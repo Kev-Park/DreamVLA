@@ -13,7 +13,7 @@
 
 module purge
 module load anaconda3/2025.6
-conda activate dreamcontrol
+conda activate /scratch/network/kp0374/conda/dreamcontrol
 
 cd Training
 ./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --device cuda:1
