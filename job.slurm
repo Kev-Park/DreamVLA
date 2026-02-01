@@ -12,7 +12,7 @@
 #SBATCH --mail-user=kp0374@princeton.edu
 
 module purge
-module load anacondapy/2024.02
+module load anaconda3/2025.6
 conda activate dreamcontrol
 
 cd Training
