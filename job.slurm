@@ -19,4 +19,4 @@ conda activate /scratch/network/kp0374/conda/dreamcontrol
 export CUDA_VISIBLE_DEVICES=0
 
 cd Training
-./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --kit_args "--/persistent/isaac/asset_root/default=/scratch/network/kp0374/isaacsimassets/Assets/Isaac/4.5" --task=Isaac-Motion-Tracking-Pick-v0 --headless --device cuda:0 
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --device cuda:0 
