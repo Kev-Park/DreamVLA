@@ -17,8 +17,6 @@ module load anaconda3/2025.6
 conda activate /scratch/network/kp0374/conda/dreamcontrol
 
 export CUDA_VISIBLE_DEVICES=0
-export OMNI_KIT_ALLOW_ROOT=1
-export OMNI_CACHE_DIR="/scratch/network/kp0374/.cache/ov"
 
 cd Training
-./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --device cuda:0
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --device cuda:0 --/persistent/isaac/asset_root/default="/scratch/network/kp0374/isaacsimassets/Assets/Isaac/4.5" 
