@@ -93,3 +93,6 @@ TrajGen/motions*/*
 .github/
 
 !Training/assets/*.usd
+
+# Ignore virtualenv directories named dreamcontrolenv anywhere in the repo
+dreamcontrolenv/
