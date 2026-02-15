@@ -14,10 +14,10 @@
 
 module purge
 module load anaconda3/2025.6
-conda activate /scratch/network/kp0374/conda/dreamcontrol
+conda activate /scratch/gpfs/TSILVER/kp0374/WBCBenchmark/dreamcontrolenv
 
 export CUDA_VISIBLE_DEVICES=0
 
 cd Training
-#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --device cuda:0 
-./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --video --num_envs 1000 --device cuda:0 
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --device cuda:0 
+#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --video --num_envs 1000 --device cuda:0 
