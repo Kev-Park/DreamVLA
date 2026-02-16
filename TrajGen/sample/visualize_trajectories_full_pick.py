@@ -29,10 +29,13 @@ SMPL_SKELETON = [
 ]
 
 # Table dimensions (from refine_motions.py)
-TABLE_WIDTH = 1.0
-TABLE_DEPTH = 2.0
-TABLE_OFFSET_Z = 0.86
-TABLE_OFFSET_X = -0.35
+TABLE_WIDTH = 1.0   # x extent (depth of table surface)
+TABLE_DEPTH = 2.0   # y extent (width of table surface)
+TABLE_HEIGHT = 0.86  # z extent (OFFSET_Z in refine_motions.py)
+# Note: refine_motions.py locally adds WRIST_TO_COLLISION (+0.35) to grab_pos
+# then does grab_pos[0] + 0.5 + OFFSET_X (-0.35).  Since the pkl stores the
+# raw wrist position (no collision offset), the +0.35 and -0.35 cancel out,
+# so we just use grab_pos[0] + 0.5 directly for the table centre.
 
 
 def load_pickle(path):
@@ -169,18 +172,19 @@ def main():
     # Table cuboid
     if not args.no_table and onp.any(grab_pos != 0):
         cuboid = trimesh.creation.box(
-            extents=(TABLE_WIDTH, TABLE_DEPTH, TABLE_OFFSET_Z)
+            extents=(TABLE_WIDTH, TABLE_DEPTH, TABLE_HEIGHT)
         )
         transform = onp.eye(4)
+        # Front edge at grab_pos[0], extends TABLE_WIDTH behind it
         transform[:3, 3] = [
-            grab_pos[0] + 0.5 + TABLE_OFFSET_X,
+            grab_pos[0] + TABLE_WIDTH / 2.0,
             0.0,
-            TABLE_OFFSET_Z / 2.0,
+            TABLE_HEIGHT / 2.0,
         ]
         cuboid.apply_transform(transform)
         cuboid.visual.face_colors = [180, 140, 100, 120]  # Semi-transparent wood color
         server.scene.add_mesh_trimesh("/table", cuboid)
-        print(f"  Table placed at x={transform[0, 3]:.2f}, z={TABLE_OFFSET_Z:.2f}")
+        print(f"  Table placed at x={transform[0, 3]:.2f}, z={TABLE_HEIGHT:.2f}")
 
     # Grab point sphere
     if onp.any(grab_pos != 0):
