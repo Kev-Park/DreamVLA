@@ -315,7 +315,11 @@ if __name__ == "__main__":
 
     human_data_path = "./sample/Pick_sim_hum/" + data_file_id + ".pkl"
     # g1_data_path = "000332.pkl"
-    g1_data_path = "./sample/Pick_sim" + ret_or_ref + "/" + data_file_id + ".pkl"
+
+    if args.ret_or_ref == 1:
+        g1_data_path = "./sample/Pick_sim1/" + data_file_id + ".pkl"
+    else:
+        g1_data_path = "./sample/Pick_sim" + ret_or_ref + "/" + data_file_id + "n.pkl"
     #g1_data_path = "follow1/0.pkl"
     print("Right script?")
     main()
