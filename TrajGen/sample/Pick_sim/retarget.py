@@ -216,6 +216,8 @@ def main():
         global_pose = jaxlie.SE3.from_rotation_and_translation(jaxlie.SO3(jnp.array(global_orientation)),jnp.array(global_position))
         with open(TASK_NAME+ "/" + str(i) + ".pkl", "wb") as f:
             pickle.dump({"global_pose": global_pose , "joints": jointss[i], "global_position": global_position, "grab_pos": grab_pos , "grab_idx": pick_t}, f)
+        with open(TASK_NAME + "/" + str(i) + "hum.pkl", "wb") as f:
+            pickle.dump({"poses": smpl_keypoints[i:i+1]}, f)  # shape: (1, N-1, 22, 3)
     
     if VIS :
         while True:
