@@ -205,12 +205,12 @@ def main():
     cuboid.apply_transform(transform)
     print(transform[:3, 3])
     # Add the cuboid to Viser
-    # server.scene.add_mesh_trimesh(
-    #     name="my_cuboid",
-    #     mesh=cuboid,
-    #     # wireframe=False,  # Set to True if you want to see just the wireframe
-    #     # color=(0.2, 0.6, 0.9, 1.0),  # RGBA
-    # )
+    server.scene.add_mesh_trimesh(
+        name="my_cuboid",
+        mesh=cuboid,
+        # wireframe=False,  # Set to True if you want to see just the wireframe
+        # color=(0.2, 0.6, 0.9, 1.0),  # RGBA
+    )
 
 
         # Define cuboid dimensions (width, height, depth)
@@ -225,12 +225,12 @@ def main():
     cuboid.apply_transform(transform)
     print(transform[:3, 3])
     # Add the cuboid to Viser
-    server.scene.add_mesh_trimesh(
-        name="my_cuboid1",
-        mesh=cuboid,
-        # wireframe=False,  # Set to True if you want to see just the wireframe
-        # color=(0.2, 0.6, 0.9, 1.0),  # RGBA
-    )
+    # server.scene.add_mesh_trimesh(
+    #     name="my_cuboid1",
+    #     mesh=cuboid,
+    #     # wireframe=False,  # Set to True if you want to see just the wireframe
+    #     # color=(0.2, 0.6, 0.9, 1.0),  # RGBA
+    # )
     
     print(positions)
     print("Started?")
