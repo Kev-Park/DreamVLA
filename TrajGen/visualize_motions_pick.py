@@ -306,7 +306,7 @@ if __name__ == "__main__":
     parser.add_argument("--ret_or_ref", type=int, choices=[1, 2], default=1, help="1=retargeted (Pick_sim1), 2=refined (Pick_sim2)")
     args = parser.parse_args()
 
-    data_file_id = str(args.data_file_id)
+    data_file_id = str(args.id)
     ret_or_ref = str(args.ret_or_ref)
 
     human_data_path = "./sample/Pick_sim1/" + data_file_id + "hum.pkl"
