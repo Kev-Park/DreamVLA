@@ -253,7 +253,7 @@ def main():
             # --- End of dummy data ---
 
             # Let's assume 'tstep' is defined elsewhere in your loop
-            current_smpl_keypoints = smpl_keypoints[tstep] # Replace with smpl_keypoints[tstep]
+            current_smpl_keypoints = smpl_keypoints[min(tstep, len(smpl_keypoints) - 1)]
 
             # Prepare points for the line segments in (N, 2, 3) format
             line_segment_points_list = []
@@ -293,7 +293,7 @@ def main():
 
             server.scene.add_point_cloud(
                 "/target_keypoints",
-                onp.array(smpl_keypoints[tstep]),
+                onp.array(smpl_keypoints[min(tstep, len(smpl_keypoints) - 1)]),
                 onp.array((0, 0, 255))[None].repeat(22, axis=0),
                 point_size=0.01,
             )
