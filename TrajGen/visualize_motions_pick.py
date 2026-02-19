@@ -119,14 +119,18 @@ def main():
     #heightmap = HUMAN_DATA['height_map'].numpy()
     heightmap = onp.zeros((1000, 1000), dtype=onp.float32)  # Dummy heightmap for visualization
 
-    """CHANGED FORMAT FOR COMMAND INPUT TESTING"""
-    #global_pose, joints = G1_DATA['global_pose'], G1_DATA['joints']
-    body_pos_w = np.array(G1_DATA["body_pos_w"])
-    body_quat_w = np.array(G1_DATA["body_quat_w"])
-    global_pose = np.concatenate([body_pos_w[:, 0, :], body_quat_w[:, 0, :]], axis=-1)
-    #global_pose = np.concatenate([body_pos_w, body_quat_w], axis=-1)
-
-    joints = np.array(G1_DATA["joint_pos"])
+    if "body_pos_w" in G1_DATA:
+        # Refined format (Pick_sim2)
+        body_pos_w = np.array(G1_DATA["body_pos_w"])
+        body_quat_w = np.array(G1_DATA["body_quat_w"])
+        global_pose = np.concatenate([body_pos_w[:, 0, :], body_quat_w[:, 0, :]], axis=-1)
+        joints = np.array(G1_DATA["joint_pos"])
+    else:
+        # Retargeted format (Pick_sim1)
+        global_position = np.array(G1_DATA["global_position"])
+        global_orientation = np.array(G1_DATA["global_pose"].rotation().wxyz)
+        global_pose = np.concatenate([global_position, global_orientation], axis=-1)
+        joints = np.array(G1_DATA["joints"])
 
     num_timesteps = joints.shape[0]
 
