@@ -5,6 +5,8 @@ cd sample/Pick_sim1
 rm -r *.pkl
 cd ../Pick_sim2
 rm -r *.pkl
+cd ../Pick_sim_hum
+rm -f *.pkl
 cd ../Pick_sim
 python3 retarget.py
 cd ../Pick_sim1

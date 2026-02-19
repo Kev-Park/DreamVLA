@@ -313,7 +313,7 @@ if __name__ == "__main__":
     data_file_id = str(args.id)
     ret_or_ref = str(args.ret_or_ref)
 
-    human_data_path = "./sample/Pick_sim1/" + data_file_id + "hum.pkl"
+    human_data_path = "./sample/Pick_sim_hum/" + data_file_id + ".pkl"
     # g1_data_path = "000332.pkl"
     g1_data_path = "./sample/Pick_sim" + ret_or_ref + "/" + data_file_id + ".pkl"
     #g1_data_path = "follow1/0.pkl"
