@@ -248,18 +248,13 @@ def main():
 
             
             # Visualize right hand position (link index 38 = right_rubber_hand)
-            # server.scene.add_point_cloud(
-            #     "/right_hand",
-            #     global_keypts[tstep, 38:39, :],  # shape (1, 3)
-            #     onp.array([[255, 0, 0]]),          # red
-            #     point_size=0.05,
-            # )
-            server.scene.add_icosphere(
+            server.scene.add_point_cloud(
                 "/right_hand",
-                radius=0.03,
-                color=(255, 50, 50),
-                position=global_keypts[tstep, 38:39, :].reshape(3,),
+                global_keypts[tstep, 38:39, :],  # shape (1, 3)
+                onp.array([[255, 0, 0]]),          # red
+                point_size=0.05,
             )
+      
             # Visualize right wrist position (link index 36 = right_wrist_pitch_link)
             server.scene.add_point_cloud(
                 "/right_wrist",
