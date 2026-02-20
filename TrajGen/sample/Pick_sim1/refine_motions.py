@@ -78,6 +78,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # penalize first frame wrist position to match last frame
             cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2)
 
+
+
+
             # penalize wrist height to remain above table
             transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z))
             cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], p=2)
@@ -85,7 +88,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # penalize wrist colliding with table
             cost2 += (transformed_keypts[:,0] + WRIST_TO_COLLISION > grab_pos[0] + offset_x)*\
                 (transformed_keypts[:,2] < offset_z)*\
-                (torch.minimum(- grab_pos[0] - offset_x + transformed_keypts[:,0] + WRIST_TO_COLLISION, - transformed_keypts[:,2] + offset_z))
+                (torch.minimum(- grab_pos[0] - offset_x + transformed_keypts[:,0] + WRIST_TO_COLLISION, - transformed_keypts[:,2] + offset_z))**2
     
             # add "laziness" penalty — linearly decays from 1.0 at frame 0 to 0.0 at grab_idx
             rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
