@@ -245,6 +245,14 @@ def main():
             # print(base_frame.position)
             urdf_vis.update_cfg(onp.array(joints[tstep]))
 
+            # Visualize right wrist position (link index 36 = right_wrist_pitch_link)
+            server.scene.add_point_cloud(
+                "/right_wrist",
+                global_keypts[tstep, 36:37, :],  # shape (1, 3)
+                onp.array([[255, 0, 0]]),          # red
+                point_size=0.05,
+            )
+
             skeleton = [
                 [-1, 0], [0, 1], [0, 2], [0, 3], [1, 4], [2, 5], [3, 6], [4, 7],
                 [5, 8], [6, 9], [7, 10], [8, 11], [9, 12], [9, 13], [9, 14],
