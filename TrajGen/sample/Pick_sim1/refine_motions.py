@@ -89,7 +89,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     
             # add "laziness" penalty — linearly decays from 1.0 at frame 0 to 0.0 at grab_idx
             rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
-            laziness_weight = torch.linspace(2.0, 0.0, grab_idx)
+            laziness_weight = torch.linspace(1.0, 0.0, grab_idx)
             cost2[:grab_idx] += laziness_weight * torch.sum(torch.abs(joint_angles[:grab_idx] - rest_pose), dim=1)
 
         elif i == 38:
