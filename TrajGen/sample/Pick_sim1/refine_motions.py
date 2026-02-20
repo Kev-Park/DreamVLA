@@ -79,17 +79,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2)
 
 
+            # Moved wrist collision penalty to hand
 
 
             # penalize wrist height to remain above table
             transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z))
             cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], p=2)
 
-            # penalize wrist colliding with table
-            cost2 += (transformed_keypts[:,0] + WRIST_TO_COLLISION > grab_pos[0] + offset_x)*\
-                (transformed_keypts[:,2] < offset_z)*\
-                (torch.minimum(- grab_pos[0] - offset_x + transformed_keypts[:,0] + WRIST_TO_COLLISION, - transformed_keypts[:,2] + offset_z))**2
-    
             # add "laziness" penalty — linearly decays from 1.0 at frame 0 to 0.0 at grab_idx
             rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
             laziness_weight = torch.linspace(1.0, 0.0, grab_idx)
@@ -104,6 +100,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             rot_mat = torch.bmm(rot_mat, rot_mat_ref.unsqueeze(0).expand(rot_mat.shape[0], -1, -1))
             angle = torch.acos(torch.clamp((rot_mat[:, 0, 0] + rot_mat[:, 1, 1] + rot_mat[:, 2, 2] - 1) / 2, -0.999, .999))
             cost2 += 0.3*angle
+
+            # penalize hand colliding with table
+            hand_pos = tf.get_matrix()[:, :3, 3]
+            transformed_hand = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
+            cost2 += (transformed_hand[:, 0] + WRIST_TO_COLLISION > grab_pos[0] + offset_x)*\
+                (transformed_hand[:, 2] < offset_z)*\
+                (torch.minimum(- grab_pos[0] - offset_x + transformed_hand[:, 0] + WRIST_TO_COLLISION, - transformed_hand[:, 2] + offset_z))**2
         else:
             i += 1
             continue
