@@ -119,7 +119,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # penalize large changes in tip position between frames (quadratic)
             tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
-            cost2[1:] += 20. * tip_disp **2
+            cost2[1:] += 40. * tip_disp **2
 
             # per-frame check
             cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx)
