@@ -66,9 +66,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1)
             cost2[:-1] += ja_diff * (1.2-ref_dists/max_ref_dists)
 
-            # Penalize wrist speed deviation
+            # Penalize wrist speed deviation from reference retargeted motion
             vals = rel_dists - ref_dists
-            cost2[1:-1] += torch.abs(vals[1:] - vals[:-1])
+            cost2[1:-1] += 10*(vals[1:] - vals[:-1])**2
             cost2[1:] += torch.abs(vals) # penalize high speed
             cost2[1:] += 10*vals**2 # penalize speed again
 
