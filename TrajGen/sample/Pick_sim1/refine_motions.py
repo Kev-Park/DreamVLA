@@ -89,7 +89,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     
             # add "laziness" penalty
             rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
-            cost2 += 10*torch.sum(torch.abs(joint_angles - rest_pose), dim=1)
+            cost2 += 5*torch.sum(torch.abs(joint_angles - rest_pose), dim=1)
 
         elif i == 38:
             rot_mat = tf.get_matrix()[:,:3,:3]
