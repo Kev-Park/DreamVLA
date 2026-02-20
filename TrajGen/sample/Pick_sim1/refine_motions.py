@@ -104,7 +104,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
 
             # penalize hand tip colliding with table
-            HAND_TIP_OFFSET = 0.25
+            HAND_TIP_OFFSET = 0.40
             hand_tf = tf.get_matrix()                   # (N, 4, 4)
             hand_pos = hand_tf[:, :3, 3]                # joint origin (N, 3)
             hand_rot = hand_tf[:, :3, :3]               # hand local rotation (N, 3, 3)
