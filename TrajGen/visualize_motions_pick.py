@@ -258,7 +258,7 @@ def main():
                 "/right_hand",
                 radius=0.03,
                 color=(255, 50, 50),
-                position=global_keypts[tstep, 38:39, :],
+                position=global_keypts[tstep, 38:39, :].reshape(3,),
             )
             # Visualize right wrist position (link index 36 = right_wrist_pitch_link)
             server.scene.add_point_cloud(
