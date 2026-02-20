@@ -304,6 +304,9 @@ def main():
 
 
 if __name__ == "__main__":
+
+    # use with dreamcontrol env
+
     import argparse
     parser = argparse.ArgumentParser(description="Visualize pick motions")
     parser.add_argument("--id", type=int, default=10, help="Motion index to visualize")
