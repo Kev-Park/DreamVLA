@@ -111,7 +111,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             local_tip = torch.tensor([HAND_TIP_OFFSET, 0., 0.], device=DEVICE)
             tip_pos = hand_pos + torch.bmm(hand_rot, local_tip.view(1, 3, 1)).squeeze(-1)
             transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
-            cost2 += 2*(transformed_tip[:, 0] > grab_pos[0] + offset_x)*\
+            cost2[:grab_idx] += 2*(transformed_tip[:, 0] > grab_pos[0] + offset_x)*\
                 (transformed_tip[:, 2] < offset_z)*\
                 (torch.minimum(- grab_pos[0] - offset_x + transformed_tip[:, 0], - transformed_tip[:, 2] + offset_z))**2
         else:
