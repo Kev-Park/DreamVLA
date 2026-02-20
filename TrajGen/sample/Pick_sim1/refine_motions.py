@@ -87,9 +87,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 (transformed_keypts[:,2] < offset_z)*\
                 (torch.minimum(- grab_pos[0] - offset_x + transformed_keypts[:,0] + WRIST_TO_COLLISION, - transformed_keypts[:,2] + offset_z))
     
-            # add "laziness" penalty
+            # add "laziness" penalty — linearly decays from 1.0 at frame 0 to 0.0 at grab_idx
             rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
-            cost2[:grab_idx] += 5.*torch.sum(torch.abs(joint_angles[:grab_idx] - rest_pose), dim=1)
+            laziness_weight = torch.linspace(2.0, 0.0, grab_idx)
+            cost2[:grab_idx] += laziness_weight * torch.sum(torch.abs(joint_angles[:grab_idx] - rest_pose), dim=1)
 
         elif i == 38:
             rot_mat = tf.get_matrix()[:,:3,:3]
