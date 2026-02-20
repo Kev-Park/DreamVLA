@@ -14,8 +14,9 @@
 
 module purge
 module load anaconda3/2025.6
-conda activate omnicontrol
+#conda activate omnicontrol
 
 export CUDA_VISIBLE_DEVICES=0
 
-bash collect_Pick.sh
+#bash collect_Pick.sh
+bash refine_Pick.sh

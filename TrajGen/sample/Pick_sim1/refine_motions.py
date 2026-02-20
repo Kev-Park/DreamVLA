@@ -55,26 +55,42 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
         if i == 36:
             pos = tf.get_matrix()[:,:3,3]
             pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3]
+
             cost2 += 0.*torch.mean(torch.norm(pos[1:] - pos[:-1], dim=1))
             transformed_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
             transformed_keypts_ref = torch.bmm(pos_ref.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
             rel_dists = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)
             
+            # Penalize large jumps in joint angles between frames
             max_ref_dists = torch.max(ref_dists)
             ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1)
             cost2[:-1] += ja_diff * (1.2-ref_dists/max_ref_dists)
+
+            # Penalize wrist speed deviation
             vals = rel_dists - ref_dists
             cost2[1:-1] += torch.abs(vals[1:] - vals[:-1])
-            cost2[1:] += torch.abs(vals)
-            cost2[1:] += 10*vals**2
+            cost2[1:] += torch.abs(vals) # penalize high speed
+            cost2[1:] += 10*vals**2 # penalize speed again
+
+            # penalize right shoulder being greater than -0.15, encourage to stay below
             cost2[:] += 10.*(joint_angles[:, -6]+0.15)*(joint_angles[:, -6]>-0.15) 
+
+            # penalize first frame wrist position to match last frame
             cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2)
+
+            # penalize wrist height to remain above table
             transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z))
             cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], p=2)
+
+            # penalize wrist colliding with table
             cost2 += (transformed_keypts[:,0] + WRIST_TO_COLLISION > grab_pos[0] + offset_x)*\
                 (transformed_keypts[:,2] < offset_z)*\
                 (torch.minimum(- grab_pos[0] - offset_x + transformed_keypts[:,0] + WRIST_TO_COLLISION, - transformed_keypts[:,2] + offset_z))
     
+            # add "laziness" penalty
+            rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
+            cost2 += 0.01*torch.sum(torch.abs(joint_angles - rest_pose), dim=1)
+
         elif i == 38:
             rot_mat = tf.get_matrix()[:,:3,:3]
             rot_mat = torch.bmm(rot_matrix, rot_mat)
