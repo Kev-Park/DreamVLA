@@ -193,23 +193,16 @@ def main():
     keypts = get_keypts(torch.tensor(joints), joint_names , pk2_robot=pk2_robot) 
     global_keypts = transform_keypts(torch.tensor(keypts), torch.tensor(orientations), torch.tensor(positions)).numpy()
     
-    # Define cuboid dimensions (width, height, depth)
-    width, height, depth = 0.5, global_keypts[-1, -11, 2]-0.1, 0.5
-
-    # Create a cuboid using Trimesh
-    cuboid = trimesh.creation.box(extents=(width, depth, height))
-
-    # gen_button = server.gui.add_button("Retarget!")
+    # Create a sphere at the grab position
+    sphere = trimesh.creation.icosphere(radius=0.05)
     transform = onp.eye(4)
     transform[:3, 3] = [global_keypts[-1, -3, 0] + 0.03 + 0.25, global_keypts[-1, -3, 1], global_keypts[-1, -3, 2]/2.-0.05]
-    cuboid.apply_transform(transform)
+    sphere.apply_transform(transform)
     print(transform[:3, 3])
-    # Add the cuboid to Viser
+    # Add the sphere to Viser
     server.scene.add_mesh_trimesh(
-        name="my_cuboid",
-        mesh=cuboid,
-        # wireframe=False,  # Set to True if you want to see just the wireframe
-        # color=(0.2, 0.6, 0.9, 1.0),  # RGBA
+        name="my_sphere",
+        mesh=sphere,
     )
 
 
@@ -245,11 +238,20 @@ def main():
             # print(base_frame.position)
             urdf_vis.update_cfg(onp.array(joints[tstep]))
 
+
+            
+            # Visualize right hand position (link index 38 = right_rubber_hand)
+            server.scene.add_point_cloud(
+                "/right_hand",
+                global_keypts[tstep, 38:39, :],  # shape (1, 3)
+                onp.array([[255, 0, 0]]),          # red
+                point_size=0.05,
+            )
             # Visualize right wrist position (link index 36 = right_wrist_pitch_link)
             server.scene.add_point_cloud(
                 "/right_wrist",
                 global_keypts[tstep, 36:37, :],  # shape (1, 3)
-                onp.array([[255, 0, 0]]),          # red
+                onp.array([[0, 0, 255]]),          # blue
                 point_size=0.05,
             )
 
