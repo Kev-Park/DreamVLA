@@ -104,7 +104,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
 
             # penalize hand tip colliding with table
-            HAND_TIP_OFFSET = 0.40
+            HAND_TIP_OFFSET = 0.45
             hand_tf = tf.get_matrix()                   # (N, 4, 4)
             hand_pos = hand_tf[:, :3, 3]                # joint origin (N, 3)
             hand_rot = hand_tf[:, :3, :3]               # hand local rotation (N, 3, 3)
@@ -113,7 +113,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
 
             def table_collision_cost(pts, gi):
-                return 2 * (pts[:gi, 0] > grab_pos[0] + offset_x) * \
+                return 5 * (pts[:gi, 0] > grab_pos[0] + offset_x) * \
                     (pts[:gi, 2] < offset_z) * \
                     (torch.minimum(- grab_pos[0] - offset_x + pts[:gi, 0], - pts[:gi, 2] + offset_z))**2
 
