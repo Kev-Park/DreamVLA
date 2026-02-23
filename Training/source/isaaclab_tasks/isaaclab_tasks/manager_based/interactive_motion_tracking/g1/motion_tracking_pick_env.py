@@ -25,7 +25,7 @@ from isaaclab.sensors import CameraCfg
 from isaac_utils.rotations import(
     slerp,
 )
-from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking_interactive_base import G1InteractiveBaseEnvCfg, hand_state_target, hand_state_target_1, rel_pose_object_w_link, object_above_threshold, reset_object_state, rel_pose_object, hand_pose, G1Rewards as G1RewardsBase, TerminationsCfg as TerminationsCfgBase, ActionsCfg as ActionsCfgBase, MySceneCfg as MySceneCfgBase, EventCfg as EventCfgBase
+from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking_interactive_base import G1InteractiveBaseEnvCfg, hand_state_target, hand_state_target_1, rel_pose_object_w_link, object_above_threshold, reset_object_state, rel_pose_object, hand_pose, object_approach_reward_right, G1Rewards as G1RewardsBase, TerminationsCfg as TerminationsCfgBase, ActionsCfg as ActionsCfgBase, MySceneCfg as MySceneCfgBase, EventCfg as EventCfgBase
 from isaaclab_assets import G1_MINIMAL_CFG  # isort: skip
 from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder
 
@@ -224,7 +224,7 @@ class G1Rewards(G1RewardsBase):
         lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=0.0)
         ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
         flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
-        object_approach_reward = RewTerm(func=object_approach_reward,
+        object_approach_reward = RewTerm(func=object_approach_reward_right,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])},
             weight=100.0)
         right_hand_state_target_reward_val = RewTerm(

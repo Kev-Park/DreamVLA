@@ -11,6 +11,17 @@ from . import agents
 # Register Gym environments.
 ##
 
+gym.register(
+    id="Isaac-Motion-Tracking-Hit-Target-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_hit_target_env:G1HitTargetEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
+
 
 gym.register(
     id="Isaac-Motion-Tracking-Pick-v0",
@@ -24,16 +35,27 @@ gym.register(
 )
 
 gym.register(
-    id="Isaac-Motion-Tracking-Pick-Real-Top-v0",
+    id="Isaac-Motion-Tracking-Pick-Top-UB-Real-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_real_top_env:G1PickRealTopEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_top_ub_real_env:G1PickTopUBRealEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
 )
 
+
+gym.register(
+    id="Isaac-Motion-Tracking-Pick-Top-UB-Real-Eval-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_top_ub_real_env:G1PickTopUBRealEnvEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
 gym.register(
     id="Isaac-Motion-Tracking-Pick-Real-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
@@ -46,22 +68,22 @@ gym.register(
 )
 
 gym.register(
-    id="Isaac-Motion-Tracking-Punch-Real-v0",
+    id="Isaac-Motion-Tracking-Punch-UB-Real-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_punch_real_env:G1PunchRealEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_punch_ub_real_env:G1PunchUBRealEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
 )
 
 gym.register(
-    id="Isaac-Motion-Tracking-Punch-Real-Eval-v0",
+    id="Isaac-Motion-Tracking-Punch-UB-Real-Eval-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_punch_real_env:G1PunchRealEvalEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_punch_ub_real_env:G1PunchUBRealEnvEvalCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
@@ -72,7 +94,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_real_env:G1PickRealEvalEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_real_env:G1PickRealEnvEvalCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
@@ -94,18 +116,29 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_button_press_real_env:G1ButtonPressEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_button_press_real_env:G1ButtonPressRealEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
 )
 
 gym.register(
-    id="Isaac-Motion-Tracking-Button-Press-Real-Full-v0",
+    id="Isaac-Motion-Tracking-Button-Press-UB-Real-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_button_press_real_full_env:G1ButtonPressRealFullEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_button_press_ub_real_env:G1ButtonPressUBRealEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Isaac-Motion-Tracking-Button-Press-UB-Real-Eval-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_button_press_ub_real_env:G1ButtonPressUBRealEnvEvalCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
@@ -116,40 +149,29 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_button_press_real_env:G1ButtonPressRealEvalEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_button_press_real_env:G1ButtonPressRealEnvEvalCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
 )
 
 gym.register(
-    id="Isaac-Motion-Tracking-Button-Press-Full-Real-Eval-v0",
+    id="Isaac-Motion-Tracking-Pick-UB-Real-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_button_press_real_full_env:G1ButtonPressRealFullEvalEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_ub_real_env:G1PickUBRealEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
 )
 
 gym.register(
-    id="Isaac-Motion-Tracking-Pick-Real-Full-v0",
+    id="Isaac-Motion-Tracking-Pick-UB-Real-Eval-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_real_full_env:G1PickRealFullEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
-    },
-)
-
-gym.register(
-    id="Isaac-Motion-Tracking-Pick-Real-Full-Eval-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_real_full_env:G1PickRealFullEvalEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_ub_real_env:G1PickUBRealEnvEvalCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
@@ -227,6 +249,50 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.motion_tracking_bimanual_pick_env:G1BimanualPickEnvPlayCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Isaac-Motion-Tracking-Bimanual-Pick-Real-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_bimanual_pick_real_env:G1BimanualPickRealEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Isaac-Motion-Tracking-Bimanual-Pick-Real-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_bimanual_pick_real_env:G1BimanualPickRealEnvPlayCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Isaac-Motion-Tracking-Squat-Real-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_squat_real_env:G1SquatRealEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Isaac-Motion-Tracking-Squat-Real-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_squat_real_env:G1SquatRealEnvPlayCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
@@ -410,16 +476,6 @@ gym.register(
     },
 )
 
-gym.register(
-    id="Isaac-Motion-Tracking-Squat-Real-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_squat_real_env:G1SquatRealEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
-    },
-)
 
 gym.register(
     id="Isaac-Motion-Tracking-Squat-Open-Drawer-Real-v0",
@@ -427,17 +483,6 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.motion_tracking_squat_open_drawer_real_env:G1SquatOpenDrawerRealEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
-    },
-)
-
-gym.register(
-    id="Isaac-Motion-Tracking-Bimanual-Pick-Real-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_bimanual_pick_real_env:G1BimanualPickRealEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
@@ -466,11 +511,11 @@ gym.register(
 )
 
 gym.register(
-    id="Isaac-Motion-Tracking-Open-Drawer-Real-v0",
+    id="Isaac-Motion-Tracking-Open-Drawer-UB-Real-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.motion_tracking_open_drawer_real_env:G1OpenDrawerRealEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_open_drawer_ub_real_env:G1OpenDrawerUBRealEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },

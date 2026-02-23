@@ -183,7 +183,12 @@ def get_checkpoint_path(
             if len(runs) > 1:
                 # Pick the run with shortest name
                 runs.sort(key=lambda x: len(x))
-                runs = runs[:1]
+                min_len = len(runs[0])
+                a = 0
+                for run in runs:
+                    if len(run) == min_len:
+                        a += 1
+                runs = runs[:a]
         else:
             runs = [
                 os.path.join(log_path, run) for run in os.scandir(log_path) if run.is_dir() and re.match(run_dir, run.name)

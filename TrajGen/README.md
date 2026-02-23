@@ -65,13 +65,14 @@ bash collect_Button_Press.sh
 This will generate the trajectories in the `sample/<TASK_NAME>_sim2` folder. This will first generate human reference trajectories in `sample/<TASK_NAME>_sim` folder, and then generate retargeted trajectories in `sample/<TASK_NAME>_sim1` folder. Later, it will refine the retargeted trajectories and save them in `sample/<TASK_NAME>_sim2` folder. For task-specific retargeting and refinement, refer to `sample/<TASK_NAME>_sim/retarget.py` and `sample/<TASK_NAME>_sim1/refine_motions.py` scripts. To visualize the trajectories, run the following command:
 
 ```bash
+cd sample
 python visualize_trajectories.py --folder <FOLDER_NAME> --id <ID>
 ```
 
-For instance, to visualize the trajectory for ```Button_Press``` task with trajectory ID ```0```, run the following command:
+For instance, to visualize the trajectory for ```Button_Press``` task with trajectory ID ```0_n```, run the following command:
 
 ```bash
-python visualize_trajectories.py --folder Button_Press_sim2 --id 0
+python visualize_trajectories.py --folder Button_Press_sim2 --id 0_n
 ```
 
 ## Code pointer to the main module of OmniControl

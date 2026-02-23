@@ -121,11 +121,11 @@ def main():
                 task_name += "-" + args_cli.baseline
             # import pdb; pdb.set_trace()  # noqa: E702
             resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint, task_name=task_name)
-            # import pdb; pdb.set_trace()  # noqa: E702
         
     log_dir = os.path.dirname(resume_path)
     env_cfg.viewer.eye = (2.5,-5.,5.)
     env_cfg.viewer.lookat = (2., 0., 0.)
+    env_cfg.observations.policy.enable_corruption = False
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     print("Observation space:", env.observation_space)
     print("Action space:", env.action_space)

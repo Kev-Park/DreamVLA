@@ -1,0 +1,218 @@
+import time
+
+import mujoco.viewer
+import mujoco
+import numpy as np
+import torch
+import yaml
+LEGGED_GYM_ROOT_DIR = "/home/gr/isaaclab-sparky/unitree_rl_gym"
+
+def get_gravity_orientation(quaternion):
+    qw = quaternion[0]
+    qx = quaternion[1]
+    qy = quaternion[2]
+    qz = quaternion[3]
+
+    gravity_orientation = np.zeros(3)
+
+    gravity_orientation[0] = 2 * (-qz * qx + qw * qy)
+    gravity_orientation[1] = -2 * (qz * qy + qw * qx)
+    gravity_orientation[2] = 1 - 2 * (qw * qw + qz * qz)
+
+    return gravity_orientation
+
+
+def pd_control(target_q, q, kp, target_dq, dq, kd):
+    """Calculates torques from position commands"""
+    # import pdb; pdb.set_trace()
+    return (target_q - q) * kp + (target_dq - dq) * kd
+
+
+
+
+if __name__ == "__main__":
+    # get config file name from command line
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("config_file", type=str, help="config file name in the config folder")
+    args = parser.parse_args()
+    config_file = args.config_file
+    with open(f"{LEGGED_GYM_ROOT_DIR}/deploy/deploy_mujoco/configs/{config_file}", "r") as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)
+        policy_path = config["policy_path"].replace("{LEGGED_GYM_ROOT_DIR}", LEGGED_GYM_ROOT_DIR) + "stand_still.pt"
+        xml_path = config["xml_path"].replace("{LEGGED_GYM_ROOT_DIR}", LEGGED_GYM_ROOT_DIR)
+        all_joints = config["joint_names"]
+        simulation_duration = config["simulation_duration"]
+        simulation_dt = config["simulation_dt"]
+        control_decimation = config["control_decimation"]
+        left_hand_open_ja = np.array(config.get("right_hand_closed_joint_angles"))
+        right_hand_open_ja = np.array(config.get("left_hand_closed_joint_angles"))
+        left_hand_closed_ja = np.array(config.get("right_hand_closed_joint_angles"))
+        right_hand_closed_ja = np.array(config.get("left_hand_closed_joint_angles"))
+
+        kps = np.array(config["kps"], dtype=np.float32)
+        kds = np.array(config["kds"], dtype=np.float32)
+
+        default_angles = np.array(config["default_angles"], dtype=np.float32)
+        left_hand_joints = config.get("left_hand_joint_names")
+        right_hand_joints = config.get("right_hand_joint_names")
+
+        ang_vel_scale = config["ang_vel_scale"]
+        dof_pos_scale = config["dof_pos_scale"]
+        dof_vel_scale = config["dof_vel_scale"]
+        action_scale = config["action_scale"]
+        cmd_scale = np.array(config["cmd_scale"], dtype=np.float32)
+
+        num_actions = config["num_actions"]
+        num_obs = config["num_obs"]
+        
+        cmd = np.array(config["cmd_init"], dtype=np.float32)
+
+    # define context variables
+    action = np.zeros(num_actions, dtype=np.float32)
+    obs = np.zeros(num_obs, dtype=np.float32)
+
+    counter = 0
+
+    # Load robot model
+    m = mujoco.MjModel.from_xml_path(xml_path+"scene_full_kick.xml")
+    d = mujoco.MjData(m)
+    m.opt.timestep = simulation_dt
+    print(m.opt.solver)
+    # m.opt.solver = "implicitfast"
+    # exit(0)
+    # load policy
+    policy = torch.jit.load(policy_path)
+    active_joints = ["left_hip_pitch_joint",
+                "left_hip_roll_joint",
+                "left_hip_yaw_joint",
+                "left_knee_joint",
+                "left_ankle_pitch_joint", 
+                "left_ankle_roll_joint",
+                "right_hip_pitch_joint",
+                "right_hip_roll_joint",
+                "right_hip_yaw_joint",
+                "right_knee_joint",
+                "right_ankle_pitch_joint", 
+                "right_ankle_roll_joint",
+                "waist_yaw_joint",
+                "left_shoulder_pitch_joint",
+                "left_shoulder_roll_joint",
+                "left_shoulder_yaw_joint",
+                "left_elbow_joint",
+                "left_wrist_roll_joint",
+                "left_wrist_pitch_joint",
+                "left_wrist_yaw_joint",
+                "right_shoulder_pitch_joint",
+                "right_shoulder_roll_joint",
+                "right_shoulder_yaw_joint",
+                "right_elbow_joint",
+                "right_wrist_roll_joint",
+                "right_wrist_pitch_joint",
+                "right_wrist_yaw_joint"]
+    
+    active_joint_ids = [all_joints.index(name) for name in active_joints]
+    left_hand_joint_ids = [all_joints.index(name) for name in left_hand_joints]
+    right_hand_joint_ids = [all_joints.index(name) for name in right_hand_joints]
+    target_dof_pos = default_angles.copy()[active_joint_ids]
+    target_dof_left_hand = default_angles.copy()[left_hand_joint_ids]
+    target_dof_right_hand = default_angles.copy()[right_hand_joint_ids]
+    pick_time = 5.82   # seconds
+    with mujoco.viewer.launch_passive(m, d) as viewer:
+        # Close the viewer automatically after simulation_duration wall-seconds.
+        start = time.time()
+        rel_pose_object = [0., 0., 0., 1., 0., 0., 0.] # Get this
+        counter = 0
+        # rel_pose_object[0] = np.random.uniform(0.34, 0.44) # Get this
+        # rel_pose_object[1] = np.random.uniform(-0.3, 0.)
+        # rel_pose_object[2] = np.random.uniform(0.267, 0.271)
+        d.qpos[7:] = default_angles
+        d.qvel[6:] = 0.
+        d.qpos[:3] = np.array([0., 0., 0.783])
+        d.qpos[3:7] = np.array([0.9971888, 0, 0.0749297, 0.])  
+        d.qvel[:6] = 0.
+        mujoco.mj_step(m, d)
+
+        while viewer.is_running() :
+            # Initialize the robot from the default position.
+            
+            step_start = time.time()
+            # tau = pd_control(default_angles,d.qpos[7:-7], kps, np.zeros_like(default_angles), d.qvel[6:-6], kds)
+            # d.ctrl[:] = tau
+            if counter*simulation_dt > 10. :
+                counter = 0
+                # rel_pose_object[0] = np.random.uniform(0.34, 0.44) # Get this
+                # rel_pose_object[1] = np.random.uniform(-0.3, 0.)
+                # rel_pose_object[2] = np.random.uniform(0.213, 0.213)
+                d.qpos[7:] = default_angles
+                d.qvel[6:] = 0.
+                d.qpos[:3] = np.array([0., 0., 0.783])
+                d.qpos[3:7] = np.array([1., 0., 0., 0.])
+                d.qvel[:6] = 0.
+                # d.qpos[-5] += 1.
+            # print(active_joint_ids)
+            # target_dof_pos[:12] = default_angles[:12]
+            tau = pd_control(target_dof_pos, d.qpos[7:][active_joint_ids], kps[active_joint_ids], np.zeros_like(kds[active_joint_ids]), d.qvel[6:][active_joint_ids], kds[active_joint_ids])
+            tau_left_hand = pd_control(target_dof_left_hand, d.qpos[7:][left_hand_joint_ids], kps[left_hand_joint_ids], np.zeros_like(kds[left_hand_joint_ids]), d.qvel[6:][left_hand_joint_ids], kds[left_hand_joint_ids])
+            tau_right_hand = pd_control(target_dof_right_hand, d.qpos[7:][right_hand_joint_ids], kps[right_hand_joint_ids], np.zeros_like(kds[right_hand_joint_ids]), d.qvel[6:][right_hand_joint_ids], kds[right_hand_joint_ids])
+            # print(d.ctrl)
+            d.ctrl[:] = 0.
+            d.ctrl[active_joint_ids] = tau
+            d.ctrl[left_hand_joint_ids] = tau_left_hand
+            d.ctrl[right_hand_joint_ids] = tau_right_hand
+            # mj_step can be replaced with code that also evaluates
+            # a policy and applies a control signal before stepping the physics.
+            mujoco.mj_step(m, d)
+            # print(tau)
+            counter += 1
+            if counter % control_decimation == 0:
+                # Apply control signal here.
+                # create observation
+                qj = d.qpos[7:][active_joint_ids]
+                dqj = d.qvel[6:][active_joint_ids]
+                quat = d.qpos[3:7]
+                omega = d.qvel[3:6]
+                qj = (qj - default_angles[active_joint_ids]) * dof_pos_scale
+                dqj = dqj * dof_vel_scale
+                gravity_orientation = get_gravity_orientation(quat)
+                
+                count = counter * simulation_dt
+                period = 10.0
+                phase = min(count, period) / period
+                sin_phase = np.sin(2 * np.pi * phase)
+                right_hand_state = (count > pick_time) * 1.0
+                right_hand_state_1 = (count < pick_time + 0.7) * (count > pick_time - 0.7) * 1.0
+                print(right_hand_state, right_hand_state_1)
+                obs[:3] = omega
+                obs[3:3+3] = gravity_orientation
+                obs[3+3:3+3+len(active_joint_ids)] = qj
+                obs[3+3+len(active_joint_ids):3+3+2*len(active_joint_ids)] = dqj
+                obs[3+3+2*len(active_joint_ids) : 3+3+2*len(active_joint_ids)+num_actions] = action
+                obs[3+3+2*len(active_joint_ids)+num_actions : 3+3+2*len(active_joint_ids)+num_actions+2] = np.array([phase, sin_phase])*0.
+                obs[3+3+2*len(active_joint_ids)+num_actions+2 : 3+3+2*len(active_joint_ids)+num_actions+2+3] = np.array(rel_pose_object)[:3]*0.
+                obs[3+3+2*len(active_joint_ids)+num_actions+2+3 : 3+3+2*len(active_joint_ids)+num_actions+2+3+1] = np.array([right_hand_state])*0.
+                obs[3+3+2*len(active_joint_ids)+num_actions+2+3+1 : 3+3+2*len(active_joint_ids)+num_actions+2+3+1+1] = np.array([right_hand_state_1])*0.
+
+                obs_tensor = torch.from_numpy(obs).unsqueeze(0)
+                # print(obs_tensor)
+                # policy inference
+                action = policy(obs_tensor).detach().numpy().squeeze()
+                # print(action[:2])
+                # action[1] += 0.5
+                # transform action to target_dof_pos
+                target_dof_pos = action[:-2] * action_scale + default_angles[active_joint_ids]
+                target_dof_left_hand = left_hand_open_ja * (1 - action[-2]) + left_hand_closed_ja * action[-2]
+                target_dof_right_hand = right_hand_open_ja * (1 - action[-1]) + right_hand_closed_ja * action[-1]
+                # print(target_dof_pos)
+                # import pdb; pdb.set_trace()
+
+            # Pick up changes to the physics state, apply perturbations, update options from GUI.
+            viewer.sync()
+    
+            # Rudimentary time keeping, will drift relative to wall clock.
+            time_until_next_step = m.opt.timestep - (time.time() - step_start)
+            # print(time_until_next_step)
+            if time_until_next_step > 0:
+                time.sleep(time_until_next_step)
+            # time.sleep(0.1)

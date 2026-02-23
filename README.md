@@ -18,6 +18,10 @@
     <img alt="Blog" src="https://img.shields.io/badge/Blog-MyBlog-blue?style=flat&logo=wordpress"/>
 </a>
 
+<a href="https://github.com/GenRobo/DreamControl/stargazers">
+    <img alt="GitHub stars" src="https://img.shields.io/github/stars/GenRobo/DreamControl?style=social"/>
+</a>
+
 
 <img src="cover.gif" width="600px"/>
 
@@ -30,14 +34,14 @@ DreamControl is a ***scalable system*** for learning human-inspired whole-body h
 ## TODO
 - [x] Release DreamControl training code with generated reference trajectories 
 - [x] Release reference trajectory generation code
-- [ ] Release Sim2Real code
+- [x] Release Sim2Real code
 
 ## Table of Contents
 
 1. [Setup](#setup)
-2. [Phase 1: Generate reference trajectories (in progress)](#phase-1-generate-reference-trajectories)
+2. [Phase 1: Generate reference trajectories](#phase-1-generate-reference-trajectories)
 3. [Phase 2: RL training](#phase-2-rl-training)
-4. [Phase 3: Sim2Real (in progress)](#phase-3-sim2real)
+4. [Phase 3: Sim2Real](#phase-3-sim2real)
 5. [Acknowledgement](#acknowledgement)
 6. [License](#license)
 7. [Citation](#citation)
@@ -134,21 +138,21 @@ For instance, to run RL training for ```Pick``` task, run the following command:
 To run inference on the trained policy, run the following command:-
 
 ```bash
-./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-<TASK NAME>-v0 --headless --video --num_envs 1000 --device cuda:1 
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-<TASK NAME>-v0 --headless --video --num_envs 1000
 ```
 
 For instance, to run inference on the trained policy for ```Pick``` task, run the following command:-
 
 ```bash
-./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --video --num_envs 1000 --device cuda:1 
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --video --num_envs 1000
 ```
 
 This will take the latest trained checkpoint for the task in the ```Training/logs/rsl_rl/g1/``` directory and run inference on it. The video will be saved in the same log directory where the training checkpoint was taken from.
 
-## Phase 3: Sim2Real (in progress)
+## Phase 3: Sim2Real
 
 
-<!-- All sim2real code is in `Sim2Real` folder. More organized code with instructions will be released soon. -->
+All Sim2Real code is in [Sim2Real](https://github.com/GenRobo/DreamControl/tree/main/Sim2Real) folder. Instructions to run tasks on hardware are in [Sim2Real/README.md](https://github.com/GenRobo/DreamControl/tree/main/Sim2Real/README.md) file.
 
 
 ## Acknowledgement

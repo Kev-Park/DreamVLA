@@ -989,21 +989,37 @@ def wrist_press_button(n_frames=196, raw_mean=None, raw_std=None, index=1, n_sam
     return text, control_full, joint_id
 
 def wrist_press_button_real(n_frames=196, raw_mean=None, raw_std=None, index=1):
+    NX = 5
+    NY = 10
+    NZ = 10
+
+    X_MIN = 0.
+    X_MAX = 0.1
+    Y_MIN = -0.1
+    Y_MAX = 0.1
+    Z_MIN = -0.1
+    Z_MAX = 0.05
+    
+    # Generate normalized grid
+    x = np.linspace(X_MIN, X_MAX, NX)
+    y = np.linspace(Y_MIN, Y_MAX, NY)
+    z = np.linspace(Z_MIN, Z_MAX, NZ)
+    SHIFT_Xs, SHIFT_Ys, SHIFT_Zs = np.meshgrid(x, y, z)
+    SHIFT_Xs = SHIFT_Xs.flatten()
+    SHIFT_Ys = SHIFT_Ys.flatten()
+    SHIFT_Zs = SHIFT_Zs.flatten()
+    wrist_pts = []
+    for i in range(len(SHIFT_Xs)):
+        SHIFT_X = SHIFT_Xs[i]
+        SHIFT_Y = SHIFT_Ys[i]
+        SHIFT_Z = SHIFT_Zs[i]
+        wrist_pts.append([30, SHIFT_Y - 0.1, 1.15 + SHIFT_Z, 0.35+SHIFT_X])
+    
     text = [
         # wrist
         'a person stands in place, presses elevator button',
-        ] * 10
+        ] * NX*NY*NZ
     
-    wrist_pts = [[30, -0.3, 1.1, .4],
-                 [30, 0.1, 1.1, .4],
-                 [30, -0.1, 1.1, .4],
-                 [30, 0., 1.1, .4],
-                 [30, -0.2, 1.1, .4],
-                 [40, 0.1, 1.2, .4],
-                 [40, -0.3, 1.2, .4],
-                 [40, -0.1, 1.2, .4],
-                 [40, 0., 1.2, .4],
-                 [40, -0.2, 1.2, .4]]
     theta = np.pi/4.
     control = []
     
@@ -1209,21 +1225,35 @@ def wrist_text_hold(n_frames=196, raw_mean=None, raw_std=None, index=1, n_sample
     return text, control_full, joint_id
 
 def wrist_text_lift_real(n_frames=196, raw_mean=None, raw_std=None, index=1):
+    NX = 10
+    NY = 30
+    
+    X_MIN = 0.
+    X_MAX = 0.1
+    Y_MIN = -0.2
+    Y_MAX = 0.1
+    
+    # Generate normalized grid
+    x = np.linspace(X_MIN, X_MAX, NX)
+    y = np.linspace(Y_MIN, Y_MAX, NY)
+    SHIFT_Xs, SHIFT_Ys = np.meshgrid(x, y)
+    SHIFT_Xs = SHIFT_Xs.flatten()
+    SHIFT_Ys = SHIFT_Ys.flatten()
+
+    wrist_pts = []
+    for i in range(len(SHIFT_Xs)):
+        SHIFT_X = SHIFT_Xs[i]
+        SHIFT_Y = SHIFT_Ys[i]
+        wrist_pts.append([30, SHIFT_Y, 1.25, 0.25+SHIFT_X])
+    hint_pelvis = np.zeros((n_frames, 3))
+    hint_pelvis[:,1] = 0.95
+    
+    
     text = [
         # wrist
         'a person stands in place, grabs the cup from side and lifts up',
-        ] * 10
+        ] * NX*NY
     
-    wrist_pts = [[30, -0.2, 1.25, .25],
-                 [30, 0.2, 1.25, .25],
-                 [30, -0.1, 1.25, .25],
-                 [30, 0.1, 1.25, .25],
-                 [30, 0., 1.25, .25],
-                 [40, -0.2, 1.25, .25],
-                 [40, 0.2, 1.25, .25],
-                 [40, -0.1, 1.25, .25],
-                 [40, 0.1, 1.25, .25],
-                 [40, 0., 1.25, .25]]
     theta = np.pi/4.
     control = []
     for pt in wrist_pts:
@@ -1245,33 +1275,8 @@ def wrist_text_lift_real(n_frames=196, raw_mean=None, raw_std=None, index=1):
     joint_id = np.array([
         # wrist, elbow, pelvis
         [21, 19, 0] 
-        ]*10)
+        ]*NX*NY)
     control = np.stack(control)
-
-    # extend for example 1
-    # control[-1, 90:110] = control[-1, 100]
-    # sparsify for example 3
-    # control[-1, 0:20] = 0
-    # control[-1, 60:180] = 0
-    # extend for example 1
-    # control[0, 60:] = control[0, 80]
-    # control[1, 60:] = control[1, 80]
-    # control[2, 60:] = control[2, 80]
-    # control[3, 60:] = control[3, 80]
-    # control[4, 50:] = control[4, 80]
-    # control[5, 90:] = control[5, 100]
-    # control[6, 90:] = control[6, 100]
-    # control[7, 90:] = control[7, 100]
-    # control[8, 90:] = control[8, 100]
-    # control[9, 80:] = control[9, 100]
-    # control[]
-    # control[1, 50:90] = control[1, 80]
-    # control[1, 130:196] = control[1, 160]
-    # # extend for example 2
-    # control[2, 150:180] = control[2, 160]
-    # # sparsify for example 3
-    # control[3, :78] = 0
-    # control[3, 119:] = 0
 
 
     text = text[index:index+1]
@@ -1336,6 +1341,17 @@ def collate_all(n_frames, dataset, task_name):
             texts2, hints2, _ = wrist_boxing_real(n_frames, raw_mean, raw_std, index=(i%1250))
             texts += texts2
             hints.append(hints2)
+    elif task_name == 'pick_real':
+        for i in range(300):
+            texts2, hints2, _ = wrist_text_lift_real(n_frames, raw_mean, raw_std, index=(i%300))
+            texts += texts2
+            hints.append(hints2)
+    elif task_name == 'button_press_real':
+        for i in range(300):
+            texts2, hints2, _ = wrist_press_button_real(n_frames, raw_mean, raw_std, index=(i%300))
+            texts += texts2
+            hints.append(hints2)
+    
     # for i in range(20):
     #     texts2, hints2, _ = foot_kick_real(n_frames, raw_mean, raw_std, index=(i%10))
     #     texts += texts2

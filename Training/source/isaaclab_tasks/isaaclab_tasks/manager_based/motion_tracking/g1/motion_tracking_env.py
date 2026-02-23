@@ -139,6 +139,7 @@ def reset_root_state_for_motion(
     env: ManagerBasedRLEnv,
     env_ids: torch.Tensor,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    offset_z: float = 0.15,
 ):
     """Reset the asset root state to the root state of the first pose in the motion library.
 
@@ -160,7 +161,7 @@ def reset_root_state_for_motion(
         positions = root_states[:, 0:3] + env.scene.env_origins[env_ids]
         orientations = root_states[:, 3:7]
         velocities = root_states[:, 7:13]
-        positions[:, 2] += 0.15
+        positions[:, 2] += offset_z
 
     # set into the physics simulation
     asset.write_root_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=env_ids)
