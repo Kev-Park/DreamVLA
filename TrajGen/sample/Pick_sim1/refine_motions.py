@@ -54,6 +54,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     for link_name, tf in fk_results.items():
 
         def cost_old():
+            nonlocal i
             if i == 36:
                 pos = tf.get_matrix()[:,:3,3]
                 pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3]
@@ -143,6 +144,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             i += 1
 
         def cost_new():
+            nonlocal i
             if i == 36:
                 pos = tf.get_matrix()[:,:3,3] # robot keypoints
                 pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3] # human keypoints
