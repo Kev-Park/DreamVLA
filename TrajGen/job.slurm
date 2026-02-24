@@ -18,7 +18,6 @@ module load anaconda3/2025.6
 
 export CUDA_VISIBLE_DEVICES=0
 
-#bash collect_Pick.sh
+bash collect_Pick.sh
 #bash refine_Pick.sh
 
-bash collect_Pick_real.sh

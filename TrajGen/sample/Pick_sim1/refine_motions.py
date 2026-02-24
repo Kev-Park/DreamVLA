@@ -52,94 +52,153 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     rot_matrix = quaternion_to_matrix(quats)
     i = 0
     for link_name, tf in fk_results.items():
-        if i == 36:
-            pos = tf.get_matrix()[:,:3,3]
-            pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3]
 
-            cost2 += 0.*torch.mean(torch.norm(pos[1:] - pos[:-1], dim=1))
-            transformed_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
-            transformed_keypts_ref = torch.bmm(pos_ref.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
-            rel_dists = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)
-            
-            # # [REF] Penalize large joint angle jumps, weighted by how fast the reference moves at each frame
-            max_ref_dists = torch.max(ref_dists)
-            ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1)
-            cost2[:-1] += ja_diff * (1.2-ref_dists/max_ref_dists)
+        def cost_old():
+            if i == 36:
+                pos = tf.get_matrix()[:,:3,3]
+                pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3]
 
-            # # [REF] Penalize wrist speed deviation from reference retargeted motion
-            # vals = rel_dists - ref_dists
-            # cost2[1:-1] += torch.abs(vals[1:] - vals[:-1])  # smoothness of speed deviation
-            # cost2[1:] += torch.abs(vals)                     # L1 speed deviation
-            # cost2[1:] += 10*vals**2                          # L2 speed deviation (dominates large errors)
+                cost2 += 0.*torch.mean(torch.norm(pos[1:] - pos[:-1], dim=1))
+                transformed_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
+                transformed_keypts_ref = torch.bmm(pos_ref.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
+                rel_dists = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)
+                
+                # # [REF] Penalize large joint angle jumps, weighted by how fast the reference moves at each frame
+                max_ref_dists = torch.max(ref_dists)
+                ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1)
+                cost2[:-1] += ja_diff * (1.2-ref_dists/max_ref_dists)
 
-            # [ABS] Penalize large joint angle jumps between consecutive frames (self-consistency)
-            ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1)
-            cost2[:-1] += ja_diff
+                # # [REF] Penalize wrist speed deviation from reference retargeted motion
+                # vals = rel_dists - ref_dists
+                # cost2[1:-1] += torch.abs(vals[1:] - vals[:-1])  # smoothness of speed deviation
+                # cost2[1:] += torch.abs(vals)                     # L1 speed deviation
+                # cost2[1:] += 10*vals**2                          # L2 speed deviation (dominates large errors)
 
-            # [ABS] Penalize wrist speed changes (acceleration) and high speed relative to own trajectory
-            cost2[1:-1] += torch.abs(rel_dists[1:] - rel_dists[:-1])  # smoothness of own speed
-            cost2[1:] += torch.abs(rel_dists)                          # L1 speed magnitude
-            cost2[1:] += 10*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
+                # [ABS] Penalize large joint angle jumps between consecutive frames (self-consistency)
+                ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1)
+                cost2[:-1] += ja_diff
 
-            # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
-            cost2[:] += 10.*(joint_angles[:, -6]+0.15)*(joint_angles[:, -6]>-0.15) 
+                # [ABS] Penalize wrist speed changes (acceleration) and high speed relative to own trajectory
+                cost2[1:-1] += torch.abs(rel_dists[1:] - rel_dists[:-1])  # smoothness of own speed
+                cost2[1:] += torch.abs(rel_dists)                          # L1 speed magnitude
+                cost2[1:] += 10*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
 
-            # [REF] Penalize first frame wrist position deviating from reference
-            cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2)
+                # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
+                cost2[:] += 10.*(joint_angles[:, -6]+0.15)*(joint_angles[:, -6]>-0.15) 
+
+                # [REF] Penalize first frame wrist position deviating from reference
+                cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2)
 
 
-            # Moved wrist collision penalty to hand (i==38)
+                # Moved wrist collision penalty to hand (i==38)
 
 
-            # [REF+ABS] Penalize wrist height: clamps reference to table height, then tracks it
-            transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z))
-            cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], p=2)
+                # [REF+ABS] Penalize wrist height: clamps reference to table height, then tracks it
+                transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z))
+                cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], p=2)
 
-            # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
-            rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
-            laziness_weight = torch.linspace(1.0, 0.0, grab_idx)
-            cost2[:grab_idx] += laziness_weight * torch.sum(torch.abs(joint_angles[:grab_idx] - rest_pose), dim=1)
+                # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
+                rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
+                laziness_weight = torch.linspace(1.0, 0.0, grab_idx)
+                cost2[:grab_idx] += laziness_weight * torch.sum(torch.abs(joint_angles[:grab_idx] - rest_pose), dim=1)
 
-        elif i == 38:
-            rot_mat = tf.get_matrix()[:,:3,:3]
-            rot_mat = torch.bmm(rot_matrix, rot_mat)
-            rot_mat_ref = torch.tensor([[1, 0, 0], 
-                                        [0, 1, 0], 
-                                        [0, 0, 1]], dtype=torch.float32, device=DEVICE).T
-            rot_mat = torch.bmm(rot_mat, rot_mat_ref.unsqueeze(0).expand(rot_mat.shape[0], -1, -1))
-            angle = torch.acos(torch.clamp((rot_mat[:, 0, 0] + rot_mat[:, 1, 1] + rot_mat[:, 2, 2] - 1) / 2, -0.999, .999))
-            cost2 += 0.3*angle  # [REF] Penalize hand orientation deviating from identity (palm-down)
+            elif i == 38:
+                rot_mat = tf.get_matrix()[:,:3,:3]
+                rot_mat = torch.bmm(rot_matrix, rot_mat)
+                rot_mat_ref = torch.tensor([[1, 0, 0], 
+                                            [0, 1, 0], 
+                                            [0, 0, 1]], dtype=torch.float32, device=DEVICE).T
+                rot_mat = torch.bmm(rot_mat, rot_mat_ref.unsqueeze(0).expand(rot_mat.shape[0], -1, -1))
+                angle = torch.acos(torch.clamp((rot_mat[:, 0, 0] + rot_mat[:, 1, 1] + rot_mat[:, 2, 2] - 1) / 2, -0.999, .999))
+                cost2 += 0.3*angle  # [REF] Penalize hand orientation deviating from identity (palm-down)
 
-            # [ABS] Penalize hand tip colliding with table
-            HAND_TIP_OFFSET = 0.45
-            hand_tf = tf.get_matrix()                   # (N, 4, 4)
-            hand_pos = hand_tf[:, :3, 3]                # joint origin (N, 3)
-            hand_rot = hand_tf[:, :3, :3]               # hand local rotation (N, 3, 3)
-            local_tip = torch.tensor([HAND_TIP_OFFSET, 0., 0.], device=DEVICE)
-            tip_pos = hand_pos + torch.bmm(hand_rot, local_tip.view(1, 3, 1).expand(hand_rot.shape[0], -1, -1)).squeeze(-1)
-            transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
+                # [ABS] Penalize hand tip colliding with table
+                HAND_TIP_OFFSET = 0.45
+                hand_tf = tf.get_matrix()                   # (N, 4, 4)
+                hand_pos = hand_tf[:, :3, 3]                # joint origin (N, 3)
+                hand_rot = hand_tf[:, :3, :3]               # hand local rotation (N, 3, 3)
+                local_tip = torch.tensor([HAND_TIP_OFFSET, 0., 0.], device=DEVICE)
+                tip_pos = hand_pos + torch.bmm(hand_rot, local_tip.view(1, 3, 1).expand(hand_rot.shape[0], -1, -1)).squeeze(-1)
+                transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
 
-            def table_collision_cost(pts, gi):
-                return 5 * (pts[:gi, 0] > grab_pos[0] + offset_x) * \
-                    (pts[:gi, 2] < offset_z) * \
-                    (torch.minimum(- grab_pos[0] - offset_x + pts[:gi, 0], - pts[:gi, 2] + offset_z))**2
+                def table_collision_cost(pts, gi):
+                    return 5 * (pts[:gi, 0] > grab_pos[0] + offset_x) * \
+                        (pts[:gi, 2] < offset_z) * \
+                        (torch.minimum(- grab_pos[0] - offset_x + pts[:gi, 0], - pts[:gi, 2] + offset_z))**2
 
-            # [ABS] Penalize large changes in tip position between frames (quadratic smoothness)
-            tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
-            cost2[1:] += 80. * tip_disp **2
+                # [ABS] Penalize large changes in tip position between frames (quadratic smoothness)
+                tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
+                cost2[1:] += 80. * tip_disp **2
 
-            # [ABS] Per-frame table collision check
-            cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx)
+                # [ABS] Per-frame table collision check
+                cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx)
 
-            # [ABS] Midpoint interpolation check to prevent tunneling through table
-            tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
-            grab_idx_mid = max(grab_idx - 1, 0)
-            cost2[:grab_idx_mid] += table_collision_cost(tip_mid, grab_idx_mid)
-        else:
+                # [ABS] Midpoint interpolation check to prevent tunneling through table
+                tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
+                grab_idx_mid = max(grab_idx - 1, 0)
+                cost2[:grab_idx_mid] += table_collision_cost(tip_mid, grab_idx_mid)
+            else:
+                i += 1
+                continue
             i += 1
-            continue
-        i += 1
 
+        def cost_new():
+            if i == 36:
+                pos = tf.get_matrix()[:,:3,3] # robot keypoints
+                pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3] # human keypoints
+                cost2 += 0.*torch.mean(torch.norm(pos[1:] - pos[:-1], dim=1))
+                transformed_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans # in world frame
+                transformed_keypts_ref = torch.bmm(pos_ref.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans # ref in world frame
+
+                rel_dists = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1) # gets relative velocities
+                # Taper reference speed from 80% to 0%
+                ref_dists[:grab_idx-5] = torch.sum(ref_dists[:grab_idx]) / (grab_idx - 2)
+                ref_dists[grab_idx-4] = 0.8 * torch.sum(ref_dists[:grab_idx]) / (grab_idx - 2)
+                ref_dists[grab_idx-3] = 0.6 * torch.sum(ref_dists[:grab_idx]) / (grab_idx - 2)
+                ref_dists[grab_idx-2] = 0.4 * torch.sum(ref_dists[:grab_idx]) / (grab_idx - 2)
+                ref_dists[grab_idx-1] = 0.2 * torch.sum(ref_dists[:grab_idx]) / (grab_idx - 2)
+                ref_dists[60:] = 0. # Set reference speed to 0 after task completion
+                ref_dists[grab_idx+9:60] = (transformed_keypts_ref[-1, 2] - transformed_keypts_ref[grab_idx+9, 2]) / (60-(grab_idx+9)) # Set reference speed during grab
+
+                max_ref_dists = torch.max(ref_dists) # get max speed for normalizing
+                ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1) # get total joint change * 0.03 (total jerkiness)
+                cost2[:-1] += ja_diff * (1.2-ref_dists/max_ref_dists) # normalize velocities; make max penalty 0.2, multiply by jerkiness to penalize low speed jerkiness
+                vals = rel_dists[:grab_idx+2] - ref_dists[:grab_idx+2] #get velocity errors
+                cost2[1:grab_idx+2] += torch.abs(vals[1:] - vals[:-1]) # get difference in velocity errors (acceleration?)
+                cost2[:grab_idx+2] += torch.abs(vals) # get velocity error
+                cost2[:grab_idx+2] += 10*vals**2 # get squared + scaled velocity error
+                cost2[:] += 10.*(joint_angles[:, 21]+0.15)*(joint_angles[:, 21]>-0.15) # when right shoulder more than -0.15 rad, penalize
+                cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2) # initially match the keypoint positions for wrist
+
+                # replace height of reference to 60 with linear ramp from grab_idx+9 to 60
+                transformed_keypts_ref[grab_idx+9:60, 2] = (transformed_keypts_ref[-1, 2] - transformed_keypts_ref[grab_idx+9, 2]) * torch.arange(60-(grab_idx+9), device=DEVICE) / (60-(grab_idx+9)) + transformed_keypts_ref[grab_idx+9, 2]
+                transformed_keypts_ref[59:, 2] = transformed_keypts_ref[59, 2] # freeze height after frame 59
+                transformed_keypts_ref[grab_idx+9:, 0] = transformed_keypts_ref[grab_idx+9, 0]
+                transformed_keypts_ref[grab_idx+9:, 1] = transformed_keypts_ref[grab_idx+9, 1]
+
+                cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
+
+                # table collision
+                cost2 += (transformed_keypts[:,0] + WRIST_TO_COLLISION > grab_pos[0] + OFFSET_X)*\
+                        (transformed_keypts[:,2] < grab_pos[2])*\
+                        (torch.minimum(- grab_pos[0] - OFFSET_X + transformed_keypts[:,0] + WRIST_TO_COLLISION, - transformed_keypts[:,2] + grab_pos[2]))
+            elif i == 38:
+                # wrist rotation stuff
+                rot_mat = tf.get_matrix()[:,:3,:3]
+                rot_mat = torch.bmm(rot_matrix, rot_mat)
+                rot_mat_ref = torch.tensor([[1, 0, 0],
+                                            [0, 1, 0],
+                                            [0, 0, 1]], dtype=torch.float32, device=DEVICE).T
+                rot_mat = torch.bmm(rot_mat, rot_mat_ref.unsqueeze(0).expand(rot_mat.shape[0], -1, -1))
+                angle = torch.acos(torch.clamp((rot_mat[:, 0, 0] + rot_mat[:, 1, 1] + rot_mat[:, 2, 2] - 1) / 2, -0.999, .999))
+                cost2 += 0.3*angle
+            else:
+                i += 1
+                return
+            i += 1
+
+        #cost_old()
+        cost_new()
     return l2_cost + torch.mean(cost2)
 
 if VISUALIZE:
