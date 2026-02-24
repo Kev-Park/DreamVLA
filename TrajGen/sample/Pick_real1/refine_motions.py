@@ -94,6 +94,7 @@ def compute_cost(joint_angles, trans, quats, ref_dists, offset_x=OFFSET_X, offse
         if i == 36:
             pos = tf.get_matrix()[:,:3,3] # robot keypoints
             pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3] # human keypoints
+            
             cost2 += 0.*torch.mean(torch.norm(pos[1:] - pos[:-1], dim=1))
             transformed_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans # in world frame
             transformed_keypts_ref = torch.bmm(pos_ref.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans # ref in world frame
@@ -117,11 +118,14 @@ def compute_cost(joint_angles, trans, quats, ref_dists, offset_x=OFFSET_X, offse
             ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1) # get total joint change * 0.03 (total jerkiness)
             cost2[:-1] += ja_diff * (1.2-ref_dists/max_ref_dists) # normalize velocities; make max penalty 0.2, multiply by jerkiness to penalize low speed jerkiness
             # print(grab_idx)
+
             vals = rel_dists[:grab_idx+2] - ref_dists[:grab_idx+2] #get velocity errors
             cost2[1:grab_idx+2] += torch.abs(vals[1:] - vals[:-1]) # get difference in velocity errors (acceleration?)
             cost2[:grab_idx+2] += torch.abs(vals) # get velocity error
             cost2[:grab_idx+2] += 10*vals**2 # get squared + scaled velocity error
+
             cost2[:] += 10.*(joint_angles[:, 21]+0.15)*(joint_angles[:, 21]>-0.15) # when right shoulder more than -0.15 rad, penalize
+            
             cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2) # initially match the keypoint positions for wrist
             # import pdb; pdb.set_trace()
 
