@@ -62,9 +62,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             rel_dists = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)
             
             # # [REF] Penalize large joint angle jumps, weighted by how fast the reference moves at each frame
-            # max_ref_dists = torch.max(ref_dists)
-            # ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1)
-            # cost2[:-1] += ja_diff * (1.2-ref_dists/max_ref_dists)
+            max_ref_dists = torch.max(ref_dists)
+            ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1)
+            cost2[:-1] += ja_diff * (1.2-ref_dists/max_ref_dists)
 
             # # [REF] Penalize wrist speed deviation from reference retargeted motion
             # vals = rel_dists - ref_dists
