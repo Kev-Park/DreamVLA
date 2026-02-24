@@ -171,7 +171,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 cost2[1:grab_idx+2] += torch.abs(vals[1:] - vals[:-1]) # get difference in velocity errors (acceleration?)
                 cost2[:grab_idx+2] += torch.abs(vals) # get velocity error
                 cost2[:grab_idx+2] += 10*vals**2 # get squared + scaled velocity error
-                cost2[:] += 10.*(joint_angles[:, 21]+0.15)*(joint_angles[:, 21]>-0.15) # when right shoulder more than -0.15 rad, penalize
+                cost2[:] += 10.*(joint_angles[:, -6]+0.15)*(joint_angles[:, -6]>-0.15) # when right shoulder more than -0.15 rad, penalize
                 cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2) # initially match the keypoint positions for wrist
 
                 # replace height of reference to 60 with linear ramp from grab_idx+9 to 60
