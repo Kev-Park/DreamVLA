@@ -139,7 +139,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 cost2[:grab_idx_mid] += table_collision_cost(tip_mid, grab_idx_mid)
             else:
                 i += 1
-                continue
+                return
             i += 1
 
         def cost_new():
