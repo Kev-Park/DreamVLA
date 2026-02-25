@@ -134,12 +134,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[1:] += 80. * tip_disp **2
 
             # [ABS] Per-frame table collision check
-            cost2[grab_idx:] += table_collision_cost(transformed_tip, grab_idx)
+            cost2[grab_idx:] += table_collision_cost(transformed_tip[grab_idx:], transformed_tip.shape[0])
 
             # [ABS] Midpoint interpolation check to prevent tunneling through table
             tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
             grab_idx_mid = max(grab_idx - 1, 0)
-            cost2[grab_idx_mid:] += table_collision_cost(tip_mid, grab_idx_mid)
+            cost2[grab_idx_mid:-1] += table_collision_cost(tip_mid[grab_idx_mid:], tip_mid.shape[0])
 
 
         else:
