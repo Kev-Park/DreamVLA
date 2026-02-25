@@ -33,6 +33,7 @@ WRIST_TO_COLLISION = 0.35
 VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
+HAND_TIP_OFFSET = 0.45
 SAVE_DIR = "../Pick_sim2/"
 #DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEVICE = torch.device("cpu")
@@ -116,7 +117,6 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             ### NEW COSTS (NOT IN REAL REFINEMENT)  
 
             # [ABS] Penalize hand tip colliding with table
-            HAND_TIP_OFFSET = 0.45
             hand_tf = tf.get_matrix()                   # (N, 4, 4)
             hand_pos = hand_tf[:, :3, 3]                # joint origin (N, 3)
             hand_rot = hand_tf[:, :3, :3]               # hand local rotation (N, 3, 3)
