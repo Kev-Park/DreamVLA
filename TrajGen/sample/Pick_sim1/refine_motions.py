@@ -122,7 +122,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             hand_rot = hand_tf[:, :3, :3]               # hand local rotation (N, 3, 3)
             local_tip = torch.tensor([HAND_TIP_OFFSET, 0., 0.], device=DEVICE)
             tip_pos = hand_pos + torch.bmm(hand_rot, local_tip.view(1, 3, 1).expand(hand_rot.shape[0], -1, -1)).squeeze(-1)
-            transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
+            transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans # final hand position
 
             def table_collision_cost(pts, gi):
                 return 5 * (pts[:gi, 0] > grab_pos[0] + offset_x) * \
@@ -134,7 +134,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[1:] += 80. * tip_disp **2
 
             # [ABS] Per-frame table collision check
-            cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx)
+            cost2[grab_idx:] += table_collision_cost(transformed_tip, grab_idx)
 
             # [ABS] Midpoint interpolation check to prevent tunneling through table
             tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
