@@ -217,8 +217,9 @@ def main():
     )
 
     # Grab point sphere
+    grab_sphere = None
     if onp.any(grab_pos != 0):
-        server.scene.add_icosphere(
+        grab_sphere = server.scene.add_icosphere(
             "/grab_point",
             radius=0.04,
             color=(255, 50, 50),
@@ -299,6 +300,13 @@ def main():
             # Visualize hand tip (green) — refined pkls only
             if hand_tip_sphere is not None:
                 hand_tip_sphere.position = hand_tip_traj[min(tstep, len(hand_tip_traj) - 1)]
+
+            # Change grab sphere color at grab_idx
+            if grab_sphere is not None and grab_idx is not None:
+                if tstep >= grab_idx:
+                    grab_sphere.color = (50, 255, 50)  # Green: grab frame reached
+                else:
+                    grab_sphere.color = (255, 50, 50)  # Red: not yet reached
 
             skeleton = [
                 [-1, 0], [0, 1], [0, 2], [0, 3], [1, 4], [2, 5], [3, 6], [4, 7],
