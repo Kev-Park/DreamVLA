@@ -34,8 +34,8 @@ VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
 SAVE_DIR = "../Pick_sim2/"
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#DEVICE = torch.device("cpu")
+#DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cpu")
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False):
     # L2 cost to target
@@ -188,15 +188,15 @@ for pkl_path in pkl_paths:
     fk_results_ref = chain.forward_kinematics(q_dict)
     # copy a tensor
     # Initial guess for joint angles (can be zeros or random)
-    joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone().detach().to(DEVICE))  # Only optimize active joints
-    trans = target_trans.clone().detach().to(DEVICE)  # Translation offset
-    quats = target_quats.clone().detach().to(DEVICE)  # Quaternion offset
+    joint_angles = torch.nn.Parameter(torch.tensor(target_joint_angles[:, active_joint_ids]).clone())  # Only optimize active joints
+    trans = torch.tensor(target_trans) # Translation offset
+    quats = torch.tensor(target_quats) # Quaternion offset
     optimizer = optim.Adam([joint_angles], lr=0.001)
     grab_idx = motion_data["grab_idx"]
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate( joint_names ) }
     fk_results = chain.forward_kinematics(q_dict)
     tf = fk_results["right_wrist_pitch_link"]
-    pos = tf.get_matrix()[:,:3,3].to(DEVICE)
+    pos = tf.get_matrix()[:,:3,3]
     rot_matrix = quaternion_to_matrix(quats)
     # import pdb; pdb.set_trace()
     wrist_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
