@@ -188,9 +188,9 @@ for pkl_path in pkl_paths:
     fk_results_ref = chain.forward_kinematics(q_dict)
     # copy a tensor
     # Initial guess for joint angles (can be zeros or random)
-    joint_angles = torch.nn.Parameter(torch.tensor(target_joint_angles[:, active_joint_ids]).clone())  # Only optimize active joints
-    trans = torch.tensor(target_trans) # Translation offset
-    quats = torch.tensor(target_quats) # Quaternion offset
+    joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone().detach().to(DEVICE))  # Only optimize active joints
+    trans = target_trans.clone().detach().to(DEVICE)  # Translation offset
+    quats = target_quats.clone().detach().to(DEVICE)  # Quaternion offset
     optimizer = optim.Adam([joint_angles], lr=0.001)
     grab_idx = motion_data["grab_idx"]
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate( joint_names ) }
