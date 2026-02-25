@@ -33,7 +33,7 @@ WRIST_TO_COLLISION = 0.35
 VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
-HAND_TIP_OFFSET = 0.155
+HAND_TIP_OFFSET = 0.15
 SAVE_DIR = "../Pick_sim2/"
 #DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEVICE = torch.device("cpu")
@@ -280,7 +280,8 @@ for pkl_path in pkl_paths:
     Ts_world_root = jaxlie.SE3.from_rotation_and_translation(jaxlie.SO3(jnp.array(quats_new)),jnp.array(trans_new)) 
 
     # Compute world-frame hand tip trajectory using the optimised joints_new.
-    # fk_results and rot_matrix are already computed on joints_new / quats_new above.
+    # Recompute rot_matrix from the fully-finalised quats_new (after slerp and ankle fix).
+    rot_matrix_final = quaternion_to_matrix(quats_new)
     tf_hand = fk_results["right_rubber_hand"]
     hand_tf_mat = tf_hand.get_matrix()                        # (T, 4, 4)
     hand_pos = hand_tf_mat[:, :3, 3]                         # local origin (T, 3)
@@ -289,7 +290,7 @@ for pkl_path in pkl_paths:
     tip_local = hand_pos + torch.bmm(
         hand_rot, local_tip.view(1, 3, 1).expand(hand_rot.shape[0], -1, -1)
     ).squeeze(-1)
-    hand_tip_traj = torch.bmm(tip_local.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_new
+    hand_tip_traj = torch.bmm(tip_local.unsqueeze(1), rot_matrix_final.transpose(2, 1))[:, 0] + trans_new
     hand_tip_traj = hand_tip_traj.detach().cpu().numpy()     # (T, 3)
 
     if not os.path.exists(SAVE_DIR):
