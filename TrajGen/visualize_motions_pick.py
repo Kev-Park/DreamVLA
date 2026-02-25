@@ -134,6 +134,7 @@ def main():
 
     grab_pos = onp.array(G1_DATA.get("grab_pos", onp.zeros(3)))
     grab_idx = G1_DATA.get("grab_idx", None)
+    hand_tip_traj = onp.array(G1_DATA["hand_tip_traj"]) if "hand_tip_traj" in G1_DATA else None
 
     num_timesteps = joints.shape[0]
 
@@ -263,6 +264,18 @@ def main():
         color=(0, 0, 255),
         position=global_keypts[0, 36, :],
     )
+    # Hand tip sphere (green) — only present in Pick_sim2 refined pkls
+    if hand_tip_traj is not None:
+        hand_tip_sphere = server.scene.add_icosphere(
+            "/hand_tip",
+            radius=0.025,
+            color=(0, 220, 80),
+            position=hand_tip_traj[0],
+        )
+        print(f"  Hand tip trajectory loaded: {hand_tip_traj.shape[0]} frames")
+    else:
+        hand_tip_sphere = None
+        print("  No hand_tip_traj in pkl — skipping hand tip sphere (Pick_sim1 or old pkl)")
 
     while True:
         with server.atomic():
@@ -282,6 +295,10 @@ def main():
 
             # Visualize right wrist position (link index 36 = right_wrist_pitch_link)
             wrist_sphere.position = global_keypts[tstep, 36, :]
+
+            # Visualize hand tip (green) — refined pkls only
+            if hand_tip_sphere is not None:
+                hand_tip_sphere.position = hand_tip_traj[min(tstep, len(hand_tip_traj) - 1)]
 
             skeleton = [
                 [-1, 0], [0, 1], [0, 2], [0, 3], [1, 4], [2, 5], [3, 6], [4, 7],
