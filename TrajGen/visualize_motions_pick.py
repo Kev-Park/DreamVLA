@@ -249,6 +249,21 @@ def main():
     
     print(positions)
     print("Started?")
+
+    # Create icosphere handles for animated end-effectors (position updated each frame)
+    hand_sphere = server.scene.add_icosphere(
+        "/right_hand",
+        radius=0.04,
+        color=(255, 0, 0),
+        position=global_keypts[0, 38, :],
+    )
+    wrist_sphere = server.scene.add_icosphere(
+        "/right_wrist",
+        radius=0.03,
+        color=(0, 0, 255),
+        position=global_keypts[0, 36, :],
+    )
+
     while True:
         with server.atomic():
             if playing.value:
@@ -263,20 +278,10 @@ def main():
 
             
             # Visualize right hand position (link index 38 = right_rubber_hand)
-            server.scene.add_point_cloud(
-                "/right_hand",
-                global_keypts[tstep, 38:39, :],  # shape (1, 3)
-                onp.array([[255, 0, 0]]),          # red
-                point_size=0.05,
-            )
-      
+            hand_sphere.position = global_keypts[tstep, 38, :]
+
             # Visualize right wrist position (link index 36 = right_wrist_pitch_link)
-            server.scene.add_point_cloud(
-                "/right_wrist",
-                global_keypts[tstep, 36:37, :],  # shape (1, 3)
-                onp.array([[0, 0, 255]]),          # blue
-                point_size=0.05,
-            )
+            wrist_sphere.position = global_keypts[tstep, 36, :]
 
             skeleton = [
                 [-1, 0], [0, 1], [0, 2], [0, 3], [1, 4], [2, 5], [3, 6], [4, 7],
