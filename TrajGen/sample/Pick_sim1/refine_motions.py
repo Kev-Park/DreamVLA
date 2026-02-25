@@ -196,7 +196,7 @@ for pkl_path in pkl_paths:
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate( joint_names ) }
     fk_results = chain.forward_kinematics(q_dict)
     tf = fk_results["right_wrist_pitch_link"]
-    pos = tf.get_matrix()[:,:3,3]
+    pos = tf.get_matrix()[:,:3,3].to(DEVICE)
     rot_matrix = quaternion_to_matrix(quats)
     # import pdb; pdb.set_trace()
     wrist_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
