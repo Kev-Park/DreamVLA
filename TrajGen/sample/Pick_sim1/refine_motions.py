@@ -33,7 +33,7 @@ WRIST_TO_COLLISION = 0.35
 VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
-HAND_TIP_OFFSET = 0.15
+HAND_TIP_OFFSET = 0.2
 SAVE_DIR = "../Pick_sim2/"
 #DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEVICE = torch.device("cpu")
@@ -284,13 +284,15 @@ for pkl_path in pkl_paths:
     rot_matrix_final = quaternion_to_matrix(quats_new)
     tf_hand = fk_results["right_rubber_hand"]
     hand_tf_mat = tf_hand.get_matrix()                        # (T, 4, 4)
-    hand_pos = hand_tf_mat[:, :3, 3]                         # local origin (T, 3)
-    hand_rot = hand_tf_mat[:, :3, :3]                        # local rotation (T, 3, 3)
+    hand_pos = hand_tf_mat[:, :3, 3]                         # hand origin in root frame (T, 3)
+    hand_rot = hand_tf_mat[:, :3, :3]                        # hand orientation in root frame (T, 3, 3)
+    # Offset along hand's local x-axis (finger direction) in root frame, then to world.
+    # This is the true geometric fingertip position and matches the collision cost in compute_cost.
     local_tip = torch.tensor([HAND_TIP_OFFSET, 0., 0.])
-    tip_local = hand_pos + torch.bmm(
+    tip_root = hand_pos + torch.bmm(
         hand_rot, local_tip.view(1, 3, 1).expand(hand_rot.shape[0], -1, -1)
     ).squeeze(-1)
-    hand_tip_traj = torch.bmm(tip_local.unsqueeze(1), rot_matrix_final.transpose(2, 1))[:, 0] + trans_new
+    hand_tip_traj = torch.bmm(tip_root.unsqueeze(1), rot_matrix_final.transpose(2, 1))[:, 0] + trans_new
     hand_tip_traj = hand_tip_traj.detach().cpu().numpy()     # (T, 3)
 
     if not os.path.exists(SAVE_DIR):
