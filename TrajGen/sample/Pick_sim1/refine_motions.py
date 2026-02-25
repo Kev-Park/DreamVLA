@@ -30,12 +30,12 @@ SMOOTH_AMT = 20
 PAUSE_AMT = 10
 INTERP_AMT = 10
 WRIST_TO_COLLISION = 0.35
-VISUALIZE = True
+VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
 SAVE_DIR = "../Pick_sim2/"
-# DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-DEVICE = torch.device("cpu")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#DEVICE = torch.device("cpu")
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False):
     # L2 cost to target
@@ -82,7 +82,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2) # match initial wrist positions
 
             # Add height ramping cost (?)
-            transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z))
+            transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z)) # freeze reference height
 
             cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
 

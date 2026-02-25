@@ -132,6 +132,9 @@ def main():
         global_pose = np.concatenate([global_position, global_orientation], axis=-1)
         joints = np.array(G1_DATA["joints"])
 
+    grab_pos = onp.array(G1_DATA.get("grab_pos", onp.zeros(3)))
+    grab_idx = G1_DATA.get("grab_idx", None)
+
     num_timesteps = joints.shape[0]
 
     heightmap = pk.collision.Heightmap(
@@ -211,6 +214,18 @@ def main():
         # wireframe=False,  # Set to True if you want to see just the wireframe
         # color=(0.2, 0.6, 0.9, 1.0),  # RGBA
     )
+
+    # Grab point sphere
+    if onp.any(grab_pos != 0):
+        server.scene.add_icosphere(
+            "/grab_point",
+            radius=0.04,
+            color=(255, 50, 50),
+            position=onp.array(grab_pos, dtype=onp.float64),
+        )
+        print(f"  Grab point at {grab_pos}" + (f", grab frame: {grab_idx}" if grab_idx is not None else ""))
+    else:
+        print("  No grab_pos found in data — skipping grab point sphere.")
 
 
         # Define cuboid dimensions (width, height, depth)
