@@ -125,7 +125,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             hand_rot = hand_tf[:, :3, :3]               # hand local rotation (N, 3, 3)
             local_tip = torch.tensor([HAND_TIP_OFFSET, 0., 0.], device=DEVICE)
             tip_pos = hand_pos + torch.bmm(hand_rot, local_tip.view(1, 3, 1).expand(hand_rot.shape[0], -1, -1)).squeeze(-1)
-            transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans # final hand position
+            transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans  # final hand position
+            # Hand joint origin in world frame — forms the other edge of the swept quad
+            transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
 
 
             # FIX SLICING
@@ -134,45 +136,54 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     (pts[gi:, 2] < offset_z) * \
                     (torch.minimum(- grab_pos[0] - offset_x + pts[gi:, 0], - pts[gi:, 2] + offset_z))**2
 
-            def table_collision_cost_segment(pts, gi, x_edge, z_table, window=40):
+            def table_collision_cost_segment(pts, orig_pts, gi, x_edge, z_table, window=40):
                 """
-                For each segment [pts[t] -> pts[t+1]] in the `window` frames before gi,
-                compute the fraction of the segment that lies inside the table quadrant
-                (x > x_edge AND z < z_table) as a continuous differentiable cost.
+                For each frame pair in the `window` frames before gi, compute the area of
+                the quadrilateral swept by the hand (tip edge + hand-origin edge) and charge
+                it whenever either edge of the quad intersects the table zone
+                (x > x_edge AND z < z_table).
                 Returns (start_idx, per-frame costs of shape (gi - start,)).
                 """
                 start = max(gi - window, 0)
-                p0 = pts[start:gi]      # (W, 3)
-                p1 = pts[start+1:gi+1]  # (W, 3)
+                p0 = pts[start:gi]           # tip at t     (W, 3)
+                p1 = pts[start+1:gi+1]       # tip at t+1   (W, 3)
+                o0 = orig_pts[start:gi]      # hand orig at t     (W, 3)
+                o1 = orig_pts[start+1:gi+1]  # hand orig at t+1   (W, 3)
 
-                p0x, p0z = p0[:, 0], p0[:, 2]
-                p1x, p1z = p1[:, 0], p1[:, 2]
-                dx = p1x - p0x
-                dz = p1z - p0z
                 eps = 1e-8
 
-                # s-interval where x(s) > x_edge
-                s_cross_x = torch.clamp((x_edge - p0x) / (dx + eps), 0., 1.)
-                s_x0 = torch.where(dx > 0, s_cross_x, torch.zeros_like(s_cross_x))
-                s_x1 = torch.where(dx > 0, torch.ones_like(s_cross_x), s_cross_x)
-                # dx==0: empty if p0x <= x_edge, full if p0x > x_edge
-                s_x0 = torch.where(dx.abs() < eps, torch.where(p0x > x_edge, torch.zeros_like(s_x0), torch.ones_like(s_x0)), s_x0)
-                s_x1 = torch.where(dx.abs() < eps, torch.where(p0x > x_edge, torch.ones_like(s_x1), torch.zeros_like(s_x1)), s_x1)
+                def seg_overlap(a0, a1):
+                    """Fraction of segment [a0->a1] inside table zone (x>x_edge, z<z_table)."""
+                    ax, az = a0[:, 0], a0[:, 2]
+                    bx, bz = a1[:, 0], a1[:, 2]
+                    ddx = bx - ax
+                    ddz = bz - az
+                    scx = torch.clamp((x_edge - ax) / (ddx + eps), 0., 1.)
+                    sx0 = torch.where(ddx > 0, scx, torch.zeros_like(scx))
+                    sx1 = torch.where(ddx > 0, torch.ones_like(scx), scx)
+                    sx0 = torch.where(ddx.abs() < eps, torch.where(ax > x_edge, torch.zeros_like(sx0), torch.ones_like(sx0)), sx0)
+                    sx1 = torch.where(ddx.abs() < eps, torch.where(ax > x_edge, torch.ones_like(sx1), torch.zeros_like(sx1)), sx1)
+                    scz = torch.clamp((z_table - az) / (ddz + eps), 0., 1.)
+                    sz0 = torch.where(ddz < 0, torch.zeros_like(scz), scz)
+                    sz1 = torch.where(ddz < 0, scz, torch.ones_like(scz))
+                    sz0 = torch.where(ddz.abs() < eps, torch.where(az < z_table, torch.zeros_like(sz0), torch.ones_like(sz0)), sz0)
+                    sz1 = torch.where(ddz.abs() < eps, torch.where(az < z_table, torch.ones_like(sz1), torch.zeros_like(sz1)), sz1)
+                    return torch.relu(torch.minimum(sx1, sz1) - torch.maximum(sx0, sz0))
 
-                # s-interval where z(s) < z_table
-                s_cross_z = torch.clamp((z_table - p0z) / (dz + eps), 0., 1.)
-                s_z0 = torch.where(dz < 0, torch.zeros_like(s_cross_z), s_cross_z)
-                s_z1 = torch.where(dz < 0, s_cross_z, torch.ones_like(s_cross_z))
-                # dz==0: empty if p0z >= z_table, full if p0z < z_table
-                s_z0 = torch.where(dz.abs() < eps, torch.where(p0z < z_table, torch.zeros_like(s_z0), torch.ones_like(s_z0)), s_z0)
-                s_z1 = torch.where(dz.abs() < eps, torch.where(p0z < z_table, torch.ones_like(s_z1), torch.zeros_like(s_z1)), s_z1)
+                # Intersection flag: fires if tip edge OR hand-origin edge clips the table
+                overlap_tip  = seg_overlap(p0, p1)
+                overlap_orig = seg_overlap(o0, o1)
+                # Combined soft binary: 1 if either edge clips
+                hit = torch.clamp((overlap_tip + overlap_orig) / 0.01, 0., 1.)
 
-                # Overlap of the two intervals — fraction of step inside the table
-                overlap = torch.relu(torch.minimum(s_x1, s_z1) - torch.maximum(s_x0, s_z0))  # (W,)
-                # Full-segment penalty: charge the entire segment length whenever any part is inside.
-                # soft binary ramps to 1 within the first 1% of intersection.
-                seg_len = torch.norm(p1 - p0, dim=1)
-                overlap_full = seg_len * torch.clamp(overlap / 0.01, 0., 1.)
+                # Quad area via two triangles (handles non-planar / twisted ribbon)
+                # Quad corners: p0, p1, o1, o0  →  tri1=(p0,p1,o0), tri2=(p1,o1,o0)
+                tri1 = 0.5 * torch.norm(torch.linalg.cross(p1 - p0, o0 - p0), dim=1)
+                tri2 = 0.5 * torch.norm(torch.linalg.cross(o1 - p1, o0 - p1), dim=1)
+                quad_area = tri1 + tri2
+
+                # Penalize the full quad area whenever any part of either edge hits the table
+                overlap_full = quad_area * hit
 
                 # Depth penalty: quadratic in how far the midpoint penetrates in x and z
                 mid = (p0 + p1) / 2.0
@@ -191,12 +202,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 prefix = torch.cumsum(inside, dim=0)
                 cost_chain = inside * prefix
 
-                return start, 10*overlap_full**2 + 1.5*depth_pen**2 + 1.5*cost_chain
+                return start, 50*overlap_full**2 + 1.5*depth_pen**2 + 1.5*cost_chain
 
             # [ABS] Per-frame table collision check
             #cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx) # old cost
             # New cost using segment test to prevent tunneling
-            _start, _seg_cost = table_collision_cost_segment(transformed_tip, grab_idx, grab_pos[0] + offset_x, offset_z)
+            _start, _seg_cost = table_collision_cost_segment(transformed_tip, transformed_hand_orig, grab_idx, grab_pos[0] + offset_x, offset_z)
             cost2[_start:grab_idx] += 10*_seg_cost
 
             #[ABS] Penalize rate of change of kinetic energy (v * |Δv| ∝ d(KE)/dt) in the approach window
