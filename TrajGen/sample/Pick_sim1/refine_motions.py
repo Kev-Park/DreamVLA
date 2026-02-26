@@ -97,7 +97,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             ### NEW COSTS (NOT IN REAL REFINEMENT)
 
             # [ABS] Penalize wrist speed changes (acceleration) and high speed relative to own trajectory
-            cost2[1:-1] += 5*torch.abs(rel_dists[1:] - rel_dists[:-1])**2  # smoothness of own speed
+            cost2[1:-1] += torch.abs(rel_dists[1:] - rel_dists[:-1])**2  # smoothness of own speed
             cost2[1:] += torch.abs(rel_dists)**2                          # L1 speed magnitude
             cost2[1:] += 10*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
 
@@ -201,7 +201,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             #[ABS] Penalize large changes in tip position between frames (quadratic smoothness)
             tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
-            cost2[max(grab_idx-TIP_SPEED_WINDOW,1):grab_idx] += 160. * tip_disp[max(grab_idx-TIP_SPEED_WINDOW-1,0):grab_idx-1] **2
+            cost2[max(grab_idx-TIP_SPEED_WINDOW,1):grab_idx] += 200. * tip_disp[max(grab_idx-TIP_SPEED_WINDOW-1,0):grab_idx-1] **2
 
             # [ABS] Midpoint interpolation check to prevent tunneling through table
             #tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
