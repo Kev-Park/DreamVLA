@@ -215,7 +215,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             tip_power = tip_speed[:-1] * torch.abs(tip_speed[1:] - tip_speed[:-1])      # (N-2,) v·|Δv|
             w_start = max(grab_idx - TIP_SPEED_WINDOW, 1)
             w_end = grab_idx
-            cost2[w_start:w_end] += 165. * tip_power[w_start-1:w_end-1]**2
+            cost2[w_start:w_end] += 200. * tip_power[w_start-1:w_end-1]**2
 
             # [ABS] Midpoint interpolation check to prevent tunneling through table
             #tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
