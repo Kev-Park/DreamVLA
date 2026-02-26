@@ -175,7 +175,18 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 depth_z = torch.relu(z_table - mid[:, 2])
                 depth_pen = torch.minimum(depth_x, depth_z) ** 2
 
-                return start, overlap + depth_pen**2
+                # Chain-length penalty: purely temporal, independent of depth or speed.
+                # Soft binary indicator [0,1] based on midpoint position only — 1 when inside.
+                sharpness = 0.005  # transition width in meters; smaller = harder step
+                inside = torch.sigmoid((mid[:, 0] - x_edge) / sharpness) * \
+                         torch.sigmoid((z_table - mid[:, 2]) / sharpness)
+                # prefix[t] = total accumulated "inside" frames up to t;
+                # multiplying by inside again means each frame is penalized by run length so far.
+                # A continuous run of N frames contributes 1+2+...+N = O(N²) total.
+                prefix = torch.cumsum(inside, dim=0)
+                cost_chain = inside * prefix
+
+                return start, overlap + depth_pen**2 + cost_chain
 
             # [ABS] Per-frame table collision check
             #cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx) # old cost
