@@ -67,7 +67,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             
             # Add speed tapering (?)
 
-            ref = True
+            ref = False
             if ref:
                 # Jerkiness penalty relative to references
                 max_ref_dists = torch.max(ref_dists) # get max speed for normalizing
@@ -80,9 +80,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 cost2[:grab_idx+2] += torch.abs(vals)                     # velocity error
                 cost2[:grab_idx+2] += 10*vals**2                          # L2 speed deviation (dominates large errors)
                 
-            cost2[:] += 10.*(joint_angles[:, -6]+0.15)*(joint_angles[:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
+            #cost2[:] += 10.*(joint_angles[:, -6]+0.15)*(joint_angles[:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
                 
-            cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2) # match initial wrist positions
+            #cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2) # match initial wrist positions
 
             # Add height ramping cost (?)
             transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z)) # freeze reference height
@@ -96,9 +96,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             ### NEW COSTS (NOT IN REAL REFINEMENT)
 
             # [ABS] Penalize wrist speed changes (acceleration) and high speed relative to own trajectory
-            cost2[1:-1] += torch.abs(rel_dists[1:] - rel_dists[:-1])  # smoothness of own speed
-            cost2[1:] += torch.abs(rel_dists)                          # L1 speed magnitude
-            cost2[1:] += 10*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
+            #cost2[1:-1] += torch.abs(rel_dists[1:] - rel_dists[:-1])  # smoothness of own speed
+            #cost2[1:] += torch.abs(rel_dists)                          # L1 speed magnitude
+            #cost2[1:] += 10*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
 
             # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
             rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
@@ -113,7 +113,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                                         [0, 0, 1]], dtype=torch.float32, device=DEVICE).T
             rot_mat = torch.bmm(rot_mat, rot_mat_ref.unsqueeze(0).expand(rot_mat.shape[0], -1, -1))
             angle = torch.acos(torch.clamp((rot_mat[:, 0, 0] + rot_mat[:, 1, 1] + rot_mat[:, 2, 2] - 1) / 2, -0.999, .999))
-            cost2 += 0.3*angle  # [REF] Penalize hand orientation deviating from identity (palm-down)
+            #cost2 += 0.3*angle  # [REF] Penalize hand orientation deviating from identity (palm-down)
 
 
             ### NEW COSTS (NOT IN REAL REFINEMENT)  
@@ -177,8 +177,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[_start:grab_idx] += _seg_cost*100
 
             # [ABS] Penalize large changes in tip position between frames (quadratic smoothness)
-            tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
-            cost2[1:] += 80. * tip_disp **2
+            #tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
+            #cost2[1:] += 80. * tip_disp **2
 
             # [ABS] Midpoint interpolation check to prevent tunneling through table
             #tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
