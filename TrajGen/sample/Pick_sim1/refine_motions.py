@@ -101,8 +101,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[1:] += 10*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
 
             # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
-            rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
-            laziness_weight = torch.linspace(1.0, 0.0, grab_idx)
+            #rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
+            #laziness_weight = torch.linspace(1.0, 0.0, grab_idx)
             #cost2[:grab_idx] += laziness_weight * torch.sum(torch.abs(joint_angles[:grab_idx] - rest_pose), dim=1)
 
         elif i == 38:
@@ -174,7 +174,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             #cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx) # old cost
             # New cost using segment test to prevent tunneling
             _start, _seg_cost = table_collision_cost_segment(transformed_tip, grab_idx, grab_pos[0] + offset_x, offset_z)
-            cost2[_start:grab_idx] += _seg_cost*10
+            cost2[_start:grab_idx] += _seg_cost*7
 
             # [ABS] Penalize large changes in tip position between frames (quadratic smoothness)
             #tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
