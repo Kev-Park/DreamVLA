@@ -199,9 +199,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             _start, _seg_cost = table_collision_cost_segment(transformed_tip, grab_idx, grab_pos[0] + offset_x, offset_z)
             cost2[_start:grab_idx] += 10*_seg_cost
 
-            #[ABS] Penalize large changes in tip position between frames (quadratic smoothness)
-            tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
-            cost2[max(grab_idx-TIP_SPEED_WINDOW,1):grab_idx] += 200. * tip_disp[max(grab_idx-TIP_SPEED_WINDOW-1,0):grab_idx-1] **2
+            #[ABS] Penalize rate of change of kinetic energy (v * |Δv| ∝ d(KE)/dt) in the approach window
+            tip_speed = torch.norm(transformed_tip[1:] - transformed_tip[:-1], dim=1)   # (N-1,) speed per frame
+            tip_power = tip_speed[:-1] * torch.abs(tip_speed[1:] - tip_speed[:-1])      # (N-2,) v·|Δv|
+            w_start = max(grab_idx - TIP_SPEED_WINDOW, 1)
+            w_end = grab_idx
+            cost2[w_start:w_end] += 160. * tip_power[w_start-1:w_end-1]
 
             # [ABS] Midpoint interpolation check to prevent tunneling through table
             #tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
