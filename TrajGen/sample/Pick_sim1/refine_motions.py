@@ -67,19 +67,21 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             
             # Add speed tapering (?)
 
-            # Jerkiness penalty
-            max_ref_dists = torch.max(ref_dists) # get max speed for normalizing
-            ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1) # get total joint change * 0.03 (total jerkiness)
-            cost2[:-1] += ja_diff * (1.2-ref_dists/max_ref_dists) # normalize velocities; make max penalty 0.2, multiply by jerkiness to penalize low speed jerkiness
+            ref = True
+            if ref:
+                # Jerkiness penalty relative to references
+                max_ref_dists = torch.max(ref_dists) # get max speed for normalizing
+                ja_diff = 0.03*torch.sum(torch.abs(joint_angles[1:] - joint_angles[:-1]), dim=1) # get total joint change * 0.03 (total jerkiness)
+                cost2[:-1] += ja_diff * (1.2-ref_dists/max_ref_dists) # normalize velocities; make max penalty 0.2, multiply by jerkiness to penalize low speed jerkiness
 
-            # [REF] IMPORTANT SECTION - Penalize wrist speed deviation from reference retargeted motion
-            vals = rel_dists[:grab_idx+2] - ref_dists[:grab_idx+2]
-            cost2[1:grab_idx+2] += torch.abs(vals[1:] - vals[:-1])  # get difference in velocity errors (acceleration?)
-            cost2[:grab_idx+2] += torch.abs(vals)                     # velocity error
-            cost2[:grab_idx+2] += 10*vals**2                          # L2 speed deviation (dominates large errors)
-            
+                # [REF] IMPORTANT SECTION - Penalize wrist speed deviation from reference retargeted motion
+                vals = rel_dists[:grab_idx+2] - ref_dists[:grab_idx+2]
+                cost2[1:grab_idx+2] += torch.abs(vals[1:] - vals[:-1])  # get difference in velocity errors (acceleration?)
+                cost2[:grab_idx+2] += torch.abs(vals)                     # velocity error
+                cost2[:grab_idx+2] += 10*vals**2                          # L2 speed deviation (dominates large errors)
+                
             cost2[:] += 10.*(joint_angles[:, -6]+0.15)*(joint_angles[:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
-            
+                
             cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2) # match initial wrist positions
 
             # Add height ramping cost (?)
@@ -116,7 +118,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             ### NEW COSTS (NOT IN REAL REFINEMENT)  
 
-            # [ABS] Penalize hand tip colliding with table
+            # Get hand position and rotation in world frame
             hand_tf = tf.get_matrix()                   # (N, 4, 4)
             hand_pos = hand_tf[:, :3, 3]                # joint origin (N, 3)
             hand_rot = hand_tf[:, :3, :3]               # hand local rotation (N, 3, 3)
@@ -131,12 +133,52 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     (pts[gi:, 2] < offset_z) * \
                     (torch.minimum(- grab_pos[0] - offset_x + pts[gi:, 0], - pts[gi:, 2] + offset_z))**2
 
+            def table_collision_cost_segment(pts, gi, x_edge, z_table, window=40, weight=50.):
+                """
+                For each segment [pts[t] -> pts[t+1]] in the `window` frames before gi,
+                compute the fraction of the segment that lies inside the table quadrant
+                (x > x_edge AND z < z_table) as a continuous differentiable cost.
+                Returns (start_idx, per-frame costs of shape (gi - start,)).
+                """
+                start = max(gi - window, 0)
+                p0 = pts[start:gi]      # (W, 3)
+                p1 = pts[start+1:gi+1]  # (W, 3)
+
+                p0x, p0z = p0[:, 0], p0[:, 2]
+                p1x, p1z = p1[:, 0], p1[:, 2]
+                dx = p1x - p0x
+                dz = p1z - p0z
+                eps = 1e-8
+
+                # s-interval where x(s) > x_edge
+                s_cross_x = torch.clamp((x_edge - p0x) / (dx + eps), 0., 1.)
+                s_x0 = torch.where(dx > 0, s_cross_x, torch.zeros_like(s_cross_x))
+                s_x1 = torch.where(dx > 0, torch.ones_like(s_cross_x), s_cross_x)
+                # dx==0: empty if p0x <= x_edge, full if p0x > x_edge
+                s_x0 = torch.where(dx.abs() < eps, torch.where(p0x > x_edge, torch.zeros_like(s_x0), torch.ones_like(s_x0)), s_x0)
+                s_x1 = torch.where(dx.abs() < eps, torch.where(p0x > x_edge, torch.ones_like(s_x1), torch.zeros_like(s_x1)), s_x1)
+
+                # s-interval where z(s) < z_table
+                s_cross_z = torch.clamp((z_table - p0z) / (dz + eps), 0., 1.)
+                s_z0 = torch.where(dz < 0, torch.zeros_like(s_cross_z), s_cross_z)
+                s_z1 = torch.where(dz < 0, s_cross_z, torch.ones_like(s_cross_z))
+                # dz==0: empty if p0z >= z_table, full if p0z < z_table
+                s_z0 = torch.where(dz.abs() < eps, torch.where(p0z < z_table, torch.zeros_like(s_z0), torch.ones_like(s_z0)), s_z0)
+                s_z1 = torch.where(dz.abs() < eps, torch.where(p0z < z_table, torch.ones_like(s_z1), torch.zeros_like(s_z1)), s_z1)
+
+                # Overlap of the two intervals — fraction of step inside the table
+                overlap = torch.relu(torch.minimum(s_x1, s_z1) - torch.maximum(s_x0, s_z0))  # (W,)
+                return start, weight * overlap
+
+            # [ABS] Per-frame table collision check
+            #cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx) # old cost
+            # New cost using segment test to prevent tunneling
+            _start, _seg_cost = table_collision_cost_segment(transformed_tip, grab_idx, grab_pos[0] + offset_x, offset_z)
+            cost2[_start:grab_idx] += _seg_cost
+
             # [ABS] Penalize large changes in tip position between frames (quadratic smoothness)
             tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
             cost2[1:] += 80. * tip_disp **2
-
-            # [ABS] Per-frame table collision check
-            cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx)
 
             # [ABS] Midpoint interpolation check to prevent tunneling through table
             tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
