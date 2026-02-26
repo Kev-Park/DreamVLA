@@ -133,7 +133,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     (pts[gi:, 2] < offset_z) * \
                     (torch.minimum(- grab_pos[0] - offset_x + pts[gi:, 0], - pts[gi:, 2] + offset_z))**2
 
-            def table_collision_cost_segment(pts, gi, x_edge, z_table, window=40, weight=50.):
+            def table_collision_cost_segment(pts, gi, x_edge, z_table, window=40):
                 """
                 For each segment [pts[t] -> pts[t+1]] in the `window` frames before gi,
                 compute the fraction of the segment that lies inside the table quadrant
@@ -168,13 +168,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
                 # Overlap of the two intervals — fraction of step inside the table
                 overlap = torch.relu(torch.minimum(s_x1, s_z1) - torch.maximum(s_x0, s_z0))  # (W,)
-                return start, weight * overlap
+                return start, overlap
 
             # [ABS] Per-frame table collision check
             #cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx) # old cost
             # New cost using segment test to prevent tunneling
             _start, _seg_cost = table_collision_cost_segment(transformed_tip, grab_idx, grab_pos[0] + offset_x, offset_z)
-            cost2[_start:grab_idx] += _seg_cost
+            cost2[_start:grab_idx] += _seg_cost*50
 
             # [ABS] Penalize large changes in tip position between frames (quadratic smoothness)
             tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
