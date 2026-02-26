@@ -101,9 +101,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[1:] += 10*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
 
             # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
-            #rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
-            #laziness_weight = torch.linspace(1.0, 0.0, grab_idx)
-            #cost2[:grab_idx] += laziness_weight * torch.sum(torch.abs(joint_angles[:grab_idx] - rest_pose), dim=1)
+            rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
+            laziness_weight = torch.linspace(1.0, 0.0, grab_idx)
+            cost2[:grab_idx-40] += laziness_weight * torch.sum(torch.abs(joint_angles[:grab_idx] - rest_pose), dim=1)
 
         elif i == 38:
             rot_mat = tf.get_matrix()[:,:3,:3]
