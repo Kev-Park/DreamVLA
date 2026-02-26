@@ -194,9 +194,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             _start, _seg_cost = table_collision_cost_segment(transformed_tip, grab_idx, grab_pos[0] + offset_x, offset_z)
             cost2[_start:grab_idx] += 10*_seg_cost
 
-            # [ABS] Penalize large changes in tip position between frames (quadratic smoothness)
-            #tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
-            #cost2[1:] += 80. * tip_disp **2
+            #[ABS] Penalize large changes in tip position between frames (quadratic smoothness)
+            tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
+            cost2[1:] += 80. * tip_disp **2
 
             # [ABS] Midpoint interpolation check to prevent tunneling through table
             #tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
