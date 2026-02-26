@@ -34,6 +34,7 @@ VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
 HAND_TIP_OFFSET = 0.2
+TIP_SPEED_WINDOW = 50
 SAVE_DIR = "../Pick_sim2/"
 #DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEVICE = torch.device("cpu")
@@ -200,7 +201,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             #[ABS] Penalize large changes in tip position between frames (quadratic smoothness)
             tip_disp = torch.sum((transformed_tip[1:] - transformed_tip[:-1])**2, dim=1)
-            cost2[1:] += 160. * tip_disp **2
+            cost2[max(grab_idx-TIP_SPEED_WINDOW,1):grab_idx] += 160. * tip_disp[max(grab_idx-TIP_SPEED_WINDOW-1,0):grab_idx-1] **2
 
             # [ABS] Midpoint interpolation check to prevent tunneling through table
             #tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
