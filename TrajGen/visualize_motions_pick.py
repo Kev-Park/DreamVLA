@@ -197,24 +197,18 @@ def main():
     keypts = get_keypts(torch.tensor(joints), joint_names , pk2_robot=pk2_robot) 
     global_keypts = transform_keypts(torch.tensor(keypts), torch.tensor(orientations), torch.tensor(positions)).numpy()
     
-    # Define cuboid dimensions (width, height, depth)
-    width, height, depth = 0.5, global_keypts[-1, -11, 2]-0.1, 0.5
-
-    # Create a cuboid using Trimesh
-    cuboid = trimesh.creation.box(extents=(width, depth, height))
-
-    # gen_button = server.gui.add_button("Retarget!")
+    # Table cuboid matching refine_motions.py cost geometry:
+    #   x_edge = wrist x at grab_idx (link 36, WRIST_TO_COLLISION and OFFSET_X cancel)
+    #   z_table = OFFSET_Z = 0.86 (fixed absolute height)
+    OFFSET_Z = 0.86
+    _gi = grab_idx if grab_idx is not None else -1
+    x_edge = global_keypts[_gi, 36, 0]
+    table_w, table_h, table_d = 1.0, OFFSET_Z, 2.0  # matches refine_motions VISUALIZE block
+    cuboid = trimesh.creation.box(extents=(table_w, table_d, table_h))
     transform = onp.eye(4)
-    transform[:3, 3] = [global_keypts[-1, -3, 0] + 0.03 + 0.25, global_keypts[-1, -3, 1], global_keypts[-1, -3, 2]/2.-0.05]
+    transform[:3, 3] = [x_edge + table_w / 2., 0., table_h / 2.]
     cuboid.apply_transform(transform)
-    print(transform[:3, 3])
-    # Add the cuboid to Viser
-    server.scene.add_mesh_trimesh(
-        name="my_cuboid",
-        mesh=cuboid,
-        # wireframe=False,  # Set to True if you want to see just the wireframe
-        # color=(0.2, 0.6, 0.9, 1.0),  # RGBA
-    )
+    server.scene.add_mesh_trimesh(name="my_cuboid", mesh=cuboid)
 
     # Grab point sphere
     grab_sphere = None
@@ -230,24 +224,7 @@ def main():
         print("  No grab_pos found in data — skipping grab point sphere.")
 
 
-        # Define cuboid dimensions (width, height, depth)
-    width, height, depth = 0.5, global_keypts[34, -11, 2]-0.1, 0.5 #changed 65 to 34 in next parts due to clipped video
-
-    # Create a cuboid using Trimesh
-    cuboid = trimesh.creation.box(extents=(width, depth, height))
-
-    # gen_button = server.gui.add_button("Retarget!")
-    transform = onp.eye(4)
-    transform[:3, 3] = [global_keypts[34, -3, 0] +0.1+ 0.25, global_keypts[34, -3, 1], global_keypts[34, -3, 2]/2.-0.05]
-    cuboid.apply_transform(transform)
-    print(transform[:3, 3])
-    # Add the cuboid to Viser
-    # server.scene.add_mesh_trimesh(
-    #     name="my_cuboid1",
-    #     mesh=cuboid,
-    #     # wireframe=False,  # Set to True if you want to see just the wireframe
-    #     # color=(0.2, 0.6, 0.9, 1.0),  # RGBA
-    # )
+    # (my_cuboid1 removed — superseded by my_cuboid above which matches refine_motions geometry)
     
     print(positions)
     print("Started?")
