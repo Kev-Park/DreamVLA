@@ -168,7 +168,14 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
                 # Overlap of the two intervals — fraction of step inside the table
                 overlap = torch.relu(torch.minimum(s_x1, s_z1) - torch.maximum(s_x0, s_z0))  # (W,)
-                return start, overlap
+
+                # Depth penalty: quadratic in how far the midpoint penetrates in x and z
+                mid = (p0 + p1) / 2.0
+                depth_x = torch.relu(mid[:, 0] - x_edge)
+                depth_z = torch.relu(z_table - mid[:, 2])
+                depth_pen = torch.minimum(depth_x, depth_z) ** 2
+
+                return start, overlap + depth_pen
 
             # [ABS] Per-frame table collision check
             #cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx) # old cost
