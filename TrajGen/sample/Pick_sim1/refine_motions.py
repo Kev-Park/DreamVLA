@@ -191,7 +191,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 prefix = torch.cumsum(inside, dim=0)
                 cost_chain = inside * prefix
 
-                return start, 2*overlap_full + 1.5*depth_pen**2 + 1.5*cost_chain
+                return start, 3*overlap_full + 1.5*depth_pen**2 + 1.5*cost_chain
 
             # [ABS] Per-frame table collision check
             #cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx) # old cost
@@ -204,7 +204,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             tip_power = tip_speed[:-1] * torch.abs(tip_speed[1:] - tip_speed[:-1])      # (N-2,) v·|Δv|
             w_start = max(grab_idx - TIP_SPEED_WINDOW, 1)
             w_end = grab_idx
-            cost2[w_start:w_end] += 100. * tip_power[w_start-1:w_end-1]**2
+            cost2[w_start:w_end] += 140. * tip_power[w_start-1:w_end-1]**2
 
             # [ABS] Midpoint interpolation check to prevent tunneling through table
             #tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
