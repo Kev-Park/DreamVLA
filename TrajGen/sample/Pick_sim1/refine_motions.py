@@ -186,7 +186,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 prefix = torch.cumsum(inside, dim=0)
                 cost_chain = inside * prefix
 
-                return start, overlap + depth_pen**2 + cost_chain
+                return start, overlap + 1.5*depth_pen**2 + cost_chain
 
             # [ABS] Per-frame table collision check
             #cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx) # old cost
