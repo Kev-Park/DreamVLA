@@ -168,6 +168,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
                 # Overlap of the two intervals — fraction of step inside the table
                 overlap = torch.relu(torch.minimum(s_x1, s_z1) - torch.maximum(s_x0, s_z0))  # (W,)
+                # Full-segment penalty: charge the entire segment length whenever any part is inside.
+                # soft binary ramps to 1 within the first 1% of intersection.
+                seg_len = torch.norm(p1 - p0, dim=1)
+                overlap_full = seg_len * torch.clamp(overlap / 0.01, 0., 1.)
 
                 # Depth penalty: quadratic in how far the midpoint penetrates in x and z
                 mid = (p0 + p1) / 2.0
@@ -186,7 +190,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 prefix = torch.cumsum(inside, dim=0)
                 cost_chain = inside * prefix
 
-                return start, 2*overlap + 1.5*depth_pen**2 + 1.5*cost_chain
+                return start, 2*overlap_full + 1.5*depth_pen**2 + 1.5*cost_chain
 
             # [ABS] Per-frame table collision check
             #cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx) # old cost
