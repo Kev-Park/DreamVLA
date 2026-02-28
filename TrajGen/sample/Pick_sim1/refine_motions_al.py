@@ -35,7 +35,7 @@ WRIST_TO_COLLISION = 0.35
 VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
-HAND_TIP_OFFSET = 0.3
+HAND_TIP_OFFSET = 0.15
 TIP_SPEED_WINDOW = 50
 SAVE_DIR = "../Pick_sim2/"
 
@@ -43,7 +43,7 @@ SAVE_DIR = "../Pick_sim2/"
 TABLE_CONSTRAINT_TOL = 1e-5   # 0.01 mm  – very tight: any tip penetration > this triggers AL update
 AL_RHO_INIT       = 50.0      # initial quadratic penalty weight
 AL_RHO_GROWTH     = 10.0      # penalty multiplier each outer iteration
-AL_RHO_MAX        = 1e8       # cap so gradients don't explode
+AL_RHO_MAX        = 1e8       # cap so gradients don't explode for quadratic hard optimization
 AL_OUTER_ITERS    = 40        # max AL outer iterations
 AL_INNER_ITERS    = 300       # Adam steps per outer iteration
 
