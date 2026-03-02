@@ -94,7 +94,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 cost2[:grab_idx+2] += torch.abs(vals)                     # velocity error
                 cost2[:grab_idx+2] += 10*vals**2                          # L2 speed deviation (dominates large errors)
                 
-            #cost2[:] += 10.*(joint_angles[:, -6]+0.15)*(joint_angles[:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
+            cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
                 
             #cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2) # match initial wrist positions
 
