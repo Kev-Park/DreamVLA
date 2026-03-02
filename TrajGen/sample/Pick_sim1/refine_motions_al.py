@@ -146,13 +146,74 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
 
 
-            def table_collision_cost(pts, gi):
-                """Per-frame penetration depth g_t >= 0, shape (gi,).
-                Zero outside the table zone; positive and differentiable via relu inside.
-                Raw (unweighted, unsquared) — suitable as AL constraint g_t <= 0."""
-                depth_x = torch.relu(pts[:gi, 0] - (grab_pos[0] + offset_x))
-                depth_z = torch.relu(offset_z - pts[:gi, 2])
-                return torch.minimum(depth_x, depth_z)
+            def table_collision_cost(pts, orig_pts, gi):
+                """Combined per-frame AL constraint g_t >= 0, shape (gi,).
+
+                For each frame t in [0, gi):
+                  g_t = max(point_depth_t, segment_penetration_length_t)
+
+                point_depth_t              : min(relu(Δx), relu(Δz)) at frame t.
+                segment_penetration_length_t : length in metres of the motion segment
+                  [t → t+1] that lies inside the table zone (x > x_edge AND z < z_table),
+                  computed over both the fingertip edge and the hand-origin edge and
+                  taking the worse of the two.  Frame gi-1 has no outgoing segment so
+                  only point depth applies there.
+
+                Units: metres throughout — commensurable with TABLE_CONSTRAINT_TOL.
+                Drop-in replacement: same (gi,) shape, same sign convention, same AL loop.
+                """
+                x_edge  = grab_pos[0] + offset_x
+                z_table = offset_z
+                eps     = 1e-8
+
+                # ---- 1. Point-wise penetration depth (existing logic, unchanged) ----
+                depth_x = torch.relu(pts[:gi, 0] - x_edge)
+                depth_z = torch.relu(z_table - pts[:gi, 2])
+                g_point = torch.minimum(depth_x, depth_z)            # (gi,)
+
+                # ---- 2. Segment overlap length  (anti-tunneling) ----
+                # Reuse the exact parametric logic from the original seg_overlap helper
+                # but scale by segment length so the output is in metres.
+                def _overlap_frac(a, b):
+                    """Fraction of segment [a→b] (W,3) inside the table zone."""
+                    ax, az = a[:, 0], a[:, 2]
+                    bx, bz = b[:, 0], b[:, 2]
+                    ddx = bx - ax
+                    ddz = bz - az
+                    # x: inside when x > x_edge
+                    scx = torch.clamp((x_edge - ax) / (ddx + eps), 0., 1.)
+                    sx0 = torch.where(ddx > 0, scx,                    torch.zeros_like(scx))
+                    sx1 = torch.where(ddx > 0, torch.ones_like(scx),   scx)
+                    sx0 = torch.where(ddx.abs() < eps,
+                                      torch.where(ax > x_edge, torch.zeros_like(sx0), torch.ones_like(sx0)), sx0)
+                    sx1 = torch.where(ddx.abs() < eps,
+                                      torch.where(ax > x_edge, torch.ones_like(sx1),  torch.zeros_like(sx1)), sx1)
+                    # z: inside when z < z_table
+                    scz = torch.clamp((z_table - az) / (ddz + eps), 0., 1.)
+                    sz0 = torch.where(ddz < 0, torch.zeros_like(scz),  scz)
+                    sz1 = torch.where(ddz < 0, scz,                    torch.ones_like(scz))
+                    sz0 = torch.where(ddz.abs() < eps,
+                                      torch.where(az < z_table, torch.zeros_like(sz0), torch.ones_like(sz0)), sz0)
+                    sz1 = torch.where(ddz.abs() < eps,
+                                      torch.where(az < z_table, torch.ones_like(sz1),  torch.zeros_like(sz1)), sz1)
+                    return torch.relu(torch.minimum(sx1, sz1) - torch.maximum(sx0, sz0))
+
+                # gi-1 consecutive segments
+                p0, p1 = pts[:gi - 1],      pts[1:gi]         # fingertip edge
+                o0, o1 = orig_pts[:gi - 1], orig_pts[1:gi]   # hand-origin edge
+
+                frac_tip  = _overlap_frac(p0, p1)              # (gi-1,)
+                frac_orig = _overlap_frac(o0, o1)              # (gi-1,)
+                frac      = torch.maximum(frac_tip, frac_orig) # worst-case edge
+
+                # Scale fraction → metres so units match g_point
+                seg_len = torch.norm(p1 - p0, dim=1)           # fingertip segment length
+                g_seg   = frac * seg_len                       # (gi-1,)
+
+                # Last frame has no outgoing segment — pad with zero
+                g_seg = torch.cat([g_seg, g_seg.new_zeros(1)]) # (gi,)
+
+                return torch.maximum(g_point, g_seg)           # (gi,)  hard constraint
 
             def table_collision_cost_segment(pts, orig_pts, gi, x_edge, z_table, window=40):
                 """
@@ -223,9 +284,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 return start, 75*overlap_full**2 + 1.5*depth_pen**2 + 1.5*cost_chain
 
             # [ABS] Per-frame table collision — hard constraint via Augmented Lagrangian.
-            # Constraint: g_t <= 0  (g_t = relu(depth_x) ∧ relu(depth_z) >= 0 means penetration)
+            # Constraint: g_t <= 0  (g_t combines point depth + tunneling segment length).
             # AL term: λ·g + (ρ/2)·g²  plus λ update in outer loop.
-            g_t = table_collision_cost(transformed_tip, grab_idx)
+            # Anti-tunneling is now baked into g_t itself — no separate soft penalty needed.
+            g_t = table_collision_cost(transformed_tip, transformed_hand_orig, grab_idx)
             _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy)
             if lambda_table is not None:
                 # Full augmented-Lagrangian penalty (vectorised over frames → CUDA-parallel)
@@ -234,10 +296,6 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 # Fallback: pure quadratic (first call before lambdas exist)
                 al_term = (rho_al / 2.0) * g_t ** 2
             cost2[:grab_idx] += al_term
-            
-            # New cost using segment test to prevent tunneling
-            #_start, _seg_cost = table_collision_cost_segment(transformed_tip, transformed_hand_orig, grab_idx, grab_pos[0] + offset_x, offset_z)
-            #cost2[_start:grab_idx] += 10*_seg_cost
 
             #[ABS] Penalize rate of change of kinetic energy (v * |Δv| ∝ d(KE)/dt) in the approach window
             tip_speed = torch.norm(transformed_tip[1:] - transformed_tip[:-1], dim=1)   # (N-1,) speed per frame
