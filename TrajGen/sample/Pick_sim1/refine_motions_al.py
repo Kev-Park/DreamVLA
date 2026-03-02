@@ -188,10 +188,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                                       torch.where(ax > x_edge, torch.zeros_like(sx0), torch.ones_like(sx0)), sx0)
                     sx1 = torch.where(ddx.abs() < eps,
                                       torch.where(ax > x_edge, torch.ones_like(sx1),  torch.zeros_like(sx1)), sx1)
-                    # z: inside when z < z_table
+                    # z: inside when z < z_table  (opposite orientation to x: zone is "z small")
+                    # ddz < 0: z falling, enters zone at scz → inside [scz, 1]
+                    # ddz > 0: z rising, starts inside and exits at scz → inside [0, scz]
                     scz = torch.clamp((z_table - az) / (ddz + eps), 0., 1.)
-                    sz0 = torch.where(ddz < 0, torch.zeros_like(scz),  scz)
-                    sz1 = torch.where(ddz < 0, scz,                    torch.ones_like(scz))
+                    sz0 = torch.where(ddz < 0, scz,                    torch.zeros_like(scz))
+                    sz1 = torch.where(ddz < 0, torch.ones_like(scz),   scz)
                     sz0 = torch.where(ddz.abs() < eps,
                                       torch.where(az < z_table, torch.zeros_like(sz0), torch.ones_like(sz0)), sz0)
                     sz1 = torch.where(ddz.abs() < eps,
@@ -204,11 +206,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
                 frac_tip  = _overlap_frac(p0, p1)              # (gi-1,)
                 frac_orig = _overlap_frac(o0, o1)              # (gi-1,)
-                frac      = torch.maximum(frac_tip, frac_orig) # worst-case edge
 
-                # Scale fraction → metres so units match g_point
-                seg_len = torch.norm(p1 - p0, dim=1)           # fingertip segment length
-                g_seg   = frac * seg_len                       # (gi-1,)
+                # Scale each edge by its own arc length so the wrist-origin edge
+                # (which can sweep a larger arc) isn't underweighted.
+                g_seg_tip  = frac_tip  * torch.norm(p1 - p0, dim=1)
+                g_seg_orig = frac_orig * torch.norm(o1 - o0, dim=1)
+                g_seg      = torch.maximum(g_seg_tip, g_seg_orig)  # (gi-1,)
 
                 # Last frame has no outgoing segment — pad with zero
                 g_seg = torch.cat([g_seg, g_seg.new_zeros(1)]) # (gi,)
