@@ -81,7 +81,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             
             # Add speed tapering (?)
 
-            ref = False
+            ref = True
             if ref:
                 # Jerkiness penalty relative to references
                 max_ref_dists = torch.max(ref_dists) # get max speed for normalizing
