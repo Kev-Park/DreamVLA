@@ -422,9 +422,9 @@ if __name__ == "__main__":
     # --- Arm capsule visualization tuning (active when --segments is set) ---
     # Lengths and thicknesses mirror the values in refine_motions_al.py capsule_collision_cost calls.
     FOREARM_LENGTH            = 0.25   # metres: wrist-pitch link → hand origin
-    FOREARM_THICKNESS         = 0.04   # metres: forearm capsule radius
+    FOREARM_THICKNESS         = 0.004   # metres: forearm capsule radius
     HAND_LENGTH               = 0.15   # metres: hand origin → fingertip (= HAND_TIP_OFFSET)
-    HAND_THICKNESS            = 0.05   # metres: hand capsule radius
+    HAND_THICKNESS            = 0.005   # metres: hand capsule radius
     COLLISION_CYLINDER_RADIUS = 0.05   # metres: grab-site obstacle cylinder (= R_OBSTACLE)
 
     data_file_id = str(args.id)
