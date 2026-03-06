@@ -69,6 +69,36 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     # Iterate over links and apply costs based on link positions and orientations
     for i, (link_name, tf) in enumerate(fk_results.items()):
     
+        def capsule_collision_cost(origin_world, rot_world, segment_length, segment_thickness, collision_site):
+            
+            R_OBSTACLE = 0.05  # vertical cylinder radius at the grab/collision site (metres)
+            r_total = segment_thickness + R_OBSTACLE
+
+            # Capsule axis is the local x-direction of the link frame.
+            axis      = rot_world[:, :, 0]                          # (N, 3) unit direction
+            end_world = origin_world + axis * segment_length        # (N, 3) distal endpoint
+
+            # Collapse to XY — obstacle is infinite in z.
+            A  = origin_world[:, :2]                                # (N, 2)
+            B  = end_world[:, :2]                                   # (N, 2)
+            P  = collision_site[:2].unsqueeze(0)                    # (1, 2) broadcast over N
+
+            AB  = B - A                                             # (N, 2)
+            AP  = P - A                                             # (N, 2)
+            ab2 = (AB * AB).sum(dim=1).clamp(min=1e-8)             # (N,) squared length
+            t   = ((AP * AB).sum(dim=1) / ab2).clamp(0., 1.)       # (N,) clamped parameter
+
+            closest = A + t.unsqueeze(1) * AB                      # (N, 2) nearest point on segment
+            d_xy    = torch.norm(P - closest, dim=1)                # (N,) XY distance to cylinder axis
+
+            return torch.relu(r_total - d_xy)                      # (N,) penetration depth
+
+        def al_penalty(g):
+            """Augmented-Lagrangian penalty for a hard constraint g >= 0, shape (grab_idx,)."""
+            if lambda_table is not None:
+                return lambda_table * g + (rho_al / 2.0) * g ** 2
+            return (rho_al / 2.0) * g ** 2
+
         if i == 36: # right wrist pitch link (blue dot in viser)
             pos = tf.get_matrix()[:,:3,3]
             pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3]
@@ -111,7 +141,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # INTER-APPROACH COSTS
 
-            
+            # [ABS] Forearm capsule collision with grab obstacle — hard constraint via AL
+            wrist_rot_world = torch.bmm(rot_matrix, tf.get_matrix()[:, :3, :3])  # (N, 3, 3) world-frame wrist orientation
+            g_cap_wrist = capsule_collision_cost(
+                transformed_keypts, wrist_rot_world, segment_length=0.25, segment_thickness=0.05,
+                collision_site=grab_pos
+            )
+            cost2[:grab_idx+20] += al_penalty(g_cap_wrist)
 
             # POST-APPROACH COSTS
 
@@ -143,7 +179,15 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # INTER-APPROACH COSTS
 
-            # table collision with anti-tunneling costs
+            # [ABS] Hand capsule collision with grab obstacle — hard constraint via AL
+            hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
+            g_cap_hand = capsule_collision_cost(
+                transformed_hand_orig, hand_rot_world, segment_length=HAND_TIP_OFFSET, segment_thickness=0.04,
+                collision_site=grab_pos
+            )
+            cost2[:grab_idx+20] += al_penalty(g_cap_hand)
+
+            # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
                 """Combined per-frame AL constraint g_t >= 0, shape (gi,).
 
@@ -219,13 +263,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # [ABS] Per-frame table collision — hard constraint via AL (g_t >= 0)
             g_t = table_collision_cost(transformed_tip, transformed_hand_orig, grab_idx)
             _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy) for hard optimization
-            if lambda_table is not None:
-                # Full augmented-Lagrangian penalty (vectorised over frames → CUDA-parallel)
-                al_term = lambda_table * g_t + (rho_al / 2.0) * g_t ** 2
-            else:
-                # Fallback: pure quadratic (first call before lambdas exist)
-                al_term = (rho_al / 2.0) * g_t ** 2
-            cost2[:grab_idx] += al_term
+            cost2[:grab_idx] += al_penalty(g_t)
 
 
             #[ABS] Penalize rate of change of kinetic energy (v * |Δv| ∝ d(KE)/dt) in the approach window

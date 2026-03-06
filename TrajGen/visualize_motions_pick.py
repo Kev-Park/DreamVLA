@@ -100,7 +100,8 @@ def transform_keypts(keypts, quat, translation):
 
 
 
-def main():
+def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
+         hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05):
     
     urdf = yourdfpy.URDF.load('../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
     #urdf = yourdfpy.URDF.load('../../HumanoidVerse/humanoidverse/data/robots/g1/g1_paddle_hand_rigid.urdf')
@@ -210,6 +211,15 @@ def main():
     cuboid.apply_transform(transform)
     server.scene.add_mesh_trimesh(name="my_cuboid", mesh=cuboid)
 
+    # Collision cylinder — vertical infinite cylinder at grab XY site (matches capsule_collision_cost)
+    if show_segments and onp.any(grab_pos != 0):
+        cyl = trimesh.creation.cylinder(radius=collision_cylinder_radius, height=3.0, sections=32)
+        cyl_tf = onp.eye(4)
+        cyl_tf[:3, 3] = [grab_pos[0], grab_pos[1], 1.5]
+        cyl.apply_transform(cyl_tf)
+        cyl.visual.face_colors = [255, 80, 80, 80]  # translucent red
+        server.scene.add_mesh_trimesh("/collision_cylinder", cyl)
+
     # Grab point sphere
     grab_sphere = None
     if onp.any(grab_pos != 0):
@@ -229,31 +239,37 @@ def main():
     print(positions)
     print("Started?")
 
-    # Create icosphere handles for animated end-effectors (position updated each frame)
-    hand_sphere = server.scene.add_icosphere(
-        "/right_hand",
-        radius=0.04,
-        color=(255, 0, 0),
-        position=global_keypts[0, 38, :],
-    )
-    wrist_sphere = server.scene.add_icosphere(
-        "/right_wrist",
-        radius=0.03,
-        color=(0, 0, 255),
-        position=global_keypts[0, 36, :],
-    )
-    # Hand tip sphere (green) — only present in Pick_sim2 refined pkls
-    if hand_tip_traj is not None:
-        hand_tip_sphere = server.scene.add_icosphere(
-            "/hand_tip",
-            radius=0.025,
-            color=(0, 220, 80),
-            position=hand_tip_traj[0],
+    # Sphere or segment end-effector visualization
+    if not show_segments:
+        hand_sphere = server.scene.add_icosphere(
+            "/right_hand",
+            radius=0.04,
+            color=(255, 0, 0),
+            position=global_keypts[0, 38, :],
         )
-        print(f"  Hand tip trajectory loaded: {hand_tip_traj.shape[0]} frames")
+        wrist_sphere = server.scene.add_icosphere(
+            "/right_wrist",
+            radius=0.03,
+            color=(0, 0, 255),
+            position=global_keypts[0, 36, :],
+        )
+        if hand_tip_traj is not None:
+            hand_tip_sphere = server.scene.add_icosphere(
+                "/hand_tip",
+                radius=0.025,
+                color=(0, 220, 80),
+                position=hand_tip_traj[0],
+            )
+            print(f"  Hand tip trajectory loaded: {hand_tip_traj.shape[0]} frames")
+        else:
+            hand_tip_sphere = None
+            print("  No hand_tip_traj in pkl — skipping hand tip sphere (Pick_sim1 or old pkl)")
     else:
-        hand_tip_sphere = None
-        print("  No hand_tip_traj in pkl — skipping hand tip sphere (Pick_sim1 or old pkl)")
+        hand_sphere = wrist_sphere = hand_tip_sphere = None
+        if hand_tip_traj is not None:
+            print(f"  Hand tip trajectory loaded: {hand_tip_traj.shape[0]} frames (segment mode)")
+        else:
+            print("  No hand_tip_traj in pkl — hand segment will end at hand origin")
 
     while True:
         with server.atomic():
@@ -266,17 +282,37 @@ def main():
             # print(base_frame.position)
             urdf_vis.update_cfg(onp.array(joints[tstep]))
 
-
-            
-            # Visualize right hand position (link index 38 = right_rubber_hand)
-            hand_sphere.position = global_keypts[tstep, 38, :]
-
-            # Visualize right wrist position (link index 36 = right_wrist_pitch_link)
-            wrist_sphere.position = global_keypts[tstep, 36, :]
-
-            # Visualize hand tip (green) — refined pkls only
-            if hand_tip_sphere is not None:
-                hand_tip_sphere.position = hand_tip_traj[min(tstep, len(hand_tip_traj) - 1)] + onp.array([0, 0, 0.035])
+            if not show_segments:
+                # Sphere mode — update positions each frame
+                hand_sphere.position = global_keypts[tstep, 38, :]       # link 38 = right_rubber_hand
+                wrist_sphere.position = global_keypts[tstep, 36, :]      # link 36 = right_wrist_pitch_link
+                if hand_tip_sphere is not None:
+                    hand_tip_sphere.position = hand_tip_traj[min(tstep, len(hand_tip_traj) - 1)] + onp.array([0, 0, 0.035])
+            else:
+                # Segment (capsule) mode — draw forearm and hand as thick line segments
+                wrist_pt = global_keypts[tstep, 36, :]
+                hand_pt  = global_keypts[tstep, 38, :]
+                # Forearm: wrist (36) → hand origin (38)
+                server.scene.add_line_segments(
+                    "/arm_forearm",
+                    points=onp.array([[wrist_pt, hand_pt]]),
+                    colors=onp.array([[[255, 165, 0], [255, 165, 0]]], dtype=onp.uint8),
+                    line_width=max(1.0, forearm_thickness * 300),
+                )
+                # Hand: hand origin (38) → fingertip
+                if hand_tip_traj is not None:
+                    tip_pt = hand_tip_traj[min(tstep, len(hand_tip_traj) - 1)] + onp.array([0, 0, 0.035])
+                else:
+                    # Fallback: extend along wrist→hand direction by hand_length
+                    direction = hand_pt - wrist_pt
+                    norm = onp.linalg.norm(direction)
+                    tip_pt = hand_pt + (direction / norm * hand_length if norm > 1e-6 else onp.array([hand_length, 0, 0]))
+                server.scene.add_line_segments(
+                    "/arm_hand",
+                    points=onp.array([[hand_pt, tip_pt]]),
+                    colors=onp.array([[[255, 80, 0], [255, 80, 0]]], dtype=onp.uint8),
+                    line_width=max(1.0, hand_thickness * 300),
+                )
 
             # Change grab sphere color at grab_idx
             if grab_sphere is not None and grab_idx is not None:
@@ -351,20 +387,34 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Visualize pick motions")
     parser.add_argument("--id", type=int, default=10, help="Motion index to visualize")
     parser.add_argument("--ret_or_ref", type=int, choices=[1, 2], default=1, help="1=retargeted (Pick_sim1), 2=refined (Pick_sim2)")
+    parser.add_argument("--segments", action="store_true", default=False, help="Show capsule arm segments instead of spheres")
     args = parser.parse_args()
+
+    # --- Arm capsule visualization tuning (active when --segments is set) ---
+    # Lengths and thicknesses mirror the values in refine_motions_al.py capsule_collision_cost calls.
+    FOREARM_LENGTH            = 0.25   # metres: wrist-pitch link → hand origin
+    FOREARM_THICKNESS         = 0.05   # metres: forearm capsule radius
+    HAND_LENGTH               = 0.15   # metres: hand origin → fingertip (= HAND_TIP_OFFSET)
+    HAND_THICKNESS            = 0.04   # metres: hand capsule radius
+    COLLISION_CYLINDER_RADIUS = 0.05   # metres: grab-site obstacle cylinder (= R_OBSTACLE)
 
     data_file_id = str(args.id)
     ret_or_ref = str(args.ret_or_ref)
 
     human_data_path = "./sample/Pick_sim_hum/" + data_file_id + ".pkl"
-    # g1_data_path = "000332.pkl"
 
     if args.ret_or_ref == 1:
         g1_data_path = "./sample/Pick_sim1/" + data_file_id + ".pkl"
     else:
         g1_data_path = "./sample/Pick_sim" + ret_or_ref + "/" + data_file_id + "_n.pkl"
-    #g1_data_path = "follow1/0.pkl"
     print("Right script?")
-    main()
+    main(
+        show_segments=args.segments,
+        forearm_length=FOREARM_LENGTH,
+        forearm_thickness=FOREARM_THICKNESS,
+        hand_length=HAND_LENGTH,
+        hand_thickness=HAND_THICKNESS,
+        collision_cylinder_radius=COLLISION_CYLINDER_RADIUS,
+    )
 
 
