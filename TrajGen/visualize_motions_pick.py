@@ -101,7 +101,7 @@ def transform_keypts(keypts, quat, translation):
 
 
 def _cylinder_between(p0: onp.ndarray, p1: onp.ndarray, radius: float,
-                      color=(255, 165, 0, 200), sections: int = 20) -> trimesh.Trimesh | None:
+                      color=(255, 165, 0, 200), sections: int = 20) -> "trimesh.Trimesh | None":
     """Return a trimesh.Trimesh cylinder aligned from p0 to p1."""
     direction = onp.array(p1, dtype=float) - onp.array(p0, dtype=float)
     length = onp.linalg.norm(direction)
