@@ -276,7 +276,7 @@ def main():
 
             # Visualize hand tip (green) — refined pkls only
             if hand_tip_sphere is not None:
-                hand_tip_sphere.position = hand_tip_traj[min(tstep, len(hand_tip_traj) - 1)]
+                hand_tip_sphere.position = hand_tip_traj[min(tstep, len(hand_tip_traj) - 1)] + onp.array([0, 0, 0.035])
 
             # Change grab sphere color at grab_idx
             if grab_sphere is not None and grab_idx is not None:
