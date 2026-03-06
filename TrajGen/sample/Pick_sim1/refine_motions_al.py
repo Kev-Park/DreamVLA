@@ -75,26 +75,37 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     for i, (link_name, tf) in enumerate(fk_results.items()):
     
         def capsule_collision_cost(origin_world, rot_world, segment_length, segment_thickness, collision_site):
-            
-            R_OBSTACLE = 0.05  # vertical cylinder radius at the grab/collision site (metres)
+            """Arm capsule vs infinite vertical cylinder obstacle.
+
+            The obstacle is an infinite vertical cylinder centred at
+            collision_site XY with radius R_OBSTACLE.  For an infinite-Z
+            cylinder the minimum 3D capsule distance reduces to the 2D
+            segment-to-point distance in XY.
+
+            The arm capsule runs from origin_world along the link's local
+            x-axis for segment_length, with radius segment_thickness.
+            Returns relu(r_total - d_xy) per frame.
+            """
+            R_OBSTACLE = 0.05  # obstacle cylinder radius (metres)
             r_total = segment_thickness + R_OBSTACLE
 
-            # Capsule axis is the local x-direction of the link frame.
-            axis      = rot_world[:, :, 0]                          # (N, 3) unit direction
-            end_world = origin_world + axis * segment_length        # (N, 3) distal endpoint
+            # Arm capsule axis in world frame (local x-axis of link frame)
+            axis  = rot_world[:, :, 0]                            # (N, 3)
+            P1    = origin_world                                   # (N, 3) proximal end
+            P2    = origin_world + axis * segment_length           # (N, 3) distal end
 
-            # Collapse to XY — obstacle is infinite in z.
-            A  = origin_world[:, :2]                                # (N, 2)
-            B  = end_world[:, :2]                                   # (N, 2)
-            P  = collision_site[:2].unsqueeze(0)                    # (1, 2) broadcast over N
+            # Project to XY — infinite-Z cylinder reduces to point in 2D
+            A  = P1[:, :2]                                         # (N, 2)
+            B  = P2[:, :2]                                         # (N, 2)
+            P  = collision_site[:2].unsqueeze(0)                   # (1, 2)
 
-            AB  = B - A                                             # (N, 2)
-            AP  = P - A                                             # (N, 2)
-            ab2 = (AB * AB).sum(dim=1).clamp(min=1e-8)             # (N,) squared length
-            t   = ((AP * AB).sum(dim=1) / ab2).clamp(0., 1.)       # (N,) clamped parameter
+            AB  = B - A                                            # (N, 2)
+            AP  = P - A                                            # (N, 2)
+            ab2 = (AB * AB).sum(dim=1).clamp(min=1e-8)            # (N,)
+            t   = ((AP * AB).sum(dim=1) / ab2).clamp(0., 1.)      # (N,) parameter on segment
 
-            closest = A + t.unsqueeze(1) * AB                      # (N, 2) nearest point on segment
-            d_xy    = torch.norm(P - closest, dim=1)                # (N,) XY distance to cylinder axis
+            closest = A + t.unsqueeze(1) * AB                     # (N, 2) nearest point on segment
+            d_xy    = torch.norm(P - closest, dim=1)               # (N,) distance to cylinder axis
 
             return torch.relu(r_total - d_xy)                      # (N,) penetration depth
 
@@ -159,10 +170,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # POST-APPROACH COSTS
 
-            cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[grab_idx:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
+            #cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[grab_idx:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
 
             transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z, device=DEVICE)) # freeze reference height
-            cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
+            #cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
 
         elif i == 38: # right hand link (red dot in viser)
             rot_mat = tf.get_matrix()[:,:3,:3]
