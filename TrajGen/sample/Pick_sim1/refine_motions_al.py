@@ -361,8 +361,10 @@ for pkl_path in pkl_paths:
             break
 
         # ---- dual (multiplier) update: λ ← max(0, λ + ρ·g) ----
+        # g_curr has shape (grab_idx,); only update the corresponding slice of lambda_table.
         with torch.no_grad():
-            lambda_table = torch.clamp(lambda_table + rho_al * g_curr, min=0.0)
+            n_g = len(g_curr)
+            lambda_table[:n_g] = torch.clamp(lambda_table[:n_g] + rho_al * g_curr, min=0.0)
 
         max_viol = float(g_curr.max())
         print(f"[AL outer={outer_iter:02d}] max_table_viol={max_viol:.2e} m  "
