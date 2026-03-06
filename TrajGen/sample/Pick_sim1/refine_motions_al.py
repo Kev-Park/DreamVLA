@@ -65,10 +65,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     # Collect all link positions
     cost2 = torch.zeros(joint_angles.shape[0], device=joint_angles.device)
     rot_matrix = quaternion_to_matrix(quats)
-    i = 0
-    for link_name, tf in fk_results.items():
 
-        
+
+    for i, (link_name, tf) in enumerate(fk_results.items()):
+    
         if i == 36:
             pos = tf.get_matrix()[:,:3,3]
             pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3]
@@ -145,7 +145,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # Hand joint origin in world frame — forms the other edge of the swept quad
             transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
 
-
+            # table collision with anti-tunneling costs
             def table_collision_cost(pts, orig_pts, gi):
                 """Combined per-frame AL constraint g_t >= 0, shape (gi,).
 
@@ -218,80 +218,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
                 return torch.maximum(g_point, g_seg)           # (gi,)  hard constraint
 
-            def table_collision_cost_segment(pts, orig_pts, gi, x_edge, z_table, window=40):
-                """
-                For each frame pair in the `window` frames before gi, compute the area of
-                the quadrilateral swept by the hand (tip edge + hand-origin edge) and charge
-                it whenever either edge of the quad intersects the table zone
-                (x > x_edge AND z < z_table).
-                Returns (start_idx, per-frame costs of shape (gi - start,)).
-                """
-                start = max(gi - window, 0)
-                p0 = pts[start:gi]           # tip at t     (W, 3)
-                p1 = pts[start+1:gi+1]       # tip at t+1   (W, 3)
-                o0 = orig_pts[start:gi]      # hand orig at t     (W, 3)
-                o1 = orig_pts[start+1:gi+1]  # hand orig at t+1   (W, 3)
-
-                eps = 1e-8
-
-                def seg_overlap(a0, a1):
-                    """Fraction of segment [a0->a1] inside table zone (x>x_edge, z<z_table)."""
-                    ax, az = a0[:, 0], a0[:, 2]
-                    bx, bz = a1[:, 0], a1[:, 2]
-                    ddx = bx - ax
-                    ddz = bz - az
-                    scx = torch.clamp((x_edge - ax) / (ddx + eps), 0., 1.)
-                    sx0 = torch.where(ddx > 0, scx, torch.zeros_like(scx))
-                    sx1 = torch.where(ddx > 0, torch.ones_like(scx), scx)
-                    sx0 = torch.where(ddx.abs() < eps, torch.where(ax > x_edge, torch.zeros_like(sx0), torch.ones_like(sx0)), sx0)
-                    sx1 = torch.where(ddx.abs() < eps, torch.where(ax > x_edge, torch.ones_like(sx1), torch.zeros_like(sx1)), sx1)
-                    scz = torch.clamp((z_table - az) / (ddz + eps), 0., 1.)
-                    sz0 = torch.where(ddz < 0, torch.zeros_like(scz), scz)
-                    sz1 = torch.where(ddz < 0, scz, torch.ones_like(scz))
-                    sz0 = torch.where(ddz.abs() < eps, torch.where(az < z_table, torch.zeros_like(sz0), torch.ones_like(sz0)), sz0)
-                    sz1 = torch.where(ddz.abs() < eps, torch.where(az < z_table, torch.ones_like(sz1), torch.zeros_like(sz1)), sz1)
-                    return torch.relu(torch.minimum(sx1, sz1) - torch.maximum(sx0, sz0))
-
-                # Intersection flag: fires if tip edge OR hand-origin edge clips the table
-                overlap_tip  = seg_overlap(p0, p1)
-                overlap_orig = seg_overlap(o0, o1)
-                # Combined soft binary: 1 if either edge clips
-                hit = torch.clamp((overlap_tip + overlap_orig) / 0.01, 0., 1.)
-
-                # Quad area via two triangles (handles non-planar / twisted ribbon)
-                # Quad corners: p0, p1, o1, o0  →  tri1=(p0,p1,o0), tri2=(p1,o1,o0)
-                tri1 = 0.5 * torch.norm(torch.linalg.cross(p1 - p0, o0 - p0), dim=1)
-                tri2 = 0.5 * torch.norm(torch.linalg.cross(o1 - p1, o0 - p1), dim=1)
-                quad_area = tri1 + tri2
-
-                # Penalize the full quad area whenever any part of either edge hits the table
-                overlap_full = quad_area * hit
-
-                # Depth penalty: quadratic in how far the midpoint penetrates in x and z
-                mid = (p0 + p1) / 2.0
-                depth_x = torch.relu(mid[:, 0] - x_edge)
-                depth_z = torch.relu(z_table - mid[:, 2])
-                depth_pen = torch.minimum(depth_x, depth_z) ** 2
-
-                # Chain-length penalty: purely temporal, independent of depth or speed.
-                # Soft binary indicator [0,1] based on midpoint position only — 1 when inside.
-                sharpness = 0.005  # transition width in meters; smaller = harder step
-                inside = torch.sigmoid((mid[:, 0] - x_edge) / sharpness) * \
-                         torch.sigmoid((z_table - mid[:, 2]) / sharpness)
-                # prefix[t] = total accumulated "inside" frames up to t;
-                # multiplying by inside again means each frame is penalized by run length so far.
-                # A continuous run of N frames contributes 1+2+...+N = O(N²) total.
-                prefix = torch.cumsum(inside, dim=0)
-                cost_chain = inside * prefix
-
-                return start, 75*overlap_full**2 + 1.5*depth_pen**2 + 1.5*cost_chain
-
-            # [ABS] Per-frame table collision — hard constraint via Augmented Lagrangian.
-            # Constraint: g_t <= 0  (g_t combines point depth + tunneling segment length).
-            # AL term: λ·g + (ρ/2)·g²  plus λ update in outer loop.
-            # Anti-tunneling is now baked into g_t itself — no separate soft penalty needed.
+            # [ABS] Per-frame table collision — hard constraint via AL (g_t >= 0)
             g_t = table_collision_cost(transformed_tip, transformed_hand_orig, grab_idx)
-            _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy)
+            _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy) for hard optimization
             if lambda_table is not None:
                 # Full augmented-Lagrangian penalty (vectorised over frames → CUDA-parallel)
                 al_term = lambda_table * g_t + (rho_al / 2.0) * g_t ** 2
@@ -300,23 +229,15 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 al_term = (rho_al / 2.0) * g_t ** 2
             cost2[:grab_idx] += al_term
 
+
             #[ABS] Penalize rate of change of kinetic energy (v * |Δv| ∝ d(KE)/dt) in the approach window
             tip_speed = torch.norm(transformed_tip[1:] - transformed_tip[:-1], dim=1)   # (N-1,) speed per frame
             tip_power = tip_speed[:-1] * torch.abs(tip_speed[1:] - tip_speed[:-1])      # (N-2,) v·|Δv|
             w_start = max(grab_idx - TIP_SPEED_WINDOW, 1)
             w_end = grab_idx
             cost2[w_start:w_end] += 200. * tip_power[w_start-1:w_end-1]**2
-
-            # [ABS] Midpoint interpolation check to prevent tunneling through table
-            #tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
-            #grab_idx_mid = max(grab_idx - 1, 0)
-            #cost2[:grab_idx_mid] += table_collision_cost(tip_mid, grab_idx_mid)
-
-
         else:
-            i += 1
             continue
-        i += 1
 
     return l2_cost + torch.mean(cost2)
 
