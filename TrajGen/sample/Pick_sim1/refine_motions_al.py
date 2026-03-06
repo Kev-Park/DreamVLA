@@ -66,10 +66,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     cost2 = torch.zeros(joint_angles.shape[0], device=joint_angles.device)
     rot_matrix = quaternion_to_matrix(quats)
 
-
+    # Iterate over links and apply costs based on link positions and orientations
     for i, (link_name, tf) in enumerate(fk_results.items()):
     
-        if i == 36:
+        if i == 36: # right wrist pitch link (blue dot in viser)
             pos = tf.get_matrix()[:,:3,3]
             pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3]
 
@@ -103,9 +103,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
 
-             # Moved wrist collision penalty with table to hand (i==38)
-
-
+            
 
             ### NEW COSTS (NOT IN REAL REFINEMENT)
 
@@ -122,7 +120,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 laziness_weight = torch.linspace(1.0, 0.0, laziness_end, device=DEVICE)
                 cost2[:laziness_end] += laziness_weight * torch.sum(torch.abs(joint_angles[:laziness_end] - rest_pose), dim=1)
 
-        elif i == 38:
+        elif i == 38: # right hand link (red dot in viser)
             rot_mat = tf.get_matrix()[:,:3,:3]
             rot_mat = torch.bmm(rot_matrix, rot_mat)
             rot_mat_ref = torch.tensor([[1, 0, 0], 

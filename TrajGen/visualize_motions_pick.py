@@ -195,7 +195,7 @@ def main():
     #pk2_robot = pk2.build_chain_from_urdf(open(urdf_path).read())
     
     keypts = get_keypts(torch.tensor(joints), joint_names , pk2_robot=pk2_robot) 
-    global_keypts = transform_keypts(torch.tensor(keypts), torch.tensor(orientations), torch.tensor(positions)).numpy()
+    global_keypts = transform_keypts(torch.tensor(keypts), torch.tensor(orientations), torch.tensor(positions + onp.array([0, 0, 0.035]))).numpy()
     
     # Table cuboid matching refine_motions.py cost geometry:
     #   x_edge = wrist x at grab_idx (link 36, WRIST_TO_COLLISION and OFFSET_X cancel)
