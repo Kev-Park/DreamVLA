@@ -185,7 +185,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 transformed_hand_orig, hand_rot_world, segment_length=HAND_TIP_OFFSET, segment_thickness=0.05,
                 collision_site=grab_pos
             )
-            cost2[:grab_idx+20] += al_penalty(g_cap_hand)
+            cost2[:grab_idx] += al_penalty(g_cap_hand[:grab_idx])
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
