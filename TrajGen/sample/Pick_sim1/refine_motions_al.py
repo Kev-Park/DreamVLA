@@ -94,9 +94,11 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             return torch.relu(r_total - d_xy)                      # (N,) penetration depth
 
         def al_penalty(g):
-            """Augmented-Lagrangian penalty for a hard constraint g >= 0, shape (grab_idx,)."""
+            """Augmented-Lagrangian penalty for a hard constraint g >= 0.
+            lambda_table is sized to the full trajectory; auto-slice to len(g)."""
             if lambda_table is not None:
-                return lambda_table * g + (rho_al / 2.0) * g ** 2
+                lam = lambda_table[:len(g)]
+                return lam * g + (rho_al / 2.0) * g ** 2
             return (rho_al / 2.0) * g ** 2
 
         if i == 36: # right wrist pitch link (blue dot in viser)
@@ -147,7 +149,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 transformed_keypts, wrist_rot_world, segment_length=0.25, segment_thickness=0.03,
                 collision_site=grab_pos
             )
-            cost2[:grab_idx] += al_penalty(g_cap_wrist[:grab_idx])
+            cost2[:grab_idx+20] += al_penalty(g_cap_wrist[:grab_idx+20])
 
             # POST-APPROACH COSTS
 
@@ -185,7 +187,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 transformed_hand_orig, hand_rot_world, segment_length=HAND_TIP_OFFSET, segment_thickness=0.05,
                 collision_site=grab_pos
             )
-            cost2[:grab_idx] += al_penalty(g_cap_hand[:grab_idx])
+            cost2[:grab_idx+20] += al_penalty(g_cap_hand[:grab_idx+20])
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
@@ -339,7 +341,7 @@ for pkl_path in pkl_paths:
     # DEVICE (GPU when available) for full CUDA parallelism.
     # (All tensors are already on DEVICE from load time above.)
     # -----------------------------------------------------------------------
-    lambda_table = torch.zeros(grab_idx, device=DEVICE)   # dual variables (one per frame)
+    lambda_table = torch.zeros(target_joint_angles.shape[0], device=DEVICE)   # dual variables (one per frame, full trajectory)
     rho_al = AL_RHO_INIT
 
     converged = False
