@@ -100,6 +100,35 @@ def transform_keypts(keypts, quat, translation):
 
 
 
+def _cylinder_between(p0: onp.ndarray, p1: onp.ndarray, radius: float,
+                      color=(255, 165, 0, 200), sections: int = 20) -> trimesh.Trimesh | None:
+    """Return a trimesh.Trimesh cylinder aligned from p0 to p1."""
+    direction = onp.array(p1, dtype=float) - onp.array(p0, dtype=float)
+    length = onp.linalg.norm(direction)
+    if length < 1e-6:
+        return None
+    cyl = trimesh.creation.cylinder(radius=radius, height=length, sections=sections)
+    # Rotate default Z-axis cylinder to align with 'direction'
+    direction /= length
+    z = onp.array([0.0, 0.0, 1.0])
+    v = onp.cross(z, direction)
+    s = onp.linalg.norm(v)
+    c = onp.dot(z, direction)
+    if s < 1e-6:
+        rot = onp.eye(3) if c > 0 else onp.diag([1.0, -1.0, -1.0])
+    else:
+        vx = onp.array([[ 0,    -v[2],  v[1]],
+                        [ v[2],  0,    -v[0]],
+                        [-v[1],  v[0],  0   ]])
+        rot = onp.eye(3) + vx + vx @ vx * (1.0 - c) / (s ** 2)
+    tf = onp.eye(4)
+    tf[:3, :3] = rot
+    tf[:3,  3] = (onp.array(p0, dtype=float) + onp.array(p1, dtype=float)) / 2.0
+    cyl.apply_transform(tf)
+    cyl.visual.face_colors = list(color)
+    return cyl
+
+
 def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
          hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05):
     
@@ -289,47 +318,31 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
                 if hand_tip_sphere is not None:
                     hand_tip_sphere.position = hand_tip_traj[min(tstep, len(hand_tip_traj) - 1)] + onp.array([0, 0, 0.035])
             else:
-                # Cylinder mesh mode — draw forearm and hand as 3D cylinders
-                import trimesh
-                def add_cylinder_between(server, name, p0, p1, radius, color):
-                    direction = p1 - p0
-                    length = np.linalg.norm(direction)
-                    if length < 1e-6:
-                        return  # skip degenerate
-                    direction = direction / length
-                    # Cylinder is aligned along z by default
-                    cyl = trimesh.creation.cylinder(radius=radius, height=length, sections=32)
-                    # Compute rotation matrix to align z to direction
-                    z_axis = np.array([0, 0, 1])
-                    v = np.cross(z_axis, direction)
-                    c = np.dot(z_axis, direction)
-                    if np.linalg.norm(v) < 1e-6:
-                        R = np.eye(3)
-                    else:
-                        vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-                        R = np.eye(3) + vx + vx @ vx * ((1 - c) / (np.linalg.norm(v) ** 2))
-                    tf = np.eye(4)
-                    tf[:3, :3] = R
-                    tf[:3, 3] = (p0 + p1) / 2
-                    cyl.apply_transform(tf)
-                    cyl.visual.face_colors = color
-                    server.scene.add_mesh_trimesh(name, cyl)
+                # Segment mode — draw forearm and hand as trimesh cylinders
                 wrist_pt = global_keypts[tstep, 36, :]
                 hand_pt  = global_keypts[tstep, 38, :]
                 # Forearm: wrist (36) → hand origin (38)
-                add_cylinder_between(
-                    server, "/arm_forearm_cyl", wrist_pt, hand_pt,
-                    radius=forearm_thickness, color=[255, 165, 0, 180])
+                forearm_cyl = _cylinder_between(
+                    wrist_pt, hand_pt,
+                    radius=forearm_thickness,
+                    color=(255, 165, 0, 220),
+                )
+                if forearm_cyl is not None:
+                    server.scene.add_mesh_trimesh("/arm_forearm", forearm_cyl)
                 # Hand: hand origin (38) → fingertip
                 if hand_tip_traj is not None:
                     tip_pt = hand_tip_traj[min(tstep, len(hand_tip_traj) - 1)] + onp.array([0, 0, 0.035])
                 else:
                     direction = hand_pt - wrist_pt
-                    norm = np.linalg.norm(direction)
-                    tip_pt = hand_pt + (direction / norm * hand_length if norm > 1e-6 else np.array([hand_length, 0, 0]))
-                add_cylinder_between(
-                    server, "/arm_hand_cyl", hand_pt, tip_pt,
-                    radius=hand_thickness, color=[255, 80, 0, 180])
+                    norm = onp.linalg.norm(direction)
+                    tip_pt = hand_pt + (direction / norm * hand_length if norm > 1e-6 else onp.array([hand_length, 0, 0]))
+                hand_cyl = _cylinder_between(
+                    hand_pt, tip_pt,
+                    radius=hand_thickness,
+                    color=(255, 80, 0, 220),
+                )
+                if hand_cyl is not None:
+                    server.scene.add_mesh_trimesh("/arm_hand", hand_cyl)
             # Change grab sphere color at grab_idx
             if grab_sphere is not None and grab_idx is not None:
                 if tstep >= grab_idx:
