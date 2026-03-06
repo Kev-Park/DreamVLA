@@ -21,9 +21,11 @@ from isaac_utils.rotations import(
     slerp
 )
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # Load URDF and create kinematic chain
 urdf_path = '../../../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf'
-chain = pk.build_chain_from_urdf(open(urdf_path).read())
+chain = pk.build_chain_from_urdf(open(urdf_path).read()).to(dtype=torch.float32, device=DEVICE)
 pkl_paths = '*.pkl'
 pkl_paths = glob.glob(pkl_paths)
 SMOOTH_AMT = 20
@@ -33,13 +35,24 @@ WRIST_TO_COLLISION = 0.35
 VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
-HAND_TIP_OFFSET = 0.3
+HAND_TIP_OFFSET = 0.15
 TIP_SPEED_WINDOW = 50
 SAVE_DIR = "../Pick_sim2/"
-#DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-DEVICE = torch.device("cpu")
 
-def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False):
+# --- Augmented Lagrangian settings ---
+TABLE_CONSTRAINT_TOL = 1e-5   # 0.01 mm  – very tight: any tip penetration > this triggers AL update
+AL_RHO_INIT       = 50.0      # initial quadratic penalty weight
+AL_RHO_GROWTH     = 10.0      # penalty multiplier each outer iteration
+AL_RHO_MAX        = 1e8       # cap so gradients don't explode for quadratic hard optimization
+AL_OUTER_ITERS    = 40        # max AL outer iterations
+AL_INNER_ITERS    = 300       # Adam steps per outer iteration
+
+# Written by compute_cost every forward pass; read by the AL outer loop.
+_last_g_t: torch.Tensor | None = None
+
+def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
+                 lambda_table: torch.Tensor | None = None, rho_al: float = AL_RHO_INIT):
+    global _last_g_t
     # L2 cost to target
     l2_cost = 0.*torch.nn.functional.mse_loss(joint_angles, target_joint_angles[:, active_joint_ids])
     
@@ -50,12 +63,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
         q_dict[name] = target_joint_angles[:, id]
     fk_results = chain.forward_kinematics(q_dict)
     # Collect all link positions
-    cost2 = torch.zeros(joint_angles.shape[0])
+    cost2 = torch.zeros(joint_angles.shape[0], device=joint_angles.device)
     rot_matrix = quaternion_to_matrix(quats)
-    i = 0
-    for link_name, tf in fk_results.items():
 
-        
+
+    for i, (link_name, tf) in enumerate(fk_results.items()):
+    
         if i == 36:
             pos = tf.get_matrix()[:,:3,3]
             pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3]
@@ -68,7 +81,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             
             # Add speed tapering (?)
 
-            ref = False
+            ref = True
             if ref:
                 # Jerkiness penalty relative to references
                 max_ref_dists = torch.max(ref_dists) # get max speed for normalizing
@@ -81,12 +94,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 cost2[:grab_idx+2] += torch.abs(vals)                     # velocity error
                 cost2[:grab_idx+2] += 10*vals**2                          # L2 speed deviation (dominates large errors)
                 
-            #cost2[:] += 10.*(joint_angles[:, -6]+0.15)*(joint_angles[:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
+            cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[grab_idx:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
                 
             #cost2[0] += torch.norm(transformed_keypts[0] - transformed_keypts_ref[0], p=2) # match initial wrist positions
 
             # Add height ramping cost (?)
-            transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z)) # freeze reference height
+            transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z, device=DEVICE)) # freeze reference height
 
             cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
 
@@ -102,9 +115,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[1:] += 10*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
 
             # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
-            rest_pose = torch.tensor(init_joint_angles)[active_joint_ids]
-            laziness_weight = torch.linspace(1.0, 0.0, grab_idx)
-            cost2[:grab_idx-40] += laziness_weight[:grab_idx-40] * torch.sum(torch.abs(joint_angles[:grab_idx-40] - rest_pose), dim=1)
+            rest_pose = torch.tensor(init_joint_angles, device=DEVICE)[active_joint_ids]
+            # Clamp effective end to actual sequence length — grab_idx can exceed N for some pkl files.
+            laziness_end = min(max(grab_idx - 40, 0), joint_angles.shape[0])
+            if laziness_end > 0:
+                laziness_weight = torch.linspace(1.0, 0.0, laziness_end, device=DEVICE)
+                cost2[:laziness_end] += laziness_weight * torch.sum(torch.abs(joint_angles[:laziness_end] - rest_pose), dim=1)
 
         elif i == 38:
             rot_mat = tf.get_matrix()[:,:3,:3]
@@ -129,87 +145,90 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # Hand joint origin in world frame — forms the other edge of the swept quad
             transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
 
+            # table collision with anti-tunneling costs
+            def table_collision_cost(pts, orig_pts, gi):
+                """Combined per-frame AL constraint g_t >= 0, shape (gi,).
 
-            # FIX SLICING
-            def table_collision_cost(pts, gi):
-                return 5 * (pts[gi:, 0] > grab_pos[0] + offset_x) * \
-                    (pts[gi:, 2] < offset_z) * \
-                    (torch.minimum(- grab_pos[0] - offset_x + pts[gi:, 0], - pts[gi:, 2] + offset_z))**2
+                For each frame t in [0, gi):
+                  g_t = max(point_depth_t, segment_penetration_length_t)
 
-            def table_collision_cost_segment(pts, orig_pts, gi, x_edge, z_table, window=40):
+                point_depth_t              : min(relu(Δx), relu(Δz)) at frame t.
+                segment_penetration_length_t : length in metres of the motion segment
+                  [t → t+1] that lies inside the table zone (x > x_edge AND z < z_table),
+                  computed over both the fingertip edge and the hand-origin edge and
+                  taking the worse of the two.  Frame gi-1 has no outgoing segment so
+                  only point depth applies there.
+
+                Units: metres throughout — commensurable with TABLE_CONSTRAINT_TOL.
+                Drop-in replacement: same (gi,) shape, same sign convention, same AL loop.
                 """
-                For each frame pair in the `window` frames before gi, compute the area of
-                the quadrilateral swept by the hand (tip edge + hand-origin edge) and charge
-                it whenever either edge of the quad intersects the table zone
-                (x > x_edge AND z < z_table).
-                Returns (start_idx, per-frame costs of shape (gi - start,)).
-                """
-                start = max(gi - window, 0)
-                p0 = pts[start:gi]           # tip at t     (W, 3)
-                p1 = pts[start+1:gi+1]       # tip at t+1   (W, 3)
-                o0 = orig_pts[start:gi]      # hand orig at t     (W, 3)
-                o1 = orig_pts[start+1:gi+1]  # hand orig at t+1   (W, 3)
+                x_edge  = grab_pos[0] + offset_x
+                z_table = offset_z
+                eps     = 1e-8
 
-                eps = 1e-8
+                # ---- 1. Point-wise penetration depth (existing logic, unchanged) ----
+                depth_x = torch.relu(pts[:gi, 0] - x_edge)
+                depth_z = torch.relu(z_table - pts[:gi, 2])
+                g_point = torch.minimum(depth_x, depth_z)            # (gi,)
 
-                def seg_overlap(a0, a1):
-                    """Fraction of segment [a0->a1] inside table zone (x>x_edge, z<z_table)."""
-                    ax, az = a0[:, 0], a0[:, 2]
-                    bx, bz = a1[:, 0], a1[:, 2]
+                # ---- 2. Segment overlap length  (anti-tunneling) ----
+                # Reuse the exact parametric logic from the original seg_overlap helper
+                # but scale by segment length so the output is in metres.
+                def _overlap_frac(a, b):
+                    """Fraction of segment [a→b] (W,3) inside the table zone."""
+                    ax, az = a[:, 0], a[:, 2]
+                    bx, bz = b[:, 0], b[:, 2]
                     ddx = bx - ax
                     ddz = bz - az
+                    # x: inside when x > x_edge
                     scx = torch.clamp((x_edge - ax) / (ddx + eps), 0., 1.)
-                    sx0 = torch.where(ddx > 0, scx, torch.zeros_like(scx))
-                    sx1 = torch.where(ddx > 0, torch.ones_like(scx), scx)
-                    sx0 = torch.where(ddx.abs() < eps, torch.where(ax > x_edge, torch.zeros_like(sx0), torch.ones_like(sx0)), sx0)
-                    sx1 = torch.where(ddx.abs() < eps, torch.where(ax > x_edge, torch.ones_like(sx1), torch.zeros_like(sx1)), sx1)
+                    sx0 = torch.where(ddx > 0, scx,                    torch.zeros_like(scx))
+                    sx1 = torch.where(ddx > 0, torch.ones_like(scx),   scx)
+                    sx0 = torch.where(ddx.abs() < eps,
+                                      torch.where(ax > x_edge, torch.zeros_like(sx0), torch.ones_like(sx0)), sx0)
+                    sx1 = torch.where(ddx.abs() < eps,
+                                      torch.where(ax > x_edge, torch.ones_like(sx1),  torch.zeros_like(sx1)), sx1)
+                    # z: inside when z < z_table  (opposite orientation to x: zone is "z small")
+                    # ddz < 0: z falling, enters zone at scz → inside [scz, 1]
+                    # ddz > 0: z rising, starts inside and exits at scz → inside [0, scz]
                     scz = torch.clamp((z_table - az) / (ddz + eps), 0., 1.)
-                    sz0 = torch.where(ddz < 0, torch.zeros_like(scz), scz)
-                    sz1 = torch.where(ddz < 0, scz, torch.ones_like(scz))
-                    sz0 = torch.where(ddz.abs() < eps, torch.where(az < z_table, torch.zeros_like(sz0), torch.ones_like(sz0)), sz0)
-                    sz1 = torch.where(ddz.abs() < eps, torch.where(az < z_table, torch.ones_like(sz1), torch.zeros_like(sz1)), sz1)
+                    sz0 = torch.where(ddz < 0, scz,                    torch.zeros_like(scz))
+                    sz1 = torch.where(ddz < 0, torch.ones_like(scz),   scz)
+                    sz0 = torch.where(ddz.abs() < eps,
+                                      torch.where(az < z_table, torch.zeros_like(sz0), torch.ones_like(sz0)), sz0)
+                    sz1 = torch.where(ddz.abs() < eps,
+                                      torch.where(az < z_table, torch.ones_like(sz1),  torch.zeros_like(sz1)), sz1)
                     return torch.relu(torch.minimum(sx1, sz1) - torch.maximum(sx0, sz0))
 
-                # Intersection flag: fires if tip edge OR hand-origin edge clips the table
-                overlap_tip  = seg_overlap(p0, p1)
-                overlap_orig = seg_overlap(o0, o1)
-                # Combined soft binary: 1 if either edge clips
-                hit = torch.clamp((overlap_tip + overlap_orig) / 0.01, 0., 1.)
+                # gi-1 consecutive segments
+                p0, p1 = pts[:gi - 1],      pts[1:gi]         # fingertip edge
+                o0, o1 = orig_pts[:gi - 1], orig_pts[1:gi]   # hand-origin edge
 
-                # Quad area via two triangles (handles non-planar / twisted ribbon)
-                # Quad corners: p0, p1, o1, o0  →  tri1=(p0,p1,o0), tri2=(p1,o1,o0)
-                tri1 = 0.5 * torch.norm(torch.linalg.cross(p1 - p0, o0 - p0), dim=1)
-                tri2 = 0.5 * torch.norm(torch.linalg.cross(o1 - p1, o0 - p1), dim=1)
-                quad_area = tri1 + tri2
+                frac_tip  = _overlap_frac(p0, p1)              # (gi-1,)
+                frac_orig = _overlap_frac(o0, o1)              # (gi-1,)
 
-                # Penalize the full quad area whenever any part of either edge hits the table
-                overlap_full = quad_area * hit
+                # Scale each edge by its own arc length so the wrist-origin edge
+                # (which can sweep a larger arc) isn't underweighted.
+                g_seg_tip  = frac_tip  * torch.norm(p1 - p0, dim=1)
+                g_seg_orig = frac_orig * torch.norm(o1 - o0, dim=1)
+                g_seg      = torch.maximum(g_seg_tip, g_seg_orig)  # (gi-1,)
 
-                # Depth penalty: quadratic in how far the midpoint penetrates in x and z
-                mid = (p0 + p1) / 2.0
-                depth_x = torch.relu(mid[:, 0] - x_edge)
-                depth_z = torch.relu(z_table - mid[:, 2])
-                depth_pen = torch.minimum(depth_x, depth_z) ** 2
+                # Last frame has no outgoing segment — pad with zero
+                g_seg = torch.cat([g_seg, g_seg.new_zeros(1)]) # (gi,)
 
-                # Chain-length penalty: purely temporal, independent of depth or speed.
-                # Soft binary indicator [0,1] based on midpoint position only — 1 when inside.
-                sharpness = 0.005  # transition width in meters; smaller = harder step
-                inside = torch.sigmoid((mid[:, 0] - x_edge) / sharpness) * \
-                         torch.sigmoid((z_table - mid[:, 2]) / sharpness)
-                # prefix[t] = total accumulated "inside" frames up to t;
-                # multiplying by inside again means each frame is penalized by run length so far.
-                # A continuous run of N frames contributes 1+2+...+N = O(N²) total.
-                prefix = torch.cumsum(inside, dim=0)
-                cost_chain = inside * prefix
+                return torch.maximum(g_point, g_seg)           # (gi,)  hard constraint
 
-                return start, 75*overlap_full**2 + 1.5*depth_pen**2 + 1.5*cost_chain
+            # [ABS] Per-frame table collision — hard constraint via AL (g_t >= 0)
+            g_t = table_collision_cost(transformed_tip, transformed_hand_orig, grab_idx)
+            _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy) for hard optimization
+            if lambda_table is not None:
+                # Full augmented-Lagrangian penalty (vectorised over frames → CUDA-parallel)
+                al_term = lambda_table * g_t + (rho_al / 2.0) * g_t ** 2
+            else:
+                # Fallback: pure quadratic (first call before lambdas exist)
+                al_term = (rho_al / 2.0) * g_t ** 2
+            cost2[:grab_idx] += al_term
 
-            # [ABS] Per-frame table collision check
-            #cost2[:grab_idx] += table_collision_cost(transformed_tip, grab_idx) # old cost
-            
-            # New cost using segment test to prevent tunneling
-            _start, _seg_cost = table_collision_cost_segment(transformed_tip, transformed_hand_orig, grab_idx, grab_pos[0] + offset_x, offset_z)
-            cost2[_start:grab_idx] += 10*_seg_cost
 
             #[ABS] Penalize rate of change of kinetic energy (v * |Δv| ∝ d(KE)/dt) in the approach window
             tip_speed = torch.norm(transformed_tip[1:] - transformed_tip[:-1], dim=1)   # (N-1,) speed per frame
@@ -217,17 +236,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             w_start = max(grab_idx - TIP_SPEED_WINDOW, 1)
             w_end = grab_idx
             cost2[w_start:w_end] += 200. * tip_power[w_start-1:w_end-1]**2
-
-            # [ABS] Midpoint interpolation check to prevent tunneling through table
-            #tip_mid = (transformed_tip[:-1] + transformed_tip[1:]) / 2
-            #grab_idx_mid = max(grab_idx - 1, 0)
-            #cost2[:grab_idx_mid] += table_collision_cost(tip_mid, grab_idx_mid)
-
-
         else:
-            i += 1
             continue
-        i += 1
 
     return l2_cost + torch.mean(cost2)
 
@@ -253,12 +263,12 @@ for pkl_path in pkl_paths:
 
     motion_data = pkl.load(open(pkl_path, 'rb'))
 
-    target_trans = torch.tensor(np.array(motion_data['global_position'])).clone()
-    target_quats = torch.tensor(np.array(motion_data['global_pose'].rotation().wxyz)).clone()
+    target_trans = torch.tensor(np.array(motion_data['global_position']), dtype=torch.float32).to(DEVICE)
+    target_quats = torch.tensor(np.array(motion_data['global_pose'].rotation().wxyz), dtype=torch.float32).to(DEVICE)
 
     # Target joint angles (example, replace with your actual target)
-    target_joint_angles = torch.tensor(np.array(motion_data['joints'])).clone()
-    grab_pos = torch.tensor(np.array(motion_data['grab_pos'])).clone()
+    target_joint_angles = torch.tensor(np.array(motion_data['joints']), dtype=torch.float32).to(DEVICE)
+    grab_pos = torch.tensor(np.array(motion_data['grab_pos']), dtype=torch.float32).to(DEVICE)
 
     joint_names = ['left_hip_pitch_joint', 'left_hip_roll_joint', 'left_hip_yaw_joint', 'left_knee_joint', 'left_ankle_pitch_joint', 'left_ankle_roll_joint', 'right_hip_pitch_joint', 'right_hip_roll_joint', 'right_hip_yaw_joint', 'right_knee_joint', 'right_ankle_pitch_joint', 'right_ankle_roll_joint', 'waist_yaw_joint', 'left_shoulder_pitch_joint', 'left_shoulder_roll_joint', 'left_shoulder_yaw_joint', 'left_elbow_joint', 'left_wrist_roll_joint', 'left_wrist_pitch_joint', 'left_wrist_yaw_joint', 'right_shoulder_pitch_joint', 'right_shoulder_roll_joint', 'right_shoulder_yaw_joint', 'right_elbow_joint', 'right_wrist_roll_joint', 'right_wrist_pitch_joint', 'right_wrist_yaw_joint']
     init_joint_angles = [-0.2, 0., 0., 0.42, -0.23, 0., -0.2, 0., 0., 0.42, -0.23, 0., 0., 0.35, 0.16, 0., 0.87, 0., 0., 0., 0.35, -0.16, 0., 0.87, 0., 0., 0.]
@@ -268,11 +278,10 @@ for pkl_path in pkl_paths:
     inactive_joint_ids = [i for i, name in enumerate(joint_names) if name in inactive_joint_names]
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate( joint_names ) }
     fk_results_ref = chain.forward_kinematics(q_dict)
-    # copy a tensor
     # Initial guess for joint angles (can be zeros or random)
-    joint_angles = torch.nn.Parameter(torch.tensor(target_joint_angles[:, active_joint_ids]).clone())  # Only optimize active joints
-    trans = torch.tensor(target_trans) # Translation offset
-    quats = torch.tensor(target_quats) # Quaternion offset
+    joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone())  # Only optimize active joints
+    trans = target_trans.clone()  # Translation offset
+    quats = target_quats.clone()  # Quaternion offset
     optimizer = optim.Adam([joint_angles], lr=0.001)
     grab_idx = motion_data["grab_idx"]
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate( joint_names ) }
@@ -286,40 +295,71 @@ for pkl_path in pkl_paths:
     grab_pos[0] += WRIST_TO_COLLISION
     ref_dists = torch.norm(wrist_keypts[1:] - wrist_keypts[:-1], dim=1)
 
-    # Optimization loop
-    for i in range(3000):
-        optimizer.zero_grad()
-        if i == 399 :
-            debug = True
-        else:
-            debug = False
-        cost = compute_cost(joint_angles, trans, quats, debug=debug)
-        t1 = time.time()
-        cost.backward()
-        t2 = time.time()
-        optimizer.step()
-        if cost.item() < 0.016:
+    # -----------------------------------------------------------------------
+    # Augmented Lagrangian optimisation
+    # Inner loop: Adam minimises  f(q) + λ·g + (ρ/2)·‖g‖²  over joint angles.
+    # Outer loop: update multipliers λ ← max(0, λ + ρ·g)  and grow ρ.
+    # All inner tensor ops are batched over the N-frame trajectory and run on
+    # DEVICE (GPU when available) for full CUDA parallelism.
+    # (All tensors are already on DEVICE from load time above.)
+    # -----------------------------------------------------------------------
+    lambda_table = torch.zeros(grab_idx, device=DEVICE)   # dual variables (one per frame)
+    rho_al = AL_RHO_INIT
+
+    converged = False
+    for outer_iter in range(AL_OUTER_ITERS):
+        # ---- inner minimisation with fixed (lambda_table, rho_al) ----
+        n_inner = AL_INNER_ITERS
+        for i in range(n_inner):
+            optimizer.zero_grad()
+            cost = compute_cost(joint_angles, trans, quats,
+                                lambda_table=lambda_table, rho_al=rho_al)
+            cost.backward()
+            optimizer.step()
+
+        # ---- read last constraint violation written by compute_cost ----
+        g_curr = _last_g_t  # shape (grab_idx,), on DEVICE
+        if g_curr is None:
             break
-        if i % 100 == 0:
-            print(f"Step {i}, Cost: {cost.item()}")
+
+        # ---- dual (multiplier) update: λ ← max(0, λ + ρ·g) ----
+        with torch.no_grad():
+            lambda_table = torch.clamp(lambda_table + rho_al * g_curr, min=0.0)
+
+        max_viol = float(g_curr.max())
+        print(f"[AL outer={outer_iter:02d}] max_table_viol={max_viol:.2e} m  "
+              f"rho={rho_al:.1e}  cost={cost.item():.4f}")
+
+        if max_viol < TABLE_CONSTRAINT_TOL:
+            print(f"  -> Table constraint satisfied to {TABLE_CONSTRAINT_TOL:.0e} m. Done.")
+            converged = True
+            break
+
+        # ---- increase penalty for next outer iteration ----
+        rho_al = min(rho_al * AL_RHO_GROWTH, AL_RHO_MAX)
+
+    if not converged:
+        print(f"[AL] Warning: did not converge within {AL_OUTER_ITERS} outer iterations. "
+              f"Final max violation = {float(g_curr.max()):.2e} m")
 
     global_pose, joints = motion_data['global_pose'], motion_data['joints']
-    joints_new_ = joints.clone()  # Copy the original joints
-    joints_new_[:,active_joint_ids] = joint_angles.data
-    num_timesteps = joints.shape[0]
-    joints_new = torch.zeros((joints_new_.shape[0]+INTERP_AMT+PAUSE_AMT, joints_new_.shape[1]), dtype=joints_new_.dtype)
-    trans_new = torch.zeros((joints_new_.shape[0]+INTERP_AMT+PAUSE_AMT, 3), dtype=joints_new_.dtype)
-    quats_new = torch.zeros((joints_new_.shape[0]+INTERP_AMT+PAUSE_AMT, 4), dtype=joints_new_.dtype)
+    # Build joints_new_ on DEVICE so all subsequent ops stay on-device.
+    joints_new_ = target_joint_angles.clone()  # shape (T, J), already on DEVICE
+    joints_new_[:, active_joint_ids] = joint_angles.detach()
+    num_timesteps = joints_new_.shape[0]
+    joints_new = torch.zeros((num_timesteps+INTERP_AMT+PAUSE_AMT, joints_new_.shape[1]), dtype=joints_new_.dtype, device=DEVICE)
+    trans_new = torch.zeros((num_timesteps+INTERP_AMT+PAUSE_AMT, 3), dtype=joints_new_.dtype, device=DEVICE)
+    quats_new = torch.zeros((num_timesteps+INTERP_AMT+PAUSE_AMT, 4), dtype=joints_new_.dtype, device=DEVICE)
     trans_new[INTERP_AMT + PAUSE_AMT:, :] = target_trans.clone()
     quats_new[INTERP_AMT + PAUSE_AMT:, :] = target_quats.clone()
-    joints_new[INTERP_AMT + PAUSE_AMT:, :] = joints_new_.clone()
+    joints_new[INTERP_AMT + PAUSE_AMT:, :] = joints_new_
     quats_new[:INTERP_AMT + PAUSE_AMT, 0] = 1.0  # Set the first quaternion component to 1.0
 
 
-    joints_new[:PAUSE_AMT, :] = torch.tensor(init_joint_angles).unsqueeze(0).repeat(PAUSE_AMT, 1)
+    joints_new[:PAUSE_AMT, :] = torch.tensor(init_joint_angles, device=DEVICE).unsqueeze(0).repeat(PAUSE_AMT, 1)
     joints_new[PAUSE_AMT:PAUSE_AMT+INTERP_AMT, :] = joints_new[PAUSE_AMT-1:PAUSE_AMT, :] + \
         (joints_new[PAUSE_AMT+INTERP_AMT:PAUSE_AMT+INTERP_AMT+1, :] - joints_new[PAUSE_AMT-1:PAUSE_AMT, :]) * \
-        torch.linspace(0, 1, INTERP_AMT).unsqueeze(1)
+        torch.linspace(0, 1, INTERP_AMT, device=DEVICE).unsqueeze(1)
 
     # Make left arm non functional
     joints_new[:,13:20] = 0.
@@ -343,23 +383,23 @@ for pkl_path in pkl_paths:
         trans_new[:PAUSE_AMT, :2] = pos_right_ankle[PAUSE_AMT+INTERP_AMT:PAUSE_AMT+INTERP_AMT+1, :2] - pos_right_ankle[:PAUSE_AMT, :2]
         trans_new[PAUSE_AMT:PAUSE_AMT+INTERP_AMT, :] = trans_new[PAUSE_AMT-1:PAUSE_AMT, :] + \
             (trans_new[PAUSE_AMT+INTERP_AMT:PAUSE_AMT+INTERP_AMT+1, :] - trans_new[PAUSE_AMT-1:PAUSE_AMT, :]) * \
-            torch.linspace(0, 1, INTERP_AMT).unsqueeze(1)
+            torch.linspace(0, 1, INTERP_AMT, device=DEVICE).unsqueeze(1)
     else :
         trans_new[:PAUSE_AMT, 2] -= pos_left_ankle[:PAUSE_AMT, 2]
         trans_new[:PAUSE_AMT, :2] = pos_left_ankle[PAUSE_AMT+INTERP_AMT:PAUSE_AMT+INTERP_AMT+1, :2] - pos_left_ankle[:PAUSE_AMT, :2]
         trans_new[PAUSE_AMT:PAUSE_AMT+INTERP_AMT, :] = trans_new[PAUSE_AMT-1:PAUSE_AMT, :] + \
             (trans_new[PAUSE_AMT+INTERP_AMT:PAUSE_AMT+INTERP_AMT+1, :] - trans_new[PAUSE_AMT-1:PAUSE_AMT, :]) * \
-            torch.linspace(0, 1, INTERP_AMT).unsqueeze(1)
+            torch.linspace(0, 1, INTERP_AMT, device=DEVICE).unsqueeze(1)
 
     # Interpolate quats from PAUSE_AMT to PAUSE_AMT + INTERP_AMT
 
     quats_new[PAUSE_AMT:PAUSE_AMT+INTERP_AMT, :] = slerp(
         quats_new[PAUSE_AMT-1:PAUSE_AMT, :],
         quats_new[PAUSE_AMT+INTERP_AMT:PAUSE_AMT+INTERP_AMT+1, :],
-        torch.linspace(0, 1, INTERP_AMT).unsqueeze(1)
+        torch.linspace(0, 1, INTERP_AMT, device=DEVICE).unsqueeze(1)
     )
 
-    Ts_world_root = jaxlie.SE3.from_rotation_and_translation(jaxlie.SO3(jnp.array(quats_new)),jnp.array(trans_new)) 
+    Ts_world_root = jaxlie.SE3.from_rotation_and_translation(jaxlie.SO3(jnp.array(quats_new.cpu())),jnp.array(trans_new.cpu())) 
 
     # Compute world-frame hand tip trajectory using the optimised joints_new.
     # Recompute rot_matrix from the fully-finalised quats_new (after slerp and ankle fix).
@@ -370,7 +410,7 @@ for pkl_path in pkl_paths:
     hand_rot = hand_tf_mat[:, :3, :3]                        # hand orientation in root frame (T, 3, 3)
     # Offset along hand's local x-axis (finger direction) in root frame, then to world.
     # This is the true geometric fingertip position and matches the collision cost in compute_cost.
-    local_tip = torch.tensor([HAND_TIP_OFFSET, 0., 0.])
+    local_tip = torch.tensor([HAND_TIP_OFFSET, 0., 0.], device=DEVICE)
     tip_root = hand_pos + torch.bmm(
         hand_rot, local_tip.view(1, 3, 1).expand(hand_rot.shape[0], -1, -1)
     ).squeeze(-1)
@@ -381,7 +421,8 @@ for pkl_path in pkl_paths:
         os.makedirs(SAVE_DIR)
 
     with open(SAVE_DIR + pkl_path[:-4] + "_n.pkl","wb") as f:
-        pickle.dump({"global_pose": Ts_world_root , "joints": joints_new, "global_position": trans_new, "grab_pos": motion_data["grab_pos"], "grab_idx": motion_data["grab_idx"]+PAUSE_AMT+INTERP_AMT, "hand_tip_traj": hand_tip_traj}, f)
+        # Move tensors to CPU before pickling so the saved file is device-agnostic.
+        pickle.dump({"global_pose": Ts_world_root, "joints": joints_new.cpu(), "global_position": trans_new.cpu(), "grab_pos": motion_data["grab_pos"], "grab_idx": motion_data["grab_idx"]+PAUSE_AMT+INTERP_AMT, "hand_tip_traj": hand_tip_traj}, f)
 
 if VISUALIZE:
     # Define cuboid dimensions (width, height, depth)
@@ -392,7 +433,7 @@ if VISUALIZE:
 
     # Optionally, apply a transformation (e.g., move it to x=1, y=0.5, z=0)
     transform = np.eye(4)
-    transform[:3, 3] = [grab_pos[0]+0.5+OFFSET_X, 0., OFFSET_Z/2.]
+    transform[:3, 3] = [grab_pos[0].item()+0.5+OFFSET_X, 0., OFFSET_Z/2.]
     cuboid.apply_transform(transform)
 
     # Add the cuboid to Viser
@@ -410,4 +451,4 @@ if VISUALIZE:
             tstep = timestep_slider.value
             base_frame_new.wxyz = np.array(Ts_world_root.wxyz_xyz[tstep][:4])
             base_frame_new.position = np.array(Ts_world_root.wxyz_xyz[tstep][4:]) + np.array([0, 0, 0.035])  # Adjust for the height of the robot's base
-            urdf_vis_new.update_cfg(np.array(joints_new[tstep]))
+            urdf_vis_new.update_cfg(np.array(joints_new[tstep].cpu()))
