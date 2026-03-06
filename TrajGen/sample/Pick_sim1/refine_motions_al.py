@@ -144,7 +144,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # [ABS] Forearm capsule collision with grab obstacle — hard constraint via AL
             wrist_rot_world = torch.bmm(rot_matrix, tf.get_matrix()[:, :3, :3])  # (N, 3, 3) world-frame wrist orientation
             g_cap_wrist = capsule_collision_cost(
-                transformed_keypts, wrist_rot_world, segment_length=0.25, segment_thickness=0.05,
+                transformed_keypts, wrist_rot_world, segment_length=0.25, segment_thickness=0.03,
                 collision_site=grab_pos
             )
             cost2[:grab_idx+20] += al_penalty(g_cap_wrist)
@@ -182,7 +182,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # [ABS] Hand capsule collision with grab obstacle — hard constraint via AL
             hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
             g_cap_hand = capsule_collision_cost(
-                transformed_hand_orig, hand_rot_world, segment_length=HAND_TIP_OFFSET, segment_thickness=0.04,
+                transformed_hand_orig, hand_rot_world, segment_length=HAND_TIP_OFFSET, segment_thickness=0.05,
                 collision_site=grab_pos
             )
             cost2[:grab_idx+20] += al_penalty(g_cap_hand)
