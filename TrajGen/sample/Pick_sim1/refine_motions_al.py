@@ -48,11 +48,16 @@ AL_OUTER_ITERS    = 40        # max AL outer iterations
 AL_INNER_ITERS    = 300       # Adam steps per outer iteration
 
 # Written by compute_cost every forward pass; read by the AL outer loop.
-_last_g_t: torch.Tensor | None = None
+_last_g_t:         torch.Tensor | None = None
+_last_g_cap_wrist: torch.Tensor | None = None
+_last_g_cap_hand:  torch.Tensor | None = None
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
-                 lambda_table: torch.Tensor | None = None, rho_al: float = AL_RHO_INIT):
-    global _last_g_t
+                 lambda_table: torch.Tensor | None = None,
+                 lambda_wrist: torch.Tensor | None = None,
+                 lambda_hand:  torch.Tensor | None = None,
+                 rho_al: float = AL_RHO_INIT):
+    global _last_g_t, _last_g_cap_wrist, _last_g_cap_hand
     # L2 cost to target
     l2_cost = 0.*torch.nn.functional.mse_loss(joint_angles, target_joint_angles[:, active_joint_ids])
     
@@ -93,11 +98,11 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             return torch.relu(r_total - d_xy)                      # (N,) penetration depth
 
-        def al_penalty(g):
+        def al_penalty(g, lam_vec=None):
             """Augmented-Lagrangian penalty for a hard constraint g >= 0.
-            lambda_table is sized to the full trajectory; auto-slice to len(g)."""
-            if lambda_table is not None:
-                lam = lambda_table[:len(g)]
+            lam_vec: dedicated dual variable tensor; auto-sliced to len(g)."""
+            if lam_vec is not None:
+                lam = lam_vec[:len(g)]
                 return lam * g + (rho_al / 2.0) * g ** 2
             return (rho_al / 2.0) * g ** 2
 
@@ -149,14 +154,15 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 transformed_keypts, wrist_rot_world, segment_length=0.25, segment_thickness=0.03,
                 collision_site=grab_pos
             )
-            cost2[:grab_idx+20] += al_penalty(g_cap_wrist[:grab_idx+20])
+            _last_g_cap_wrist = g_cap_wrist[:grab_idx+20].detach()
+            cost2[:grab_idx+20] += al_penalty(g_cap_wrist[:grab_idx+20], lam_vec=lambda_wrist)
 
             # POST-APPROACH COSTS
 
             cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[grab_idx:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
 
             transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z, device=DEVICE)) # freeze reference height
-            #cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
+            cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
 
         elif i == 38: # right hand link (red dot in viser)
             rot_mat = tf.get_matrix()[:,:3,:3]
@@ -187,7 +193,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 transformed_hand_orig, hand_rot_world, segment_length=HAND_TIP_OFFSET, segment_thickness=0.05,
                 collision_site=grab_pos
             )
-            cost2[:grab_idx+20] += al_penalty(g_cap_hand[:grab_idx+20])
+            _last_g_cap_hand = g_cap_hand[:grab_idx+20].detach()
+            cost2[:grab_idx+20] += al_penalty(g_cap_hand[:grab_idx+20], lam_vec=lambda_hand)
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
@@ -265,7 +272,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # [ABS] Per-frame table collision — hard constraint via AL (g_t >= 0)
             g_t = table_collision_cost(transformed_tip, transformed_hand_orig, grab_idx)
             _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy) for hard optimization
-            cost2[:grab_idx] += al_penalty(g_t)
+            cost2[:grab_idx] += al_penalty(g_t, lam_vec=lambda_table)
 
 
             #[ABS] Penalize rate of change of kinetic energy (v * |Δv| ∝ d(KE)/dt) in the approach window
@@ -341,33 +348,45 @@ for pkl_path in pkl_paths:
     # DEVICE (GPU when available) for full CUDA parallelism.
     # (All tensors are already on DEVICE from load time above.)
     # -----------------------------------------------------------------------
-    lambda_table = torch.zeros(target_joint_angles.shape[0], device=DEVICE)   # dual variables (one per frame, full trajectory)
+    lambda_table = torch.zeros(grab_idx,          device=DEVICE)  # table surface dual vars (grab_idx frames)
+    lambda_wrist  = torch.zeros(grab_idx + 20,    device=DEVICE)  # wrist capsule dual vars
+    lambda_hand   = torch.zeros(grab_idx + 20,    device=DEVICE)  # hand capsule dual vars
     rho_al = AL_RHO_INIT
 
     converged = False
     for outer_iter in range(AL_OUTER_ITERS):
-        # ---- inner minimisation with fixed (lambda_table, rho_al) ----
+        # ---- inner minimisation with fixed dual vars and rho_al ----
         n_inner = AL_INNER_ITERS
         for i in range(n_inner):
             optimizer.zero_grad()
             cost = compute_cost(joint_angles, trans, quats,
-                                lambda_table=lambda_table, rho_al=rho_al)
+                                lambda_table=lambda_table,
+                                lambda_wrist=lambda_wrist,
+                                lambda_hand=lambda_hand,
+                                rho_al=rho_al)
             cost.backward()
             optimizer.step()
 
-        # ---- read last constraint violation written by compute_cost ----
-        g_curr = _last_g_t  # shape (grab_idx,), on DEVICE
+        # ---- read last constraint violations written by compute_cost ----
+        g_curr       = _last_g_t          # shape (grab_idx,)
+        g_curr_wrist = _last_g_cap_wrist  # shape (grab_idx+20,)
+        g_curr_hand  = _last_g_cap_hand   # shape (grab_idx+20,)
         if g_curr is None:
             break
 
         # ---- dual (multiplier) update: λ ← max(0, λ + ρ·g) ----
-        # g_curr has shape (grab_idx,); only update the corresponding slice of lambda_table.
         with torch.no_grad():
-            n_g = len(g_curr)
-            lambda_table[:n_g] = torch.clamp(lambda_table[:n_g] + rho_al * g_curr, min=0.0)
+            lambda_table = torch.clamp(lambda_table + rho_al * g_curr, min=0.0)
+            if g_curr_wrist is not None:
+                lambda_wrist = torch.clamp(lambda_wrist + rho_al * g_curr_wrist, min=0.0)
+            if g_curr_hand is not None:
+                lambda_hand  = torch.clamp(lambda_hand  + rho_al * g_curr_hand,  min=0.0)
 
-        max_viol = float(g_curr.max())
-        print(f"[AL outer={outer_iter:02d}] max_table_viol={max_viol:.2e} m  "
+        max_viol       = float(g_curr.max())
+        max_viol_wrist = float(g_curr_wrist.max()) if g_curr_wrist is not None else 0.0
+        max_viol_hand  = float(g_curr_hand.max())  if g_curr_hand  is not None else 0.0
+        print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m  "
+              f"wrist_cap={max_viol_wrist:.2e}m  hand_cap={max_viol_hand:.2e}m  "
               f"rho={rho_al:.1e}  cost={cost.item():.4f}")
 
         if max_viol < TABLE_CONSTRAINT_TOL:
