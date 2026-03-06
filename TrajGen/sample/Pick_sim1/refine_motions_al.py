@@ -147,7 +147,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 transformed_keypts, wrist_rot_world, segment_length=0.25, segment_thickness=0.03,
                 collision_site=grab_pos
             )
-            cost2[:grab_idx+20] += al_penalty(g_cap_wrist)
+            cost2[:grab_idx] += al_penalty(g_cap_wrist[:grab_idx])
 
             # POST-APPROACH COSTS
 
