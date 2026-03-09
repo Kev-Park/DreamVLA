@@ -132,7 +132,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # [ABS] Penalize wrist speed changes (acceleration) and high speed relative to own trajectory
             cost2[1:-1] += torch.abs(rel_dists[1:] - rel_dists[:-1])**2  # smoothness of own speed
             cost2[1:] += torch.abs(rel_dists)**2                          # L1 speed magnitude
-            cost2[1:] += 10*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
+            cost2[1:] += 100*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
 
             # PRE-APPROACH COSTS
 
