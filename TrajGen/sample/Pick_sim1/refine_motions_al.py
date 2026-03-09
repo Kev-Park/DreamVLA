@@ -223,8 +223,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 )
             else:
                 g_cap_wrist = torch.zeros(transformed_hand_orig.shape[0], device=DEVICE)
-            _last_g_cap_wrist = g_cap_wrist.detach()
-            cost2 += al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
+            _last_g_cap_wrist = g_cap_wrist[:grab_idx].detach()
+            cost2[:grab_idx] += al_penalty(g_cap_wrist[:grab_idx], lam_vec=lambda_wrist)
 
             # [ABS] Hand capsule collision with grab obstacle — hard constraint via AL
             hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
@@ -232,8 +232,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 transformed_hand_orig, hand_rot_world, segment_length=0.15, segment_thickness=0.04,
                 collision_site=capsule_obs_pos
             )
-            _last_g_cap_hand = g_cap_hand.detach()
-            cost2 += al_penalty(g_cap_hand, lam_vec=lambda_hand)
+            _last_g_cap_hand = g_cap_hand[:grab_idx].detach()
+            cost2[:grab_idx] += al_penalty(g_cap_hand[:grab_idx], lam_vec=lambda_hand)
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
@@ -396,10 +396,9 @@ for pkl_path in pkl_paths:
     # DEVICE (GPU when available) for full CUDA parallelism.
     # (All tensors are already on DEVICE from load time above.)
     # -----------------------------------------------------------------------
-    N_total = target_joint_angles.shape[0]
     lambda_table = torch.zeros(grab_idx, device=DEVICE)   # table surface dual vars (grab_idx frames)
-    lambda_wrist  = torch.zeros(N_total,  device=DEVICE)  # wrist capsule dual vars (all frames)
-    lambda_hand   = torch.zeros(N_total,  device=DEVICE)  # hand capsule dual vars (all frames)
+    lambda_wrist  = torch.zeros(grab_idx, device=DEVICE)  # wrist capsule dual vars (grab_idx frames)
+    lambda_hand   = torch.zeros(grab_idx, device=DEVICE)  # hand capsule dual vars (grab_idx frames)
     rho_al = AL_RHO_INIT
 
     converged = False
