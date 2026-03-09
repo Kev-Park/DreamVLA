@@ -533,12 +533,40 @@ for pkl_path in pkl_paths:
     hand_tip_traj = torch.bmm(tip_root.unsqueeze(1), rot_matrix_final.transpose(2, 1))[:, 0] + trans_new
     hand_tip_traj = hand_tip_traj.detach().cpu().numpy()     # (T, 3)
 
+    # --- Debug: optimizer-view arm trajectories (0.035 z-offset already baked in) ---
+    # These let visualize_motions_pick.py overlay the optimizer's coordinate frame directly
+    # on the viewer scene so any position mismatch is immediately visible.
+    _dbg_offset = torch.tensor([0., 0., 0.035], device=DEVICE)
+    tf_wrist_dbg = fk_results["right_wrist_pitch_link"]
+    wrist_root_dbg = tf_wrist_dbg.get_matrix()[:, :3, 3]
+    debug_wrist_world_traj = (
+        torch.bmm(wrist_root_dbg.unsqueeze(1), rot_matrix_final.transpose(2, 1))[:, 0]
+        + trans_new + _dbg_offset
+    ).detach().cpu().numpy()   # (T, 3)  — world frame, 0.035 baked in
+
+    hand_orig_root_dbg = fk_results["right_rubber_hand"].get_matrix()[:, :3, 3]
+    debug_hand_world_traj = (
+        torch.bmm(hand_orig_root_dbg.unsqueeze(1), rot_matrix_final.transpose(2, 1))[:, 0]
+        + trans_new + _dbg_offset
+    ).detach().cpu().numpy()   # (T, 3)  — world frame, 0.035 baked in
+
+    debug_capsule_obs_pos = capsule_obs_pos.detach().cpu().numpy()  # (3,) optimizer obstacle centre
+    print(f"[DEBUG pkl] capsule_obs_pos = {debug_capsule_obs_pos.round(3)}")
+    print(f"[DEBUG pkl] wrist world pos at opt-grab_idx ({motion_data['grab_idx']}) = "
+          f"{debug_wrist_world_traj[motion_data['grab_idx']].round(3)}")
+    print(f"[DEBUG pkl] grab_pos (table x_edge ref) = {np.array(motion_data['grab_pos']).round(3)}")
+
     if not os.path.exists(SAVE_DIR):
         os.makedirs(SAVE_DIR)
 
     with open(SAVE_DIR + pkl_path[:-4] + "_n.pkl","wb") as f:
         # Move tensors to CPU before pickling so the saved file is device-agnostic.
-        pickle.dump({"global_pose": Ts_world_root, "joints": joints_new.cpu(), "global_position": trans_new.cpu(), "grab_pos": motion_data["grab_pos"], "grab_idx": motion_data["grab_idx"]+PAUSE_AMT+INTERP_AMT, "hand_tip_traj": hand_tip_traj}, f)
+        pickle.dump({"global_pose": Ts_world_root, "joints": joints_new.cpu(), "global_position": trans_new.cpu(),
+                     "grab_pos": motion_data["grab_pos"], "grab_idx": motion_data["grab_idx"]+PAUSE_AMT+INTERP_AMT,
+                     "hand_tip_traj": hand_tip_traj,
+                     "debug_capsule_obs_pos": debug_capsule_obs_pos,
+                     "debug_wrist_world_traj": debug_wrist_world_traj,
+                     "debug_hand_world_traj": debug_hand_world_traj}, f)
 
 if VISUALIZE:
     # Define cuboid dimensions (width, height, depth)
