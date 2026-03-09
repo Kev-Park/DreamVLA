@@ -134,6 +134,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[1:] += torch.abs(rel_dists)**2                          # L1 speed magnitude
             cost2[1:] += 100*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
 
+            # [ABS] 3D wrist jerk penalty — penalises rapid acceleration changes (vibration/oscillation)
+            # vel[t] = pos[t+1]-pos[t] (N-1, 3), accel[t] = vel[t+1]-vel[t] (N-2, 3), jerk[t] = accel[t+1]-accel[t] (N-3, 3)
+            wrist_vel   = transformed_keypts[1:] - transformed_keypts[:-1]   # (N-1, 3)
+            wrist_accel = wrist_vel[1:] - wrist_vel[:-1]                     # (N-2, 3)
+            wrist_jerk  = wrist_accel[1:] - wrist_accel[:-1]                 # (N-3, 3)
+            cost2[2:-1] += 50. * torch.sum(wrist_jerk ** 2, dim=1)
+
             # PRE-APPROACH COSTS
 
             # Use reference tracking costs in the initial approach (good motion sentiment reference)
@@ -223,8 +230,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 )
             else:
                 g_cap_wrist = torch.zeros(transformed_hand_orig.shape[0], device=DEVICE)
-            _last_g_cap_wrist = g_cap_wrist[:grab_idx-4].detach()
-            cost2[:grab_idx-4] += al_penalty(g_cap_wrist[:grab_idx-4], lam_vec=lambda_wrist)
+            _last_g_cap_wrist = g_cap_wrist[:grab_idx].detach()
+            cost2[:grab_idx] += al_penalty(g_cap_wrist[:grab_idx], lam_vec=lambda_wrist)
 
             # [ABS] Hand capsule collision with grab obstacle — hard constraint via AL
             hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
@@ -232,8 +239,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 transformed_hand_orig, hand_rot_world, segment_length=0.15, segment_thickness=0.04,
                 collision_site=capsule_obs_pos
             )
-            _last_g_cap_hand = g_cap_hand[:grab_idx-4].detach()
-            cost2[:grab_idx-4] += al_penalty(g_cap_hand[:grab_idx-4], lam_vec=lambda_hand)
+            _last_g_cap_hand = g_cap_hand[:grab_idx].detach()
+            cost2[:grab_idx] += al_penalty(g_cap_hand[:grab_idx], lam_vec=lambda_hand)
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
@@ -397,8 +404,8 @@ for pkl_path in pkl_paths:
     # (All tensors are already on DEVICE from load time above.)
     # -----------------------------------------------------------------------
     lambda_table = torch.zeros(grab_idx, device=DEVICE)   # table surface dual vars (grab_idx frames)
-    lambda_wrist  = torch.zeros(grab_idx-4, device=DEVICE)  # wrist capsule dual vars (grab_idx-4 frames)
-    lambda_hand   = torch.zeros(grab_idx-4, device=DEVICE)  # hand capsule dual vars (grab_idx-4 frames)
+    lambda_wrist  = torch.zeros(grab_idx, device=DEVICE)  # wrist capsule dual vars (grab_idx frames)
+    lambda_hand   = torch.zeros(grab_idx, device=DEVICE)  # hand capsule dual vars (grab_idx frames)
     rho_al = AL_RHO_INIT
 
     converged = False
