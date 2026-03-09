@@ -201,7 +201,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # [ABS] Hand capsule collision with grab obstacle — hard constraint via AL
             hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
             g_cap_hand = capsule_collision_cost(
-                transformed_hand_orig, hand_rot_world, segment_length=HAND_TIP_OFFSET, segment_thickness=0.05,
+                transformed_hand_orig, hand_rot_world, segment_length=0.15, segment_thickness=0.04,
                 collision_site=grab_pos
             )
             _last_g_cap_hand = g_cap_hand.detach()
