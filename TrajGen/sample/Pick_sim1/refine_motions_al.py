@@ -122,8 +122,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3]
 
             cost2 += 0.*torch.mean(torch.norm(pos[1:] - pos[:-1], dim=1))
-            transformed_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
-            transformed_keypts_ref = torch.bmm(pos_ref.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
+            trans_with_z = trans + torch.tensor([0., 0., 0.035], device=trans.device)
+            transformed_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans_with_z
+            transformed_keypts_ref = torch.bmm(pos_ref.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans_with_z
             
             rel_dists = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)
 
@@ -160,13 +161,11 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # INTER-APPROACH COSTS
 
             # [ABS] Forearm capsule collision with grab obstacle — hard constraint via AL
-            wrist_rot_world = torch.bmm(rot_matrix, tf.get_matrix()[:, :3, :3])  # (N, 3, 3) world-frame wrist orientation
-            g_cap_wrist = capsule_collision_cost(
-                transformed_keypts, wrist_rot_world, segment_length=0.25, segment_thickness=0.03,
-                collision_site=capsule_obs_pos
-            )
-            _last_g_cap_wrist = g_cap_wrist.detach()
-            cost2 += al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
+            # The forearm capsule runs from the wrist origin (link 36) toward the hand origin (link 38).
+            # We resolve the axis lazily inside compute_cost by storing wrist pos and computing
+            # the direction to the hand link when i==38.  For the wrist pass we just stash the
+            # transformed wrist position so the hand pass (i==38) can pick it up.
+            _wrist_pos_world = transformed_keypts  # (N, 3) — used by i==38 for forearm axis
 
             # POST-APPROACH COSTS
 
@@ -191,12 +190,41 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             hand_rot = hand_tf[:, :3, :3]               # hand local rotation (N, 3, 3)
             local_tip = torch.tensor([HAND_TIP_OFFSET, 0., 0.], device=DEVICE)
             tip_pos = hand_pos + torch.bmm(hand_rot, local_tip.view(1, 3, 1).expand(hand_rot.shape[0], -1, -1)).squeeze(-1)
-            transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans  # final hand position
+            trans_with_z = trans + torch.tensor([0., 0., 0.035], device=trans.device)
+            transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z  # final hand position
             # Hand joint origin in world frame — forms the other edge of the swept quad
-            transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans
+            transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
 
 
             # INTER-APPROACH COSTS
+
+            # [ABS] Forearm capsule collision — axis runs from wrist origin (link 36) toward hand
+            # origin (link 38), matching the visual in visualize_motions_pick.py.  We use the
+            # stashed _wrist_pos_world from the i==36 branch (already includes the 0.035 offset).
+            if '_wrist_pos_world' in dir():
+                forearm_dir_world = transformed_hand_orig - _wrist_pos_world  # (N, 3)
+                forearm_dist = torch.norm(forearm_dir_world, dim=1, keepdim=True).clamp(min=1e-8)  # (N, 1)
+                forearm_axis_world = forearm_dir_world / forearm_dist          # (N, 3) unit vector
+                # Build a rotation-matrix-like (N, 3, 3) where the first column is our axis.
+                forearm_rot_world = torch.zeros(forearm_axis_world.shape[0], 3, 3, device=DEVICE)
+                forearm_rot_world[:, :, 0] = forearm_axis_world
+                # Fill remaining columns with any orthonormal basis (only col-0 is used by capsule_collision_cost)
+                perp = torch.zeros_like(forearm_axis_world)
+                perp[:, 1] = 1.0
+                dot = (forearm_axis_world * perp).sum(dim=1, keepdim=True)
+                perp = perp - dot * forearm_axis_world
+                perp_norm = torch.norm(perp, dim=1, keepdim=True).clamp(min=1e-8)
+                perp = perp / perp_norm
+                forearm_rot_world[:, :, 1] = perp
+                forearm_rot_world[:, :, 2] = torch.linalg.cross(forearm_axis_world, perp)
+                g_cap_wrist = capsule_collision_cost(
+                    _wrist_pos_world, forearm_rot_world, segment_length=0.25, segment_thickness=0.03,
+                    collision_site=capsule_obs_pos
+                )
+            else:
+                g_cap_wrist = torch.zeros(transformed_hand_orig.shape[0], device=DEVICE)
+            _last_g_cap_wrist = g_cap_wrist.detach()
+            cost2 += al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
 
             # [ABS] Hand capsule collision with grab obstacle — hard constraint via AL
             hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
@@ -336,7 +364,7 @@ for pkl_path in pkl_paths:
     fk_results_ref = chain.forward_kinematics(q_dict)
     # Initial guess for joint angles (can be zeros or random)
     joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone())  # Only optimize active joints
-    trans = target_trans.clone()  # Translation offset
+    trans = target_trans.clone()  # Translation offset (0.035 z added inside compute_cost)
     quats = target_quats.clone()  # Quaternion offset
     optimizer = optim.Adam([joint_angles], lr=0.001)
     grab_idx = motion_data["grab_idx"]
@@ -346,7 +374,10 @@ for pkl_path in pkl_paths:
     pos = tf.get_matrix()[:,:3,3]
     rot_matrix = quaternion_to_matrix(quats)
     # import pdb; pdb.set_trace()
-    wrist_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
+    # Apply the same 0.035 z-offset used inside compute_cost so capsule_obs_pos matches
+    # the world-frame positions that the collision cost will actually operate on.
+    trans_with_z_setup = trans + torch.tensor([0., 0., 0.035], device=trans.device)
+    wrist_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans_with_z_setup
     grab_pos = wrist_keypts[grab_idx].clone()
     grab_pos[0] += WRIST_TO_COLLISION
     # Capsule obstacle: place along wrist's actual world-frame forward (local x-axis) at grab_idx,
@@ -376,6 +407,10 @@ for pkl_path in pkl_paths:
     converged = False
     for outer_iter in range(AL_OUTER_ITERS):
         # ---- inner minimisation with fixed dual vars and rho_al ----
+        # Re-create Adam so stale first/second-moment estimates from the previous
+        # (lighter-penalty) outer iteration don't corrupt the step direction now
+        # that rho_al is much larger.
+        optimizer = optim.Adam([joint_angles], lr=0.001)
         n_inner = AL_INNER_ITERS
         for i in range(n_inner):
             optimizer.zero_grad()
