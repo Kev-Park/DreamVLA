@@ -166,16 +166,6 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
     grab_idx = G1_DATA.get("grab_idx", None)
     hand_tip_traj = onp.array(G1_DATA["hand_tip_traj"]) if "hand_tip_traj" in G1_DATA else None
 
-    # Debug overlay fields (only present in Pick_sim2 pkls produced by refine_motions_al.py)
-    debug_capsule_obs_pos  = onp.array(G1_DATA["debug_capsule_obs_pos"])  if "debug_capsule_obs_pos"  in G1_DATA else None
-    debug_wrist_world_traj = onp.array(G1_DATA["debug_wrist_world_traj"]) if "debug_wrist_world_traj" in G1_DATA else None
-    debug_hand_world_traj  = onp.array(G1_DATA["debug_hand_world_traj"])  if "debug_hand_world_traj"  in G1_DATA else None
-    if debug_capsule_obs_pos is not None:
-        print(f"[DEBUG] optimizer capsule_obs_pos  = {debug_capsule_obs_pos.round(3)}")
-        print(f"[DEBUG] viewer    grab_pos (red sph) = {grab_pos.round(3)}")
-        print(f"[DEBUG] XY offset (capsule - grab_pos): {(debug_capsule_obs_pos[:2] - grab_pos[:2]).round(3)} "
-              f"(should both sit at the cylinder axis)")
-
     num_timesteps = joints.shape[0]
 
     heightmap = pk.collision.Heightmap(
@@ -259,25 +249,6 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
         cyl.visual.face_colors = [255, 80, 80, 80]  # translucent red
         server.scene.add_mesh_trimesh("/collision_cylinder", cyl)
 
-    # Debug: optimizer's obstacle centre — cyan sphere + separate magenta cylinder at its XY
-    # If the cyan sphere/cylinder doesn't sit on top of the red one, the obstacle is misplaced.
-    if debug_capsule_obs_pos is not None:
-        server.scene.add_icosphere(
-            "/debug_capsule_obs",
-            radius=0.04,
-            color=(0, 220, 220),   # cyan
-            position=debug_capsule_obs_pos.astype(onp.float64),
-        )
-        if show_segments:
-            dbg_cyl = trimesh.creation.cylinder(radius=collision_cylinder_radius, height=3.0, sections=32)
-            dbg_cyl_tf = onp.eye(4)
-            dbg_cyl_tf[:3, 3] = [debug_capsule_obs_pos[0], debug_capsule_obs_pos[1], 1.5]
-            dbg_cyl.apply_transform(dbg_cyl_tf)
-            dbg_cyl.visual.face_colors = [0, 220, 220, 80]  # translucent cyan
-            server.scene.add_mesh_trimesh("/debug_collision_cylinder", dbg_cyl)
-        print(f"  [DEBUG] Cyan sphere = optimizer capsule_obs_pos.  "
-              f"Red sphere = grab_pos from pkl.  They should overlap.")
-
     # Grab point sphere
     grab_sphere = None
     if onp.any(grab_pos != 0):
@@ -322,33 +293,8 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
         else:
             hand_tip_sphere = None
             print("  No hand_tip_traj in pkl — skipping hand tip sphere (Pick_sim1 or old pkl)")
-
-        # Debug spheres — optimizer's view of wrist/hand (yellow = wrist, orange = hand origin)
-        # These should perfectly overlap the blue/red spheres above.
-        # Any gap = the optimizer is working with wrong positions.
-        if debug_wrist_world_traj is not None:
-            debug_wrist_sphere = server.scene.add_icosphere(
-                "/debug_wrist",
-                radius=0.025,
-                color=(255, 255, 0),   # yellow
-                position=debug_wrist_world_traj[0],
-            )
-            print("  [DEBUG] Yellow sphere = optimizer wrist pos (should overlap blue sphere)")
-        else:
-            debug_wrist_sphere = None
-        if debug_hand_world_traj is not None:
-            debug_hand_sphere = server.scene.add_icosphere(
-                "/debug_hand",
-                radius=0.025,
-                color=(255, 140, 0),   # orange
-                position=debug_hand_world_traj[0],
-            )
-            print("  [DEBUG] Orange sphere = optimizer hand-origin pos (should overlap red sphere)")
-        else:
-            debug_hand_sphere = None
     else:
         hand_sphere = wrist_sphere = hand_tip_sphere = None
-        debug_wrist_sphere = debug_hand_sphere = None
         if hand_tip_traj is not None:
             print(f"  Hand tip trajectory loaded: {hand_tip_traj.shape[0]} frames (segment mode)")
         else:
@@ -371,11 +317,6 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
                 wrist_sphere.position = global_keypts[tstep, 36, :]      # link 36 = right_wrist_pitch_link
                 if hand_tip_sphere is not None:
                     hand_tip_sphere.position = hand_tip_traj[min(tstep, len(hand_tip_traj) - 1)] + onp.array([0, 0, 0.035])
-                # Debug: optimizer-view positions (0.035 already baked in — do NOT add again)
-                if debug_wrist_sphere is not None:
-                    debug_wrist_sphere.position = debug_wrist_world_traj[min(tstep, len(debug_wrist_world_traj) - 1)]
-                if debug_hand_sphere is not None:
-                    debug_hand_sphere.position = debug_hand_world_traj[min(tstep, len(debug_hand_world_traj) - 1)]
             else:
                 # Segment mode — draw forearm and hand as trimesh cylinders
                 wrist_pt = global_keypts[tstep, 36, :]
