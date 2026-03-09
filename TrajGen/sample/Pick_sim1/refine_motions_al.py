@@ -379,15 +379,13 @@ for pkl_path in pkl_paths:
     trans_with_z_setup = trans + torch.tensor([0., 0., 0.035], device=trans.device)
     wrist_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans_with_z_setup
     grab_pos = wrist_keypts[grab_idx].clone()
-    grab_pos[0] += WRIST_TO_COLLISION
-    # Capsule obstacle: place along wrist's actual world-frame forward (local x-axis) at grab_idx,
-    # not global +X. grab_pos keeps its global-X definition for the table cost (x_edge).
-    wrist_rot_at_grab = torch.bmm(
-        rot_matrix[grab_idx:grab_idx+1],
-        tf.get_matrix()[grab_idx:grab_idx+1, :3, :3]
-    ).squeeze(0)                                       # (3, 3) world-frame wrist orientation
-    wrist_forward = wrist_rot_at_grab[:, 0]            # (3,) local x-axis in world frame
-    capsule_obs_pos = wrist_keypts[grab_idx] + WRIST_TO_COLLISION * wrist_forward
+    grab_pos[0] += WRIST_TO_COLLISION  # kept for table_collision_cost x_edge
+
+    # Capsule obstacle: use the ground-truth object position from the pkl, which is exactly
+    # where visualize_motions_pick.py places its collision cylinder.
+    # Only XY is used by capsule_collision_cost (infinite vertical cylinder), but we keep
+    # the full 3D point so the debug pkl renders the cyan sphere at the right height too.
+    capsule_obs_pos = torch.tensor(np.array(motion_data['grab_pos']), dtype=torch.float32).to(DEVICE)
     ref_dists = torch.norm(wrist_keypts[1:] - wrist_keypts[:-1], dim=1)
 
     # -----------------------------------------------------------------------
