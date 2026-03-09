@@ -136,7 +136,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # PRE-APPROACH COSTS
 
             # Use reference tracking costs in the initial approach (good motion sentiment reference)
-            ref = False
+            ref = True
             if ref:
                 # Jerkiness penalty relative to references
                 max_ref_dists = torch.max(ref_dists) # get max speed for normalizing
@@ -163,7 +163,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             wrist_rot_world = torch.bmm(rot_matrix, tf.get_matrix()[:, :3, :3])  # (N, 3, 3) world-frame wrist orientation
             g_cap_wrist = capsule_collision_cost(
                 transformed_keypts, wrist_rot_world, segment_length=0.25, segment_thickness=0.03,
-                collision_site=grab_pos
+                collision_site=capsule_obs_pos
             )
             _last_g_cap_wrist = g_cap_wrist.detach()
             cost2 += al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
@@ -202,7 +202,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
             g_cap_hand = capsule_collision_cost(
                 transformed_hand_orig, hand_rot_world, segment_length=0.15, segment_thickness=0.04,
-                collision_site=grab_pos
+                collision_site=capsule_obs_pos
             )
             _last_g_cap_hand = g_cap_hand.detach()
             cost2 += al_penalty(g_cap_hand, lam_vec=lambda_hand)
@@ -349,6 +349,14 @@ for pkl_path in pkl_paths:
     wrist_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans
     grab_pos = wrist_keypts[grab_idx].clone()
     grab_pos[0] += WRIST_TO_COLLISION
+    # Capsule obstacle: place along wrist's actual world-frame forward (local x-axis) at grab_idx,
+    # not global +X. grab_pos keeps its global-X definition for the table cost (x_edge).
+    wrist_rot_at_grab = torch.bmm(
+        rot_matrix[grab_idx:grab_idx+1],
+        tf.get_matrix()[grab_idx:grab_idx+1, :3, :3]
+    ).squeeze(0)                                       # (3, 3) world-frame wrist orientation
+    wrist_forward = wrist_rot_at_grab[:, 0]            # (3,) local x-axis in world frame
+    capsule_obs_pos = wrist_keypts[grab_idx] + WRIST_TO_COLLISION * wrist_forward
     ref_dists = torch.norm(wrist_keypts[1:] - wrist_keypts[:-1], dim=1)
 
     # -----------------------------------------------------------------------
@@ -401,8 +409,10 @@ for pkl_path in pkl_paths:
               f"wrist_cap={max_viol_wrist:.2e}m  hand_cap={max_viol_hand:.2e}m  "
               f"rho={rho_al:.1e}  cost={cost.item():.4f}")
 
-        if max_viol < TABLE_CONSTRAINT_TOL:
-            print(f"  -> Table constraint satisfied to {TABLE_CONSTRAINT_TOL:.0e} m. Done.")
+        if (max_viol < TABLE_CONSTRAINT_TOL and
+                max_viol_wrist < TABLE_CONSTRAINT_TOL and
+                max_viol_hand  < TABLE_CONSTRAINT_TOL):
+            print(f"  -> All constraints satisfied to {TABLE_CONSTRAINT_TOL:.0e} m. Done.")
             converged = True
             break
 
