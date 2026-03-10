@@ -131,7 +131,6 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # GENERAL COSTS
             # [ABS] Penalize wrist speed changes (acceleration) and high speed relative to own trajectory
             cost2[1:-1] += torch.abs(rel_dists[1:] - rel_dists[:-1])**2  # smoothness of own speed
-            cost2[1:] += torch.abs(rel_dists)**2                          # L1 speed magnitude
             cost2[1:] += 100*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
 
             # [ABS] 3D wrist jerk penalty — penalises rapid acceleration changes (vibration/oscillation)
@@ -140,6 +139,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             wrist_accel = wrist_vel[1:] - wrist_vel[:-1]                     # (N-2, 3)
             wrist_jerk  = wrist_accel[1:] - wrist_accel[:-1]                 # (N-3, 3)
             cost2[2:-1] += 50. * torch.sum(wrist_jerk ** 2, dim=1)
+
 
             # PRE-APPROACH COSTS
 
@@ -156,6 +156,19 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 cost2[1:grab_idx+2] += torch.abs(vals[1:] - vals[:-1])  # get difference in velocity errors (acceleration?)
                 cost2[:grab_idx+2] += torch.abs(vals)                     # velocity error
                 cost2[:grab_idx+2] += 10*vals**2                          # L2 speed deviation (dominates large errors)
+
+
+            # RECOMMENDED COSTS
+            # [REF] 1-step and 2-step displacement matching — penalise deviation of step size from reference
+            # 1-step: distance t→t+1 (rel_dists already computed above for opt; compute ref equivalent)
+            ref_dists_1 = torch.norm(transformed_keypts_ref[1:] - transformed_keypts_ref[:-1], dim=1)  # (N-1,)
+            cost2[1:] += 10*(rel_dists - ref_dists_1) ** 2
+
+            # 2-step: distance t→t+2 (captures stride-level speed, not just frame-to-frame)
+            opt_dists_2 = torch.norm(transformed_keypts[2:] - transformed_keypts[:-2], dim=1)           # (N-2,)
+            ref_dists_2 = torch.norm(transformed_keypts_ref[2:] - transformed_keypts_ref[:-2], dim=1)   # (N-2,)
+            cost2[2:] += (opt_dists_2 - ref_dists_2) ** 2
+
 
             # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
             rest_pose = torch.tensor(init_joint_angles, device=DEVICE)[active_joint_ids]
