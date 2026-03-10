@@ -159,15 +159,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
 
             # RECOMMENDED COSTS
-            # [REF] 1-step and 2-step displacement matching — penalise deviation of step size from reference
-            # 1-step: distance t→t+1 (rel_dists already computed above for opt; compute ref equivalent)
-            ref_dists_1 = torch.norm(transformed_keypts_ref[1:] - transformed_keypts_ref[:-1], dim=1)  # (N-1,)
-            cost2[1:] += 10*(rel_dists - ref_dists_1) ** 2
+            # [REF] 1-step and 2-step velocity matching — penalise deviation of velocity vector from reference
+            # 1-step: velocity t→t+1 (full 3D vector, preserves direction)
+            opt_vel_1 = transformed_keypts[1:] - transformed_keypts[:-1]      # (N-1, 3)
+            ref_vel_1 = transformed_keypts_ref[1:] - transformed_keypts_ref[:-1]  # (N-1, 3)
+            cost2[1:] += 10 * torch.sum((opt_vel_1 - ref_vel_1) ** 2, dim=1)
 
-            # 2-step: distance t→t+2 (captures stride-level speed, not just frame-to-frame)
-            opt_dists_2 = torch.norm(transformed_keypts[2:] - transformed_keypts[:-2], dim=1)           # (N-2,)
-            ref_dists_2 = torch.norm(transformed_keypts_ref[2:] - transformed_keypts_ref[:-2], dim=1)   # (N-2,)
-            cost2[2:] += 10*(opt_dists_2 - ref_dists_2) ** 2
+            # 2-step: velocity t→t+2 (captures stride-level velocity direction and magnitude)
+            opt_vel_2 = transformed_keypts[2:] - transformed_keypts[:-2]      # (N-2, 3)
+            ref_vel_2 = transformed_keypts_ref[2:] - transformed_keypts_ref[:-2]  # (N-2, 3)
+            cost2[2:] += 10 * torch.sum((opt_vel_2 - ref_vel_2) ** 2, dim=1)
 
 
             # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
