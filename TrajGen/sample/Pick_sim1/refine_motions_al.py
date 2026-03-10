@@ -161,14 +161,14 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # RECOMMENDED COSTS
             # [REF] 1-step and 2-step velocity magnitude matching — penalise deviation of speed from reference
             # 1-step: speed t→t+1
-            opt_speed_1 = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)      # (N-1,)
-            ref_speed_1 = torch.norm(transformed_keypts_ref[1:] - transformed_keypts_ref[:-1], dim=1)  # (N-1,)
-            cost2[1:] += 10 * (opt_speed_1 - ref_speed_1) ** 2
+            # opt_speed_1 = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)      # (N-1,)
+            # ref_speed_1 = torch.norm(transformed_keypts_ref[1:] - transformed_keypts_ref[:-1], dim=1)  # (N-1,)
+            # cost2[1:] += 10 * (opt_speed_1 - ref_speed_1) ** 2
 
-            # 2-step: speed t→t+2 (captures stride-level speed)
-            opt_speed_2 = torch.norm(transformed_keypts[2:] - transformed_keypts[:-2], dim=1)      # (N-2,)
-            ref_speed_2 = torch.norm(transformed_keypts_ref[2:] - transformed_keypts_ref[:-2], dim=1)  # (N-2,)
-            cost2[2:] += 10 * (opt_speed_2 - ref_speed_2) ** 2
+            # # 2-step: speed t→t+2 (captures stride-level speed)
+            # opt_speed_2 = torch.norm(transformed_keypts[2:] - transformed_keypts[:-2], dim=1)      # (N-2,)
+            # ref_speed_2 = torch.norm(transformed_keypts_ref[2:] - transformed_keypts_ref[:-2], dim=1)  # (N-2,)
+            # cost2[2:] += 10 * (opt_speed_2 - ref_speed_2) ** 2
 
 
             # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
@@ -192,8 +192,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             #cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[grab_idx:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
 
-            transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z, device=DEVICE)) # freeze reference height
-            cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
+            
+            #transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z, device=DEVICE)) # freeze reference height
+            #cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
 
         elif i == 38: # right hand link (red dot in viser)
             rot_mat = tf.get_matrix()[:,:3,:3]
