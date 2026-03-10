@@ -167,7 +167,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # 2-step: distance t→t+2 (captures stride-level speed, not just frame-to-frame)
             opt_dists_2 = torch.norm(transformed_keypts[2:] - transformed_keypts[:-2], dim=1)           # (N-2,)
             ref_dists_2 = torch.norm(transformed_keypts_ref[2:] - transformed_keypts_ref[:-2], dim=1)   # (N-2,)
-            cost2[2:] += (opt_dists_2 - ref_dists_2) ** 2
+            cost2[2:] += 10*(opt_dists_2 - ref_dists_2) ** 2
 
 
             # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
