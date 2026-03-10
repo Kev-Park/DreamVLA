@@ -138,7 +138,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             wrist_vel   = transformed_keypts[1:] - transformed_keypts[:-1]   # (N-1, 3)
             wrist_accel = wrist_vel[1:] - wrist_vel[:-1]                     # (N-2, 3)
             wrist_jerk  = wrist_accel[1:] - wrist_accel[:-1]                 # (N-3, 3)
-            cost2[2:-1] += 50. * torch.sum(wrist_jerk ** 2, dim=1)
+            cost2[2:-1] += 100. * torch.sum(wrist_jerk ** 2, dim=1)
 
 
             # PRE-APPROACH COSTS
