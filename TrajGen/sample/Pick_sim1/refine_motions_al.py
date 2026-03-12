@@ -269,7 +269,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             ANGLE_EXP_SCALE  = 5.0    # steepness; (e^5 − 1) ≈ 147× weight at worst angle
             HAND_SOFT_WEIGHT = 200.0  # base multiplier for soft collision penalty
             angle_weight = torch.exp(ANGLE_EXP_SCALE * cos_angle) - 1.0            # (N,) = 0 at ideal angle
-            cost2 += HAND_SOFT_WEIGHT * angle_weight * g_cap_hand                  # soft over all frames
+            cost2[:grab_idx] += HAND_SOFT_WEIGHT * angle_weight[:grab_idx] * g_cap_hand[:grab_idx]  # soft, approach only
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
@@ -365,7 +365,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             PROXIMITY_SPEED_DECAY  = 3.0    # higher → effect is concentrated at short range
             PROXIMITY_SPEED_WEIGHT = 500.0  # base weight for the proximity-speed penalty
             proximity_factor = torch.exp(-PROXIMITY_SPEED_DECAY * tip_dist_to_target[1:])  # (N-1,)
-            cost2[1:] += PROXIMITY_SPEED_WEIGHT * proximity_factor * tip_speed ** 2
+            cost2[1:grab_idx] += PROXIMITY_SPEED_WEIGHT * proximity_factor[:grab_idx-1] * tip_speed[:grab_idx-1] ** 2
         else:
             continue
 
