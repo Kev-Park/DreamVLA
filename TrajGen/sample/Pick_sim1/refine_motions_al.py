@@ -55,7 +55,6 @@ _last_g_cap_hand:  torch.Tensor | None = None
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
                  lambda_table: torch.Tensor | None = None,
                  lambda_wrist: torch.Tensor | None = None,
-                 lambda_hand:  torch.Tensor | None = None,
                  rho_al: float = AL_RHO_INIT):
     global _last_g_t, _last_g_cap_wrist, _last_g_cap_hand
     # L2 cost to target
@@ -138,7 +137,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             wrist_vel   = transformed_keypts[1:] - transformed_keypts[:-1]   # (N-1, 3)
             wrist_accel = wrist_vel[1:] - wrist_vel[:-1]                     # (N-2, 3)
             wrist_jerk  = wrist_accel[1:] - wrist_accel[:-1]                 # (N-3, 3)
-            cost2[2:-1] += 100. * torch.sum(wrist_jerk ** 2, dim=1)
+            cost2[2:-1] += 50. * torch.sum(wrist_jerk ** 2, dim=1)
 
 
             # PRE-APPROACH COSTS
@@ -248,14 +247,27 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             _last_g_cap_wrist = g_cap_wrist[:grab_idx].detach()
             cost2[:grab_idx] += al_penalty(g_cap_wrist[:grab_idx], lam_vec=lambda_wrist)
 
-            # [ABS] Hand capsule collision with grab obstacle — hard constraint via AL
+            # [SOFT] Hand capsule collision — soft, angle-weighted cost (not an AL hard constraint).
+            # A correct grasp has the hand capsule axis (local x) perpendicular to the vertical
+            # cylinder axis, i.e. the palm faces *into* the cylinder.  The cost is amplified
+            # exponentially when that axis deviates from the ideal 90° orientation so that
+            # skewed contacts are heavily discouraged relative to palm-aligned contacts.
             hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
             g_cap_hand = capsule_collision_cost(
                 transformed_hand_orig, hand_rot_world, segment_length=0.15, segment_thickness=0.04,
                 collision_site=capsule_obs_pos
             )
-            _last_g_cap_hand = g_cap_hand[:grab_idx].detach()
-            cost2[:grab_idx] += al_penalty(g_cap_hand[:grab_idx], lam_vec=lambda_hand)
+            _last_g_cap_hand = g_cap_hand.detach()  # kept for logging; not used in AL
+
+            # |cos_angle| = 0 → capsule axis ⊥ cylinder (ideal palm-in contact)
+            # |cos_angle| = 1 → capsule axis ∥ cylinder (worst case)
+            cyl_axis = torch.tensor([0., 0., 1.], device=DEVICE)
+            hand_capsule_axis = hand_rot_world[:, :, 0]                             # (N, 3)
+            cos_angle = (hand_capsule_axis * cyl_axis).sum(dim=-1).abs()            # (N,) ∈ [0, 1]
+            ANGLE_EXP_SCALE  = 5.0    # steepness of exponential; e^5 ≈ 148× at worst angle
+            HAND_SOFT_WEIGHT = 200.0  # base multiplier for soft collision penalty
+            angle_weight = torch.exp(ANGLE_EXP_SCALE * cos_angle)                  # (N,)
+            cost2 += HAND_SOFT_WEIGHT * angle_weight * g_cap_hand                  # soft over all frames
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
@@ -342,6 +354,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             w_start = max(grab_idx - TIP_SPEED_WINDOW, 1)
             w_end = grab_idx
             cost2[w_start:w_end] += 200. * tip_power[w_start-1:w_end-1]**2
+
+            # [SOFT] Proximity-weighted speed penalty: as the hand tip approaches the target
+            # point the allowable speed budget shrinks — high speeds near the cylinder are
+            # penalised much more than the same speed far away.
+            # proximity_factor → 1 when tip is at the target, → 0 far away.
+            tip_dist_to_target = torch.norm(transformed_tip - capsule_obs_pos[:3].unsqueeze(0), dim=1)  # (N,)
+            PROXIMITY_SPEED_DECAY  = 3.0    # higher → effect is concentrated at short range
+            PROXIMITY_SPEED_WEIGHT = 500.0  # base weight for the proximity-speed penalty
+            proximity_factor = torch.exp(-PROXIMITY_SPEED_DECAY * tip_dist_to_target[1:])  # (N-1,)
+            cost2[1:] += PROXIMITY_SPEED_WEIGHT * proximity_factor * tip_speed ** 2
         else:
             continue
 
@@ -420,7 +442,7 @@ for pkl_path in pkl_paths:
     # -----------------------------------------------------------------------
     lambda_table = torch.zeros(grab_idx, device=DEVICE)   # table surface dual vars (grab_idx frames)
     lambda_wrist  = torch.zeros(grab_idx, device=DEVICE)  # wrist capsule dual vars (grab_idx frames)
-    lambda_hand   = torch.zeros(grab_idx, device=DEVICE)  # hand capsule dual vars (grab_idx frames)
+    # lambda_hand removed: hand collision is now a soft cost, not an AL hard constraint
     rho_al = AL_RHO_INIT
 
     converged = False
@@ -436,36 +458,33 @@ for pkl_path in pkl_paths:
             cost = compute_cost(joint_angles, trans, quats,
                                 lambda_table=lambda_table,
                                 lambda_wrist=lambda_wrist,
-                                lambda_hand=lambda_hand,
                                 rho_al=rho_al)
             cost.backward()
             optimizer.step()
 
         # ---- read last constraint violations written by compute_cost ----
         g_curr       = _last_g_t          # shape (grab_idx,)
-        g_curr_wrist = _last_g_cap_wrist  # shape (grab_idx+20,)
-        g_curr_hand  = _last_g_cap_hand   # shape (grab_idx+20,)
+        g_curr_wrist = _last_g_cap_wrist  # shape (grab_idx,)
         if g_curr is None:
             break
 
         # ---- dual (multiplier) update: λ ← max(0, λ + ρ·g) ----
+        # Hand collision is now a soft cost — no dual variable update needed for it.
         with torch.no_grad():
             lambda_table = torch.clamp(lambda_table + rho_al * g_curr, min=0.0)
             if g_curr_wrist is not None:
                 lambda_wrist = torch.clamp(lambda_wrist + rho_al * g_curr_wrist, min=0.0)
-            if g_curr_hand is not None:
-                lambda_hand  = torch.clamp(lambda_hand  + rho_al * g_curr_hand,  min=0.0)
 
         max_viol       = float(g_curr.max())
         max_viol_wrist = float(g_curr_wrist.max()) if g_curr_wrist is not None else 0.0
-        max_viol_hand  = float(g_curr_hand.max())  if g_curr_hand  is not None else 0.0
+        # Log hand penetration depth for info (soft cost, not a hard constraint)
+        max_hand_pen   = float(_last_g_cap_hand.max()) if _last_g_cap_hand is not None else 0.0
         print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m  "
-              f"wrist_cap={max_viol_wrist:.2e}m  hand_cap={max_viol_hand:.2e}m  "
+              f"wrist_cap={max_viol_wrist:.2e}m  hand_pen={max_hand_pen:.2e}m (soft)  "
               f"rho={rho_al:.1e}  cost={cost.item():.4f}")
 
         if (max_viol < TABLE_CONSTRAINT_TOL and
-                max_viol_wrist < TABLE_CONSTRAINT_TOL and
-                max_viol_hand  < TABLE_CONSTRAINT_TOL):
+                max_viol_wrist < TABLE_CONSTRAINT_TOL):
             print(f"  -> All constraints satisfied to {TABLE_CONSTRAINT_TOL:.0e} m. Done.")
             converged = True
             break
