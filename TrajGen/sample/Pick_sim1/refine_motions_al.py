@@ -259,14 +259,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             )
             _last_g_cap_hand = g_cap_hand.detach()  # kept for logging; not used in AL
 
-            # |cos_angle| = 0 → capsule axis ⊥ cylinder (ideal palm-in contact)
-            # |cos_angle| = 1 → capsule axis ∥ cylinder (worst case)
+            # |cos_angle| = 0 → capsule axis ⊥ cylinder (ideal palm-in contact) → zero penalty
+            # |cos_angle| = 1 → capsule axis ∥ cylinder (worst case)              → maximum penalty
+            # angle_weight = exp(scale × |cos|) − 1 so that the weight is exactly 0 at perfect
+            # approach angle and grows exponentially as the angle deviates from ideal.
             cyl_axis = torch.tensor([0., 0., 1.], device=DEVICE)
             hand_capsule_axis = hand_rot_world[:, :, 0]                             # (N, 3)
             cos_angle = (hand_capsule_axis * cyl_axis).sum(dim=-1).abs()            # (N,) ∈ [0, 1]
-            ANGLE_EXP_SCALE  = 5.0    # steepness of exponential; e^5 ≈ 148× at worst angle
+            ANGLE_EXP_SCALE  = 5.0    # steepness; (e^5 − 1) ≈ 147× weight at worst angle
             HAND_SOFT_WEIGHT = 200.0  # base multiplier for soft collision penalty
-            angle_weight = torch.exp(ANGLE_EXP_SCALE * cos_angle)                  # (N,)
+            angle_weight = torch.exp(ANGLE_EXP_SCALE * cos_angle) - 1.0            # (N,) = 0 at ideal angle
             cost2 += HAND_SOFT_WEIGHT * angle_weight * g_cap_hand                  # soft over all frames
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
