@@ -356,15 +356,14 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             w_end = grab_idx
             cost2[w_start:w_end] += 200. * tip_power[w_start-1:w_end-1]**2
 
-            # [SOFT] Proximity-weighted speed penalty: as the hand tip approaches the target
-            # point the allowable speed budget shrinks — high speeds near the cylinder are
-            # penalised much more than the same speed far away.
-            # proximity_factor → 1 when tip is at the target, → 0 far away.
+            # [SOFT] Near-cylinder speed penalty: flat penalty on speed whenever the hand tip
+            # is within PROXIMITY_SPEED_RADIUS of the target.  No distance weighting — all
+            # frames inside the gate are penalised equally.
             tip_dist_to_target = torch.norm(transformed_tip - capsule_obs_pos[:3].unsqueeze(0), dim=1)  # (N,)
-            PROXIMITY_SPEED_DECAY  = 3.0    # higher → effect is concentrated at short range
-            PROXIMITY_SPEED_WEIGHT = 500.0  # base weight for the proximity-speed penalty
-            proximity_factor = torch.exp(-PROXIMITY_SPEED_DECAY * tip_dist_to_target[1:])  # (N-1,)
-            cost2[1:grab_idx] += PROXIMITY_SPEED_WEIGHT * proximity_factor[:grab_idx-1] * tip_speed[:grab_idx-1] ** 2
+            PROXIMITY_SPEED_RADIUS = 0.35   # metres — gate radius around target point
+            PROXIMITY_SPEED_WEIGHT = 500.0  # flat weight applied inside the gate
+            in_gate = (tip_dist_to_target[1:grab_idx] < PROXIMITY_SPEED_RADIUS).float()  # (grab_idx-1,)
+            cost2[1:grab_idx] += PROXIMITY_SPEED_WEIGHT * in_gate * tip_speed[:grab_idx-1] ** 2
         else:
             continue
 
