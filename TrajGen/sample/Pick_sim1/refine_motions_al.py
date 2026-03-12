@@ -73,11 +73,11 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     # Iterate over links and apply costs based on link positions and orientations
     for i, (link_name, tf) in enumerate(fk_results.items()):
     
-        def capsule_collision_cost(origin_world, rot_world, segment_length, segment_thickness, collision_site):
+        def capsule_collision_cost(origin_world, rot_world, segment_length, segment_thickness, collision_site, r_obstacle=0.05):
             """Arm capsule vs infinite vertical cylinder obstacle.
 
             The obstacle is an infinite vertical cylinder centred at
-            collision_site XY with radius R_OBSTACLE.  For an infinite-Z
+            collision_site XY with radius r_obstacle.  For an infinite-Z
             cylinder the minimum 3D capsule distance reduces to the 2D
             segment-to-point distance in XY.
 
@@ -85,8 +85,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             x-axis for segment_length, with radius segment_thickness.
             Returns relu(r_total - d_xy) per frame.
             """
-            R_OBSTACLE = 0.05  # obstacle cylinder radius (metres)
-            r_total = segment_thickness + R_OBSTACLE
+            r_total = segment_thickness + r_obstacle
 
             # Arm capsule axis in world frame (local x-axis of link frame)
             axis  = rot_world[:, :, 0]                            # (N, 3)
@@ -255,7 +254,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
             g_cap_hand = capsule_collision_cost(
                 transformed_hand_orig, hand_rot_world, segment_length=0.15, segment_thickness=0.04,
-                collision_site=capsule_obs_pos
+                collision_site=capsule_obs_pos, r_obstacle=0.18
             )
             _last_g_cap_hand = g_cap_hand.detach()  # kept for logging; not used in AL
 
