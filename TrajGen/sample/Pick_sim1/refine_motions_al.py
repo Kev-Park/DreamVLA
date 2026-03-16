@@ -351,6 +351,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
                 return torch.maximum(g_point, g_seg)           # (gi,)  hard constraint
 
+
+
             # [ABS] Per-frame table collision — hard constraint via AL (g_t >= 0)
             g_t = table_collision_cost(transformed_tip, transformed_hand_orig, grab_idx)
             _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy) for hard optimization
@@ -364,14 +366,6 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             w_end = grab_idx
             cost2[w_start:w_end] += 200. * tip_power[w_start-1:w_end-1]**2
 
-            # [SOFT] Near-cylinder speed penalty: flat penalty on speed whenever the hand tip
-            # is within PROXIMITY_SPEED_RADIUS of the target.  No distance weighting — all
-            # frames inside the gate are penalised equally.
-            tip_dist_to_target = torch.norm(transformed_tip - capsule_obs_pos[:3].unsqueeze(0), dim=1)  # (N,)
-            PROXIMITY_SPEED_RADIUS = 0.35   # metres — gate radius around target point
-            PROXIMITY_SPEED_WEIGHT = 500.0  # flat weight applied inside the gate
-            in_gate = (tip_dist_to_target[1:grab_idx] < PROXIMITY_SPEED_RADIUS).float()  # (grab_idx-1,)
-            cost2[1:grab_idx] += PROXIMITY_SPEED_WEIGHT * in_gate * tip_speed[:grab_idx-1] ** 2
 
             # [SOFT] Hand-tip approach shaping in XY:
             # penalize only decreases in distance to grab-point XY, with quadratic growth,
