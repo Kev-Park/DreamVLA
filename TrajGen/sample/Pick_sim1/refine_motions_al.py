@@ -38,6 +38,22 @@ OFFSET_X = -0.35
 HAND_TIP_OFFSET = 0.15
 TIP_SPEED_WINDOW = 50
 SAVE_DIR = "../Pick_sim2/"
+TRAJ_FPS_DEFAULT = 20.0
+
+# Right-arm hard speed limits (rad/s)
+RIGHT_ARM_SPEED_LIMITS = {
+    "right_shoulder_pitch_joint": 37.0,
+    "right_shoulder_roll_joint": 37.0,
+    "right_shoulder_yaw_joint": 37.0,
+    "right_elbow_joint": 37.0,
+    "right_wrist_roll_joint": 37.0,
+    "right_wrist_pitch_joint": 22.0,
+    "right_wrist_yaw_joint": 22.0,
+}
+DOF_SPEED_CONSTRAINT_TOL = 1e-3  # rad/s
+
+# Updated per motion file (fallback to TRAJ_FPS_DEFAULT)
+traj_fps_hz = TRAJ_FPS_DEFAULT
 
 # --- Augmented Lagrangian settings ---
 TABLE_CONSTRAINT_TOL = 1e-5   # 0.01 mm  – very tight: any tip penetration > this triggers AL update
@@ -51,14 +67,39 @@ AL_INNER_ITERS    = 300       # Adam steps per outer iteration
 _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_cap_hand:  torch.Tensor | None = None
+_last_g_dof_speed: torch.Tensor | None = None
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
                  lambda_table: torch.Tensor | None = None,
                  lambda_wrist: torch.Tensor | None = None,
+                 lambda_dof_speed: torch.Tensor | None = None,
                  rho_al: float = AL_RHO_INIT):
-    global _last_g_t, _last_g_cap_wrist, _last_g_cap_hand
+    global _last_g_t, _last_g_cap_wrist, _last_g_cap_hand, _last_g_dof_speed
+
+    def al_penalty(g, lam_vec=None):
+        """Augmented-Lagrangian penalty for a hard constraint g >= 0.
+        lam_vec: dedicated dual variable tensor; auto-sliced to len(g)."""
+        if lam_vec is not None:
+            lam = lam_vec[:len(g)]
+            return lam * g + (rho_al / 2.0) * g ** 2
+        return (rho_al / 2.0) * g ** 2
+
     # L2 cost to target
     l2_cost = 0.*torch.nn.functional.mse_loss(joint_angles, target_joint_angles[:, active_joint_ids])
+
+    # [ABS] Right-arm DOF hard speed limits (rad/s), enforced via AL.
+    # joint_angles are in rad/frame, so convert with current trajectory FPS.
+    dt = 1.0 / float(traj_fps_hz)
+    joint_speed_rad_s = torch.abs(joint_angles[1:] - joint_angles[:-1]) / dt  # (T-1, 7)
+    dof_limit_vec = torch.tensor(
+        [RIGHT_ARM_SPEED_LIMITS[name] for name in active_joint_names],
+        device=joint_angles.device,
+        dtype=joint_angles.dtype,
+    ).unsqueeze(0)  # (1, 7)
+    g_dof_speed = torch.relu(joint_speed_rad_s - dof_limit_vec)  # (T-1, 7), hard violation in rad/s
+    g_dof_speed_flat = g_dof_speed.reshape(-1)
+    _last_g_dof_speed = g_dof_speed_flat.detach()
+    dof_speed_hard_cost = torch.mean(al_penalty(g_dof_speed_flat, lam_vec=lambda_dof_speed))
     
     # Forward kinematics to get link positions
     q_dict = {name: joint_angles[:, i] for i, name in enumerate( active_joint_names ) }
@@ -106,14 +147,6 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             d_xy    = torch.norm(P - closest, dim=1)               # (N,) distance to cylinder axis
 
             return torch.relu(r_total - d_xy)                      # (N,) penetration depth
-
-        def al_penalty(g, lam_vec=None):
-            """Augmented-Lagrangian penalty for a hard constraint g >= 0.
-            lam_vec: dedicated dual variable tensor; auto-sliced to len(g)."""
-            if lam_vec is not None:
-                lam = lam_vec[:len(g)]
-                return lam * g + (rho_al / 2.0) * g ** 2
-            return (rho_al / 2.0) * g ** 2
 
         if i == 36: # right wrist pitch link (blue dot in viser)
             pos = tf.get_matrix()[:,:3,3]
@@ -367,7 +400,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
         else:
             continue
 
-    return l2_cost + torch.mean(cost2)
+    return l2_cost + torch.mean(cost2) + dof_speed_hard_cost
 
 if VISUALIZE:
     urdf = yourdfpy.URDF.load('../../../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
@@ -442,7 +475,9 @@ for pkl_path in pkl_paths:
     # -----------------------------------------------------------------------
     lambda_table = torch.zeros(grab_idx, device=DEVICE)   # table surface dual vars (grab_idx frames)
     lambda_wrist  = torch.zeros(grab_idx, device=DEVICE)  # wrist capsule dual vars (grab_idx frames)
+    lambda_dof_speed = torch.zeros((joint_angles.shape[0] - 1) * joint_angles.shape[1], device=DEVICE)
     # lambda_hand removed: hand collision is now a soft cost, not an AL hard constraint
+    traj_fps_hz = float(motion_data.get("fps", motion_data.get("frame_rate", TRAJ_FPS_DEFAULT)))
     rho_al = AL_RHO_INIT
 
     converged = False
@@ -458,6 +493,7 @@ for pkl_path in pkl_paths:
             cost = compute_cost(joint_angles, trans, quats,
                                 lambda_table=lambda_table,
                                 lambda_wrist=lambda_wrist,
+                                lambda_dof_speed=lambda_dof_speed,
                                 rho_al=rho_al)
             cost.backward()
             optimizer.step()
@@ -465,6 +501,7 @@ for pkl_path in pkl_paths:
         # ---- read last constraint violations written by compute_cost ----
         g_curr       = _last_g_t          # shape (grab_idx,)
         g_curr_wrist = _last_g_cap_wrist  # shape (grab_idx,)
+        g_curr_dof_speed = _last_g_dof_speed  # shape ((T-1)*7,)
         if g_curr is None:
             break
 
@@ -474,18 +511,24 @@ for pkl_path in pkl_paths:
             lambda_table = torch.clamp(lambda_table + rho_al * g_curr, min=0.0)
             if g_curr_wrist is not None:
                 lambda_wrist = torch.clamp(lambda_wrist + rho_al * g_curr_wrist, min=0.0)
+            if g_curr_dof_speed is not None:
+                lambda_dof_speed = torch.clamp(lambda_dof_speed + rho_al * g_curr_dof_speed, min=0.0)
 
         max_viol       = float(g_curr.max())
         max_viol_wrist = float(g_curr_wrist.max()) if g_curr_wrist is not None else 0.0
+        max_viol_dof_speed = float(g_curr_dof_speed.max()) if g_curr_dof_speed is not None else 0.0
         # Log hand penetration depth for info (soft cost, not a hard constraint)
         max_hand_pen   = float(_last_g_cap_hand.max()) if _last_g_cap_hand is not None else 0.0
         print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m  "
-              f"wrist_cap={max_viol_wrist:.2e}m  hand_pen={max_hand_pen:.2e}m (soft)  "
+              f"wrist_cap={max_viol_wrist:.2e}m  dof_speed={max_viol_dof_speed:.2e}rad/s  "
+              f"hand_pen={max_hand_pen:.2e}m (soft)  "
               f"rho={rho_al:.1e}  cost={cost.item():.4f}")
 
         if (max_viol < TABLE_CONSTRAINT_TOL and
-                max_viol_wrist < TABLE_CONSTRAINT_TOL):
-            print(f"  -> All constraints satisfied to {TABLE_CONSTRAINT_TOL:.0e} m. Done.")
+                max_viol_wrist < TABLE_CONSTRAINT_TOL and
+                max_viol_dof_speed < DOF_SPEED_CONSTRAINT_TOL):
+            print(f"  -> All constraints satisfied to table/wrist={TABLE_CONSTRAINT_TOL:.0e} m "
+                f"and dof_speed={DOF_SPEED_CONSTRAINT_TOL:.0e} rad/s. Done.")
             converged = True
             break
 
