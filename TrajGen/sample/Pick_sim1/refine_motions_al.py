@@ -66,7 +66,6 @@ AL_INNER_ITERS    = 300       # Adam steps per outer iteration
 # Written by compute_cost every forward pass; read by the AL outer loop.
 _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
-_last_g_cap_hand:  torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
@@ -74,7 +73,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                  lambda_wrist: torch.Tensor | None = None,
                  lambda_dof_speed: torch.Tensor | None = None,
                  rho_al: float = AL_RHO_INIT):
-    global _last_g_t, _last_g_cap_wrist, _last_g_cap_hand, _last_g_dof_speed
+    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed
 
     def al_penalty(g, lam_vec=None):
         """Augmented-Lagrangian penalty for a hard constraint g >= 0.
@@ -279,30 +278,6 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             _last_g_cap_wrist = g_cap_wrist[:grab_idx].detach()
             cost2[:grab_idx] += al_penalty(g_cap_wrist[:grab_idx], lam_vec=lambda_wrist)
 
-            # [SOFT] Hand capsule collision — soft, angle-weighted cost (not an AL hard constraint).
-            # A correct grasp has the hand capsule axis (local x) perpendicular to the vertical
-            # cylinder axis, i.e. the palm faces *into* the cylinder.  The cost is amplified
-            # exponentially when that axis deviates from the ideal 90° orientation so that
-            # skewed contacts are heavily discouraged relative to palm-aligned contacts.
-            hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
-            g_cap_hand = capsule_collision_cost(
-                transformed_hand_orig, hand_rot_world, segment_length=0.15, segment_thickness=0.04,
-                collision_site=capsule_obs_pos, r_obstacle=0.18
-            )
-            _last_g_cap_hand = g_cap_hand.detach()  # kept for logging; not used in AL
-
-            # |cos_angle| = 0 → capsule axis ⊥ cylinder (ideal palm-in contact) → zero penalty
-            # |cos_angle| = 1 → capsule axis ∥ cylinder (worst case)              → maximum penalty
-            # angle_weight = exp(scale × |cos|) − 1 so that the weight is exactly 0 at perfect
-            # approach angle and grows exponentially as the angle deviates from ideal.
-            cyl_axis = torch.tensor([0., 0., 1.], device=DEVICE)
-            hand_capsule_axis = hand_rot_world[:, :, 0]                             # (N, 3)
-            cos_angle = (hand_capsule_axis * cyl_axis).sum(dim=-1).abs()            # (N,) ∈ [0, 1]
-            ANGLE_EXP_SCALE  = 5.0    # steepness; (e^5 − 1) ≈ 147× weight at worst angle
-            HAND_SOFT_WEIGHT = 200.0  # base multiplier for soft collision penalty
-            angle_weight = torch.exp(ANGLE_EXP_SCALE * cos_angle) - 1.0            # (N,) = 0 at ideal angle
-            cost2[:grab_idx] += HAND_SOFT_WEIGHT * angle_weight[:grab_idx] * g_cap_hand[:grab_idx]  # soft, approach only
-
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
                 """Combined per-frame AL constraint g_t >= 0, shape (gi,).
@@ -506,7 +481,6 @@ for pkl_path in pkl_paths:
             break
 
         # ---- dual (multiplier) update: λ ← max(0, λ + ρ·g) ----
-        # Hand collision is now a soft cost — no dual variable update needed for it.
         with torch.no_grad():
             lambda_table = torch.clamp(lambda_table + rho_al * g_curr, min=0.0)
             if g_curr_wrist is not None:
@@ -517,11 +491,8 @@ for pkl_path in pkl_paths:
         max_viol       = float(g_curr.max())
         max_viol_wrist = float(g_curr_wrist.max()) if g_curr_wrist is not None else 0.0
         max_viol_dof_speed = float(g_curr_dof_speed.max()) if g_curr_dof_speed is not None else 0.0
-        # Log hand penetration depth for info (soft cost, not a hard constraint)
-        max_hand_pen   = float(_last_g_cap_hand.max()) if _last_g_cap_hand is not None else 0.0
         print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m  "
               f"wrist_cap={max_viol_wrist:.2e}m  dof_speed={max_viol_dof_speed:.2e}rad/s  "
-              f"hand_pen={max_hand_pen:.2e}m (soft)  "
               f"rho={rho_al:.1e}  cost={cost.item():.4f}")
 
         if (max_viol < TABLE_CONSTRAINT_TOL and
