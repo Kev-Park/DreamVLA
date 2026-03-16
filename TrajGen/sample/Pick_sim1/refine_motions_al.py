@@ -354,9 +354,11 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
 
             # [ABS] Per-frame table collision — hard constraint via AL (g_t >= 0)
-            g_t = table_collision_cost(transformed_tip, transformed_hand_orig, grab_idx)
+            # Enforce through grab_idx+15 when available; otherwise clamp to sequence length.
+            table_gi = min(grab_idx + 15, transformed_tip.shape[0])
+            g_t = table_collision_cost(transformed_tip, transformed_hand_orig, table_gi)
             _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy) for hard optimization
-            cost2[:grab_idx] += al_penalty(g_t, lam_vec=lambda_table)
+            cost2[:table_gi] += al_penalty(g_t, lam_vec=lambda_table)
 
 
             #[ABS] Penalize rate of change of kinetic energy (v * |Δv| ∝ d(KE)/dt) in the approach window
@@ -461,7 +463,8 @@ for pkl_path in pkl_paths:
     # DEVICE (GPU when available) for full CUDA parallelism.
     # (All tensors are already on DEVICE from load time above.)
     # -----------------------------------------------------------------------
-    lambda_table = torch.zeros(grab_idx, device=DEVICE)   # table surface dual vars (grab_idx frames)
+    table_gi = min(grab_idx + 15, joint_angles.shape[0])
+    lambda_table = torch.zeros(table_gi, device=DEVICE)   # table surface dual vars (table horizon)
     lambda_wrist  = torch.zeros(grab_idx, device=DEVICE)  # wrist capsule dual vars (grab_idx frames)
     lambda_dof_speed = torch.zeros((joint_angles.shape[0] - 1) * joint_angles.shape[1], device=DEVICE)
     # lambda_hand removed: hand collision is now a soft cost, not an AL hard constraint
