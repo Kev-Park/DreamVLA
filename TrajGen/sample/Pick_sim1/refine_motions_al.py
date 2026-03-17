@@ -371,7 +371,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # [SOFT] Hand-tip approach shaping in XY:
             # penalize only decreases in distance to grab-point XY, with quadratic growth,
-            # then linearly taper this penalty down over [grab_idx-20, grab_idx-1].
+            # then linearly taper this penalty down over [grab_idx-20, grab_idx-10].
             tip_xy_dist = torch.norm(transformed_tip[:grab_idx, :2] - capsule_obs_pos[:2].unsqueeze(0), dim=1)  # (G,)
             dist_decrease = torch.relu(tip_xy_dist[:-1] - tip_xy_dist[1:])  # (G-1,), only when moving closer
             approach_pen = dist_decrease ** 2
@@ -380,10 +380,11 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             if n_trans > 0:
                 frame_ids = torch.arange(1, n_trans + 1, device=DEVICE, dtype=joint_angles.dtype)  # destination frames
                 taper_start = max(grab_idx - 20, 1)
+                taper_end = max(grab_idx - 10, 1)
                 taper = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
                 taper_mask = frame_ids >= float(taper_start)
-                taper_denom = max((grab_idx - 1) - taper_start, 1)
-                taper[taper_mask] = torch.clamp((float(grab_idx - 1) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
+                taper_denom = max(taper_end - taper_start, 1)
+                taper[taper_mask] = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
 
                 HAND_APPROACH_SOFT_WEIGHT = 300.0
                 cost2[1:grab_idx] += HAND_APPROACH_SOFT_WEIGHT * taper * approach_pen
