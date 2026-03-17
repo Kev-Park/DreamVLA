@@ -370,11 +370,11 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
 
             # [SOFT] Hand-tip approach shaping in XY:
-            # penalize only decreases in wrist XY distance to grab-point, with quadratic growth,
+            # penalize only decreases in distance to grab-point XY, with quadratic growth,
             # then linearly taper this penalty down over [taper_start, taper_end], where
             # taper_end is the first frame the hand tip comes above the table height.
-            wrist_xy_dist = torch.norm(_wrist_pos_world[:grab_idx, :2] - capsule_obs_pos[:2].unsqueeze(0), dim=1)  # (G,)
-            dist_decrease = torch.relu(wrist_xy_dist[:-1] - wrist_xy_dist[1:])  # (G-1,), only when moving closer
+            tip_xy_dist = torch.norm(transformed_tip[:grab_idx, :2] - capsule_obs_pos[:2].unsqueeze(0), dim=1)  # (G,)
+            dist_decrease = torch.relu(tip_xy_dist[:-1] - tip_xy_dist[1:])  # (G-1,), only when moving closer
             approach_pen = dist_decrease ** 2
 
             n_trans = approach_pen.shape[0]
