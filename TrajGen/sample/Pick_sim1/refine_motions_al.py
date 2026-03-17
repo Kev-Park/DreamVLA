@@ -474,7 +474,8 @@ for pkl_path in pkl_paths:
     # -----------------------------------------------------------------------
     table_gi = min(grab_idx + 15, joint_angles.shape[0])
     lambda_table = torch.zeros(table_gi, device=DEVICE)   # table surface dual vars (table horizon)
-    lambda_wrist  = torch.zeros(grab_idx, device=DEVICE)  # wrist capsule dual vars (grab_idx frames)
+    wrist_gi = max(grab_idx - 15, 1)
+    lambda_wrist  = torch.zeros(wrist_gi, device=DEVICE)  # wrist capsule dual vars (grab_idx-15 frames)
     lambda_dof_speed = torch.zeros((joint_angles.shape[0] - 1) * joint_angles.shape[1], device=DEVICE)
     # lambda_hand removed: hand collision is now a soft cost, not an AL hard constraint
     traj_fps_hz = float(motion_data.get("fps", motion_data.get("frame_rate", TRAJ_FPS_DEFAULT)))
