@@ -275,8 +275,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 )
             else:
                 g_cap_wrist = torch.zeros(transformed_hand_orig.shape[0], device=DEVICE)
-            _last_g_cap_wrist = g_cap_wrist[:grab_idx].detach()
-            cost2[:grab_idx] += al_penalty(g_cap_wrist[:grab_idx], lam_vec=lambda_wrist)
+            _last_g_cap_wrist = g_cap_wrist[:max(grab_idx-15, 1)].detach()
+            cost2[:max(grab_idx-15, 1)] += al_penalty(g_cap_wrist[:max(grab_idx-15, 1)], lam_vec=lambda_wrist)
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
