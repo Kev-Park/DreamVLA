@@ -395,9 +395,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 taper = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
                 taper_mask = frame_ids >= float(taper_start)
                 taper_denom = max(taper_end - taper_start, 1)
-                taper[taper_mask] = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
+                taper_linear = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
+                taper[taper_mask] = taper_linear ** 2
 
-                HAND_APPROACH_SOFT_WEIGHT = 800.0
+                HAND_APPROACH_SOFT_WEIGHT = 2400.0
                 cost2[1:grab_idx] += HAND_APPROACH_SOFT_WEIGHT * taper * approach_pen
         else:
             continue
