@@ -237,8 +237,11 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
     keypts, link_names = get_keypts(torch.tensor(joints), joint_names , pk2_robot=pk2_robot) 
     global_keypts = transform_keypts(torch.tensor(keypts), torch.tensor(orientations), torch.tensor(positions + onp.array([0, 0, 0.035]))).numpy()
 
-    spine_lower_name = _find_first_name(["waist_yaw_link", "pelvis_link", "torso_link", "base_link"], link_names)
-    spine_upper_name = _find_first_name(["head_link", "neck_link", "chest_link", "upper_torso_link", "imu_link", "torso_link"], link_names)
+    spine_lower_name = _find_first_name(["waist_yaw_link", "pelvis_link", "base_link", "torso_link"], link_names)
+    upper_candidates = ["head_link", "neck_link", "chest_link", "upper_torso_link", "imu_link", "torso_link"]
+    if spine_lower_name is not None:
+        upper_candidates = [name for name in upper_candidates if name != spine_lower_name]
+    spine_upper_name = _find_first_name(upper_candidates, link_names)
     if spine_lower_name is not None and spine_upper_name is not None:
         spine_lower_idx = link_names.index(spine_lower_name)
         spine_upper_idx = link_names.index(spine_upper_name)
@@ -342,11 +345,19 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
                     torso_height = 0.55
                     spine_p0 = root_p + onp.array([0.0, 0.0, 0.10])
                     spine_p1 = root_p + onp.array([0.0, 0.0, 0.10 + torso_height])
+
+                # Safety fallback if selected spine points collapse to near-zero distance.
+                if onp.linalg.norm(spine_p1 - spine_p0) < 1e-4:
+                    root_p = positions[tstep] + onp.array([0, 0, 0.035])
+                    torso_height = 0.55
+                    spine_p0 = root_p + onp.array([0.0, 0.0, 0.10])
+                    spine_p1 = root_p + onp.array([0.0, 0.0, 0.10 + torso_height])
+
                 torso_cyl = _cylinder_between(
                     spine_p0,
                     spine_p1,
                     radius=torso_radius,
-                    color=(80, 220, 255, 90),
+                    color=(80, 220, 255, 180),
                     sections=28,
                 )
                 if torso_cyl is not None:
