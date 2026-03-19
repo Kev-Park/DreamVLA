@@ -162,8 +162,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # GENERAL COSTS
             # [ABS] Penalize wrist speed changes (acceleration) and high speed relative to own trajectory
             wrist_accel = rel_dists[1:] - rel_dists[:-1]
-            cost2[1:-1] += 50*(wrist_accel)**2  # acceleration
             cost2[1:] += 50*torch.abs(rel_dists)**2 # L2 speed magnitude (dominates large speeds)
+            cost2[1:-1] += 50*(wrist_accel)**2  # acceleration
             wrist_jerk = wrist_accel[1:] - wrist_accel[:-1]
             cost2[2:-1] += 50. * wrist_jerk ** 2
 
@@ -348,8 +348,6 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
                 return torch.maximum(g_point, g_seg)           # (gi,)  hard constraint
 
-
-
             # [ABS] Per-frame table collision — hard constraint via AL (g_t >= 0)
             # Enforce over the full trajectory.
             table_gi = transformed_tip.shape[0]
@@ -358,12 +356,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[:table_gi] += al_penalty(g_t, lam_vec=lambda_table)
 
 
-            #[ABS] Penalize rate of change of kinetic energy (v * |Δv| ∝ d(KE)/dt) in the approach window
+            # [ABS] Penalize hand-tip speed changes (acceleration), speed, and jerk
             tip_speed = torch.norm(transformed_tip[1:] - transformed_tip[:-1], dim=1)   # (N-1,) speed per frame
-            tip_power = tip_speed[:-1] * torch.abs(tip_speed[1:] - tip_speed[:-1])      # (N-2,) v·|Δv|
-            w_start = max(grab_idx - TIP_SPEED_WINDOW, 1)
-            w_end = grab_idx
-            cost2[w_start:w_end] += 200. * tip_power[w_start-1:w_end-1]**2
+            cost2[1:] += 50*torch.abs(tip_speed)**2  # L2 speed magnitude (dominates large speeds)
+            tip_accel = tip_speed[1:] - tip_speed[:-1]
+            cost2[1:-1] += 50*(tip_accel)**2  # acceleration
+            tip_jerk = tip_accel[1:] - tip_accel[:-1]
+            cost2[2:-1] += 50. * tip_jerk ** 2
 
 
             # [SOFT] Hand-tip approach shaping in XY:
