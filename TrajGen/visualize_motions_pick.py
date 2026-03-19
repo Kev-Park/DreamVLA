@@ -29,7 +29,6 @@ from isaac_utils.rotations import(
     quat_conjugate,
     quaternion_to_matrix
 )
-import pyroki as pk
 import numpy as np
 
 class RetargetingWeights(TypedDict):
@@ -60,6 +59,7 @@ def get_keypts(joint_angles, joint_names, pk2_robot):
         tf_dict = pk2_robot.forward_kinematics( q_dict )
 
         keypts = torch.zeros((len(joint_angles), len(tf_dict), 3))
+        link_names = []
         # print(len(tf_dict))
         # exit(0)
         cntr = 0 
@@ -70,10 +70,11 @@ def get_keypts(joint_angles, joint_names, pk2_robot):
             t = tf_val[:, :3, -1 ]
             # print(name, t)
             keypts[:, cntr , :] = t 
+            link_names.append(name)
             cntr += 1 
         # print(keypts)
         # exit(0)
-        return keypts
+        return keypts, link_names
 
 
 def transform_keypts(keypts, quat, translation):
@@ -129,8 +130,16 @@ def _cylinder_between(p0: onp.ndarray, p1: onp.ndarray, radius: float,
     return cyl
 
 
+def _find_first_name(candidates, names):
+    for candidate in candidates:
+        if candidate in names:
+            return candidate
+    return None
+
+
 def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
-         hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05):
+         hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05,
+         torso_cylinder_radius=0.16):
     
     urdf = yourdfpy.URDF.load('../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
     #urdf = yourdfpy.URDF.load('../../HumanoidVerse/humanoidverse/data/robots/g1/g1_paddle_hand_rigid.urdf')
@@ -183,6 +192,7 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
     urdf_vis = ViserUrdf(server, urdf, root_node_name="/base")
     playing = server.gui.add_checkbox("playing", True)
     timestep_slider = server.gui.add_slider("timestep", 0, num_timesteps - 1, 1, 0)
+    torso_radius_slider = server.gui.add_slider("torso_cyl_radius", 0.05, 0.45, 0.005, torso_cylinder_radius) if show_segments else None
     server.scene.add_mesh_trimesh("/heightmap", heightmap.to_trimesh())
 
     # weights = pk.viewer.WeightTuner(
@@ -224,8 +234,19 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
     #urdf_path = '../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_paddle_hand_rigid.urdf'
     #pk2_robot = pk2.build_chain_from_urdf(open(urdf_path).read())
     
-    keypts = get_keypts(torch.tensor(joints), joint_names , pk2_robot=pk2_robot) 
+    keypts, link_names = get_keypts(torch.tensor(joints), joint_names , pk2_robot=pk2_robot) 
     global_keypts = transform_keypts(torch.tensor(keypts), torch.tensor(orientations), torch.tensor(positions + onp.array([0, 0, 0.035]))).numpy()
+
+    spine_lower_name = _find_first_name(["waist_yaw_link", "pelvis_link", "torso_link", "base_link"], link_names)
+    spine_upper_name = _find_first_name(["head_link", "neck_link", "chest_link", "upper_torso_link", "imu_link", "torso_link"], link_names)
+    if spine_lower_name is not None and spine_upper_name is not None:
+        spine_lower_idx = link_names.index(spine_lower_name)
+        spine_upper_idx = link_names.index(spine_upper_name)
+        print(f"  Torso cylinder spine links: lower={spine_lower_name}, upper={spine_upper_name}")
+    else:
+        spine_lower_idx = None
+        spine_upper_idx = None
+        print("  Torso cylinder fallback mode: root-vertical (spine links not found).")
     
     # Table cuboid matching refine_motions.py cost geometry:
     #   x_edge = wrist x at grab_idx (link 36, WRIST_TO_COLLISION and OFFSET_X cancel)
@@ -310,6 +331,26 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
             # base_frame.position[2] += 0.35  # Adjust for the height of the robot's base
             # print(base_frame.position)
             urdf_vis.update_cfg(onp.array(joints[tstep]))
+
+            if show_segments and torso_radius_slider is not None:
+                torso_radius = float(torso_radius_slider.value)
+                if spine_lower_idx is not None and spine_upper_idx is not None:
+                    spine_p0 = global_keypts[tstep, spine_lower_idx, :]
+                    spine_p1 = global_keypts[tstep, spine_upper_idx, :]
+                else:
+                    root_p = positions[tstep] + onp.array([0, 0, 0.035])
+                    torso_height = 0.55
+                    spine_p0 = root_p + onp.array([0.0, 0.0, 0.10])
+                    spine_p1 = root_p + onp.array([0.0, 0.0, 0.10 + torso_height])
+                torso_cyl = _cylinder_between(
+                    spine_p0,
+                    spine_p1,
+                    radius=torso_radius,
+                    color=(80, 220, 255, 90),
+                    sections=28,
+                )
+                if torso_cyl is not None:
+                    server.scene.add_mesh_trimesh("/torso_collision_cylinder", torso_cyl)
 
             if not show_segments:
                 # Sphere mode — update positions each frame
@@ -426,6 +467,7 @@ if __name__ == "__main__":
     HAND_LENGTH               = 0.15   # metres: hand origin → fingertip (= HAND_TIP_OFFSET)
     HAND_THICKNESS            = 0.04   # metres: hand capsule radius
     COLLISION_CYLINDER_RADIUS = 0.05   # metres: grab-site obstacle cylinder (= R_OBSTACLE)
+    TORSO_CYLINDER_RADIUS     = 0.16   # metres: initial torso collision proxy radius (segment mode)
 
     data_file_id = str(args.id)
     ret_or_ref = str(args.ret_or_ref)
@@ -444,6 +486,7 @@ if __name__ == "__main__":
         hand_length=HAND_LENGTH,
         hand_thickness=HAND_THICKNESS,
         collision_cylinder_radius=COLLISION_CYLINDER_RADIUS,
+        torso_cylinder_radius=TORSO_CYLINDER_RADIUS,
     )
 
 
