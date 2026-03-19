@@ -365,13 +365,23 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[2:-1] += 50. * tip_jerk ** 2
 
 
-            # [SOFT] Hand-tip approach shaping in X:
-            # Asymmetric X-distance cost: only penalize if hand is LEFT of grab point.
-            # Allows rightward movement without penalty, prevents self-intersection from leftward drift.
-            tip_x = transformed_tip[:grab_idx, 0]
+            # [SOFT] Hand-tip approach shaping in XY with directional bias:
+            # Use full 2D distance cost (like before) but with asymmetric weighting.
+            # Right of grab point: 1x cost (normal approach bias)
+            # Left of grab point: 3x cost (strong penalty to prevent self-intersection)
+            # This creates a gradient that pulls arm rightward while still penalizing other deviations.
+            tip_xy = transformed_tip[:grab_idx, :2]
+            tip_x = tip_xy[:, 0]
+            grab_xy = capsule_obs_pos[:2].unsqueeze(0)
             grab_x = grab_pos[0] + offset_x
-            x_dist_left = torch.relu(grab_x - tip_x)  # (G,) Distance to the left; 0 if to the right
-            approach_pen = x_dist_left ** 2
+
+            xy_dist = torch.norm(tip_xy - grab_xy, dim=1)  # (G,)
+            
+            # Asymmetric weight: 1x on right, 3x on left
+            is_left = (tip_x < grab_x).float()
+            weight_multiplier = 1.0 + 2.0 * is_left  # 1.0 if right, 3.0 if left
+            
+            approach_pen = xy_dist ** 2 * weight_multiplier
 
             n_trans = approach_pen.shape[0]
             if n_trans > 0:
