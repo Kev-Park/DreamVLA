@@ -51,7 +51,24 @@ RIGHT_ARM_SPEED_LIMITS = {
     "right_wrist_pitch_joint": 22.0,
     "right_wrist_yaw_joint": 22.0,
 }
+RIGHT_ARM_JOINT_LIMITS = {
+    "shoulder": {
+        "right_shoulder_pitch_joint": {"lower": -3.0892, "upper": 2.6704},
+        "right_shoulder_roll_joint": {"lower": -2.2515, "upper": 1.5882},
+        "right_shoulder_yaw_joint": {"lower": -2.618, "upper": 2.618},
+    },
+    "elbow": {
+        "right_elbow_joint": {"lower": -1.0472, "upper": 2.0944},
+    },
+    "wrist": {
+        "right_wrist_roll_joint": {"lower": -1.972222054, "upper": 1.972222054},
+        "right_wrist_pitch_joint": {"lower": -1.61443, "upper": 1.61443},
+        "right_wrist_yaw_joint": {"lower": -1.61443, "upper": 1.61443},
+    },
+}
+
 DOF_SPEED_CONSTRAINT_TOL = 1e-3  # rad/s
+JOINT_LIMIT_CONSTRAINT_TOL = 1e-4  # rad
 
 # Updated per motion file (fallback to TRAJ_FPS_DEFAULT)
 traj_fps_hz = TRAJ_FPS_DEFAULT
@@ -68,13 +85,21 @@ AL_INNER_ITERS    = 300       # Adam steps per outer iteration
 _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
+_last_g_joint_limits: torch.Tensor | None = None
+
+_RIGHT_ARM_JOINT_LIMITS_FLAT = {
+    **RIGHT_ARM_JOINT_LIMITS["shoulder"],
+    **RIGHT_ARM_JOINT_LIMITS["elbow"],
+    **RIGHT_ARM_JOINT_LIMITS["wrist"],
+}
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
                  lambda_table: torch.Tensor | None = None,
                  lambda_wrist: torch.Tensor | None = None,
                  lambda_dof_speed: torch.Tensor | None = None,
+                 lambda_joint_limits: torch.Tensor | None = None,
                  rho_al: float = AL_RHO_INIT):
-    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed
+    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_g_joint_limits
 
     def al_penalty(g, lam_vec=None):
         """Augmented-Lagrangian penalty for a hard constraint g >= 0.
@@ -100,6 +125,23 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     g_dof_speed_flat = g_dof_speed.reshape(-1)
     _last_g_dof_speed = g_dof_speed_flat.detach()
     dof_speed_hard_cost = torch.mean(al_penalty(g_dof_speed_flat, lam_vec=lambda_dof_speed))
+
+    # [ABS] Right-arm hard joint limits (rad), enforced via AL.
+    lower_limit_vec = torch.tensor(
+        [_RIGHT_ARM_JOINT_LIMITS_FLAT[name]["lower"] for name in active_joint_names],
+        device=joint_angles.device,
+        dtype=joint_angles.dtype,
+    ).unsqueeze(0)  # (1, 7)
+    upper_limit_vec = torch.tensor(
+        [_RIGHT_ARM_JOINT_LIMITS_FLAT[name]["upper"] for name in active_joint_names],
+        device=joint_angles.device,
+        dtype=joint_angles.dtype,
+    ).unsqueeze(0)  # (1, 7)
+    g_joint_lower = torch.relu(lower_limit_vec - joint_angles)  # (T, 7), lower-bound violation
+    g_joint_upper = torch.relu(joint_angles - upper_limit_vec)  # (T, 7), upper-bound violation
+    g_joint_limits_flat = torch.cat([g_joint_lower.reshape(-1), g_joint_upper.reshape(-1)], dim=0)
+    _last_g_joint_limits = g_joint_limits_flat.detach()
+    joint_limits_hard_cost = torch.mean(al_penalty(g_joint_limits_flat, lam_vec=lambda_joint_limits))
     
     # Forward kinematics to get link positions
     q_dict = {name: joint_angles[:, i] for i, name in enumerate( active_joint_names ) }
@@ -397,7 +439,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
         else:
             continue
 
-    return l2_cost + torch.mean(cost2) + dof_speed_hard_cost
+    return l2_cost + torch.mean(cost2) + dof_speed_hard_cost + joint_limits_hard_cost
 
 if VISUALIZE:
     urdf = yourdfpy.URDF.load('../../../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
@@ -475,6 +517,7 @@ for pkl_path in pkl_paths:
     wrist_gi = max(grab_idx - 15, 1)
     lambda_wrist  = torch.zeros(wrist_gi, device=DEVICE)  # wrist capsule dual vars (grab_idx-15 frames)
     lambda_dof_speed = torch.zeros((joint_angles.shape[0] - 1) * joint_angles.shape[1], device=DEVICE)
+    lambda_joint_limits = torch.zeros(2 * joint_angles.shape[0] * joint_angles.shape[1], device=DEVICE)
     # lambda_hand removed: hand collision is now a soft cost, not an AL hard constraint
     traj_fps_hz = float(motion_data.get("fps", motion_data.get("frame_rate", TRAJ_FPS_DEFAULT)))
     rho_al = AL_RHO_INIT
@@ -493,6 +536,7 @@ for pkl_path in pkl_paths:
                                 lambda_table=lambda_table,
                                 lambda_wrist=lambda_wrist,
                                 lambda_dof_speed=lambda_dof_speed,
+                                lambda_joint_limits=lambda_joint_limits,
                                 rho_al=rho_al)
             cost.backward()
             optimizer.step()
@@ -501,6 +545,7 @@ for pkl_path in pkl_paths:
         g_curr       = _last_g_t          # shape (grab_idx,)
         g_curr_wrist = _last_g_cap_wrist  # shape (grab_idx,)
         g_curr_dof_speed = _last_g_dof_speed  # shape ((T-1)*7,)
+        g_curr_joint_limits = _last_g_joint_limits  # shape (2*T*7,)
         if g_curr is None:
             break
 
@@ -511,19 +556,25 @@ for pkl_path in pkl_paths:
                 lambda_wrist = torch.clamp(lambda_wrist + rho_al * g_curr_wrist, min=0.0)
             if g_curr_dof_speed is not None:
                 lambda_dof_speed = torch.clamp(lambda_dof_speed + rho_al * g_curr_dof_speed, min=0.0)
+            if g_curr_joint_limits is not None:
+                lambda_joint_limits = torch.clamp(lambda_joint_limits + rho_al * g_curr_joint_limits, min=0.0)
 
         max_viol       = float(g_curr.max())
         max_viol_wrist = float(g_curr_wrist.max()) if g_curr_wrist is not None else 0.0
         max_viol_dof_speed = float(g_curr_dof_speed.max()) if g_curr_dof_speed is not None else 0.0
+        max_viol_joint_limits = float(g_curr_joint_limits.max()) if g_curr_joint_limits is not None else 0.0
         print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m  "
               f"wrist_cap={max_viol_wrist:.2e}m  dof_speed={max_viol_dof_speed:.2e}rad/s  "
+              f"joint_limits={max_viol_joint_limits:.2e}rad  "
               f"rho={rho_al:.1e}  cost={cost.item():.4f}")
 
         if (max_viol < TABLE_CONSTRAINT_TOL and
                 max_viol_wrist < TABLE_CONSTRAINT_TOL and
-                max_viol_dof_speed < DOF_SPEED_CONSTRAINT_TOL):
+                max_viol_dof_speed < DOF_SPEED_CONSTRAINT_TOL and
+                max_viol_joint_limits < JOINT_LIMIT_CONSTRAINT_TOL):
             print(f"  -> All constraints satisfied to table/wrist={TABLE_CONSTRAINT_TOL:.0e} m "
-                f"and dof_speed={DOF_SPEED_CONSTRAINT_TOL:.0e} rad/s. Done.")
+                f"and dof_speed={DOF_SPEED_CONSTRAINT_TOL:.0e} rad/s "
+                f"and joint_limits={JOINT_LIMIT_CONSTRAINT_TOL:.0e} rad. Done.")
             converged = True
             break
 
