@@ -249,6 +249,11 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
         spine_lower_idx = None
         spine_upper_idx = None
         print("  Torso cylinder fallback mode: root-vertical (spine links not found).")
+
+    left_ankle_name = _find_first_name(["left_ankle_roll_link", "left_ankle_pitch_link"], link_names)
+    right_ankle_name = _find_first_name(["right_ankle_roll_link", "right_ankle_pitch_link"], link_names)
+    left_ankle_idx = link_names.index(left_ankle_name) if left_ankle_name is not None else None
+    right_ankle_idx = link_names.index(right_ankle_name) if right_ankle_name is not None else None
     
     # Table cuboid matching refine_motions.py cost geometry:
     #   x_edge = wrist x at grab_idx (link 36, WRIST_TO_COLLISION and OFFSET_X cancel)
@@ -337,20 +342,27 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
             if show_segments:
                 torso_radius = float(torso_cylinder_radius)
                 if spine_lower_idx is not None and spine_upper_idx is not None:
-                    spine_p0 = global_keypts[tstep, spine_lower_idx, :]
-                    spine_p1 = global_keypts[tstep, spine_upper_idx, :]
+                    spine_lower_pt = global_keypts[tstep, spine_lower_idx, :]
+                    spine_upper_pt = global_keypts[tstep, spine_upper_idx, :]
                 else:
                     root_p = positions[tstep] + onp.array([0, 0, 0.035])
-                    torso_height = 0.55
-                    spine_p0 = root_p + onp.array([0.0, 0.0, 0.10])
-                    spine_p1 = root_p + onp.array([0.0, 0.0, 0.10 + torso_height])
+                    spine_lower_pt = root_p + onp.array([0.0, 0.0, 0.10])
+                    spine_upper_pt = root_p + onp.array([0.0, 0.0, 0.65])
+
+                center_xy = 0.5 * (spine_lower_pt[:2] + spine_upper_pt[:2])
+                if left_ankle_idx is not None and right_ankle_idx is not None:
+                    feet_z = min(global_keypts[tstep, left_ankle_idx, 2], global_keypts[tstep, right_ankle_idx, 2])
+                else:
+                    feet_z = float((positions[tstep] + onp.array([0, 0, 0.035]))[2] - 0.45)
+
+                spine_p0 = onp.array([center_xy[0], center_xy[1], feet_z])
+                spine_p1 = onp.array([center_xy[0], center_xy[1], spine_upper_pt[2]])
 
                 # Safety fallback if selected spine points collapse to near-zero distance.
                 if onp.linalg.norm(spine_p1 - spine_p0) < 1e-4:
                     root_p = positions[tstep] + onp.array([0, 0, 0.035])
-                    torso_height = 0.55
-                    spine_p0 = root_p + onp.array([0.0, 0.0, 0.10])
-                    spine_p1 = root_p + onp.array([0.0, 0.0, 0.10 + torso_height])
+                    spine_p0 = root_p + onp.array([0.0, 0.0, -0.35])
+                    spine_p1 = root_p + onp.array([0.0, 0.0, 0.65])
 
                 torso_cyl = _cylinder_between(
                     spine_p0,

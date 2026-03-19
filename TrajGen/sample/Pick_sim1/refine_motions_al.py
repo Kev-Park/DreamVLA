@@ -92,28 +92,31 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
         return (rho_use / 2.0) * g ** 2
 
     def segment_vertical_cylinder_collision_cost(p1_world, p2_world, cylinder_center_world,
+                                                 z_low_world, z_high_world,
                                                  segment_thickness, cylinder_radius):
-        """Finite arm segment capsule vs infinite vertical torso cylinder.
+        """Finite arm segment capsule vs finite vertical torso cylinder.
 
         p1_world, p2_world: segment endpoints in world frame, shape (N, 3)
         cylinder_center_world: torso-cylinder centerline point, shape (N, 3)
+        z_low_world, z_high_world: per-frame cylinder z bounds, shape (N,)
         Returns per-frame penetration depth >= 0, shape (N,)
         """
         r_total = segment_thickness + cylinder_radius
+        sample_t = torch.linspace(0.0, 1.0, 7, device=p1_world.device, dtype=p1_world.dtype).view(1, -1, 1)
+        pts = p1_world.unsqueeze(1) * (1.0 - sample_t) + p2_world.unsqueeze(1) * sample_t  # (N, 7, 3)
 
-        A = p1_world[:, :2]                         # (N, 2)
-        B = p2_world[:, :2]                         # (N, 2)
-        P = cylinder_center_world[:, :2]            # (N, 2)
+        center_xy = cylinder_center_world[:, :2].unsqueeze(1)  # (N, 1, 2)
+        d_xy = torch.norm(pts[:, :, :2] - center_xy, dim=2)     # (N, 7)
+        radial_pen = torch.relu(r_total - d_xy)                 # (N, 7)
 
-        AB = B - A                                  # (N, 2)
-        AP = P - A                                  # (N, 2)
-        ab2 = (AB * AB).sum(dim=1).clamp(min=1e-8) # (N,)
-        t = ((AP * AB).sum(dim=1) / ab2).clamp(0., 1.)
+        z_pts = pts[:, :, 2]                                     # (N, 7)
+        z_low = z_low_world.unsqueeze(1)                         # (N, 1)
+        z_high = z_high_world.unsqueeze(1)                       # (N, 1)
+        z_gate_k = 60.0
+        z_gate = torch.sigmoid(z_gate_k * (z_pts - z_low)) * torch.sigmoid(z_gate_k * (z_high - z_pts))
 
-        closest = A + t.unsqueeze(1) * AB           # (N, 2)
-        d_xy = torch.norm(P - closest, dim=1)       # (N,)
-
-        return torch.relu(r_total - d_xy)
+        pen = radial_pen * z_gate                                # (N, 7)
+        return torch.max(pen, dim=1).values                      # (N,)
 
     # L2 cost to target
     l2_cost = 0.*torch.nn.functional.mse_loss(joint_angles, target_joint_angles[:, active_joint_ids])
@@ -149,6 +152,25 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             torso_pos_root = fk_results[_torso_link_name].get_matrix()[:, :3, 3]
             torso_center_world = torch.bmm(torso_pos_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_base
             break
+
+    torso_top_world = torso_center_world
+    for _upper_link_name in ["head_link", "neck_link", "chest_link", "upper_torso_link", "imu_link", "torso_link"]:
+        if _upper_link_name in fk_results:
+            upper_pos_root = fk_results[_upper_link_name].get_matrix()[:, :3, 3]
+            torso_top_world = torch.bmm(upper_pos_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_base
+            break
+
+    left_foot_world = torso_center_world
+    right_foot_world = torso_center_world
+    if "left_ankle_roll_link" in fk_results:
+        left_pos_root = fk_results["left_ankle_roll_link"].get_matrix()[:, :3, 3]
+        left_foot_world = torch.bmm(left_pos_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_base
+    if "right_ankle_roll_link" in fk_results:
+        right_pos_root = fk_results["right_ankle_roll_link"].get_matrix()[:, :3, 3]
+        right_foot_world = torch.bmm(right_pos_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_base
+
+    torso_z_low_world = torch.minimum(left_foot_world[:, 2], right_foot_world[:, 2])
+    torso_z_high_world = torch.maximum(torso_top_world[:, 2], torso_z_low_world + 0.05)
 
     # Iterate over links and apply costs based on link positions and orientations
     for i, (link_name, tf) in enumerate(fk_results.items()):
@@ -294,6 +316,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     _wrist_pos_world,
                     transformed_hand_orig,
                     torso_center_world,
+                    torso_z_low_world,
+                    torso_z_high_world,
                     segment_thickness=WRIST_TORSO_SEGMENT_RADIUS,
                     cylinder_radius=TORSO_CYLINDER_RADIUS,
                 )
