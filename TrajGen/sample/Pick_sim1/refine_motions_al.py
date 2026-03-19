@@ -156,20 +156,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             transformed_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans_with_z
             transformed_keypts_ref = torch.bmm(pos_ref.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans_with_z
             
+            # displacement per pair of frames
             rel_dists = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)
 
             # GENERAL COSTS
             # [ABS] Penalize wrist speed changes (acceleration) and high speed relative to own trajectory
-            cost2[1:-1] += torch.abs(rel_dists[1:] - rel_dists[:-1])**2  # smoothness of own speed
-            cost2[1:] += 100*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
-
-            # [ABS] 3D wrist jerk penalty — penalises rapid acceleration changes (vibration/oscillation)
-            # vel[t] = pos[t+1]-pos[t] (N-1, 3), accel[t] = vel[t+1]-vel[t] (N-2, 3), jerk[t] = accel[t+1]-accel[t] (N-3, 3)
-            wrist_vel   = transformed_keypts[1:] - transformed_keypts[:-1]   # (N-1, 3)
-            wrist_accel = wrist_vel[1:] - wrist_vel[:-1]                     # (N-2, 3)
-            wrist_jerk  = wrist_accel[1:] - wrist_accel[:-1]                 # (N-3, 3)
-            cost2[2:-1] += 50. * torch.sum(wrist_jerk ** 2, dim=1)
-
+            wrist_accel = rel_dists[1:] - rel_dists[:-1]
+            cost2[1:-1] += 50*(wrist_accel)**2  # acceleration
+            cost2[1:] += 50*torch.abs(rel_dists)**2 # L2 speed magnitude (dominates large speeds)
+            wrist_jerk = wrist_accel[1:] - wrist_accel[:-1]
+            cost2[2:-1] += 50. * wrist_jerk ** 2
 
             # PRE-APPROACH COSTS
 
