@@ -358,9 +358,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # [ABS] Penalize hand-tip speed changes (acceleration), speed, and jerk
             tip_speed = torch.norm(transformed_tip[1:] - transformed_tip[:-1], dim=1)   # (N-1,) speed per frame
-            cost2[1:] += 50*torch.abs(tip_speed)**2  # L2 speed magnitude (dominates large speeds)
+            cost2[1:] += 25*torch.abs(tip_speed)**2  # L2 speed magnitude (dominates large speeds)
             tip_accel = tip_speed[1:] - tip_speed[:-1]
-            cost2[1:-1] += 50*(tip_accel)**2  # acceleration
+            cost2[1:-1] += 25*(tip_accel)**2  # acceleration
             tip_jerk = tip_accel[1:] - tip_accel[:-1]
             cost2[2:-1] += 50. * tip_jerk ** 2
 
