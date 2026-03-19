@@ -365,13 +365,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[2:-1] += 50. * tip_jerk ** 2
 
 
-            # [SOFT] Hand-tip approach shaping in XY:
-            # penalize only decreases in distance to grab-point XY, with quadratic growth,
-            # then linearly taper this penalty down over [taper_start, taper_end], where
-            # taper_end is the first frame the hand tip comes above the table height.
-            tip_xy_dist = torch.norm(transformed_tip[:grab_idx, :2] - capsule_obs_pos[:2].unsqueeze(0), dim=1)  # (G,)
-            dist_decrease = torch.relu(tip_xy_dist[:-1] - tip_xy_dist[1:])  # (G-1,), only when moving closer
-            approach_pen = dist_decrease ** 2
+            # [SOFT] Hand-tip approach shaping in X:
+            # Asymmetric X-distance cost: only penalize if hand is LEFT of grab point.
+            # Allows rightward movement without penalty, prevents self-intersection from leftward drift.
+            tip_x = transformed_tip[:grab_idx, 0]
+            grab_x = grab_pos[0] + offset_x
+            x_dist_left = torch.relu(grab_x - tip_x)  # (G,) Distance to the left; 0 if to the right
+            approach_pen = x_dist_left ** 2
 
             n_trans = approach_pen.shape[0]
             if n_trans > 0:
@@ -391,7 +391,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 taper[taper_mask] = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
 
                 HAND_APPROACH_SOFT_WEIGHT = 500.0
-                cost2[1:grab_idx] += HAND_APPROACH_SOFT_WEIGHT * taper * approach_pen
+                cost2[:grab_idx] += HAND_APPROACH_SOFT_WEIGHT * approach_pen
         else:
             continue
 
