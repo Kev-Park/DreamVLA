@@ -355,14 +355,14 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
                 else:
                     feet_z = float((positions[tstep] + onp.array([0, 0, 0.035]))[2] - 0.45)
 
-                spine_p0 = onp.array([center_xy[0], center_xy[1], feet_z])
-                spine_p1 = onp.array([center_xy[0], center_xy[1], spine_upper_pt[2]])
+                spine_p0 = onp.array([center_xy[0], center_xy[1], spine_upper_pt[2]])
+                spine_p1 = onp.array([center_xy[0], center_xy[1], feet_z])
 
                 # Safety fallback if selected spine points collapse to near-zero distance.
                 if onp.linalg.norm(spine_p1 - spine_p0) < 1e-4:
                     root_p = positions[tstep] + onp.array([0, 0, 0.035])
-                    spine_p0 = root_p + onp.array([0.0, 0.0, -0.35])
-                    spine_p1 = root_p + onp.array([0.0, 0.0, 0.65])
+                    spine_p0 = root_p + onp.array([0.0, 0.0, 0.65])
+                    spine_p1 = root_p + onp.array([0.0, 0.0, -0.35])
 
                 torso_cyl = _cylinder_between(
                     spine_p0,
