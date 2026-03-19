@@ -40,6 +40,8 @@ TIP_SPEED_WINDOW = 50
 SAVE_DIR = "../Pick_sim2/"
 TRAJ_FPS_DEFAULT = 20.0
 APPROACH_SPOOF_LEFT_X = 0.08
+TORSO_CYLINDER_RADIUS = 0.125
+WRIST_TORSO_SEGMENT_RADIUS = 0.03
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -89,6 +91,30 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             return lam * g + (rho_use / 2.0) * g ** 2
         return (rho_use / 2.0) * g ** 2
 
+    def segment_vertical_cylinder_collision_cost(p1_world, p2_world, cylinder_center_world,
+                                                 segment_thickness, cylinder_radius):
+        """Finite arm segment capsule vs infinite vertical torso cylinder.
+
+        p1_world, p2_world: segment endpoints in world frame, shape (N, 3)
+        cylinder_center_world: torso-cylinder centerline point, shape (N, 3)
+        Returns per-frame penetration depth >= 0, shape (N,)
+        """
+        r_total = segment_thickness + cylinder_radius
+
+        A = p1_world[:, :2]                         # (N, 2)
+        B = p2_world[:, :2]                         # (N, 2)
+        P = cylinder_center_world[:, :2]            # (N, 2)
+
+        AB = B - A                                  # (N, 2)
+        AP = P - A                                  # (N, 2)
+        ab2 = (AB * AB).sum(dim=1).clamp(min=1e-8) # (N,)
+        t = ((AP * AB).sum(dim=1) / ab2).clamp(0., 1.)
+
+        closest = A + t.unsqueeze(1) * AB           # (N, 2)
+        d_xy = torch.norm(P - closest, dim=1)       # (N,)
+
+        return torch.relu(r_total - d_xy)
+
     # L2 cost to target
     l2_cost = 0.*torch.nn.functional.mse_loss(joint_angles, target_joint_angles[:, active_joint_ids])
 
@@ -115,6 +141,14 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     # Collect all link positions
     cost2 = torch.zeros(joint_angles.shape[0], device=joint_angles.device)
     rot_matrix = quaternion_to_matrix(quats)
+    trans_with_z_base = trans + torch.tensor([0., 0., 0.035], device=trans.device)
+
+    torso_center_world = trans_with_z_base
+    for _torso_link_name in ["waist_yaw_link", "torso_link", "base_link"]:
+        if _torso_link_name in fk_results:
+            torso_pos_root = fk_results[_torso_link_name].get_matrix()[:, :3, 3]
+            torso_center_world = torch.bmm(torso_pos_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_base
+            break
 
     # Iterate over links and apply costs based on link positions and orientations
     for i, (link_name, tf) in enumerate(fk_results.items()):
@@ -252,34 +286,21 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # INTER-APPROACH COSTS
 
-            # [ABS] Forearm capsule collision — axis runs from wrist origin (link 36) toward hand
-            # origin (link 38), matching the visual in visualize_motions_pick.py.  We use the
-            # stashed _wrist_pos_world from the i==36 branch (already includes the 0.035 offset).
-            ENABLE_WRIST_CAPSULE_COST = False
-            if ENABLE_WRIST_CAPSULE_COST and '_wrist_pos_world' in dir():
-                forearm_dir_world = transformed_hand_orig - _wrist_pos_world  # (N, 3)
-                forearm_dist = torch.norm(forearm_dir_world, dim=1, keepdim=True).clamp(min=1e-8)  # (N, 1)
-                forearm_axis_world = forearm_dir_world / forearm_dist          # (N, 3) unit vector
-                # Build a rotation-matrix-like (N, 3, 3) where the first column is our axis.
-                forearm_rot_world = torch.zeros(forearm_axis_world.shape[0], 3, 3, device=DEVICE)
-                forearm_rot_world[:, :, 0] = forearm_axis_world
-                # Fill remaining columns with any orthonormal basis (only col-0 is used by capsule_collision_cost)
-                perp = torch.zeros_like(forearm_axis_world)
-                perp[:, 1] = 1.0
-                dot = (forearm_axis_world * perp).sum(dim=1, keepdim=True)
-                perp = perp - dot * forearm_axis_world
-                perp_norm = torch.norm(perp, dim=1, keepdim=True).clamp(min=1e-8)
-                perp = perp / perp_norm
-                forearm_rot_world[:, :, 1] = perp
-                forearm_rot_world[:, :, 2] = torch.linalg.cross(forearm_axis_world, perp)
-                g_cap_wrist = capsule_collision_cost(
-                    _wrist_pos_world, forearm_rot_world, segment_length=0.25, segment_thickness=0.03,
-                    collision_site=capsule_obs_pos
+            # [ABS] Hard torso-vs-wrist/forearm collision (AL, rho_other schedule).
+            # Forearm segment runs from wrist origin (i==36) to hand origin (i==38), and
+            # must stay outside the torso cylinder centered along robot spine.
+            if '_wrist_pos_world' in locals():
+                g_cap_wrist = segment_vertical_cylinder_collision_cost(
+                    _wrist_pos_world,
+                    transformed_hand_orig,
+                    torso_center_world,
+                    segment_thickness=WRIST_TORSO_SEGMENT_RADIUS,
+                    cylinder_radius=TORSO_CYLINDER_RADIUS,
                 )
             else:
                 g_cap_wrist = torch.zeros(transformed_hand_orig.shape[0], device=DEVICE)
-            _last_g_cap_wrist = g_cap_wrist[:max(grab_idx-15, 1)].detach()
-            cost2[:max(grab_idx-15, 1)] += al_penalty(g_cap_wrist[:max(grab_idx-15, 1)], lam_vec=lambda_wrist)
+            _last_g_cap_wrist = g_cap_wrist.detach()
+            cost2 += al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
@@ -478,8 +499,8 @@ for pkl_path in pkl_paths:
     # -----------------------------------------------------------------------
     table_gi = joint_angles.shape[0]
     lambda_table = torch.zeros(table_gi, device=DEVICE)   # table surface dual vars (full trajectory)
-    wrist_gi = max(grab_idx - 15, 1)
-    lambda_wrist  = torch.zeros(wrist_gi, device=DEVICE)  # wrist capsule dual vars (grab_idx-15 frames)
+    wrist_gi = joint_angles.shape[0]
+    lambda_wrist  = torch.zeros(wrist_gi, device=DEVICE)  # torso-vs-wrist capsule dual vars (full trajectory)
     lambda_dof_speed = torch.zeros((joint_angles.shape[0] - 1) * joint_angles.shape[1], device=DEVICE)
     # lambda_hand removed: hand collision is now a soft cost, not an AL hard constraint
     traj_fps_hz = float(motion_data.get("fps", motion_data.get("frame_rate", TRAJ_FPS_DEFAULT)))

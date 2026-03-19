@@ -139,7 +139,7 @@ def _find_first_name(candidates, names):
 
 def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
          hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05,
-         torso_cylinder_radius=0.16):
+         torso_cylinder_radius=0.125):
     
     urdf = yourdfpy.URDF.load('../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
     #urdf = yourdfpy.URDF.load('../../HumanoidVerse/humanoidverse/data/robots/g1/g1_paddle_hand_rigid.urdf')
@@ -192,7 +192,6 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
     urdf_vis = ViserUrdf(server, urdf, root_node_name="/base")
     playing = server.gui.add_checkbox("playing", True)
     timestep_slider = server.gui.add_slider("timestep", 0, num_timesteps - 1, 1, 0)
-    torso_radius_slider = server.gui.add_slider("torso_cyl_radius", 0.05, 0.45, 0.005, torso_cylinder_radius) if show_segments else None
     server.scene.add_mesh_trimesh("/heightmap", heightmap.to_trimesh())
 
     # weights = pk.viewer.WeightTuner(
@@ -335,8 +334,8 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
             # print(base_frame.position)
             urdf_vis.update_cfg(onp.array(joints[tstep]))
 
-            if show_segments and torso_radius_slider is not None:
-                torso_radius = float(torso_radius_slider.value)
+            if show_segments:
+                torso_radius = float(torso_cylinder_radius)
                 if spine_lower_idx is not None and spine_upper_idx is not None:
                     spine_p0 = global_keypts[tstep, spine_lower_idx, :]
                     spine_p1 = global_keypts[tstep, spine_upper_idx, :]
@@ -478,7 +477,7 @@ if __name__ == "__main__":
     HAND_LENGTH               = 0.15   # metres: hand origin → fingertip (= HAND_TIP_OFFSET)
     HAND_THICKNESS            = 0.04   # metres: hand capsule radius
     COLLISION_CYLINDER_RADIUS = 0.05   # metres: grab-site obstacle cylinder (= R_OBSTACLE)
-    TORSO_CYLINDER_RADIUS     = 0.16   # metres: initial torso collision proxy radius (segment mode)
+    TORSO_CYLINDER_RADIUS     = 0.125  # metres: fixed torso collision proxy radius (segment mode)
 
     data_file_id = str(args.id)
     ret_or_ref = str(args.ret_or_ref)
