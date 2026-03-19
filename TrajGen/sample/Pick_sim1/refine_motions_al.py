@@ -249,7 +249,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # [ABS] Forearm capsule collision — axis runs from wrist origin (link 36) toward hand
             # origin (link 38), matching the visual in visualize_motions_pick.py.  We use the
             # stashed _wrist_pos_world from the i==36 branch (already includes the 0.035 offset).
-            if '_wrist_pos_world' in dir():
+            ENABLE_WRIST_CAPSULE_COST = False
+            if ENABLE_WRIST_CAPSULE_COST and '_wrist_pos_world' in dir():
                 forearm_dir_world = transformed_hand_orig - _wrist_pos_world  # (N, 3)
                 forearm_dist = torch.norm(forearm_dir_world, dim=1, keepdim=True).clamp(min=1e-8)  # (N, 1)
                 forearm_axis_world = forearm_dir_world / forearm_dist          # (N, 3) unit vector
