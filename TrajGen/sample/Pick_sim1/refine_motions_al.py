@@ -39,6 +39,7 @@ HAND_TIP_OFFSET = 0.15
 TIP_SPEED_WINDOW = 50
 SAVE_DIR = "../Pick_sim2/"
 TRAJ_FPS_DEFAULT = 20.0
+APPROACH_SPOOF_LEFT_X = 0.08
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -365,23 +366,14 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2[2:-1] += 50. * tip_jerk ** 2
 
 
-            # [SOFT] Hand-tip approach shaping in XY with directional bias:
-            # Use full 2D distance cost (like before) but with asymmetric weighting.
-            # Right of grab point: 1x cost (normal approach bias)
-            # Left of grab point: 3x cost (strong penalty to prevent self-intersection)
-            # This creates a gradient that pulls arm rightward while still penalizing other deviations.
-            tip_xy = transformed_tip[:grab_idx, :2]
-            tip_x = tip_xy[:, 0]
-            grab_xy = capsule_obs_pos[:2].unsqueeze(0)
-            grab_x = grab_pos[0] + offset_x
-
-            xy_dist = torch.norm(tip_xy - grab_xy, dim=1)  # (G,)
-            
-            # Asymmetric weight: 1x on right, 3x on left
-            is_left = (tip_x < grab_x).float()
-            weight_multiplier = 1.0 + 2.0 * is_left  # 1.0 if right, 3.0 if left
-            
-            approach_pen = xy_dist ** 2 * weight_multiplier
+            # [SOFT] Hand-tip approach shaping in XY:
+            # Original quadratic distance-change cost, but with a spoofed capsule
+            # location shifted left in X to increase rightward bias.
+            spoof_capsule_xy = capsule_obs_pos[:2].clone()
+            spoof_capsule_xy[0] -= APPROACH_SPOOF_LEFT_X
+            tip_xy_dist = torch.norm(transformed_tip[:grab_idx, :2] - spoof_capsule_xy.unsqueeze(0), dim=1)  # (G,)
+            dist_decrease = torch.relu(tip_xy_dist[:-1] - tip_xy_dist[1:])  # (G-1,), only when moving closer
+            approach_pen = dist_decrease ** 2
 
             n_trans = approach_pen.shape[0]
             if n_trans > 0:
@@ -401,7 +393,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 taper[taper_mask] = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
 
                 HAND_APPROACH_SOFT_WEIGHT = 500.0
-                cost2[:grab_idx] += HAND_APPROACH_SOFT_WEIGHT * approach_pen
+                cost2[1:grab_idx] += HAND_APPROACH_SOFT_WEIGHT * taper * approach_pen
         else:
             continue
 
