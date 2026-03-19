@@ -69,6 +69,7 @@ RIGHT_ARM_JOINT_LIMITS = {
 
 DOF_SPEED_CONSTRAINT_TOL = 1e-3  # rad/s
 JOINT_LIMIT_CONSTRAINT_TOL = 1e-4  # rad
+JOINT_LIMIT_ORIGIN_MODE = "auto"  # one of: "urdf", "init-offset", "auto"
 
 # Updated per motion file (fallback to TRAJ_FPS_DEFAULT)
 traj_fps_hz = TRAJ_FPS_DEFAULT
@@ -86,6 +87,7 @@ _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
 _last_g_joint_limits: torch.Tensor | None = None
+_joint_limit_origin_offset_vec: torch.Tensor | None = None
 
 _RIGHT_ARM_JOINT_LIMITS_FLAT = {
     **RIGHT_ARM_JOINT_LIMITS["shoulder"],
@@ -127,16 +129,25 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     dof_speed_hard_cost = torch.mean(al_penalty(g_dof_speed_flat, lam_vec=lambda_dof_speed))
 
     # [ABS] Right-arm hard joint limits (rad), enforced via AL.
-    lower_limit_vec = torch.tensor(
+    base_lower_limit_vec = torch.tensor(
         [_RIGHT_ARM_JOINT_LIMITS_FLAT[name]["lower"] for name in active_joint_names],
         device=joint_angles.device,
         dtype=joint_angles.dtype,
     ).unsqueeze(0)  # (1, 7)
-    upper_limit_vec = torch.tensor(
+    base_upper_limit_vec = torch.tensor(
         [_RIGHT_ARM_JOINT_LIMITS_FLAT[name]["upper"] for name in active_joint_names],
         device=joint_angles.device,
         dtype=joint_angles.dtype,
     ).unsqueeze(0)  # (1, 7)
+    if _joint_limit_origin_offset_vec is not None:
+        joint_limit_origin_offset = _joint_limit_origin_offset_vec.to(
+            device=joint_angles.device,
+            dtype=joint_angles.dtype,
+        ).unsqueeze(0)
+    else:
+        joint_limit_origin_offset = torch.zeros_like(base_lower_limit_vec)
+    lower_limit_vec = base_lower_limit_vec + joint_limit_origin_offset
+    upper_limit_vec = base_upper_limit_vec + joint_limit_origin_offset
     g_joint_lower = torch.relu(lower_limit_vec - joint_angles)  # (T, 7), lower-bound violation
     g_joint_upper = torch.relu(joint_angles - upper_limit_vec)  # (T, 7), upper-bound violation
     g_joint_limits_flat = torch.cat([g_joint_lower.reshape(-1), g_joint_upper.reshape(-1)], dim=0)
@@ -503,6 +514,51 @@ for pkl_path in pkl_paths:
     # the full 3D point so the debug pkl renders the cyan sphere at the right height too.
     capsule_obs_pos = torch.tensor(np.array(motion_data['grab_pos']), dtype=torch.float32).to(DEVICE)
     ref_dists = torch.norm(wrist_keypts[1:] - wrist_keypts[:-1], dim=1)
+
+    # Configure joint-limit origin offset for this motion.
+    # URDF limits are defined around model zero, but some retargeted trajectories
+    # may be encoded around a nominal pose offset. "auto" picks the origin that
+    # yields smaller initial limit violation on the current trajectory.
+    base_lower_limit_vec = torch.tensor(
+        [_RIGHT_ARM_JOINT_LIMITS_FLAT[name]["lower"] for name in active_joint_names],
+        device=joint_angles.device,
+        dtype=joint_angles.dtype,
+    ).unsqueeze(0)
+    base_upper_limit_vec = torch.tensor(
+        [_RIGHT_ARM_JOINT_LIMITS_FLAT[name]["upper"] for name in active_joint_names],
+        device=joint_angles.device,
+        dtype=joint_angles.dtype,
+    ).unsqueeze(0)
+    init_offset_vec = torch.tensor(init_joint_angles, device=joint_angles.device, dtype=joint_angles.dtype)[active_joint_ids].unsqueeze(0)
+    q0 = joint_angles.detach()
+
+    viol_urdf = torch.maximum(
+        torch.relu(base_lower_limit_vec - q0),
+        torch.relu(q0 - base_upper_limit_vec),
+    )
+    max_viol_urdf = float(viol_urdf.max())
+
+    viol_init_offset = torch.maximum(
+        torch.relu((base_lower_limit_vec + init_offset_vec) - q0),
+        torch.relu(q0 - (base_upper_limit_vec + init_offset_vec)),
+    )
+    max_viol_init_offset = float(viol_init_offset.max())
+
+    if JOINT_LIMIT_ORIGIN_MODE == "urdf":
+        _joint_limit_origin_offset_vec = torch.zeros_like(init_offset_vec.squeeze(0))
+        chosen_origin = "urdf"
+    elif JOINT_LIMIT_ORIGIN_MODE == "init-offset":
+        _joint_limit_origin_offset_vec = init_offset_vec.squeeze(0).clone()
+        chosen_origin = "init-offset"
+    else:
+        use_init_offset = max_viol_init_offset < max_viol_urdf
+        _joint_limit_origin_offset_vec = init_offset_vec.squeeze(0).clone() if use_init_offset else torch.zeros_like(init_offset_vec.squeeze(0))
+        chosen_origin = "init-offset" if use_init_offset else "urdf"
+
+    print(
+        f"[JOINT LIMIT ORIGIN] mode={JOINT_LIMIT_ORIGIN_MODE} chosen={chosen_origin} "
+        f"init_max_viol(urdf)={max_viol_urdf:.2e}rad init_max_viol(init-offset)={max_viol_init_offset:.2e}rad"
+    )
 
     # -----------------------------------------------------------------------
     # Augmented Lagrangian optimisation
