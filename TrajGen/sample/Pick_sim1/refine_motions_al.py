@@ -61,6 +61,8 @@ traj_fps_hz = TRAJ_FPS_DEFAULT
 TABLE_CONSTRAINT_TOL = 1e-5   # 0.01 mm  – very tight: any tip penetration > this triggers AL update
 AL_RHO_INIT       = 50.0      # initial quadratic penalty weight
 AL_RHO_GROWTH     = 10.0      # penalty multiplier each outer iteration
+AL_RHO_INIT_TABLE = 10.0      # table-only initial penalty (slower start)
+AL_RHO_GROWTH_TABLE = 2.5     # table-only penalty growth (slower ramp)
 AL_RHO_MAX        = 1e8       # cap so gradients don't explode for quadratic hard optimization
 AL_OUTER_ITERS    = 40        # max AL outer iterations
 AL_INNER_ITERS    = 300       # Adam steps per outer iteration
@@ -74,16 +76,18 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                  lambda_table: torch.Tensor | None = None,
                  lambda_wrist: torch.Tensor | None = None,
                  lambda_dof_speed: torch.Tensor | None = None,
-                 rho_al: float = AL_RHO_INIT):
+                 rho_al: float = AL_RHO_INIT,
+                 rho_al_table: float | None = None):
     global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed
 
-    def al_penalty(g, lam_vec=None):
+    def al_penalty(g, lam_vec=None, rho_override: float | None = None):
         """Augmented-Lagrangian penalty for a hard constraint g >= 0.
         lam_vec: dedicated dual variable tensor; auto-sliced to len(g)."""
+        rho_use = rho_al if rho_override is None else rho_override
         if lam_vec is not None:
             lam = lam_vec[:len(g)]
-            return lam * g + (rho_al / 2.0) * g ** 2
-        return (rho_al / 2.0) * g ** 2
+            return lam * g + (rho_use / 2.0) * g ** 2
+        return (rho_use / 2.0) * g ** 2
 
     # L2 cost to target
     l2_cost = 0.*torch.nn.functional.mse_loss(joint_angles, target_joint_angles[:, active_joint_ids])
@@ -355,7 +359,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             table_gi = transformed_tip.shape[0]
             g_t = table_collision_cost(transformed_tip, transformed_hand_orig, table_gi)
             _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy) for hard optimization
-            cost2[:table_gi] += al_penalty(g_t, lam_vec=lambda_table)
+            cost2[:table_gi] += al_penalty(g_t, lam_vec=lambda_table, rho_override=rho_al_table)
 
 
             # [ABS] Penalize hand-tip speed changes (acceleration), speed, and jerk
@@ -479,13 +483,14 @@ for pkl_path in pkl_paths:
     # lambda_hand removed: hand collision is now a soft cost, not an AL hard constraint
     traj_fps_hz = float(motion_data.get("fps", motion_data.get("frame_rate", TRAJ_FPS_DEFAULT)))
     rho_al = AL_RHO_INIT
+    rho_al_table = AL_RHO_INIT_TABLE
 
     converged = False
     for outer_iter in range(AL_OUTER_ITERS):
-        # ---- inner minimisation with fixed dual vars and rho_al ----
+        # ---- inner minimisation with fixed dual vars and rho schedules ----
         # Re-create Adam so stale first/second-moment estimates from the previous
         # (lighter-penalty) outer iteration don't corrupt the step direction now
-        # that rho_al is much larger.
+        # that rho values are larger.
         optimizer = optim.Adam([joint_angles], lr=0.001)
         n_inner = AL_INNER_ITERS
         for i in range(n_inner):
@@ -494,7 +499,8 @@ for pkl_path in pkl_paths:
                                 lambda_table=lambda_table,
                                 lambda_wrist=lambda_wrist,
                                 lambda_dof_speed=lambda_dof_speed,
-                                rho_al=rho_al)
+                                rho_al=rho_al,
+                                rho_al_table=rho_al_table)
             cost.backward()
             optimizer.step()
 
@@ -507,7 +513,7 @@ for pkl_path in pkl_paths:
 
         # ---- dual (multiplier) update: λ ← max(0, λ + ρ·g) ----
         with torch.no_grad():
-            lambda_table = torch.clamp(lambda_table + rho_al * g_curr, min=0.0)
+            lambda_table = torch.clamp(lambda_table + rho_al_table * g_curr, min=0.0)
             if g_curr_wrist is not None:
                 lambda_wrist = torch.clamp(lambda_wrist + rho_al * g_curr_wrist, min=0.0)
             if g_curr_dof_speed is not None:
@@ -518,7 +524,7 @@ for pkl_path in pkl_paths:
         max_viol_dof_speed = float(g_curr_dof_speed.max()) if g_curr_dof_speed is not None else 0.0
         print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m  "
               f"wrist_cap={max_viol_wrist:.2e}m  dof_speed={max_viol_dof_speed:.2e}rad/s  "
-              f"rho={rho_al:.1e}  cost={cost.item():.4f}")
+              f"rho_table={rho_al_table:.1e}  rho_other={rho_al:.1e}  cost={cost.item():.4f}")
 
         if (max_viol < TABLE_CONSTRAINT_TOL and
                 max_viol_wrist < TABLE_CONSTRAINT_TOL and
@@ -529,6 +535,7 @@ for pkl_path in pkl_paths:
             break
 
         # ---- increase penalty for next outer iteration ----
+        rho_al_table = min(rho_al_table * AL_RHO_GROWTH_TABLE, AL_RHO_MAX)
         rho_al = min(rho_al * AL_RHO_GROWTH, AL_RHO_MAX)
 
     if not converged:
