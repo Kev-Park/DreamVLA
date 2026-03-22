@@ -42,6 +42,7 @@ TRAJ_FPS_DEFAULT = 20.0
 APPROACH_SPOOF_LEFT_X = 0.08
 TORSO_CYLINDER_RADIUS = 0.125
 WRIST_TORSO_SEGMENT_RADIUS = 0.03
+HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 
 # Right-arm hard speed limits (rad/s)
@@ -312,11 +313,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # INTER-APPROACH COSTS
 
-            # [ABS] Hard torso-vs-wrist/forearm collision (AL, rho_other schedule).
+            # [ABS] Hard torso-vs-arm collision (AL, rho_other schedule).
             # Forearm segment runs from wrist origin (i==36) to hand origin (i==38), and
-            # must stay outside the torso cylinder centered along robot spine.
+            # hand segment runs from hand origin to fingertip. Both must stay outside
+            # the torso cylinder centered along robot spine.
             if '_wrist_pos_world' in locals():
-                g_cap_wrist = segment_vertical_cylinder_collision_cost(
+                g_cap_forearm = segment_vertical_cylinder_collision_cost(
                     _wrist_pos_world,
                     transformed_hand_orig,
                     torso_center_world,
@@ -325,6 +327,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     segment_thickness=WRIST_TORSO_SEGMENT_RADIUS,
                     cylinder_radius=TORSO_CYLINDER_RADIUS,
                 )
+                g_cap_hand = segment_vertical_cylinder_collision_cost(
+                    transformed_hand_orig,
+                    transformed_tip,
+                    torso_center_world,
+                    torso_z_low_world,
+                    torso_z_high_world,
+                    segment_thickness=HAND_TORSO_SEGMENT_RADIUS,
+                    cylinder_radius=TORSO_CYLINDER_RADIUS,
+                )
+                g_cap_wrist = torch.maximum(g_cap_forearm, g_cap_hand)
             else:
                 g_cap_wrist = torch.zeros(transformed_hand_orig.shape[0], device=DEVICE)
             _last_g_cap_wrist = g_cap_wrist.detach()
