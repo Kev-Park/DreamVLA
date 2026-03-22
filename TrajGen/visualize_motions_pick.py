@@ -139,7 +139,7 @@ def _find_first_name(candidates, names):
 
 def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
          hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05,
-         torso_cylinder_radius=0.125, torso_cylinder_top_extension=0.25):
+         torso_cylinder_radius=0.125, torso_cylinder_top_extension=0.3):
     
     urdf = yourdfpy.URDF.load('../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
     #urdf = yourdfpy.URDF.load('../../HumanoidVerse/humanoidverse/data/robots/g1/g1_paddle_hand_rigid.urdf')
@@ -491,7 +491,7 @@ if __name__ == "__main__":
     HAND_THICKNESS            = 0.04   # metres: hand capsule radius
     COLLISION_CYLINDER_RADIUS = 0.05   # metres: grab-site obstacle cylinder (= R_OBSTACLE)
     TORSO_CYLINDER_RADIUS     = 0.125  # metres: fixed torso collision proxy radius (segment mode)
-    TORSO_CYLINDER_TOP_EXTENSION = 0.25  # metres: extend torso cylinder top into head area
+    TORSO_CYLINDER_TOP_EXTENSION = 0.3  # metres: extend torso cylinder top into head area
 
     data_file_id = str(args.id)
     ret_or_ref = str(args.ret_or_ref)
