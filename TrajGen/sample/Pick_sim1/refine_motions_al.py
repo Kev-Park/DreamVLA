@@ -36,7 +36,7 @@ VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
 HAND_TIP_OFFSET = 0.15
-BODY_TO_GRAB_TAPER_START_DIST = 0.10
+TIP_TO_TABLE_EDGE_TAPER_START_DIST = 0.05
 TIP_SPEED_WINDOW = 50
 SAVE_DIR = "../Pick_sim2/"
 TRAJ_FPS_DEFAULT = 20.0
@@ -446,13 +446,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             if n_trans > 0:
                 frame_ids = torch.arange(1, n_trans + 1, device=DEVICE, dtype=joint_angles.dtype)  # destination frames
                 z_table = offset_z
+                x_edge = grab_pos[0] + offset_x
                 tip_above_mask = transformed_tip[:grab_idx, 2] >= z_table
-                body_to_grab_xy = torch.norm(
-                    torso_center_world[:grab_idx, :2] - capsule_obs_pos[:2].unsqueeze(0),
-                    dim=1,
-                )
-                body_near_grab_mask = body_to_grab_xy <= BODY_TO_GRAB_TAPER_START_DIST
-                taper_start_mask = tip_above_mask & body_near_grab_mask
+                tip_near_table_edge_mask = torch.abs(transformed_tip[:grab_idx, 0] - x_edge) <= TIP_TO_TABLE_EDGE_TAPER_START_DIST
+                taper_start_mask = tip_above_mask & tip_near_table_edge_mask
                 above_idx = torch.nonzero(taper_start_mask, as_tuple=False)
                 if above_idx.numel() > 0:
                     taper_end = int(above_idx[0].item())
