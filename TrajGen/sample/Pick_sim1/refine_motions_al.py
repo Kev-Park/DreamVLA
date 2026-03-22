@@ -270,7 +270,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # Clamp effective end to actual sequence length — grab_idx can exceed N for some pkl files.
             laziness_end = min(max(grab_idx - 40, 0), joint_angles.shape[0])
             if laziness_end > 0:
-                laziness_weight = torch.linspace(1.0, 0.0, laziness_end, device=DEVICE)
+                laziness_weight = torch.linspace(1.0, 0.0, laziness_end, device=DEVICE) ** 2
                 cost2[:laziness_end] += laziness_weight * torch.sum(torch.abs(joint_angles[:laziness_end] - rest_pose), dim=1)
 
             # INTER-APPROACH COSTS
