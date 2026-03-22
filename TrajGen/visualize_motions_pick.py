@@ -139,7 +139,7 @@ def _find_first_name(candidates, names):
 
 def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
          hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05,
-         torso_cylinder_radius=0.125):
+         torso_cylinder_radius=0.125, torso_cylinder_top_extension=0.12):
     
     urdf = yourdfpy.URDF.load('../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
     #urdf = yourdfpy.URDF.load('../../HumanoidVerse/humanoidverse/data/robots/g1/g1_paddle_hand_rigid.urdf')
@@ -341,6 +341,7 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
 
             if show_segments:
                 torso_radius = float(torso_cylinder_radius)
+                torso_top_extension = float(torso_cylinder_top_extension)
                 if spine_lower_idx is not None and spine_upper_idx is not None:
                     spine_lower_pt = global_keypts[tstep, spine_lower_idx, :]
                     spine_upper_pt = global_keypts[tstep, spine_upper_idx, :]
@@ -355,13 +356,13 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
                 else:
                     feet_z = float((positions[tstep] + onp.array([0, 0, 0.035]))[2] - 0.45)
 
-                spine_p0 = onp.array([center_xy[0], center_xy[1], spine_upper_pt[2]])
+                spine_p0 = onp.array([center_xy[0], center_xy[1], spine_upper_pt[2] + torso_top_extension])
                 spine_p1 = onp.array([center_xy[0], center_xy[1], feet_z])
 
                 # Safety fallback if selected spine points collapse to near-zero distance.
                 if onp.linalg.norm(spine_p1 - spine_p0) < 1e-4:
                     root_p = positions[tstep] + onp.array([0, 0, 0.035])
-                    spine_p0 = root_p + onp.array([0.0, 0.0, 0.65])
+                    spine_p0 = root_p + onp.array([0.0, 0.0, 0.65 + torso_top_extension])
                     spine_p1 = root_p + onp.array([0.0, 0.0, -0.35])
 
                 torso_cyl = _cylinder_between(
@@ -490,6 +491,7 @@ if __name__ == "__main__":
     HAND_THICKNESS            = 0.04   # metres: hand capsule radius
     COLLISION_CYLINDER_RADIUS = 0.05   # metres: grab-site obstacle cylinder (= R_OBSTACLE)
     TORSO_CYLINDER_RADIUS     = 0.125  # metres: fixed torso collision proxy radius (segment mode)
+    TORSO_CYLINDER_TOP_EXTENSION = 0.12  # metres: extend torso cylinder top into head area
 
     data_file_id = str(args.id)
     ret_or_ref = str(args.ret_or_ref)
@@ -509,6 +511,7 @@ if __name__ == "__main__":
         hand_thickness=HAND_THICKNESS,
         collision_cylinder_radius=COLLISION_CYLINDER_RADIUS,
         torso_cylinder_radius=TORSO_CYLINDER_RADIUS,
+        torso_cylinder_top_extension=TORSO_CYLINDER_TOP_EXTENSION,
     )
 
 

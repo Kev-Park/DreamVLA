@@ -42,6 +42,7 @@ TRAJ_FPS_DEFAULT = 20.0
 APPROACH_SPOOF_LEFT_X = 0.08
 TORSO_CYLINDER_RADIUS = 0.125
 WRIST_TORSO_SEGMENT_RADIUS = 0.03
+TORSO_CYLINDER_TOP_EXTENSION = 0.12
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -170,7 +171,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
         right_foot_world = torch.bmm(right_pos_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_base
 
     torso_z_low_world = torch.minimum(left_foot_world[:, 2], right_foot_world[:, 2])
-    torso_z_high_world = torch.maximum(torso_top_world[:, 2], torso_z_low_world + 0.05)
+    torso_z_high_world = torch.maximum(
+        torso_top_world[:, 2] + TORSO_CYLINDER_TOP_EXTENSION,
+        torso_z_low_world + 0.05,
+    )
 
     # Iterate over links and apply costs based on link positions and orientations
     for i, (link_name, tf) in enumerate(fk_results.items()):
