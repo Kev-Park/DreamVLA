@@ -471,26 +471,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             n_trans = approach_pen.shape[0]
             if n_trans > 0:
                 frame_ids = torch.arange(1, n_trans + 1, device=DEVICE, dtype=joint_angles.dtype)  # destination frames
-                z_table = offset_z
-                x_edge = grab_pos[0] + offset_x
-                tip_above_mask = transformed_tip[:grab_idx, 2] >= z_table
-                tip_past_table_edge_mask = transformed_tip[:grab_idx, 0] >= x_edge
-                taper_start_mask = tip_above_mask & tip_past_table_edge_mask
-                above_idx = torch.nonzero(taper_start_mask, as_tuple=False)
-                if above_idx.numel() > 0:
-                    taper_end = int(above_idx[0].item())
-                else:
-                    taper_end = max(grab_idx - 10, 1)
-                taper_end = max(min(taper_end, n_trans), 1)
-                taper_start = max(taper_end - 10, 1)
                 taper = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
-                taper_mask = frame_ids >= float(taper_start)
-                taper_denom = max(taper_end - taper_start, 1)
-                taper_linear = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
-                taper[taper_mask] = taper_linear ** 2
 
                 # Smoothly ramp in from trajectory start up to (grab_idx - 40),
-                # then keep full strength until the existing taper-out window.
+                # then keep full strength for the rest of the approach window.
                 ramp_end = max(min(grab_idx - 40, n_trans), 1)
                 pre_ramp = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
                 pre_mask = frame_ids <= float(ramp_end)
