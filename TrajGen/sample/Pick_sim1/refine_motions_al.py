@@ -46,8 +46,7 @@ TORSO_CYLINDER_RADIUS = 0.125
 WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
-HAND_APPROACH_SOFT_WEIGHT_BASE = 2800.0
-HAND_APPROACH_SOFT_WEIGHT_ID29 = 8000.0
+HAND_APPROACH_SOFT_WEIGHT = 2800.0
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -68,9 +67,9 @@ traj_fps_hz = TRAJ_FPS_DEFAULT
 # --- Augmented Lagrangian settings ---
 TABLE_CONSTRAINT_TOL = 1e-5   # 0.01 mm  – very tight: any tip penetration > this triggers AL update
 AL_RHO_INIT       = 50.0      # initial quadratic penalty weight
-AL_RHO_GROWTH     = 10.0      # penalty multiplier each outer iteration
+AL_RHO_GROWTH     = 3.0      # penalty multiplier each outer iteration (reduced for soft cost influence)
 AL_RHO_INIT_TABLE = 10.0      # table-only initial penalty (slower start)
-AL_RHO_GROWTH_TABLE = 2.0     # table-only penalty growth (even slower ramp)
+AL_RHO_GROWTH_TABLE = 1.5     # table-only penalty growth (even slower ramp)
 AL_RHO_MAX        = 1e8       # cap so gradients don't explode for quadratic hard optimization
 AL_OUTER_ITERS    = 40        # max AL outer iterations
 AL_INNER_ITERS    = 300       # Adam steps per outer iteration
@@ -80,7 +79,6 @@ _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
 _last_cost_terms: dict[str, torch.Tensor] | None = None
-current_hand_approach_soft_weight = HAND_APPROACH_SOFT_WEIGHT_BASE
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
                  lambda_table: torch.Tensor | None = None,
@@ -88,7 +86,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                  lambda_dof_speed: torch.Tensor | None = None,
                  rho_al: float = AL_RHO_INIT,
                  rho_al_table: float | None = None):
-    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_cost_terms, current_hand_approach_soft_weight
+    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_cost_terms
 
     n_frames = joint_angles.shape[0]
     inv_n_frames = 1.0 / float(n_frames)
@@ -499,7 +497,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 pre_mask = frame_ids <= float(ramp_end)
                 pre_ramp[pre_mask] = (frame_ids[pre_mask] / float(ramp_end)) ** 2
 
-                approach_term = current_hand_approach_soft_weight * pre_ramp * taper * approach_pen
+                approach_term = HAND_APPROACH_SOFT_WEIGHT * pre_ramp * taper * approach_pen
                 cost2[1:grab_idx] += approach_term
                 approach_soft_contrib += torch.sum(approach_term) * inv_n_frames
         else:
@@ -510,7 +508,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     _last_cost_terms = {
         "total": total_cost.detach(),
         "l2": l2_cost.detach(),
-        "mean_cost2": mean_cost2.detach(),
+        "meanCost": mean_cost2.detach(),
         "dof_speed": dof_speed_hard_cost.detach(),
         "approach_soft": approach_soft_contrib.detach(),
         "table_hard": table_hard_contrib.detach(),
@@ -539,18 +537,6 @@ if VISUALIZE:
     server.scene.add_mesh_trimesh("/heightmap", heightmap.to_trimesh())
 
 for pkl_path in pkl_paths:
-
-    pkl_base = os.path.basename(pkl_path)
-    pkl_stem = os.path.splitext(pkl_base)[0]
-    stem_digits = re.findall(r"\d+", pkl_stem)
-    pkl_id = int(stem_digits[-1]) if len(stem_digits) > 0 else None
-    current_hand_approach_soft_weight = (
-        HAND_APPROACH_SOFT_WEIGHT_ID29 if pkl_id == 29 else HAND_APPROACH_SOFT_WEIGHT_BASE
-    )
-    print(
-        f"[approach_weight] file={pkl_base} id={pkl_id} "
-        f"weight={current_hand_approach_soft_weight:.1f}"
-    )
 
     motion_data = pkl.load(open(pkl_path, 'rb'))
 
@@ -661,13 +647,13 @@ for pkl_path in pkl_paths:
             wrist_c = float(_last_cost_terms["wrist_dyn"].item())
             dof_c = float(_last_cost_terms["dof_speed"].item())
             total_c = float(_last_cost_terms["total"].item())
-            mean_cost2_c = float(_last_cost_terms["mean_cost2"].item())
+            mean_cost2_c = float(_last_cost_terms["meanCost"].item())
             parts_abs = abs(app) + abs(table_c) + abs(wrist_cap_c) + abs(tip_c) + abs(wrist_c) + abs(dof_c)
             app_share = 100.0 * abs(app) / max(parts_abs, 1e-12)
             print(
                 f"  [cost-share] app={app:.3e} ({app_share:.1f}% parts)  "
-                f"table={table_c:.2e} wristCap={wrist_cap_c:.2e} tipDyn={tip_c:.2e} "
-                f"wristDyn={wrist_c:.2e} dof={dof_c:.2e} meanCost2={mean_cost2_c:.3e} total={total_c:.3e}"
+                f"table={table_c:.2e} selfCollide={wrist_cap_c:.2e} tipDyn={tip_c:.2e} "
+                f"wristDyn={wrist_c:.2e} dof={dof_c:.2e} meanCost={mean_cost2_c:.3e} total={total_c:.3e}"
             )
 
         if (max_viol < TABLE_CONSTRAINT_TOL and
