@@ -463,8 +463,15 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 taper_linear = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
                 taper[taper_mask] = taper_linear ** 2
 
-                HAND_APPROACH_SOFT_WEIGHT = 2800.0*0
-                cost2[1:grab_idx] += HAND_APPROACH_SOFT_WEIGHT * taper * approach_pen
+                # Smoothly ramp in from trajectory start up to (grab_idx - 40),
+                # then keep full strength until the existing taper-out window.
+                ramp_end = max(min(grab_idx - 40, n_trans), 1)
+                pre_ramp = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
+                pre_mask = frame_ids <= float(ramp_end)
+                pre_ramp[pre_mask] = (frame_ids[pre_mask] / float(ramp_end)) ** 2
+
+                HAND_APPROACH_SOFT_WEIGHT = 2800.0
+                cost2[1:grab_idx] += HAND_APPROACH_SOFT_WEIGHT * pre_ramp * taper * approach_pen
         else:
             continue
 
