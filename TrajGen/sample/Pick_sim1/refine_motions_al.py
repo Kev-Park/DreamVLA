@@ -538,6 +538,9 @@ if VISUALIZE:
 
 for pkl_path in pkl_paths:
 
+    pkl_base = os.path.basename(pkl_path)
+    print(f"[processing] {pkl_base}")
+
     motion_data = pkl.load(open(pkl_path, 'rb'))
 
     target_trans = torch.tensor(np.array(motion_data['global_position']), dtype=torch.float32).to(DEVICE)
