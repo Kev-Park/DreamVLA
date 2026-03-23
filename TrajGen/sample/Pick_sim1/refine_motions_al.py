@@ -47,7 +47,7 @@ WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 HAND_APPROACH_SOFT_WEIGHT_BASE = 2800.0
-HAND_APPROACH_SOFT_WEIGHT_ID29 = 4200.0
+HAND_APPROACH_SOFT_WEIGHT_ID29 = 8000.0
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -79,6 +79,7 @@ AL_INNER_ITERS    = 300       # Adam steps per outer iteration
 _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
+_last_cost_terms: dict[str, torch.Tensor] | None = None
 current_hand_approach_soft_weight = HAND_APPROACH_SOFT_WEIGHT_BASE
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
@@ -87,7 +88,15 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                  lambda_dof_speed: torch.Tensor | None = None,
                  rho_al: float = AL_RHO_INIT,
                  rho_al_table: float | None = None):
-    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, current_hand_approach_soft_weight
+    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_cost_terms, current_hand_approach_soft_weight
+
+    n_frames = joint_angles.shape[0]
+    inv_n_frames = 1.0 / float(n_frames)
+    wrist_dyn_contrib = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
+    tip_dyn_contrib = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
+    table_hard_contrib = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
+    wrist_cap_hard_contrib = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
+    approach_soft_contrib = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
 
     def al_penalty(g, lam_vec=None, rho_override: float | None = None):
         """Augmented-Lagrangian penalty for a hard constraint g >= 0.
@@ -234,10 +243,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # GENERAL COSTS
             # [ABS] Penalize wrist speed changes (acceleration) and high speed relative to own trajectory
             wrist_accel = rel_dists[1:] - rel_dists[:-1]
-            cost2[1:] += 50*torch.abs(rel_dists)**2 # L2 speed magnitude (dominates large speeds)
-            cost2[1:-1] += 50*(wrist_accel)**2  # acceleration
+            wrist_speed_term = 50 * torch.abs(rel_dists) ** 2
+            cost2[1:] += wrist_speed_term # L2 speed magnitude (dominates large speeds)
+            wrist_dyn_contrib += torch.sum(wrist_speed_term) * inv_n_frames
+            wrist_accel_term = 50 * (wrist_accel) ** 2
+            cost2[1:-1] += wrist_accel_term  # acceleration
+            wrist_dyn_contrib += torch.sum(wrist_accel_term) * inv_n_frames
             wrist_jerk = wrist_accel[1:] - wrist_accel[:-1]
-            cost2[2:-1] += 50. * wrist_jerk ** 2
+            wrist_jerk_term = 50. * wrist_jerk ** 2
+            cost2[2:-1] += wrist_jerk_term
+            wrist_dyn_contrib += torch.sum(wrist_jerk_term) * inv_n_frames
 
             # PRE-APPROACH COSTS
 
@@ -345,7 +360,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             else:
                 g_cap_wrist = torch.zeros(transformed_hand_orig.shape[0], device=DEVICE)
             _last_g_cap_wrist = g_cap_wrist.detach()
-            cost2 += al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
+            wrist_cap_term = al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
+            cost2 += wrist_cap_term
+            wrist_cap_hard_contrib += torch.sum(wrist_cap_term) * inv_n_frames
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
@@ -425,16 +442,24 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             table_gi = transformed_tip.shape[0]
             g_t = table_collision_cost(transformed_tip, transformed_hand_orig, table_gi)
             _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy) for hard optimization
-            cost2[:table_gi] += al_penalty(g_t, lam_vec=lambda_table, rho_override=rho_al_table)
+            table_term = al_penalty(g_t, lam_vec=lambda_table, rho_override=rho_al_table)
+            cost2[:table_gi] += table_term
+            table_hard_contrib += torch.sum(table_term) * inv_n_frames
 
 
             # [ABS] Penalize hand-tip speed changes (acceleration), speed, and jerk
             tip_speed = torch.norm(transformed_tip[1:] - transformed_tip[:-1], dim=1)   # (N-1,) speed per frame
-            cost2[1:] += 25*torch.abs(tip_speed)**2  # L2 speed magnitude (dominates large speeds)
+            tip_speed_term = 25 * torch.abs(tip_speed) ** 2
+            cost2[1:] += tip_speed_term  # L2 speed magnitude (dominates large speeds)
+            tip_dyn_contrib += torch.sum(tip_speed_term) * inv_n_frames
             tip_accel = tip_speed[1:] - tip_speed[:-1]
-            cost2[1:-1] += 25*(tip_accel)**2  # acceleration
+            tip_accel_term = 25 * (tip_accel) ** 2
+            cost2[1:-1] += tip_accel_term  # acceleration
+            tip_dyn_contrib += torch.sum(tip_accel_term) * inv_n_frames
             tip_jerk = tip_accel[1:] - tip_accel[:-1]
-            cost2[2:-1] += 50. * tip_jerk ** 2
+            tip_jerk_term = 50. * tip_jerk ** 2
+            cost2[2:-1] += tip_jerk_term
+            tip_dyn_contrib += torch.sum(tip_jerk_term) * inv_n_frames
 
 
             # [SOFT] Hand-tip approach shaping in XY:
@@ -474,11 +499,26 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 pre_mask = frame_ids <= float(ramp_end)
                 pre_ramp[pre_mask] = (frame_ids[pre_mask] / float(ramp_end)) ** 2
 
-                cost2[1:grab_idx] += current_hand_approach_soft_weight * pre_ramp * taper * approach_pen
+                approach_term = current_hand_approach_soft_weight * pre_ramp * taper * approach_pen
+                cost2[1:grab_idx] += approach_term
+                approach_soft_contrib += torch.sum(approach_term) * inv_n_frames
         else:
             continue
 
-    return l2_cost + torch.mean(cost2) + dof_speed_hard_cost
+    mean_cost2 = torch.mean(cost2)
+    total_cost = l2_cost + mean_cost2 + dof_speed_hard_cost
+    _last_cost_terms = {
+        "total": total_cost.detach(),
+        "l2": l2_cost.detach(),
+        "mean_cost2": mean_cost2.detach(),
+        "dof_speed": dof_speed_hard_cost.detach(),
+        "approach_soft": approach_soft_contrib.detach(),
+        "table_hard": table_hard_contrib.detach(),
+        "wrist_cap_hard": wrist_cap_hard_contrib.detach(),
+        "tip_dyn": tip_dyn_contrib.detach(),
+        "wrist_dyn": wrist_dyn_contrib.detach(),
+    }
+    return total_cost
 
 if VISUALIZE:
     urdf = yourdfpy.URDF.load('../../../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
@@ -613,6 +653,22 @@ for pkl_path in pkl_paths:
         print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m  "
               f"wrist_cap={max_viol_wrist:.2e}m  dof_speed={max_viol_dof_speed:.2e}rad/s  "
               f"rho_table={rho_al_table:.1e}  rho_other={rho_al:.1e}  cost={cost.item():.4f}")
+        if _last_cost_terms is not None:
+            app = float(_last_cost_terms["approach_soft"].item())
+            table_c = float(_last_cost_terms["table_hard"].item())
+            wrist_cap_c = float(_last_cost_terms["wrist_cap_hard"].item())
+            tip_c = float(_last_cost_terms["tip_dyn"].item())
+            wrist_c = float(_last_cost_terms["wrist_dyn"].item())
+            dof_c = float(_last_cost_terms["dof_speed"].item())
+            total_c = float(_last_cost_terms["total"].item())
+            mean_cost2_c = float(_last_cost_terms["mean_cost2"].item())
+            parts_abs = abs(app) + abs(table_c) + abs(wrist_cap_c) + abs(tip_c) + abs(wrist_c) + abs(dof_c)
+            app_share = 100.0 * abs(app) / max(parts_abs, 1e-12)
+            print(
+                f"  [cost-share] app={app:.3e} ({app_share:.1f}% parts)  "
+                f"table={table_c:.2e} wristCap={wrist_cap_c:.2e} tipDyn={tip_c:.2e} "
+                f"wristDyn={wrist_c:.2e} dof={dof_c:.2e} meanCost2={mean_cost2_c:.3e} total={total_c:.3e}"
+            )
 
         if (max_viol < TABLE_CONSTRAINT_TOL and
                 max_viol_wrist < TABLE_CONSTRAINT_TOL and
