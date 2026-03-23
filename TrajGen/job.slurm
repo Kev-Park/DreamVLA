@@ -6,7 +6,7 @@
 #SBATCH --mem=4G         # memory per cpu-core (4G is default)
 #SBATCH --gres=gpu:1             # number of GPUs per node
 #SBATCH --constraint=gpu80
-#SBATCH --time=1:00:00          # total run time limit (HH:MM:SS)
+#SBATCH --time=3:00:00          # total run time limit (HH:MM:SS)
 #SBATCH --mail-type=begin        # send email when job begins
 #SBATCH --mail-type=end          # send email when job ends
 #SBATCH --mail-type=fail         # send email if job fails
@@ -18,6 +18,6 @@ module load anaconda3/2025.6
 
 export CUDA_VISIBLE_DEVICES=0
 
-#bash collect_Pick.sh
-bash refine_Pick_al.sh
+bash collect_Pick.sh
+#bash refine_Pick_al.sh
 
