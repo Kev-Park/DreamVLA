@@ -461,27 +461,44 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
 
             # [SOFT] Hand-tip approach shaping in XY:
-            # Penalize being close to spoofed capsule location (reciprocal penalty),
-            # with the capsule shifted left in X to increase rightward bias.
+            # Original quadratic distance-change cost, but with a spoofed capsule
+            # location shifted left in X to increase rightward bias.
             spoof_capsule_xy = capsule_obs_pos[:2].clone()
             spoof_capsule_xy[0] -= APPROACH_SPOOF_LEFT_X
             tip_xy_dist = torch.norm(transformed_tip[:grab_idx, :2] - spoof_capsule_xy.unsqueeze(0), dim=1)  # (G,)
-            approach_pen = 1.0 / (tip_xy_dist.clamp(min=1e-3) + 0.01)  # (G,) - penalize small distances
+            dist_decrease = torch.relu(tip_xy_dist[:-1] - tip_xy_dist[1:])  # (G-1,), only when moving closer
+            approach_pen = dist_decrease ** 2
 
             n_trans = approach_pen.shape[0]
             if n_trans > 0:
                 frame_ids = torch.arange(1, n_trans + 1, device=DEVICE, dtype=joint_angles.dtype)  # destination frames
+                z_table = offset_z
+                x_edge = grab_pos[0] + offset_x
+                tip_above_mask = transformed_tip[:grab_idx, 2] >= z_table
+                tip_past_table_edge_mask = transformed_tip[:grab_idx, 0] >= x_edge
+                taper_start_mask = tip_above_mask & tip_past_table_edge_mask
+                above_idx = torch.nonzero(taper_start_mask, as_tuple=False)
+                if above_idx.numel() > 0:
+                    taper_end = int(above_idx[0].item())
+                else:
+                    taper_end = max(grab_idx - 10, 1)
+                taper_end = max(min(taper_end, n_trans), 1)
+                taper_start = max(taper_end - 10, 1)
                 taper = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
+                taper_mask = frame_ids >= float(taper_start)
+                taper_denom = max(taper_end - taper_start, 1)
+                taper_linear = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
+                taper[taper_mask] = taper_linear ** 2
 
                 # Smoothly ramp in from trajectory start up to (grab_idx - 40),
-                # then keep full strength for the rest of the approach window.
+                # then keep full strength until the existing taper-out window.
                 ramp_end = max(min(grab_idx - 40, n_trans), 1)
                 pre_ramp = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
                 pre_mask = frame_ids <= float(ramp_end)
                 pre_ramp[pre_mask] = (frame_ids[pre_mask] / float(ramp_end)) ** 2
 
                 approach_term = HAND_APPROACH_SOFT_WEIGHT * pre_ramp * taper * approach_pen
-                cost2[:grab_idx] += approach_term
+                cost2[1:grab_idx] += approach_term
                 approach_soft_contrib += torch.sum(approach_term) * inv_n_frames
         else:
             continue
