@@ -11,7 +11,6 @@
 #SBATCH --mail-type=end          # send email when job ends
 #SBATCH --mail-type=fail         # send email if job fails
 #SBATCH --mail-user=kp0374@princeton.edu
-#SBATCH --partition=gputest
 
 module purge
 module load anaconda3/2025.6
