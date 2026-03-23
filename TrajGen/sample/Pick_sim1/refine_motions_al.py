@@ -14,6 +14,7 @@ import pickle
 import time
 import trimesh
 import glob
+import re
 import torch.optim as optim
 from isaac_utils.rotations import(
     quat_conjugate,
@@ -45,6 +46,8 @@ TORSO_CYLINDER_RADIUS = 0.125
 WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
+HAND_APPROACH_SOFT_WEIGHT_BASE = 2800.0
+HAND_APPROACH_SOFT_WEIGHT_ID29 = 4200.0
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -76,6 +79,7 @@ AL_INNER_ITERS    = 300       # Adam steps per outer iteration
 _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
+current_hand_approach_soft_weight = HAND_APPROACH_SOFT_WEIGHT_BASE
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
                  lambda_table: torch.Tensor | None = None,
@@ -83,7 +87,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                  lambda_dof_speed: torch.Tensor | None = None,
                  rho_al: float = AL_RHO_INIT,
                  rho_al_table: float | None = None):
-    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed
+    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, current_hand_approach_soft_weight
 
     def al_penalty(g, lam_vec=None, rho_override: float | None = None):
         """Augmented-Lagrangian penalty for a hard constraint g >= 0.
@@ -470,8 +474,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 pre_mask = frame_ids <= float(ramp_end)
                 pre_ramp[pre_mask] = (frame_ids[pre_mask] / float(ramp_end)) ** 2
 
-                HAND_APPROACH_SOFT_WEIGHT = 2800.0
-                cost2[1:grab_idx] += HAND_APPROACH_SOFT_WEIGHT * pre_ramp * taper * approach_pen
+                cost2[1:grab_idx] += current_hand_approach_soft_weight * pre_ramp * taper * approach_pen
         else:
             continue
 
@@ -496,6 +499,18 @@ if VISUALIZE:
     server.scene.add_mesh_trimesh("/heightmap", heightmap.to_trimesh())
 
 for pkl_path in pkl_paths:
+
+    pkl_base = os.path.basename(pkl_path)
+    pkl_stem = os.path.splitext(pkl_base)[0]
+    stem_digits = re.findall(r"\d+", pkl_stem)
+    pkl_id = int(stem_digits[-1]) if len(stem_digits) > 0 else None
+    current_hand_approach_soft_weight = (
+        HAND_APPROACH_SOFT_WEIGHT_ID29 if pkl_id == 29 else HAND_APPROACH_SOFT_WEIGHT_BASE
+    )
+    print(
+        f"[approach_weight] file={pkl_base} id={pkl_id} "
+        f"weight={current_hand_approach_soft_weight:.1f}"
+    )
 
     motion_data = pkl.load(open(pkl_path, 'rb'))
 
