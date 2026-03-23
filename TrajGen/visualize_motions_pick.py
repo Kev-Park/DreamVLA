@@ -490,7 +490,7 @@ if __name__ == "__main__":
     HAND_LENGTH               = 0.15   # metres: hand origin → fingertip (= HAND_TIP_OFFSET)
     HAND_THICKNESS            = 0.04   # metres: hand capsule radius
     COLLISION_CYLINDER_RADIUS = 0.05   # metres: grab-site obstacle cylinder (= R_OBSTACLE)
-    TORSO_CYLINDER_RADIUS     = 0.125  # metres: fixed torso collision proxy radius (segment mode)
+    TORSO_CYLINDER_RADIUS     = 0.135  # metres: fixed torso collision proxy radius (segment mode)
     TORSO_CYLINDER_TOP_EXTENSION = 0.35  # metres: extend torso cylinder top into head area
 
     data_file_id = str(args.id)
