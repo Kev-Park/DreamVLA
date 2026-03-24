@@ -294,16 +294,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z, device=DEVICE)) # freeze reference height
             
             
-            # constrain wrist to approach grab point
-            wrist_grab_start = max(grab_idx - 25, 0)
-            wrist_grab_end = min(grab_idx + 20, transformed_keypts.shape[0])
-            if wrist_grab_end > wrist_grab_start:
-                wrist_to_grab = transformed_keypts[wrist_grab_start:wrist_grab_end] - capsule_obs_pos.unsqueeze(0)
-                wrist_to_grab_norm = torch.norm(wrist_to_grab, dim=1)
-                wrist_grab_charb = WRIST_GRAB_CHARB_WEIGHT * (
-                    torch.sqrt(wrist_to_grab_norm ** 2 + WRIST_GRAB_CHARB_EPS ** 2) - WRIST_GRAB_CHARB_EPS
-                )
-                cost2[wrist_grab_start:wrist_grab_end] += wrist_grab_charb
+            # Defer wrist-to-grab cost application to the hand-link block (i==38),
+            # where the over-table trigger for distance-maximization is computed.
+            _pending_wrist_grab_world = transformed_keypts
 
 
             cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
@@ -487,12 +480,29 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 tip_past_table_edge_mask = transformed_tip[:grab_idx, 0] >= x_edge
                 taper_start_mask = tip_above_mask & tip_past_table_edge_mask
                 above_idx = torch.nonzero(taper_start_mask, as_tuple=False)
+
                 if above_idx.numel() > 0:
                     taper_end = int(above_idx[0].item())
                 else:
                     taper_end = max(grab_idx - 10, 1)
                 taper_end = max(min(taper_end, n_trans), 1)
+
                 taper_start = max(taper_end - 10, 1)
+
+                # Constrain wrist-to-grab only after distance-maximization starts to taper off.
+                # Taper begins at taper_start, so activate from the next frame onward.
+                distance_max_taper_start_frame = taper_start
+                if '_pending_wrist_grab_world' in locals():
+                    wrist_grab_start = max(grab_idx - 25, distance_max_taper_start_frame + 1)
+                    wrist_grab_end = min(grab_idx + 20, _pending_wrist_grab_world.shape[0])
+                    if wrist_grab_end > wrist_grab_start:
+                        wrist_to_grab = _pending_wrist_grab_world[wrist_grab_start:wrist_grab_end] - capsule_obs_pos.unsqueeze(0)
+                        wrist_to_grab_norm = torch.norm(wrist_to_grab, dim=1)
+                        wrist_grab_charb = WRIST_GRAB_CHARB_WEIGHT * (
+                            torch.sqrt(wrist_to_grab_norm ** 2 + WRIST_GRAB_CHARB_EPS ** 2) - WRIST_GRAB_CHARB_EPS
+                        )
+                        cost2[wrist_grab_start:wrist_grab_end] += wrist_grab_charb
+
                 taper = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
                 taper_mask = frame_ids >= float(taper_start)
                 taper_denom = max(taper_end - taper_start, 1)
