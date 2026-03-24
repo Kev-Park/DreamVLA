@@ -339,15 +339,15 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             cost2 += wrist_cap_term
             wrist_cap_hard_contrib += torch.sum(wrist_cap_term) * inv_n_frames
 
-            # Hand neutral orientation penalty: quadratic deviation from reference hand rotation
-            # from grab_idx-40 onwards (straight/neutral hand posture)
+            # Hand neutral orientation penalty: quadratic deviation from neutral straight hand pose
+            # from grab_idx-40 onwards (palm vertical, pointing straight outward)
             hand_neutral_start = max(grab_idx - 40, 0)
             if hand_neutral_start < rot_mat.shape[0]:
-                hand_rot_ref = fk_results_ref[link_name].get_matrix()[:, :3, :3]
-                hand_rot_ref = torch.bmm(rot_matrix, hand_rot_ref)
+                # Define neutral hand orientation: identity rotation in world frame (hand axes aligned with world axes)
+                hand_rot_neutral = torch.eye(3, device=DEVICE, dtype=rot_mat.dtype).unsqueeze(0).expand(rot_mat.shape[0], -1, -1)
                 
-                # Compute rotation difference as Frobenius norm: ||R - R_ref||_F
-                rot_diff = rot_mat[hand_neutral_start:] - hand_rot_ref[hand_neutral_start:]
+                # Compute rotation difference as Frobenius norm: ||R - R_neutral||_F
+                rot_diff = rot_mat[hand_neutral_start:] - hand_rot_neutral[hand_neutral_start:]
                 rot_dev = torch.norm(rot_diff, p='fro', dim=(1, 2))  # Frobenius norm per frame
                 
                 # Quadratic penalty starting from hand_neutral_start
