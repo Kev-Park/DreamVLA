@@ -48,8 +48,8 @@ HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 HAND_APPROACH_SOFT_WEIGHT = 3000.0 # distance bias
 
-WRIST_GRAB_CHARB_WEIGHT = 20.0 # wrist-to-grab Charbonnier distance (final approach)
-WRIST_GRAB_CHARB_EPS = 1e-3 # meters, smooth near-zero Charbonnier epsilon
+WRIST_GRAB_CHARB_WEIGHT = 8.0 # wrist-to-grab Charbonnier distance (final approach)
+WRIST_GRAB_CHARB_EPS =2e-3 # meters, smooth near-zero Charbonnier epsilon
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
