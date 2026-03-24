@@ -340,8 +340,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             wrist_cap_hard_contrib += torch.sum(wrist_cap_term) * inv_n_frames
 
             # Hand neutral orientation penalty: quadratic deviation from neutral straight hand pose
-            # from grab_idx-40 onwards (palm vertical, pointing straight outward)
-            hand_neutral_start = max(grab_idx - 40, 0)
+            # from grab_idx-20 onwards (palm vertical, pointing straight outward)
+            hand_neutral_start = max(grab_idx - 20, 0)
             if hand_neutral_start < rot_mat.shape[0]:
                 # Define neutral hand orientation: identity rotation in world frame (hand axes aligned with world axes)
                 hand_rot_neutral = torch.eye(3, device=DEVICE, dtype=rot_mat.dtype).unsqueeze(0).expand(rot_mat.shape[0], -1, -1)
