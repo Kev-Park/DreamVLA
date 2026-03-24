@@ -309,13 +309,22 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # Hand joint origin in world frame — forms the other edge of the swept quad
             transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
 
-            # [REF] Make palm normal face grab point location, with linear ramp-up from grab_idx-20 to grab_idx.
+            # [REF] Make palm normal face grab point location in the horizontal plane (XY only),
+            # with linear ramp-up from grab_idx-20 to grab_idx.
             eps = 1e-6
             palm_normal_world = PALM_NORMAL_SIGN * rot_mat[:, :, PALM_NORMAL_AXIS]
-            palm_normal_world = palm_normal_world / torch.clamp(torch.norm(palm_normal_world, dim=1, keepdim=True), min=eps)
             to_grab = capsule_obs_pos.unsqueeze(0) - transformed_hand_orig
-            to_grab_dir = to_grab / torch.clamp(torch.norm(to_grab, dim=1, keepdim=True), min=eps)
-            palm_align = torch.sum(palm_normal_world * to_grab_dir, dim=1).clamp(-1.0, 1.0)
+
+            # Ignore vertical component to avoid driving pitch/up-down orientation.
+            palm_normal_xy = palm_normal_world.clone()
+            palm_normal_xy[:, 2] = 0.0
+            palm_normal_xy = palm_normal_xy / torch.clamp(torch.norm(palm_normal_xy, dim=1, keepdim=True), min=eps)
+
+            to_grab_xy = to_grab.clone()
+            to_grab_xy[:, 2] = 0.0
+            to_grab_dir_xy = to_grab_xy / torch.clamp(torch.norm(to_grab_xy, dim=1, keepdim=True), min=eps)
+
+            palm_align = torch.sum(palm_normal_xy * to_grab_dir_xy, dim=1).clamp(-1.0, 1.0)
             orient_error = 1.0 - palm_align
 
             orient_weight = torch.zeros_like(orient_error)
