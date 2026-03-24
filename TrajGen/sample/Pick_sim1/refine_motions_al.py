@@ -47,7 +47,7 @@ WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 HAND_APPROACH_SOFT_WEIGHT = 3000.0 # distance bias
-WRIST_GRAB_QUAD_WEIGHT = 1200.0 # wrist-to-grab quadratic distance (final approach)
+WRIST_GRAB_QUAD_WEIGHT = 800.0 # wrist-to-grab quadratic distance (final approach)
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -290,14 +290,18 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[grab_idx:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
             transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z, device=DEVICE)) # freeze reference height
+            
+            
             # constrain wrist to approach grab point
-            wrist_grab_start = max(grab_idx - 15, 0)
+            wrist_grab_start = max(grab_idx - 25, 0)
             wrist_grab_end = min(grab_idx, transformed_keypts.shape[0])
             if wrist_grab_end > wrist_grab_start:
                 wrist_to_grab = transformed_keypts[wrist_grab_start:wrist_grab_end] - capsule_obs_pos.unsqueeze(0)
                 wrist_grab_quad = WRIST_GRAB_QUAD_WEIGHT * torch.sum(wrist_to_grab ** 2, dim=1)
                 cost2[wrist_grab_start:wrist_grab_end] += wrist_grab_quad
-            cost2[grab_idx-15:grab_idx] += torch.norm(transformed_keypts[grab_idx-15:grab_idx] - transformed_keypts_ref[grab_idx-15:grab_idx], dim=1, p=2) # penalize distance from reference after grab
+
+
+            cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
 
         elif i == 38: # right hand link (red dot in viser)
             rot_mat = tf.get_matrix()[:,:3,:3]
