@@ -351,7 +351,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 rot_dev = torch.norm(rot_diff, p='fro', dim=(1, 2))  # Frobenius norm per frame
                 
                 # Quadratic penalty starting from hand_neutral_start
-                hand_neutral_cost = 50.0 * rot_dev ** 2
+                hand_neutral_cost = 30.0 * rot_dev ** 2
                 cost2[hand_neutral_start:] += hand_neutral_cost
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
