@@ -46,6 +46,7 @@ TORSO_CYLINDER_RADIUS = 0.125
 WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
+TORSO_COLLISIONS_ENABLED = False
 HAND_APPROACH_SOFT_WEIGHT = 3000.0 # distance bias
 
 WRIST_GRAB_CHARB_WEIGHT = 1.0 # wrist-to-grab Charbonnier distance (final approach)
@@ -344,10 +345,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 g_cap_wrist = torch.maximum(g_cap_forearm, g_cap_hand)
             else:
                 g_cap_wrist = torch.zeros(transformed_hand_orig.shape[0], device=DEVICE)
-            _last_g_cap_wrist = g_cap_wrist.detach()
-            wrist_cap_term = al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
-            cost2 += wrist_cap_term
-            wrist_cap_hard_contrib += torch.sum(wrist_cap_term) * inv_n_frames
+            if TORSO_COLLISIONS_ENABLED:
+                _last_g_cap_wrist = g_cap_wrist.detach()
+                wrist_cap_term = al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
+                cost2 += wrist_cap_term
+                wrist_cap_hard_contrib += torch.sum(wrist_cap_term) * inv_n_frames
+            else:
+                _last_g_cap_wrist = torch.zeros_like(g_cap_wrist).detach()
 
             # Hand neutral orientation penalty: quadratic deviation from neutral straight hand pose
             # from grab_idx-20 onwards (palm vertical, pointing straight outward)
@@ -650,7 +654,7 @@ for pkl_path in pkl_paths:
         # ---- dual (multiplier) update: λ ← max(0, λ + ρ·g) ----
         with torch.no_grad():
             lambda_table = torch.clamp(lambda_table + rho_al_table * g_curr, min=0.0)
-            if g_curr_wrist is not None:
+            if TORSO_COLLISIONS_ENABLED and g_curr_wrist is not None:
                 lambda_wrist = torch.clamp(lambda_wrist + rho_al * g_curr_wrist, min=0.0)
             if g_curr_dof_speed is not None:
                 lambda_dof_speed = torch.clamp(lambda_dof_speed + rho_al * g_curr_dof_speed, min=0.0)
