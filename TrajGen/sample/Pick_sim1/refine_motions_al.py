@@ -484,11 +484,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 taper_end = max(min(taper_end, n_trans), 1)
                 taper_start = max(taper_end - 10, 1)
                 taper = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
-                # DISABLED: taper-off at the end — keep penalty constant throughout
-                # taper_mask = frame_ids >= float(taper_start)
-                # taper_denom = max(taper_end - taper_start, 1)
-                # taper_linear = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
-                # taper[taper_mask] = taper_linear ** 2
+                taper_mask = frame_ids >= float(taper_start)
+                taper_denom = max(taper_end - taper_start, 1)
+                taper_linear = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
+                taper[taper_mask] = taper_linear ** 2
 
                 # Smoothly ramp in from trajectory start up to (grab_idx - 40),
                 # then keep full strength until the existing taper-out window.
