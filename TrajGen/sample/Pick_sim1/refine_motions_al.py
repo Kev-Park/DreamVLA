@@ -47,7 +47,8 @@ WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 HAND_APPROACH_SOFT_WEIGHT = 3000.0 # distance bias
-WRIST_GRAB_QUAD_WEIGHT = 800.0 # wrist-to-grab quadratic distance (final approach)
+WRIST_GRAB_CHARB_WEIGHT = 800.0 # wrist-to-grab Charbonnier distance (final approach)
+WRIST_GRAB_CHARB_EPS = 1e-3 # meters, smooth near-zero Charbonnier epsilon
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -294,11 +295,14 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             
             # constrain wrist to approach grab point
             wrist_grab_start = max(grab_idx - 25, 0)
-            wrist_grab_end = min(grab_idx, transformed_keypts.shape[0])
+            wrist_grab_end = min(grab_idx + 20, transformed_keypts.shape[0])
             if wrist_grab_end > wrist_grab_start:
                 wrist_to_grab = transformed_keypts[wrist_grab_start:wrist_grab_end] - capsule_obs_pos.unsqueeze(0)
-                wrist_grab_quad = WRIST_GRAB_QUAD_WEIGHT * torch.sum(wrist_to_grab ** 2, dim=1)
-                cost2[wrist_grab_start:wrist_grab_end] += wrist_grab_quad
+                wrist_to_grab_norm = torch.norm(wrist_to_grab, dim=1)
+                wrist_grab_charb = WRIST_GRAB_CHARB_WEIGHT * (
+                    torch.sqrt(wrist_to_grab_norm ** 2 + WRIST_GRAB_CHARB_EPS ** 2) - WRIST_GRAB_CHARB_EPS
+                )
+                cost2[wrist_grab_start:wrist_grab_end] += wrist_grab_charb
 
 
             cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
