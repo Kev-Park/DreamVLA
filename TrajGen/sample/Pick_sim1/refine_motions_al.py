@@ -461,12 +461,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
 
             # [SOFT] Hand-tip approach shaping in XY:
-            # Penalize being close to spoofed capsule location (reciprocal penalty),
+            # Penalize only movements that reduce distance to spoofed capsule location,
             # with the capsule shifted in +Y (90° clockwise from prior -X shift in XY plane).
             spoof_capsule_xy = capsule_obs_pos[:2].clone()
             spoof_capsule_xy[1] += APPROACH_SPOOF_LEFT_X
             tip_xy_dist = torch.norm(transformed_tip[:grab_idx, :2] - spoof_capsule_xy.unsqueeze(0), dim=1)  # (G,)
-            approach_pen = 1.0 / (tip_xy_dist.clamp(min=1e-3) + 0.01)  # (G,) - penalize small distances
+            dist_decrease = torch.relu(tip_xy_dist[:-1] - tip_xy_dist[1:])  # (G-1,), only when moving closer
+            approach_pen = dist_decrease ** 2
 
             n_trans = approach_pen.shape[0]
             if n_trans > 0:
@@ -497,7 +498,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 pre_ramp[pre_mask] = (frame_ids[pre_mask] / float(ramp_end)) ** 2
 
                 approach_term = HAND_APPROACH_SOFT_WEIGHT * pre_ramp * taper * approach_pen
-                cost2[:grab_idx] += approach_term
+                cost2[1:grab_idx] += approach_term
                 approach_soft_contrib += torch.sum(approach_term) * inv_n_frames
         else:
             continue
