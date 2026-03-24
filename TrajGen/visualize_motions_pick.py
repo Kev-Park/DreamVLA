@@ -279,15 +279,15 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
         server.scene.add_mesh_trimesh("/collision_cylinder", cyl)
 
         # Spoofed collision cylinder used by refine_motions_al.py approach shaping:
-        # spoof_capsule_xy[0] = capsule_obs_pos[0] - APPROACH_SPOOF_LEFT_X
+        # spoof_capsule_xy[1] = capsule_obs_pos[1] + APPROACH_SPOOF_LEFT_X
         spoof_cyl = trimesh.creation.cylinder(radius=collision_cylinder_radius, height=3.0, sections=32)
         spoof_cyl_tf = onp.eye(4)
-        spoof_x = float(grab_pos[0] - approach_spoof_left_x)
-        spoof_cyl_tf[:3, 3] = [spoof_x, grab_pos[1], 1.5]
+        spoof_y = float(grab_pos[1] + approach_spoof_left_x)
+        spoof_cyl_tf[:3, 3] = [grab_pos[0], spoof_y, 1.5]
         spoof_cyl.apply_transform(spoof_cyl_tf)
         spoof_cyl.visual.face_colors = [80, 220, 255, 90]  # translucent cyan
         server.scene.add_mesh_trimesh("/spoofed_collision_cylinder", spoof_cyl)
-        print(f"  Spoofed cylinder at x={spoof_x:.3f}, y={float(grab_pos[1]):.3f} (APPROACH_SPOOF_LEFT_X={approach_spoof_left_x})")
+        print(f"  Spoofed cylinder at x={float(grab_pos[0]):.3f}, y={spoof_y:.3f} (APPROACH_SPOOF_LEFT_X={approach_spoof_left_x})")
 
     # Grab point sphere
     grab_sphere = None

@@ -462,9 +462,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # [SOFT] Hand-tip approach shaping in XY:
             # Penalize being close to spoofed capsule location (reciprocal penalty),
-            # with the capsule shifted left in X to increase rightward bias.
+            # with the capsule shifted in +Y (90° clockwise from prior -X shift in XY plane).
             spoof_capsule_xy = capsule_obs_pos[:2].clone()
-            spoof_capsule_xy[0] -= APPROACH_SPOOF_LEFT_X
+            spoof_capsule_xy[1] += APPROACH_SPOOF_LEFT_X
             tip_xy_dist = torch.norm(transformed_tip[:grab_idx, :2] - spoof_capsule_xy.unsqueeze(0), dim=1)  # (G,)
             approach_pen = 1.0 / (tip_xy_dist.clamp(min=1e-3) + 0.01)  # (G,) - penalize small distances
 
