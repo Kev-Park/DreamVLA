@@ -47,6 +47,9 @@ WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 HAND_APPROACH_SOFT_WEIGHT = 2800.0
+PALM_FACE_GRAB_WEIGHT = 0.3 # for facing palm into grab point
+PALM_NORMAL_AXIS = 2 # choose 0, 1, or 2 for local axis of palm normal
+PALM_NORMAL_SIGN = 1.0 # sign
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -268,20 +271,6 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 cost2[:grab_idx+2] += torch.abs(vals)                     # velocity error
                 cost2[:grab_idx+2] += 10*vals**2                          # L2 speed deviation (dominates large errors)
 
-
-            # RECOMMENDED COSTS
-            # [REF] 1-step and 2-step velocity magnitude matching — penalise deviation of speed from reference
-            # 1-step: speed t→t+1
-            # opt_speed_1 = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)      # (N-1,)
-            # ref_speed_1 = torch.norm(transformed_keypts_ref[1:] - transformed_keypts_ref[:-1], dim=1)  # (N-1,)
-            # cost2[1:] += 10 * (opt_speed_1 - ref_speed_1) ** 2
-
-            # # 2-step: speed t→t+2 (captures stride-level speed)
-            # opt_speed_2 = torch.norm(transformed_keypts[2:] - transformed_keypts[:-2], dim=1)      # (N-2,)
-            # ref_speed_2 = torch.norm(transformed_keypts_ref[2:] - transformed_keypts_ref[:-2], dim=1)  # (N-2,)
-            # cost2[2:] += 10 * (opt_speed_2 - ref_speed_2) ** 2
-
-
             # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
             rest_pose = torch.tensor(init_joint_angles, device=DEVICE)[active_joint_ids]
             # Clamp effective end to actual sequence length — grab_idx can exceed N for some pkl files.
@@ -301,21 +290,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # POST-APPROACH COSTS
 
-            #cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[grab_idx:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
-
-            
+            cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[grab_idx:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
             transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z, device=DEVICE)) # freeze reference height
             cost2[grab_idx-15:grab_idx] += torch.norm(transformed_keypts[grab_idx-15:grab_idx] - transformed_keypts_ref[grab_idx-15:grab_idx], dim=1, p=2) # penalize distance from reference after grab
 
         elif i == 38: # right hand link (red dot in viser)
             rot_mat = tf.get_matrix()[:,:3,:3]
             rot_mat = torch.bmm(rot_matrix, rot_mat)
-            rot_mat_ref = torch.tensor([[1, 0, 0], 
-                                        [0, 1, 0], 
-                                        [0, 0, 1]], dtype=torch.float32, device=DEVICE).T
-            rot_mat = torch.bmm(rot_mat, rot_mat_ref.unsqueeze(0).expand(rot_mat.shape[0], -1, -1))
-            angle = torch.acos(torch.clamp((rot_mat[:, 0, 0] + rot_mat[:, 1, 1] + rot_mat[:, 2, 2] - 1) / 2, -0.999, .999))
-            #cost2 += 0.3*angle  # [REF] Penalize hand orientation deviating from identity (palm-down)
 
             # Get hand position and rotation in world frame
             hand_tf = tf.get_matrix()                   # (N, 4, 4)
@@ -327,6 +308,28 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z  # final hand position
             # Hand joint origin in world frame — forms the other edge of the swept quad
             transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
+
+            # [REF] Make palm normal face grab point location, with linear ramp-up from grab_idx-20 to grab_idx.
+            eps = 1e-6
+            palm_normal_world = PALM_NORMAL_SIGN * rot_mat[:, :, PALM_NORMAL_AXIS]
+            palm_normal_world = palm_normal_world / torch.clamp(torch.norm(palm_normal_world, dim=1, keepdim=True), min=eps)
+            to_grab = capsule_obs_pos.unsqueeze(0) - transformed_hand_orig
+            to_grab_dir = to_grab / torch.clamp(torch.norm(to_grab, dim=1, keepdim=True), min=eps)
+            palm_align = torch.sum(palm_normal_world * to_grab_dir, dim=1).clamp(-1.0, 1.0)
+            orient_error = 1.0 - palm_align
+
+            orient_weight = torch.zeros_like(orient_error)
+            orient_ramp_start = max(grab_idx - 20, 0)
+            orient_ramp_end = min(grab_idx, orient_error.shape[0])
+            if orient_ramp_end > orient_ramp_start:
+                orient_weight[orient_ramp_start:orient_ramp_end] = torch.linspace(
+                    0.0,
+                    1.0,
+                    orient_ramp_end - orient_ramp_start,
+                    device=DEVICE,
+                    dtype=orient_error.dtype,
+                )
+            cost2 += PALM_FACE_GRAB_WEIGHT * orient_weight * orient_error
 
 
             # INTER-APPROACH COSTS
