@@ -14,7 +14,7 @@
 
 module purge
 module load anaconda3/2025.6
-conda activate /scratch/gpfs/TSILVER/kp0374/conda/dreamcontrol
+conda activate dreamcontrol
 
 export CUDA_VISIBLE_DEVICES=0
 
