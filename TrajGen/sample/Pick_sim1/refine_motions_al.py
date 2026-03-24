@@ -47,9 +47,6 @@ WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 HAND_APPROACH_SOFT_WEIGHT = 2800.0 # distance bias
-PALM_FACE_GRAB_WEIGHT = 250 # for facing palm into grab point
-PALM_NORMAL_AXIS = 1 # choose 0, 1, or 2 for local axis of palm normal
-PALM_NORMAL_SIGN = 1.0 # sign
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -309,41 +306,6 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # Hand joint origin in world frame — forms the other edge of the swept quad
             transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
 
-            # [REF] Make palm normal face grab point location in the horizontal plane (XY only),
-            # with linear ramp-up from grab_idx-20 to grab_idx.
-            eps = 1e-6
-            palm_normal_world = PALM_NORMAL_SIGN * rot_mat[:, :, PALM_NORMAL_AXIS]
-            to_grab = capsule_obs_pos.unsqueeze(0) - transformed_hand_orig
-
-            # Ignore vertical component to avoid driving pitch/up-down orientation.
-            palm_normal_xy = palm_normal_world.clone()
-            palm_normal_xy[:, 2] = 0.0
-            palm_normal_xy = palm_normal_xy / torch.clamp(torch.norm(palm_normal_xy, dim=1, keepdim=True), min=eps)
-
-            to_grab_xy = to_grab.clone()
-            to_grab_xy[:, 2] = 0.0
-            to_grab_dir_xy = to_grab_xy / torch.clamp(torch.norm(to_grab_xy, dim=1, keepdim=True), min=eps)
-
-            palm_align = torch.sum(palm_normal_xy * to_grab_dir_xy, dim=1).clamp(-1.0, 1.0)
-            orient_error = 1.0 - palm_align
-
-            orient_weight = torch.zeros_like(orient_error)
-            orient_ramp_start = max(grab_idx - 40, 0)
-            orient_ramp_end = min(grab_idx - 20, orient_error.shape[0])
-            if orient_ramp_end > orient_ramp_start:
-                orient_weight[orient_ramp_start:orient_ramp_end] = torch.linspace(
-                    0.0,
-                    1.0,
-                    orient_ramp_end - orient_ramp_start,
-                    device=DEVICE,
-                    dtype=orient_error.dtype,
-                )
-            # Maintain full weight from grab_idx-20 onwards (through grab and after)
-            if orient_ramp_end < orient_error.shape[0]:
-                orient_weight[orient_ramp_end:] = 1.0
-            cost2 += PALM_FACE_GRAB_WEIGHT * orient_weight * orient_error
-
-
             # INTER-APPROACH COSTS
 
             # [ABS] Hard torso-vs-arm collision (AL, rho_other schedule).
@@ -376,6 +338,21 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             wrist_cap_term = al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
             cost2 += wrist_cap_term
             wrist_cap_hard_contrib += torch.sum(wrist_cap_term) * inv_n_frames
+
+            # Hand neutral orientation penalty: quadratic deviation from reference hand rotation
+            # from grab_idx-40 onwards (straight/neutral hand posture)
+            hand_neutral_start = max(grab_idx - 40, 0)
+            if hand_neutral_start < rot_mat.shape[0]:
+                hand_rot_ref = fk_results_ref[link_name].get_matrix()[:, :3, :3]
+                hand_rot_ref = torch.bmm(rot_matrix, hand_rot_ref)
+                
+                # Compute rotation difference as Frobenius norm: ||R - R_ref||_F
+                rot_diff = rot_mat[hand_neutral_start:] - hand_rot_ref[hand_neutral_start:]
+                rot_dev = torch.norm(rot_diff, p='fro', dim=(1, 2))  # Frobenius norm per frame
+                
+                # Quadratic penalty starting from hand_neutral_start
+                hand_neutral_cost = 50.0 * rot_dev ** 2
+                cost2[hand_neutral_start:] += hand_neutral_cost
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
