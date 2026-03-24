@@ -47,7 +47,7 @@ WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 HAND_APPROACH_SOFT_WEIGHT = 2800.0 # distance bias
-PALM_FACE_GRAB_WEIGHT = 15 # for facing palm into grab point
+PALM_FACE_GRAB_WEIGHT = 1000 # for facing palm into grab point
 PALM_NORMAL_AXIS = 2 # choose 0, 1, or 2 for local axis of palm normal
 PALM_NORMAL_SIGN = 1.0 # sign
 
