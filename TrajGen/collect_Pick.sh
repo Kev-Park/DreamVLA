@@ -10,5 +10,5 @@ rm -f *.pkl
 cd ../Pick_sim
 python3 retarget.py
 cd ../Pick_sim1
-python3 refine_motions.py
+python3 refine_motions_al.py
 cd ..
