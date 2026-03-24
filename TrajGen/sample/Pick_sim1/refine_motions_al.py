@@ -47,7 +47,7 @@ WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 HAND_APPROACH_SOFT_WEIGHT = 2800.0 # distance bias
-PALM_FACE_GRAB_WEIGHT = 10000 # for facing palm into grab point
+PALM_FACE_GRAB_WEIGHT = 0 # for facing palm into grab point
 PALM_NORMAL_AXIS = 2 # choose 0, 1, or 2 for local axis of palm normal
 PALM_NORMAL_SIGN = 1.0 # sign
 
@@ -328,8 +328,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             orient_error = 1.0 - palm_align
 
             orient_weight = torch.zeros_like(orient_error)
-            orient_ramp_start = max(grab_idx - 20, 0)
-            orient_ramp_end = min(grab_idx, orient_error.shape[0])
+            orient_ramp_start = max(grab_idx - 40, 0)
+            orient_ramp_end = min(grab_idx - 20, orient_error.shape[0])
             if orient_ramp_end > orient_ramp_start:
                 orient_weight[orient_ramp_start:orient_ramp_end] = torch.linspace(
                     0.0,
@@ -338,6 +338,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     device=DEVICE,
                     dtype=orient_error.dtype,
                 )
+            # Maintain full weight from grab_idx-20 onwards (through grab and after)
+            if orient_ramp_end < orient_error.shape[0]:
+                orient_weight[orient_ramp_end:] = 1.0
             cost2 += PALM_FACE_GRAB_WEIGHT * orient_weight * orient_error
 
 
