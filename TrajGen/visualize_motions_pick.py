@@ -139,7 +139,8 @@ def _find_first_name(candidates, names):
 
 def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
          hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05,
-         torso_cylinder_radius=0.125, torso_cylinder_top_extension=0.35):
+         torso_cylinder_radius=0.125, torso_cylinder_top_extension=0.35,
+         approach_spoof_left_x=0.24):
     
     urdf = yourdfpy.URDF.load('../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
     #urdf = yourdfpy.URDF.load('../../HumanoidVerse/humanoidverse/data/robots/g1/g1_paddle_hand_rigid.urdf')
@@ -276,6 +277,17 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
         cyl.apply_transform(cyl_tf)
         cyl.visual.face_colors = [255, 80, 80, 80]  # translucent red
         server.scene.add_mesh_trimesh("/collision_cylinder", cyl)
+
+        # Spoofed collision cylinder used by refine_motions_al.py approach shaping:
+        # spoof_capsule_xy[0] = capsule_obs_pos[0] - APPROACH_SPOOF_LEFT_X
+        spoof_cyl = trimesh.creation.cylinder(radius=collision_cylinder_radius, height=3.0, sections=32)
+        spoof_cyl_tf = onp.eye(4)
+        spoof_x = float(grab_pos[0] - approach_spoof_left_x)
+        spoof_cyl_tf[:3, 3] = [spoof_x, grab_pos[1], 1.5]
+        spoof_cyl.apply_transform(spoof_cyl_tf)
+        spoof_cyl.visual.face_colors = [80, 220, 255, 90]  # translucent cyan
+        server.scene.add_mesh_trimesh("/spoofed_collision_cylinder", spoof_cyl)
+        print(f"  Spoofed cylinder at x={spoof_x:.3f}, y={float(grab_pos[1]):.3f} (APPROACH_SPOOF_LEFT_X={approach_spoof_left_x})")
 
     # Grab point sphere
     grab_sphere = None
@@ -490,6 +502,7 @@ if __name__ == "__main__":
     HAND_LENGTH               = 0.15   # metres: hand origin → fingertip (= HAND_TIP_OFFSET)
     HAND_THICKNESS            = 0.04   # metres: hand capsule radius
     COLLISION_CYLINDER_RADIUS = 0.05   # metres: grab-site obstacle cylinder (= R_OBSTACLE)
+    APPROACH_SPOOF_LEFT_X     = 0.24   # metres: matches refine_motions_al.py spoofed approach shaping offset
     TORSO_CYLINDER_RADIUS     = 0.125  # metres: fixed torso collision proxy radius (segment mode)
     TORSO_CYLINDER_TOP_EXTENSION = 0.35  # metres: extend torso cylinder top into head area
 
@@ -510,6 +523,7 @@ if __name__ == "__main__":
         hand_length=HAND_LENGTH,
         hand_thickness=HAND_THICKNESS,
         collision_cylinder_radius=COLLISION_CYLINDER_RADIUS,
+        approach_spoof_left_x=APPROACH_SPOOF_LEFT_X,
         torso_cylinder_radius=TORSO_CYLINDER_RADIUS,
         torso_cylinder_top_extension=TORSO_CYLINDER_TOP_EXTENSION,
     )
