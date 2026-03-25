@@ -170,6 +170,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # import pdb; pdb.set_trace()  # noqa: E702
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
+    if hasattr(runner, "git_status_repos"):
+        valid_git_status_repos = []
+        for repo in runner.git_status_repos:
+            try:
+                repo.git.status()
+                valid_git_status_repos.append(repo)
+            except Exception as error:
+                print(
+                    f"[WARNING] Skipping git state logging for repo at '{repo.working_tree_dir}': {error}"
+                )
+        runner.git_status_repos = valid_git_status_repos
     # load the checkpoint
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
