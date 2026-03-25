@@ -16,7 +16,7 @@ module purge
 module load anaconda3/2025.6
 conda activate dreamcontrol
 
-export CUDA_VISIBLE_DEVICES=0
+#export CUDA_VISIBLE_DEVICES=0
 
 cd Training
 #./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --device cuda:0 # takes ~6 hours
