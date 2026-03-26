@@ -95,7 +95,7 @@ def main():
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
-    print(f"[INFO] Loading experiment from directory: {log_root_path}", flush=True, flush=True)
+    print(f"[INFO] Loading experiment from directory: {log_root_path}", flush=True)
     if args_cli.use_pretrained_checkpoint:
         resume_path = get_published_pretrained_checkpoint("rsl_rl", args_cli.task)
         print(resume_path, flush=True)
@@ -143,7 +143,7 @@ def main():
             "name_prefix": "eval_"+args_cli.baseline+"_"+args_cli.id,
         }
         print("[INFO] Recording videos during training.", flush=True)
-        print_dict(video_kwargs, nesting=4, flush=True)
+        print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     # wrap around environment for rsl-rl
