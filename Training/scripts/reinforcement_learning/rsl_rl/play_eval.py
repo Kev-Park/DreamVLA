@@ -181,20 +181,17 @@ def main():
     obs, _ = env.get_observations()
     timestep = 0
     camera_robot = None
-    head_video_writer = None
-    head_video_path = None
+    robot_video_writer = None
+    robot_video_path = None
     if args_cli.video:
         try:
             camera_robot = env.unwrapped.scene["camera_robot"]
-            head_video_dir = os.path.join(log_dir, "videos", "play")
-            os.makedirs(head_video_dir, exist_ok=True)
-            head_video_path = os.path.join(
-                head_video_dir,
-                f"eval_{args_cli.baseline}_{args_cli.id}_robot_head.mp4",
-            )
-            print(f"[INFO] Recording robot head camera video to: {head_video_path}", flush=True)
+            robot_video_dir = os.path.join(log_dir, "videos", "play")
+            os.makedirs(robot_video_dir, exist_ok=True)
+            robot_video_path = os.path.join(robot_video_dir, f"eval_{args_cli.baseline}_{args_cli.id}_robot.mp4")
+            print(f"[INFO] camera_robot found. Recording robot POV video to: {robot_video_path}", flush=True)
         except KeyError:
-            print("[WARN] camera_robot not found in scene. Skipping head-camera recording.", flush=True)
+            print("[INFO] camera_robot not found. Skipping robot POV recording.", flush=True)
 
     # print("Here???")
     joint_angless = []
@@ -214,23 +211,22 @@ def main():
             obs, _, dones, _ = env.step(actions)
 
         if args_cli.video and camera_robot is not None:
-            frame_rgb = camera_robot.data.output["rgb"][0].detach().cpu().numpy()[..., :3]
-            if frame_rgb.dtype != "uint8":
-                if frame_rgb.max() <= 1.0:
-                    frame_rgb = frame_rgb * 255.0
-                frame_rgb = frame_rgb.clip(0, 255).astype("uint8")
-            frame_bgr = frame_rgb[:, :, ::-1]
-
-            if head_video_writer is None and head_video_path is not None:
-                h, w = frame_bgr.shape[:2]
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                head_video_writer = cv2.VideoWriter(head_video_path, fourcc, 50, (w, h))
-                if not head_video_writer.isOpened():
-                    print(f"[WARN] Failed to open head-camera writer at: {head_video_path}", flush=True)
-                    head_video_writer = None
-
-            if head_video_writer is not None:
-                head_video_writer.write(frame_bgr)
+            robot_frame_rgb = camera_robot.data.output["rgb"][0].detach().cpu().numpy()[..., :3]
+            robot_frame_bgr = robot_frame_rgb[:, :, ::-1]
+            if robot_video_writer is None:
+                frame_height, frame_width = robot_frame_bgr.shape[:2]
+                robot_video_writer = cv2.VideoWriter(
+                    robot_video_path,
+                    cv2.VideoWriter_fourcc(*"mp4v"),
+                    50,
+                    (frame_width, frame_height),
+                )
+                if not robot_video_writer.isOpened():
+                    print(f"[WARN] Failed to open robot POV writer: {robot_video_path}", flush=True)
+                    robot_video_writer.release()
+                    robot_video_writer = None
+            if robot_video_writer is not None:
+                robot_video_writer.write(robot_frame_bgr)
             
         if args_cli.video:
             timestep += 1
@@ -255,9 +251,9 @@ def main():
         pickle.dump({"joint_angles": joint_angless, "root_pos": root_poss, "root_quats": root_quatss}, f)
     print("Success rate: ", 100*(torch.sum(env.unwrapped.n_successes > 0)/int(args_cli.num_envs)).detach().cpu().item(), "%", flush=True)
 
-    if head_video_writer is not None:
-        print(f"[INFO] Releasing head-camera writer: {head_video_path}", flush=True)
-        head_video_writer.release()
+    if robot_video_writer is not None:
+        print(f"[INFO] Releasing robot POV writer: {robot_video_path}", flush=True)
+        robot_video_writer.release()
 
     # close the simulator
     env.close()
