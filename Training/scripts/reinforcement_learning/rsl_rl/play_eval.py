@@ -10,6 +10,7 @@
 import argparse
 
 from isaaclab.app import AppLauncher
+import cv2
 
 # local imports
 import cli_args  # isort: skip
@@ -179,6 +180,22 @@ def main():
     # reset environment
     obs, _ = env.get_observations()
     timestep = 0
+    camera_robot = None
+    head_video_writer = None
+    head_video_path = None
+    if args_cli.video:
+        try:
+            camera_robot = env.unwrapped.scene["camera_robot"]
+            head_video_dir = os.path.join(log_dir, "videos", "play")
+            os.makedirs(head_video_dir, exist_ok=True)
+            head_video_path = os.path.join(
+                head_video_dir,
+                f"eval_{args_cli.baseline}_{args_cli.id}_robot_head.mp4",
+            )
+            print(f"[INFO] Recording robot head camera video to: {head_video_path}", flush=True)
+        except KeyError:
+            print("[WARN] camera_robot not found in scene. Skipping head-camera recording.", flush=True)
+
     # print("Here???")
     joint_angless = []
     root_poss = []
@@ -195,6 +212,25 @@ def main():
             root_poss.append(env.unwrapped.scene["robot"].data.root_pos_w.clone() - env.unwrapped.scene.env_origins.clone())
             root_quatss.append(env.unwrapped.scene["robot"].data.root_quat_w.clone())
             obs, _, dones, _ = env.step(actions)
+
+        if args_cli.video and camera_robot is not None:
+            frame_rgb = camera_robot.data.output["rgb"][0].detach().cpu().numpy()[..., :3]
+            if frame_rgb.dtype != "uint8":
+                if frame_rgb.max() <= 1.0:
+                    frame_rgb = frame_rgb * 255.0
+                frame_rgb = frame_rgb.clip(0, 255).astype("uint8")
+            frame_bgr = frame_rgb[:, :, ::-1]
+
+            if head_video_writer is None and head_video_path is not None:
+                h, w = frame_bgr.shape[:2]
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                head_video_writer = cv2.VideoWriter(head_video_path, fourcc, 50, (w, h))
+                if not head_video_writer.isOpened():
+                    print(f"[WARN] Failed to open head-camera writer at: {head_video_path}", flush=True)
+                    head_video_writer = None
+
+            if head_video_writer is not None:
+                head_video_writer.write(frame_bgr)
             
         if args_cli.video:
             timestep += 1
@@ -218,6 +254,10 @@ def main():
     with open(os.path.join(log_dir, "eval", "motions.pkl"), "wb") as f:
         pickle.dump({"joint_angles": joint_angless, "root_pos": root_poss, "root_quats": root_quatss}, f)
     print("Success rate: ", 100*(torch.sum(env.unwrapped.n_successes > 0)/int(args_cli.num_envs)).detach().cpu().item(), "%", flush=True)
+
+    if head_video_writer is not None:
+        print(f"[INFO] Releasing head-camera writer: {head_video_path}", flush=True)
+        head_video_writer.release()
 
     # close the simulator
     env.close()
