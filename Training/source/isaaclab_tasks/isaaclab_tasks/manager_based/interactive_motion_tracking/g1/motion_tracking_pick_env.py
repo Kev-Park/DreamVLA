@@ -435,23 +435,6 @@ class G1PickEnvCfg(G1InteractiveBaseEnvCfg):
         # post init of parent
         super().__post_init__()
         self.scene.kitchen.init_state.pos = (2.55, 0, 0.4)
-        self.ref_motions_path = "../TrajGen/sample/Pick_sim2"
-
-
-
-@configclass
-class G1PickPlayEnvCfg(G1InteractiveBaseEnvCfg):
-    rewards: G1Rewards = G1Rewards()
-    events: EventCfg = EventCfg()
-    observations: ObservationsCfg = ObservationsCfg()
-    scene: MySceneCfg = MySceneCfg(num_envs=8192, env_spacing=100.)
-    terminations: TerminationsCfg = TerminationsCfg()
-    actions: ActionsCfg = ActionsCfg()
-
-
-    def __post_init__(self):
-        # post init of parent
-        super().__post_init__()
         rot = np.array([0.7538, 0.61221, -0.1505, -0.1853])
         rot_mat = np.array(math_utils.matrix_from_quat(torch.tensor(rot)))
         theta = -np.pi*0.75
@@ -491,6 +474,23 @@ class G1PickPlayEnvCfg(G1InteractiveBaseEnvCfg):
                                           convention="opengl"
                                       ),
                                     )
+        self.ref_motions_path = "../TrajGen/sample/Pick_sim2"
+
+
+
+@configclass
+class G1PickPlayEnvCfg(G1InteractiveBaseEnvCfg):
+    rewards: G1Rewards = G1Rewards()
+    events: EventCfg = EventCfg()
+    observations: ObservationsCfg = ObservationsCfg()
+    scene: MySceneCfg = MySceneCfg(num_envs=8192, env_spacing=100.)
+    terminations: TerminationsCfg = TerminationsCfg()
+    actions: ActionsCfg = ActionsCfg()
+
+
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
         self.ref_motions_path = "../TrajGen/sample/Pick_sim2"
         self.scene.terrain = None
         self.scene.sky_light = None

@@ -161,6 +161,15 @@ def main():
     obs, _ = env.get_observations()
     timestep = 0
 
+    scene_keys = list(env.unwrapped.scene.keys())
+    if "camera" not in scene_keys or "camera_robot" not in scene_keys:
+        raise RuntimeError(
+            "Required scene cameras are missing. "
+            f"Found: {scene_keys}. "
+            "Use a task config that defines camera and camera_robot "
+            "(e.g. Isaac-Motion-Tracking-Pick-v0)."
+        )
+
     cam = env.unwrapped.scene["camera"]
     cam_robot = env.unwrapped.scene["camera_robot"]
     fourcc = cv2.VideoWriter_fourcc(*'mp4v') # MP4 codec
