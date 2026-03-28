@@ -458,7 +458,7 @@ class G1PickEnvCfg(G1InteractiveBaseEnvCfg):
                                           rot=rot_quat,
                                           convention="opengl"
                                       ),)
-        self.scene.camera_robot = CameraCfg(prim_path="{ENV_REGEX_NS}/Robot/d435_link/Camera_robot",
+        self.scene.camera_robot = CameraCfg(prim_path="{ENV_REGEX_NS}/Robot/head_link/Camera_robot",
                                       spawn=PinholeCameraCfg(
                                           focal_length=9.1,
                                           focus_distance=400.,
