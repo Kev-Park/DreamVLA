@@ -23,4 +23,4 @@ cd Training
 #./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --video --num_envs 1000 --device cuda:0 # look in Training/logs/rsl_rl/g1, takes ~1 hour
 #./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_pick.py --task=Isaac-Motion-Tracking-Pick-v0 --video --num_envs 1 --device cuda:0
 
-./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-UB-Real-Eval-v0 --headless --video --num_envs 1 --device cuda:0 --checkpoint logs/rsl_rl/g1/2026-03-26_02-19-20-Pick-a/model_4999.pt
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_pick_cam.py --task=Isaac-Motion-Tracking-Pick-v0 --video --num_envs 1 --device cuda:0

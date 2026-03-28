@@ -10,11 +10,8 @@
 import argparse
 
 from isaaclab.app import AppLauncher
-
-# local imports
+import cv2
 import cli_args  # isort: skip
-# from isaaclab.managers import SceneEntityCfg
-# from isaaclab.assets import Articulation, RigidObject
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -25,14 +22,14 @@ parser.add_argument(
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
-parser.add_argument("--baseline", type=str, default="a", help="Name of the baseline.")
-parser.add_argument("--id", type=str, default="0", help="Name of the id.")
 parser.add_argument(
     "--use_pretrained_checkpoint",
     action="store_true",
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument("--name", type=str, default="test.mp4", help="Name of the video file.")
+parser.add_argument("--object_name", type=str, default=None, help="Name of the object.")
 parser.add_argument("--path", type=str, default=None, help="Path to the task.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -59,6 +56,7 @@ import torch
 from rsl_rl.runners import OnPolicyRunner
 
 from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
+import isaaclab.utils.math as math_utils
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
@@ -67,21 +65,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, expor
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
-from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
-# cfg = UrdfConverterCfg(
-#     asset_path="/home/azureuser/IsaacLab/HumanoidVerse/humanoidverse/data/robots/g1/g1_29dof.urdf",     # Absolute path to your URDF file
-#     usd_dir="/home/azureuser/IsaacLab/HumanoidVerse/humanoidverse/data/robots/g1",       # Directory to store the generated USD
-#     usd_file_name="g1_27dof.usd",                # Optional: name for the USD file
-#     force_usd_conversion=True,                # Optional: force re-generation
-#     make_instanceable=True,                   # Optional: for memory efficiency
-#     fix_base=True                             # Optional: fix the base link
-# )
-
-# converter = UrdfConverter(cfg)
-# print("USD file generated at:", converter.usd_path)
-# exit(0)
-# PLACEHOLDER: Extension template (do not remove this comment)
-
+OUTPUT_VIDEO = "pick"
 
 def main():
     """Play with RSL-RL agent."""
@@ -95,44 +79,42 @@ def main():
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
-    print(f"[INFO] Loading experiment from directory: {log_root_path}", flush=True)
+    print(f"[INFO] Loading experiment from directory: {log_root_path}")
     if args_cli.use_pretrained_checkpoint:
         resume_path = get_published_pretrained_checkpoint("rsl_rl", args_cli.task)
-        print(resume_path, flush=True)
+        print(resume_path)
+        import pdb; pdb.set_trace()  # noqa: E702
         if not resume_path:
-            print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.", flush=True)
+            print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
             return
     elif args_cli.checkpoint:
         resume_path = retrieve_file_path(args_cli.checkpoint)
-        # import pdb; pdb.set_trace()  # noqa: E702
     else:
-        # print(log_root_path)
         if args_cli.path:
             # if path is provided, use it to get the checkpoint
             resume_path = args_cli.path
         else :
-            task_names_ = args_cli.task.split("-")[3:-1]
-            task_name = ""
-            for task_name_ in task_names_:
-                task_name += task_name_ + "-"
-            task_name = task_name[:-1]
-            if args_cli.baseline is not None:
-                task_name += "-" + args_cli.baseline
-            # import pdb; pdb.set_trace()  # noqa: E702
-            resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint, task_name=task_name)
-        
+            resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+    
     log_dir = os.path.dirname(resume_path)
-    env_cfg.viewer.eye = (2.5,-5.,5.)
+    env_cfg.viewer.eye = (1.,-2.,2.)
     env_cfg.viewer.lookat = (2., 0., 0.)
-    env_cfg.observations.policy.enable_corruption = False
+    if args_cli.object_name is not None and args_cli.object_name != "none":
+        env_cfg.scene.object.spawn.usd_path = "assets/"+args_cli.object_name+".usd"
+
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
-    print("Observation space:", env.observation_space, flush=True)
-    print("Action space:", env.action_space, flush=True)
+    print("Observation space:", env.observation_space)
+    print("Action space:", env.action_space)
     from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
-    print(ISAACLAB_NUCLEUS_DIR, flush=True)
+    print(ISAACLAB_NUCLEUS_DIR)
+    # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    # camera = Camera(
+    #     CameraCfg(prim_path="/world/Camera")
+    # )
+    # camera.initialize()
     # wrap for video recording
     if args_cli.video:
         video_kwargs = {
@@ -140,19 +122,18 @@ def main():
             "step_trigger": lambda step: step == 0,
             "video_length": args_cli.video_length,
             "disable_logger": True,
-            "name_prefix": "eval_"+args_cli.baseline+"_"+args_cli.id,
         }
-        print("[INFO] Recording videos during training.", flush=True)
+        print("[INFO] Recording videos during training.")
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    print(f"[INFO]: Loading model checkpoint from: {resume_path}", flush=True)
+    print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    ppo_runner.load(resume_path)
+    # ppo_runner.load(resume_path)
 
     # obtain the trained policy for inference
     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
@@ -174,54 +155,76 @@ def main():
     )
 
     dt = env.unwrapped.step_dt
-    print("dt:", dt, flush=True)
+    print("dt:", dt)
 
     # reset environment
     obs, _ = env.get_observations()
     timestep = 0
-    # print("Here???")
-    joint_angless = []
-    root_poss = []
-    root_quatss = []
-    # print("Whats happening???")
+
+    cam = env.unwrapped.scene["camera"]
+    cam_robot = env.unwrapped.scene["camera_robot"]
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # MP4 codec
+    video_writers = []
+    for i in range(1):
+        video_writer = cv2.VideoWriter(args_cli.name, fourcc, 50, (2560, 1920))
+        video_writers.append(video_writer)
+
+    video_writers_robot = []
+    for i in range(1): # TO-DO look
+        video_writer = cv2.VideoWriter(args_cli.name[:-4] + "_robot" + ".mp4", fourcc, 50, (512, 384))
+        video_writers_robot.append(video_writer)
+
     while simulation_app.is_running():
         start_time = time.time()
         # run everything in inference mode
+
+        # import pdb; pdb.set_trace()  # noqa: E702
+        image = cam.data.output["rgb"]
+        image_robot = cam_robot.data.output["rgb"] # robot face camera color data
+        # Read object location directly from Isaac scene state (world -> robot local frame).
+        object_pos_world = env.unwrapped.scene["object"].data.root_pos_w
+        robot_pos_world = env.unwrapped.scene["robot"].data.root_pos_w
+        robot_quat_world = math_utils.quat_unique(env.unwrapped.scene["robot"].data.root_quat_w)
+        object_pos_local = math_utils.quat_apply(
+            math_utils.quat_conjugate(robot_quat_world), object_pos_world - robot_pos_world
+        )
+        x_new = object_pos_local[0, 0].item()
+        y_new = object_pos_local[0, 1].item()
+        
+        
+        for i in range(1):
+            video_writers[i].write(image[i].cpu().numpy()[:,:,::-1])
+        for i in range(1):
+            video_writers_robot[i].write(image_robot[i].cpu().numpy()[:,:,::-1])
+        
+        # image = camera.get_image("rgb")
         with torch.inference_mode():
+            obs[:,52] = x_new
+            obs[:,53] = y_new
             actions = policy(obs).clone()
-            joint_angles = env.unwrapped.scene["robot"].data.joint_pos.clone()
-            # print(joint_angles[0])
-            joint_angless.append(joint_angles)
-            root_poss.append(env.unwrapped.scene["robot"].data.root_pos_w.clone() - env.unwrapped.scene.env_origins.clone())
-            root_quatss.append(env.unwrapped.scene["robot"].data.root_quat_w.clone())
             obs, _, dones, _ = env.step(actions)
+        if timestep == args_cli.video_length:
+            break
+        timestep += 1
+        print(timestep)
             
-        if args_cli.video:
-            timestep += 1
-            print(timestep, flush=True)
-            
-            # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
-                break
 
         # time delay for real-time evaluation
         sleep_time = dt - (time.time() - start_time)
         if args_cli.real_time and sleep_time > 0:
             time.sleep(sleep_time)
-
-    joint_angless = torch.cat(joint_angless, dim=0)
-    root_poss = torch.cat(root_poss, dim=0)
-    root_quatss = torch.cat(root_quatss, dim=0)
-    # Save as pkl
-    import pickle
-    os.makedirs(log_dir + "/eval", exist_ok=True)
-    with open(os.path.join(log_dir, "eval", "motions.pkl"), "wb") as f:
-        pickle.dump({"joint_angles": joint_angless, "root_pos": root_poss, "root_quats": root_quatss}, f)
-    print("Success rate: ", 100*(torch.sum(env.unwrapped.n_successes > 0)/int(args_cli.num_envs)).detach().cpu().item(), "%", flush=True)
-
+    
+    # release video writers
+    for video_writer in video_writers:
+        # release the video writer
+        print(f"[INFO] Releasing video writer: {video_writer}")
+        video_writer.release()
+    for video_writer in video_writers_robot:
+        # release the video writer
+        print(f"[INFO] Releasing video writer: {video_writer}")
+        video_writer.release()
     # close the simulator
     env.close()
-
 
 
 if __name__ == "__main__":

@@ -475,6 +475,22 @@ class G1PickPlayEnvCfg(G1InteractiveBaseEnvCfg):
                                           rot=rot_quat,
                                           convention="opengl"
                                       ),)
+        self.scene.camera_robot = CameraCfg(prim_path="{ENV_REGEX_NS}/Robot/Camera_robot",
+                                      spawn=PinholeCameraCfg(
+                                          focal_length=9.1,
+                                          focus_distance=400.,
+                                          horizontal_aperture=20.955,
+                                          clipping_range=(0.1, 10000.0),
+                                      ),
+                                      data_types=["rgb", "depth"],
+                                      height=384,
+                                      width=512,
+                                      offset=CameraCfg.OffsetCfg(
+                                          pos=(0.05, 0., 0.36),
+                                          rot=(0.5, 0.5, -0.5, -0.5),
+                                          convention="opengl"
+                                      ),
+                                    )
         self.ref_motions_path = "../TrajGen/sample/Pick_sim2"
         self.scene.terrain = None
         self.scene.sky_light = None
