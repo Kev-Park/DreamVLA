@@ -8,10 +8,14 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import builtins
+from functools import partial
 
 from isaaclab.app import AppLauncher
 import cv2
 import cli_args  # isort: skip
+
+print = partial(builtins.print, flush=True)
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -58,7 +62,6 @@ from rsl_rl.runners import OnPolicyRunner
 from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
 import isaaclab.utils.math as math_utils
 from isaaclab.utils.assets import retrieve_file_path
-from isaaclab.utils.dict import print_dict
 from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
@@ -115,17 +118,8 @@ def main():
     #     CameraCfg(prim_path="/world/Camera")
     # )
     # camera.initialize()
-    # wrap for video recording
-    if args_cli.video:
-        video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "play"),
-            "step_trigger": lambda step: step == 0,
-            "video_length": args_cli.video_length,
-            "disable_logger": True,
-        }
-        print("[INFO] Recording videos during training.")
-        print_dict(video_kwargs, nesting=4)
-        env = gym.wrappers.RecordVideo(env, **video_kwargs)
+    # We intentionally do not use gym.wrappers.RecordVideo here because it records
+    # the env render (third-person), while this script writes robot-camera video directly.
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
@@ -133,7 +127,7 @@ def main():
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    # ppo_runner.load(resume_path)
+    ppo_runner.load(resume_path)
 
     # obtain the trained policy for inference
     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
@@ -162,25 +156,25 @@ def main():
     timestep = 0
 
     scene_keys = list(env.unwrapped.scene.keys())
-    if "camera" not in scene_keys or "camera_robot" not in scene_keys:
+    if "camera_robot" not in scene_keys:
         raise RuntimeError(
-            "Required scene cameras are missing. "
+            "Required robot camera is missing. "
             f"Found: {scene_keys}. "
-            "Use a task config that defines camera and camera_robot "
+            "Use a task config that defines camera_robot "
             "(e.g. Isaac-Motion-Tracking-Pick-v0)."
         )
 
-    cam = env.unwrapped.scene["camera"]
     cam_robot = env.unwrapped.scene["camera_robot"]
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # MP4 codec
-    video_writers = []
-    for i in range(1):
-        video_writer = cv2.VideoWriter(args_cli.name, fourcc, 50, (2560, 1920))
-        video_writers.append(video_writer)
 
+    video_folder = os.path.join(log_dir, "videos", "play")
+    os.makedirs(video_folder, exist_ok=True)
+    robot_video_path = os.path.join(video_folder, args_cli.name)
+    print(f"[INFO] Writing robot camera video to: {robot_video_path}")
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # MP4 codec
     video_writers_robot = []
     for i in range(1): # TO-DO look
-        video_writer = cv2.VideoWriter(args_cli.name[:-4] + "_robot" + ".mp4", fourcc, 50, (512, 384))
+        video_writer = cv2.VideoWriter(robot_video_path, fourcc, 50, (512, 384))
         video_writers_robot.append(video_writer)
 
     while simulation_app.is_running():
@@ -188,7 +182,6 @@ def main():
         # run everything in inference mode
 
         # import pdb; pdb.set_trace()  # noqa: E702
-        image = cam.data.output["rgb"]
         image_robot = cam_robot.data.output["rgb"] # robot face camera color data
         # Read object location directly from Isaac scene state (world -> robot local frame).
         object_pos_world = env.unwrapped.scene["object"].data.root_pos_w
@@ -201,8 +194,6 @@ def main():
         y_new = object_pos_local[0, 1].item()
         
         
-        for i in range(1):
-            video_writers[i].write(image[i].cpu().numpy()[:,:,::-1])
         for i in range(1):
             video_writers_robot[i].write(image_robot[i].cpu().numpy()[:,:,::-1])
         
@@ -224,10 +215,6 @@ def main():
             time.sleep(sleep_time)
     
     # release video writers
-    for video_writer in video_writers:
-        # release the video writer
-        print(f"[INFO] Releasing video writer: {video_writer}")
-        video_writer.release()
     for video_writer in video_writers_robot:
         # release the video writer
         print(f"[INFO] Releasing video writer: {video_writer}")
