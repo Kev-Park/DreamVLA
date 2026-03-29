@@ -461,16 +461,16 @@ class G1PickEnvCfg(G1InteractiveBaseEnvCfg):
         self.scene.camera_robot = CameraCfg(prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
                                       spawn=PinholeCameraCfg(
                                           focal_length=9.1,
-                                          focus_distance=400.,
+                                          focus_distance=2.0,
                                           horizontal_aperture=20.955,
-                                          clipping_range=(0.1, 10000.0),
+                                          clipping_range=(0.05, 100.0),
                                       ),
-                                      data_types=["rgb", "depth"],
-                                      height=384,
-                                      width=512,
+                                      data_types=["rgb"],
+                                      height=720,
+                                      width=1280,
                                       offset=CameraCfg.OffsetCfg(
-                                          pos=(0.05, 0., 0.36),
-                                          rot=(0.5, 0.5, -0.5, -0.5),
+                                          pos=(0.0, 0.0, 0.0),
+                                          rot=(1.0, 0.0, 0.0, 0.0),
                                           convention="opengl"
                                       ),
                                     )

@@ -172,11 +172,11 @@ def main():
     robot_video_path = os.path.join(video_folder, args_cli.name)
     print(f"[INFO] Writing robot camera video to: {robot_video_path}")
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # MP4 codec
-    video_writers_robot = []
-    for i in range(1): # TO-DO look
-        video_writer = cv2.VideoWriter(robot_video_path, fourcc, 50, (512, 384))
-        video_writers_robot.append(video_writer)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    video_writer_robot = None
+    video_fps = max(1, int(round(1.0 / env.unwrapped.step_dt)))
+
+    printed_frame_stats = False
 
     while simulation_app.is_running():
         start_time = time.time()
@@ -197,14 +197,36 @@ def main():
         
         for i in range(1):
             frame_rgb = image_robot[i].cpu().numpy()
+            if not printed_frame_stats:
+                print(
+                    f"[INFO] camera_robot frame stats: shape={frame_rgb.shape}, "
+                    f"dtype={frame_rgb.dtype}, min={float(np.min(frame_rgb)):.4f}, "
+                    f"max={float(np.max(frame_rgb)):.4f}"
+                )
+                printed_frame_stats = True
+
+            # Drop alpha if present.
+            if frame_rgb.ndim == 3 and frame_rgb.shape[2] == 4:
+                frame_rgb = frame_rgb[:, :, :3]
+
+            # Sanitize non-finite values first.
+            frame_rgb = np.nan_to_num(frame_rgb, nan=0.0, posinf=1.0, neginf=0.0)
+
             if frame_rgb.dtype != np.uint8:
-                # Handle both [0, 1] floats and [0, 255] numeric ranges.
-                if np.max(frame_rgb) <= 1.0:
-                    frame_rgb = (frame_rgb * 255.0).clip(0, 255).astype(np.uint8)
-                else:
-                    frame_rgb = frame_rgb.clip(0, 255).astype(np.uint8)
+                frame_rgb = frame_rgb.astype(np.float32)
+                # Normalize to [0, 1] regardless of whether source is [0,1] or [0,255].
+                if np.max(frame_rgb) > 1.5:
+                    frame_rgb = frame_rgb / 255.0
+                frame_rgb = np.clip(frame_rgb, 0.0, 1.0)
+                # Convert linear-like camera output to display-friendly sRGB.
+                frame_rgb = np.power(frame_rgb, 1.0 / 2.2)
+                frame_rgb = (frame_rgb * 255.0).clip(0, 255).astype(np.uint8)
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-            video_writers_robot[i].write(frame_bgr)
+            if video_writer_robot is None:
+                frame_h, frame_w = frame_bgr.shape[:2]
+                video_writer_robot = cv2.VideoWriter(robot_video_path, fourcc, video_fps, (frame_w, frame_h))
+                print(f"[INFO] Initialized robot video writer at {frame_w}x{frame_h} @ {video_fps} FPS")
+            video_writer_robot.write(frame_bgr)
         
         # image = camera.get_image("rgb")
         with torch.inference_mode():
@@ -224,10 +246,9 @@ def main():
             time.sleep(sleep_time)
     
     # release video writers
-    for video_writer in video_writers_robot:
-        # release the video writer
-        print(f"[INFO] Releasing video writer: {video_writer}")
-        video_writer.release()
+    if video_writer_robot is not None:
+        print(f"[INFO] Releasing video writer: {video_writer_robot}")
+        video_writer_robot.release()
     # close the simulator
     env.close()
 
