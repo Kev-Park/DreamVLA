@@ -52,6 +52,7 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
+import numpy as np
 import os
 import time
 import torch
@@ -195,7 +196,15 @@ def main():
         
         
         for i in range(1):
-            video_writers_robot[i].write(image_robot[i].cpu().numpy()[:,:,::-1])
+            frame_rgb = image_robot[i].cpu().numpy()
+            if frame_rgb.dtype != np.uint8:
+                # Handle both [0, 1] floats and [0, 255] numeric ranges.
+                if np.max(frame_rgb) <= 1.0:
+                    frame_rgb = (frame_rgb * 255.0).clip(0, 255).astype(np.uint8)
+                else:
+                    frame_rgb = frame_rgb.clip(0, 255).astype(np.uint8)
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            video_writers_robot[i].write(frame_bgr)
         
         # image = camera.get_image("rgb")
         with torch.inference_mode():
