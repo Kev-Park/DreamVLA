@@ -469,8 +469,8 @@ class G1PickEnvCfg(G1InteractiveBaseEnvCfg):
                                       height=720,
                                       width=1280,
                                       offset=CameraCfg.OffsetCfg(
-                                          pos=(0.0, 0.0, 0.0),
-                                          rot=(1.0, 0.0, 0.0, 0.0),
+                                          pos=(0.05, 0., 0.36),
+                                          rot=(0.5, 0.5, -0.5, -0.5),
                                           convention="opengl"
                                       ),
                                     )
