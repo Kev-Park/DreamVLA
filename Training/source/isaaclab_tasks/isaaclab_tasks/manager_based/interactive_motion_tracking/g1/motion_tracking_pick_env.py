@@ -460,10 +460,9 @@ class G1PickEnvCfg(G1InteractiveBaseEnvCfg):
                                       ),)
         self.scene.camera_robot = CameraCfg(prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
                                       spawn=PinholeCameraCfg(
-                                          focal_length=7.1,
-                                          focus_distance=2.0,
-                                          horizontal_aperture=20.955,
-                                          clipping_range=(0.05, 100.0),
+                                          focal_length=1.93,
+                                          horizontal_aperture=3.896,
+                                          clipping_range=(0.1, 100.0),
                                       ),
                                       data_types=["rgb"],
                                       height=720,
