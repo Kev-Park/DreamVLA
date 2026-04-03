@@ -1,0 +1,41 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/Elevator/textures/Old_Rug_Brown_basecolor.jpg",
+            "source_hash": "2a4fca6825c798d0850d3c617912a40fc6a36c4b",
+            "target_url": "./textures/Old_Rug_Brown_basecolor.jpg",
+            "target_hash": "967388078de1bc1ce9d913f3e7a8d09dfa853d22"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/Elevator/textures/Old_Rug_Brown_normalogl.jpg",
+            "source_hash": "5c057107acd2d50cd703dca5394808548ab7e3cd",
+            "target_url": "./textures/Old_Rug_Brown_normalogl.jpg",
+            "target_hash": "4672077edf3c472323be6631b2b103ee095abc96"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/Elevator/textures/Old_Rug_Brown_roughness.jpg",
+            "source_hash": "102e58439f8f352027afae19844b8baa6c79bf10",
+            "target_url": "./textures/Old_Rug_Brown_roughness.jpg",
+            "target_hash": "c30fbac954005142f1fb0016b2490991537ecf70"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/Elevator/textures/UpDown.jpg",
+            "source_hash": "f35d480d2554f72f4f10906fae814d15bb7f4ef7",
+            "target_url": "./textures/UpDown.jpg",
+            "target_hash": "d49613460b1d2e452d263db4474540d2ee8cbfbf"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/Elevator/textures/autumn_field_puresky_1k.hdr",
+            "source_hash": "ab6c3a70e620f9c0222ba9fc26ec702b6a53a4e2",
+            "target_url": "./textures/autumn_field_puresky_1k.hdr",
+            "target_hash": "004d8d5ef84acbfaacd79a950ed4d45672e94522"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/Elevator/models/textures/UpDown.jpg",
+            "source_hash": "039b112466f689b5647344ad57c29040712edda9",
+            "target_url": "./models/textures/UpDown.jpg",
+            "target_hash": "9969ed0c2c2329c9f555c9b94b27f34ec22d6e37"
+        }
+    ]
+}

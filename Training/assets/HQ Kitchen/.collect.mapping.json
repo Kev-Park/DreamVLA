@@ -1,0 +1,215 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/112_Oak moka fine wood PBR texture seamless.jpg",
+            "source_hash": "3a48fcaae814e83ac156e6e2ebde4c60d7d54bb3",
+            "target_url": "./SubUSDs/textures/112_Oak moka fine wood PBR texture seamless.jpg",
+            "target_hash": "3a48fcaae814e83ac156e6e2ebde4c60d7d54bb3"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/11764.jpg",
+            "source_hash": "eefe52b810170b2561fdd2ce8dc554062c0b0adf",
+            "target_url": "./SubUSDs/textures/11764.jpg",
+            "target_hash": "eefe52b810170b2561fdd2ce8dc554062c0b0adf"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/1554077.jpg",
+            "source_hash": "97590c938a5bbc15ec4cba74b7747b1e8912de75",
+            "target_url": "./SubUSDs/textures/1554077.jpg",
+            "target_hash": "97590c938a5bbc15ec4cba74b7747b1e8912de75"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Boite de mouchoir.png",
+            "source_hash": "4e49e5c516d5779dfe88c2db03d978b515b3fdd5",
+            "target_url": "./SubUSDs/textures/Boite de mouchoir.png",
+            "target_hash": "4e49e5c516d5779dfe88c2db03d978b515b3fdd5"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Circle_baked_baseColor.png",
+            "source_hash": "0eb341ac21b7ea1dd895d2c12c011eb25c3e9587",
+            "target_url": "./SubUSDs/textures/Circle_baked_baseColor.png",
+            "target_hash": "0eb341ac21b7ea1dd895d2c12c011eb25c3e9587"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Circle_baked_metallicRoughness.png",
+            "source_hash": "0eb341ac21b7ea1dd895d2c12c011eb25c3e9587",
+            "target_url": "./SubUSDs/textures/Circle_baked_metallicRoughness.png",
+            "target_hash": "0eb341ac21b7ea1dd895d2c12c011eb25c3e9587"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Circle_baked_normal.png",
+            "source_hash": "5dd1079e9c0d333d82f8978d457d8a3399bab1c8",
+            "target_url": "./SubUSDs/textures/Circle_baked_normal.png",
+            "target_hash": "5dd1079e9c0d333d82f8978d457d8a3399bab1c8"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/CustomTextures/museumplein_4k.hdr",
+            "source_hash": "15feaadcd076a3b621a1fd384349a5421e4a2306",
+            "target_url": "./SubUSDs/textures/museumplein_4k.hdr",
+            "target_hash": "15feaadcd076a3b621a1fd384349a5421e4a2306"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Electrical_Outlet_Duplex_Standard_Albedo.jpg",
+            "source_hash": "983fb013aedd53767ed241e0c1dd44ef17bf28e8",
+            "target_url": "./SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Albedo.jpg",
+            "target_hash": "983fb013aedd53767ed241e0c1dd44ef17bf28e8"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Electrical_Outlet_Duplex_Standard_Metalness.jpg",
+            "source_hash": "873cfdf28d6ef333aea82bdd6f1b5c6ded484d6a",
+            "target_url": "./SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Metalness.jpg",
+            "target_hash": "873cfdf28d6ef333aea82bdd6f1b5c6ded484d6a"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Electrical_Outlet_Duplex_Standard_Normal.jpg",
+            "source_hash": "e7e365c5c0c290b7f2642b3190ab7a464c5d482b",
+            "target_url": "./SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Normal.jpg",
+            "target_hash": "e7e365c5c0c290b7f2642b3190ab7a464c5d482b"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Electrical_Outlet_Duplex_Standard_Roughness.jpg",
+            "source_hash": "c677931e44bf813da496ae75a5e4a66911aa3e1b",
+            "target_url": "./SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Roughness.jpg",
+            "target_hash": "c677931e44bf813da496ae75a5e4a66911aa3e1b"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/NINTCHDBPICT000504004831.jpg",
+            "source_hash": "a3ede736fcc4d505d7304964b278c98e71ce0ea1",
+            "target_url": "./SubUSDs/textures/NINTCHDBPICT000504004831.jpg",
+            "target_hash": "a3ede736fcc4d505d7304964b278c98e71ce0ea1"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Panel_color.jpg",
+            "source_hash": "67cbafbc05e326488dfec38da38a6643b6721eb6",
+            "target_url": "./SubUSDs/textures/Panel_color.jpg",
+            "target_hash": "67cbafbc05e326488dfec38da38a6643b6721eb6"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Paper003_2K_Normal.jpg",
+            "source_hash": "0181f5f9d82ecdafb4c2331b6dee1af9019e5cdf",
+            "target_url": "./SubUSDs/textures/Paper003_2K_Normal.jpg",
+            "target_hash": "0181f5f9d82ecdafb4c2331b6dee1af9019e5cdf"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/Paper_B_Bump_01.jpg",
+            "source_hash": "6c1a28bfa80bf23835886638bba62c5d87203f84",
+            "target_url": "./SubUSDs/textures/Paper_B_Bump_01.jpg",
+            "target_hash": "6c1a28bfa80bf23835886638bba62c5d87203f84"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/appliances_exterior_Mat_BaseColor.jpg",
+            "source_hash": "341f8f97a934bfd2217dc73e5426589d3f104cda",
+            "target_url": "./SubUSDs/textures/appliances_exterior_Mat_BaseColor.jpg",
+            "target_hash": "341f8f97a934bfd2217dc73e5426589d3f104cda"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/appliances_exterior_Mat_Emissive.jpg",
+            "source_hash": "f47ad6da61acaea387f0bb6ac624a349bc09efbb",
+            "target_url": "./SubUSDs/textures/appliances_exterior_Mat_Emissive.jpg",
+            "target_hash": "f47ad6da61acaea387f0bb6ac624a349bc09efbb"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/appliances_exterior_Mat_Normal.jpg",
+            "source_hash": "424bc78a28bb330904fd9e386fe6c790f848fa9e",
+            "target_url": "./SubUSDs/textures/appliances_exterior_Mat_Normal.jpg",
+            "target_hash": "424bc78a28bb330904fd9e386fe6c790f848fa9e"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/appliances_exterior_Mat_packed.jpg",
+            "source_hash": "c93b0de57e2c4dc9ba570fd841bc0345540dfafe",
+            "target_url": "./SubUSDs/textures/appliances_exterior_Mat_packed.jpg",
+            "target_hash": "c93b0de57e2c4dc9ba570fd841bc0345540dfafe"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/appliances_interior_Mat_BaseColor.jpg",
+            "source_hash": "803c02f6e51d697b5cf0774ba197edd41763990e",
+            "target_url": "./SubUSDs/textures/appliances_interior_Mat_BaseColor.jpg",
+            "target_hash": "803c02f6e51d697b5cf0774ba197edd41763990e"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/appliances_interior_Mat_Normal.jpg",
+            "source_hash": "9f0f6f3bcd55b3759ffefd491edabc45a03cd4c5",
+            "target_url": "./SubUSDs/textures/appliances_interior_Mat_Normal.jpg",
+            "target_hash": "9f0f6f3bcd55b3759ffefd491edabc45a03cd4c5"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/appliances_interior_Mat_packed.jpg",
+            "source_hash": "d30abd952050d57dcf68e51552d3c0f0c077c7ac",
+            "target_url": "./SubUSDs/textures/appliances_interior_Mat_packed.jpg",
+            "target_hash": "d30abd952050d57dcf68e51552d3c0f0c077c7ac"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/beige_wall_001_diff_1k.jpg",
+            "source_hash": "d8fc11e3e103e54ff04672ca7658327055897bc7",
+            "target_url": "./SubUSDs/textures/beige_wall_001_diff_1k.jpg",
+            "target_hash": "d8fc11e3e103e54ff04672ca7658327055897bc7"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/beige_wall_001_nor_gl_1k.exr",
+            "source_hash": "9604c3de852f0057f600e04eb71b2b419b4d8ee6",
+            "target_url": "./SubUSDs/textures/beige_wall_001_nor_gl_1k.exr",
+            "target_hash": "9604c3de852f0057f600e04eb71b2b419b4d8ee6"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/beige_wall_001_rough_1k.jpg",
+            "source_hash": "b823920112c31876ed98dfcc04fc3e7822beaba9",
+            "target_url": "./SubUSDs/textures/beige_wall_001_rough_1k.jpg",
+            "target_hash": "b823920112c31876ed98dfcc04fc3e7822beaba9"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/laminate_floor_03_diff_1k.jpg",
+            "source_hash": "d7f819bdeec323c1235f4a9177402807991af5b5",
+            "target_url": "./SubUSDs/textures/laminate_floor_03_diff_1k.jpg",
+            "target_hash": "d7f819bdeec323c1235f4a9177402807991af5b5"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/laminate_floor_03_nor_gl_1k.exr",
+            "source_hash": "a8bdf80e65e85d1ac5e1d6bc14f0aee4ec45f2bc",
+            "target_url": "./SubUSDs/textures/laminate_floor_03_nor_gl_1k.exr",
+            "target_hash": "a8bdf80e65e85d1ac5e1d6bc14f0aee4ec45f2bc"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/laminate_floor_03_rough_1k.exr",
+            "source_hash": "dacab86a97031ebf9df3f6f57f77bd8d7fd3acb1",
+            "target_url": "./SubUSDs/textures/laminate_floor_03_rough_1k.exr",
+            "target_hash": "dacab86a97031ebf9df3f6f57f77bd8d7fd3acb1"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/ref-1.jpg",
+            "source_hash": "e485b19197d623a0c910f5a45db2e028533a7bff",
+            "target_url": "./SubUSDs/textures/ref-1.jpg",
+            "target_hash": "e485b19197d623a0c910f5a45db2e028533a7bff"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/spruce wood rough clean_albedo.jpg",
+            "source_hash": "5f294411eed4edc3e4c8af4e926f5c6ebf524050",
+            "target_url": "./SubUSDs/textures/spruce wood rough clean_albedo.jpg",
+            "target_hash": "5f294411eed4edc3e4c8af4e926f5c6ebf524050"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/spruce wood rough clean_normal.jpg",
+            "source_hash": "06e1c6008c07b56e68bf176c53aa49d329c84776",
+            "target_url": "./SubUSDs/textures/spruce wood rough clean_normal.jpg",
+            "target_hash": "06e1c6008c07b56e68bf176c53aa49d329c84776"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/spruce wood rough clean_roughness.jpg",
+            "source_hash": "cb1d77c02007d9cd1cdef3d4a2380cc8814496e2",
+            "target_url": "./SubUSDs/textures/spruce wood rough clean_roughness.jpg",
+            "target_hash": "cb1d77c02007d9cd1cdef3d4a2380cc8814496e2"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/transparent_plastic_Mat_BaseColor.jpg",
+            "source_hash": "656525417d1ac13abfacc6e72cc9c64a528465b7",
+            "target_url": "./SubUSDs/textures/transparent_plastic_Mat_BaseColor.jpg",
+            "target_hash": "656525417d1ac13abfacc6e72cc9c64a528465b7"
+        },
+        {
+            "source_url": "C:/Users/harhn/OneDrive/Desktop/Omniverse/SFG_ProjectScully_Phase2_HQ'sKitchen_V02/textures/museumplein_4k.hdr",
+            "source_hash": "09eda711ddc3a810e2803da23adae2c510da6d97",
+            "target_url": "./SubUSDs/textures/museumplein_4k_1.hdr",
+            "target_hash": "09eda711ddc3a810e2803da23adae2c510da6d97"
+        }
+    ]
+}

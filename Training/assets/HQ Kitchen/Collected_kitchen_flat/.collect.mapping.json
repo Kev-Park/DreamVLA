@@ -1,0 +1,203 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/112_Oak moka fine wood PBR texture seamless.jpg",
+            "source_hash": "3a48fcaae814e83ac156e6e2ebde4c60d7d54bb3",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/112_Oak moka fine wood PBR texture seamless.jpg",
+            "target_hash": "5e4212bd5e27c171e2dd150aaee3329c7e8f9ae0"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/11764.jpg",
+            "source_hash": "eefe52b810170b2561fdd2ce8dc554062c0b0adf",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/11764.jpg",
+            "target_hash": "8f2a959a7ba2f9c69a21865ef78c58499e12a157"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/1554077.jpg",
+            "source_hash": "97590c938a5bbc15ec4cba74b7747b1e8912de75",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/1554077.jpg",
+            "target_hash": "542e0572f9e1a4e430fdfe9e2aed9607441158f1"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Boite de mouchoir.png",
+            "source_hash": "4e49e5c516d5779dfe88c2db03d978b515b3fdd5",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Boite de mouchoir.png",
+            "target_hash": "c7c3f776bf77cc304829160a3b3d8e0d744ba44e"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Circle_baked_baseColor.png",
+            "source_hash": "0eb341ac21b7ea1dd895d2c12c011eb25c3e9587",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Circle_baked_baseColor.png",
+            "target_hash": "218d85f71f20e632d45cfb9c46f6ad816bb260f7"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Circle_baked_metallicRoughness.png",
+            "source_hash": "0eb341ac21b7ea1dd895d2c12c011eb25c3e9587",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Circle_baked_metallicRoughness.png",
+            "target_hash": "36db461ace950c2d36c178fd0dc4300fa9f7d351"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Circle_baked_normal.png",
+            "source_hash": "5dd1079e9c0d333d82f8978d457d8a3399bab1c8",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Circle_baked_normal.png",
+            "target_hash": "7f4f2ea770eccf28ceffc36d7a8c5ee603ad616d"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Albedo.jpg",
+            "source_hash": "983fb013aedd53767ed241e0c1dd44ef17bf28e8",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Albedo.jpg",
+            "target_hash": "b62ddf7f837d7bb9ebc5ce23a708c71db3dd354f"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Metalness.jpg",
+            "source_hash": "873cfdf28d6ef333aea82bdd6f1b5c6ded484d6a",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Metalness.jpg",
+            "target_hash": "ab09389413917cae1805df6cc847b00093337960"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Normal.jpg",
+            "source_hash": "e7e365c5c0c290b7f2642b3190ab7a464c5d482b",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Normal.jpg",
+            "target_hash": "4182d4a7ebb8bc06a26ecdd936d2962fa0a40baa"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Roughness.jpg",
+            "source_hash": "c677931e44bf813da496ae75a5e4a66911aa3e1b",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Electrical_Outlet_Duplex_Standard_Roughness.jpg",
+            "target_hash": "5660ae38bd1c13c7cb5bca01b8b5370971ef15d4"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/NINTCHDBPICT000504004831.jpg",
+            "source_hash": "a3ede736fcc4d505d7304964b278c98e71ce0ea1",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/NINTCHDBPICT000504004831.jpg",
+            "target_hash": "555b7cfe58584b59ef44b0a447f8373dac680282"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Panel_color.jpg",
+            "source_hash": "67cbafbc05e326488dfec38da38a6643b6721eb6",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Panel_color.jpg",
+            "target_hash": "cf800ba8b2c6bb9e1009c2469f65d2b2e532b137"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Paper003_2K_Normal.jpg",
+            "source_hash": "0181f5f9d82ecdafb4c2331b6dee1af9019e5cdf",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Paper003_2K_Normal.jpg",
+            "target_hash": "904b1098ec795e585cf370fd92abd82662b54bb4"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Paper_B_Bump_01.jpg",
+            "source_hash": "6c1a28bfa80bf23835886638bba62c5d87203f84",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/Paper_B_Bump_01.jpg",
+            "target_hash": "1b72a0cb05bb8987787909a1da7ec14313af4fc3"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_exterior_Mat_BaseColor.jpg",
+            "source_hash": "341f8f97a934bfd2217dc73e5426589d3f104cda",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_exterior_Mat_BaseColor.jpg",
+            "target_hash": "1bd94a4e3f61bba23d3d20b8a1c5d2270a6ae8d8"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_exterior_Mat_Emissive.jpg",
+            "source_hash": "f47ad6da61acaea387f0bb6ac624a349bc09efbb",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_exterior_Mat_Emissive.jpg",
+            "target_hash": "5dca6e8ec3440b8f6184c9cbe8f995ebd2ef5ffc"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_exterior_Mat_Normal.jpg",
+            "source_hash": "424bc78a28bb330904fd9e386fe6c790f848fa9e",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_exterior_Mat_Normal.jpg",
+            "target_hash": "0d5c76bfc93723bf10c72f05dd2961e3077420f7"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_exterior_Mat_packed.jpg",
+            "source_hash": "c93b0de57e2c4dc9ba570fd841bc0345540dfafe",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_exterior_Mat_packed.jpg",
+            "target_hash": "4e9ef43a86108b56a2d2296390c41814e4fc7bc6"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_interior_Mat_BaseColor.jpg",
+            "source_hash": "803c02f6e51d697b5cf0774ba197edd41763990e",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_interior_Mat_BaseColor.jpg",
+            "target_hash": "15fda85ed15a1e58034e6aa7d8fbb0a6a3a9e711"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_interior_Mat_Normal.jpg",
+            "source_hash": "9f0f6f3bcd55b3759ffefd491edabc45a03cd4c5",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_interior_Mat_Normal.jpg",
+            "target_hash": "02950438a0028473ce1431f2bec151fa1eb29c17"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_interior_Mat_packed.jpg",
+            "source_hash": "d30abd952050d57dcf68e51552d3c0f0c077c7ac",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/appliances_interior_Mat_packed.jpg",
+            "target_hash": "db006c1de110e580902d093b37ee1a3c5eb91756"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/beige_wall_001_diff_1k.jpg",
+            "source_hash": "d8fc11e3e103e54ff04672ca7658327055897bc7",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/beige_wall_001_diff_1k.jpg",
+            "target_hash": "95846e9c902a0cba8fab262f2bbcb40fe59cceb4"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/beige_wall_001_nor_gl_1k.exr",
+            "source_hash": "9604c3de852f0057f600e04eb71b2b419b4d8ee6",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/beige_wall_001_nor_gl_1k.exr",
+            "target_hash": "164f195eb7d7742a059ecdb62f3c168ef062ea80"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/beige_wall_001_rough_1k.jpg",
+            "source_hash": "b823920112c31876ed98dfcc04fc3e7822beaba9",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/beige_wall_001_rough_1k.jpg",
+            "target_hash": "9d9dfa34fdcbfe3c8be0aa93152dd72dab9564b6"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/laminate_floor_03_diff_1k.jpg",
+            "source_hash": "d7f819bdeec323c1235f4a9177402807991af5b5",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/laminate_floor_03_diff_1k.jpg",
+            "target_hash": "1c07371c301b2636fa3361b8ae172221365e759c"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/laminate_floor_03_nor_gl_1k.exr",
+            "source_hash": "a8bdf80e65e85d1ac5e1d6bc14f0aee4ec45f2bc",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/laminate_floor_03_nor_gl_1k.exr",
+            "target_hash": "e42d63a8b98e01c8f8797dc74b9b4a5b6ed12588"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/laminate_floor_03_rough_1k.exr",
+            "source_hash": "dacab86a97031ebf9df3f6f57f77bd8d7fd3acb1",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/laminate_floor_03_rough_1k.exr",
+            "target_hash": "19614d623fc97242d701fc8b1a48832fefbaeab6"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/ref-1.jpg",
+            "source_hash": "e485b19197d623a0c910f5a45db2e028533a7bff",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/ref-1.jpg",
+            "target_hash": "efd9f51ba241db9f20fe5a108ae0763ea0d60781"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/spruce wood rough clean_albedo.jpg",
+            "source_hash": "5f294411eed4edc3e4c8af4e926f5c6ebf524050",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/spruce wood rough clean_albedo.jpg",
+            "target_hash": "58b368f7495048016126743cc1f092546f6ffa00"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/spruce wood rough clean_normal.jpg",
+            "source_hash": "06e1c6008c07b56e68bf176c53aa49d329c84776",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/spruce wood rough clean_normal.jpg",
+            "target_hash": "5575884cbfe6f344ceecb3c59dd5a4b4a6bfa02b"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/spruce wood rough clean_roughness.jpg",
+            "source_hash": "cb1d77c02007d9cd1cdef3d4a2380cc8814496e2",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/spruce wood rough clean_roughness.jpg",
+            "target_hash": "4059e457fb91da952bcf3894fdd74fa7fdadb5f9"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/transparent_plastic_Mat_BaseColor.jpg",
+            "source_hash": "656525417d1ac13abfacc6e72cc9c64a528465b7",
+            "target_url": "./assets/HQ Kitchen/Collected_kitchen_flat/home/gr/isaaclab-sparky/assets/HQ Kitchen/SubUSDs/textures/transparent_plastic_Mat_BaseColor.jpg",
+            "target_hash": "bd3f1df74d5c55077399a47a40dba7de8e75459f"
+        }
+    ]
+}

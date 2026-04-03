@@ -1,0 +1,17 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "/home/gr/Downloads/9562dwzzz4sg-BottleBeerCorona/Corona/BotellaText.jpg",
+            "source_hash": "6c319fac7e61e2e42028409b4996b419a404ea9c",
+            "target_url": "./Downloads/9562dwzzz4sg-BottleBeerCorona/Corona/BotellaText.jpg",
+            "target_hash": "4a5911be1b0571c8f27ea20eb0d4424be3d9e850"
+        },
+        {
+            "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Props/YCB/Axis_Aligned/Materials/Textures/019_pitcher_base_COLOR.png",
+            "source_hash": "1163fd4a48422695dd432eced3000c260db2ed6e",
+            "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Props/YCB/Axis_Aligned/Materials/Textures/019_pitcher_base_COLOR.png",
+            "target_hash": "82821e0e0ac8287dff0812d5ebfc02ee5e9c53ef"
+        }
+    ]
+}
