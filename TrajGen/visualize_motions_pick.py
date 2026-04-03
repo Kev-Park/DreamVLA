@@ -29,7 +29,6 @@ from isaac_utils.rotations import(
     quat_conjugate,
     quaternion_to_matrix
 )
-import pyroki as pk
 import numpy as np
 
 class RetargetingWeights(TypedDict):
@@ -60,6 +59,7 @@ def get_keypts(joint_angles, joint_names, pk2_robot):
         tf_dict = pk2_robot.forward_kinematics( q_dict )
 
         keypts = torch.zeros((len(joint_angles), len(tf_dict), 3))
+        link_names = []
         # print(len(tf_dict))
         # exit(0)
         cntr = 0 
@@ -70,10 +70,11 @@ def get_keypts(joint_angles, joint_names, pk2_robot):
             t = tf_val[:, :3, -1 ]
             # print(name, t)
             keypts[:, cntr , :] = t 
+            link_names.append(name)
             cntr += 1 
         # print(keypts)
         # exit(0)
-        return keypts
+        return keypts, link_names
 
 
 def transform_keypts(keypts, quat, translation):
@@ -129,8 +130,17 @@ def _cylinder_between(p0: onp.ndarray, p1: onp.ndarray, radius: float,
     return cyl
 
 
+def _find_first_name(candidates, names):
+    for candidate in candidates:
+        if candidate in names:
+            return candidate
+    return None
+
+
 def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
-         hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05):
+         hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05,
+         torso_cylinder_radius=0.125, torso_cylinder_top_extension=0.35,
+         approach_spoof_left_x=0.24):
     
     urdf = yourdfpy.URDF.load('../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
     #urdf = yourdfpy.URDF.load('../../HumanoidVerse/humanoidverse/data/robots/g1/g1_paddle_hand_rigid.urdf')
@@ -224,8 +234,27 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
     #urdf_path = '../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_paddle_hand_rigid.urdf'
     #pk2_robot = pk2.build_chain_from_urdf(open(urdf_path).read())
     
-    keypts = get_keypts(torch.tensor(joints), joint_names , pk2_robot=pk2_robot) 
+    keypts, link_names = get_keypts(torch.tensor(joints), joint_names , pk2_robot=pk2_robot) 
     global_keypts = transform_keypts(torch.tensor(keypts), torch.tensor(orientations), torch.tensor(positions + onp.array([0, 0, 0.035]))).numpy()
+
+    spine_lower_name = _find_first_name(["waist_yaw_link", "pelvis_link", "base_link", "torso_link"], link_names)
+    upper_candidates = ["head_link", "neck_link", "chest_link", "upper_torso_link", "imu_link", "torso_link"]
+    if spine_lower_name is not None:
+        upper_candidates = [name for name in upper_candidates if name != spine_lower_name]
+    spine_upper_name = _find_first_name(upper_candidates, link_names)
+    if spine_lower_name is not None and spine_upper_name is not None:
+        spine_lower_idx = link_names.index(spine_lower_name)
+        spine_upper_idx = link_names.index(spine_upper_name)
+        print(f"  Torso cylinder spine links: lower={spine_lower_name}, upper={spine_upper_name}")
+    else:
+        spine_lower_idx = None
+        spine_upper_idx = None
+        print("  Torso cylinder fallback mode: root-vertical (spine links not found).")
+
+    left_ankle_name = _find_first_name(["left_ankle_roll_link", "left_ankle_pitch_link"], link_names)
+    right_ankle_name = _find_first_name(["right_ankle_roll_link", "right_ankle_pitch_link"], link_names)
+    left_ankle_idx = link_names.index(left_ankle_name) if left_ankle_name is not None else None
+    right_ankle_idx = link_names.index(right_ankle_name) if right_ankle_name is not None else None
     
     # Table cuboid matching refine_motions.py cost geometry:
     #   x_edge = wrist x at grab_idx (link 36, WRIST_TO_COLLISION and OFFSET_X cancel)
@@ -248,6 +277,17 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
         cyl.apply_transform(cyl_tf)
         cyl.visual.face_colors = [255, 80, 80, 80]  # translucent red
         server.scene.add_mesh_trimesh("/collision_cylinder", cyl)
+
+        # Spoofed collision cylinder used by refine_motions_al.py approach shaping:
+        # spoof_capsule_xy[1] = capsule_obs_pos[1] + APPROACH_SPOOF_LEFT_X
+        spoof_cyl = trimesh.creation.cylinder(radius=collision_cylinder_radius, height=3.0, sections=32)
+        spoof_cyl_tf = onp.eye(4)
+        spoof_y = float(grab_pos[1] + approach_spoof_left_x)
+        spoof_cyl_tf[:3, 3] = [grab_pos[0], spoof_y, 1.5]
+        spoof_cyl.apply_transform(spoof_cyl_tf)
+        spoof_cyl.visual.face_colors = [80, 220, 255, 90]  # translucent cyan
+        server.scene.add_mesh_trimesh("/spoofed_collision_cylinder", spoof_cyl)
+        print(f"  Spoofed cylinder at x={float(grab_pos[0]):.3f}, y={spoof_y:.3f} (APPROACH_SPOOF_LEFT_X={approach_spoof_left_x})")
 
     # Grab point sphere
     grab_sphere = None
@@ -310,6 +350,42 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
             # base_frame.position[2] += 0.35  # Adjust for the height of the robot's base
             # print(base_frame.position)
             urdf_vis.update_cfg(onp.array(joints[tstep]))
+
+            if show_segments:
+                torso_radius = float(torso_cylinder_radius)
+                torso_top_extension = float(torso_cylinder_top_extension)
+                if spine_lower_idx is not None and spine_upper_idx is not None:
+                    spine_lower_pt = global_keypts[tstep, spine_lower_idx, :]
+                    spine_upper_pt = global_keypts[tstep, spine_upper_idx, :]
+                else:
+                    root_p = positions[tstep] + onp.array([0, 0, 0.035])
+                    spine_lower_pt = root_p + onp.array([0.0, 0.0, 0.10])
+                    spine_upper_pt = root_p + onp.array([0.0, 0.0, 0.65])
+
+                center_xy = 0.5 * (spine_lower_pt[:2] + spine_upper_pt[:2])
+                if left_ankle_idx is not None and right_ankle_idx is not None:
+                    feet_z = min(global_keypts[tstep, left_ankle_idx, 2], global_keypts[tstep, right_ankle_idx, 2])
+                else:
+                    feet_z = float((positions[tstep] + onp.array([0, 0, 0.035]))[2] - 0.45)
+
+                spine_p0 = onp.array([center_xy[0], center_xy[1], spine_upper_pt[2] + torso_top_extension])
+                spine_p1 = onp.array([center_xy[0], center_xy[1], feet_z])
+
+                # Safety fallback if selected spine points collapse to near-zero distance.
+                if onp.linalg.norm(spine_p1 - spine_p0) < 1e-4:
+                    root_p = positions[tstep] + onp.array([0, 0, 0.035])
+                    spine_p0 = root_p + onp.array([0.0, 0.0, 0.65 + torso_top_extension])
+                    spine_p1 = root_p + onp.array([0.0, 0.0, -0.35])
+
+                torso_cyl = _cylinder_between(
+                    spine_p0,
+                    spine_p1,
+                    radius=torso_radius,
+                    color=(80, 220, 255, 180),
+                    sections=28,
+                )
+                if torso_cyl is not None:
+                    server.scene.add_mesh_trimesh("/torso_collision_cylinder", torso_cyl)
 
             if not show_segments:
                 # Sphere mode — update positions each frame
@@ -426,6 +502,9 @@ if __name__ == "__main__":
     HAND_LENGTH               = 0.15   # metres: hand origin → fingertip (= HAND_TIP_OFFSET)
     HAND_THICKNESS            = 0.04   # metres: hand capsule radius
     COLLISION_CYLINDER_RADIUS = 0.05   # metres: grab-site obstacle cylinder (= R_OBSTACLE)
+    APPROACH_SPOOF_LEFT_X     = 0.24   # metres: matches refine_motions_al.py spoofed approach shaping offset
+    TORSO_CYLINDER_RADIUS     = 0.125  # metres: fixed torso collision proxy radius (segment mode)
+    TORSO_CYLINDER_TOP_EXTENSION = 0.35  # metres: extend torso cylinder top into head area
 
     data_file_id = str(args.id)
     ret_or_ref = str(args.ret_or_ref)
@@ -444,6 +523,9 @@ if __name__ == "__main__":
         hand_length=HAND_LENGTH,
         hand_thickness=HAND_THICKNESS,
         collision_cylinder_radius=COLLISION_CYLINDER_RADIUS,
+        approach_spoof_left_x=APPROACH_SPOOF_LEFT_X,
+        torso_cylinder_radius=TORSO_CYLINDER_RADIUS,
+        torso_cylinder_top_extension=TORSO_CYLINDER_TOP_EXTENSION,
     )
 
 

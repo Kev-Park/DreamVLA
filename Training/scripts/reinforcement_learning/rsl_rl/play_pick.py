@@ -294,7 +294,7 @@ def main():
         video_writers.append(video_writer)
 
     video_writers_robot = []
-    for i in range(1):
+    for i in range(1): # TO-DO look
         video_writer = cv2.VideoWriter(args_cli.name[:-4] + "_robot" + ".mp4", fourcc, 50, (512, 384))
         video_writers_robot.append(video_writer)
 
@@ -304,8 +304,8 @@ def main():
 
         # import pdb; pdb.set_trace()  # noqa: E702
         image = cam.data.output["rgb"]
-        image_robot = cam_robot.data.output["rgb"]
-        image_robot_depth = cam_robot.data.output["depth"]
+        image_robot = cam_robot.data.output["rgb"] # robot face camera color data
+        image_robot_depth = cam_robot.data.output["depth"] # robot face camera output
         prompt = "yellow bottle"
         if timestep < 1:
             intrinsics = {

@@ -43,12 +43,12 @@ isaac.startup.ros_bridge_extension = ""
 
 # Flags for better rendering performance
 # Disabling these settings reduces renderer VRAM usage and improves rendering performance, but at some quality cost
-rtx.translucency.enabled = false
+rtx.translucency.enabled = false 
 rtx.reflections.enabled = false
 rtx.indirectDiffuse.enabled = false
-rtx-transient.dlssg.enabled = false
+rtx-transient.dlssg.enabled = false # DLSS; gpu doesn't do, wasteful
 rtx.directLighting.sampledLighting.enabled = true
-rtx.directLighting.sampledLighting.samplesPerPixel = 1
+rtx.directLighting.sampledLighting.samplesPerPixel = 1024 # set to 1 for training, high otherwise
 rtx.sceneDb.ambientLightIntensity = 1.0
 # rtx.shadows.enabled = false
 

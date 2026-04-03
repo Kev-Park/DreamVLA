@@ -14,6 +14,7 @@ import pickle
 import time
 import trimesh
 import glob
+import re
 import torch.optim as optim
 from isaac_utils.rotations import(
     quat_conjugate,
@@ -36,13 +37,43 @@ VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
 HAND_TIP_OFFSET = 0.15
+TIP_TO_TABLE_EDGE_TAPER_START_DIST = 0.05
 TIP_SPEED_WINDOW = 50
 SAVE_DIR = "../Pick_sim2/"
+TRAJ_FPS_DEFAULT = 20.0
+APPROACH_SPOOF_LEFT_X = 0.24
+TORSO_CYLINDER_RADIUS = 0.125
+WRIST_TORSO_SEGMENT_RADIUS = 0.03
+HAND_TORSO_SEGMENT_RADIUS = 0.04
+TORSO_CYLINDER_TOP_EXTENSION = 0.35
+TORSO_COLLISIONS_ENABLED = False
+HAND_APPROACH_SOFT_WEIGHT = 3000.0 # distance bias
+
+WRIST_GRAB_CHARB_WEIGHT = 1.0 # wrist-to-grab Charbonnier distance (final approach)
+WRIST_GRAB_CHARB_EPS =2e-3 # meters, smooth near-zero Charbonnier epsilon
+
+# Right-arm hard speed limits (rad/s)
+RIGHT_ARM_SPEED_LIMITS = {
+    "right_shoulder_pitch_joint": 37.0,
+    "right_shoulder_roll_joint": 37.0,
+    "right_shoulder_yaw_joint": 37.0,
+    "right_elbow_joint": 37.0,
+    "right_wrist_roll_joint": 37.0,
+    "right_wrist_pitch_joint": 22.0,
+    "right_wrist_yaw_joint": 22.0,
+}
+
+DOF_SPEED_CONSTRAINT_TOL = 1e-3  # rad/s
+
+# Updated per motion file (fallback to TRAJ_FPS_DEFAULT)
+traj_fps_hz = TRAJ_FPS_DEFAULT
 
 # --- Augmented Lagrangian settings ---
 TABLE_CONSTRAINT_TOL = 1e-5   # 0.01 mm  – very tight: any tip penetration > this triggers AL update
 AL_RHO_INIT       = 50.0      # initial quadratic penalty weight
-AL_RHO_GROWTH     = 10.0      # penalty multiplier each outer iteration
+AL_RHO_GROWTH     = 3.0      # penalty multiplier each outer iteration (reduced for soft cost influence)
+AL_RHO_INIT_TABLE = 10.0      # table-only initial penalty (slower start)
+AL_RHO_GROWTH_TABLE = 1.5     # table-only penalty growth (even slower ramp)
 AL_RHO_MAX        = 1e8       # cap so gradients don't explode for quadratic hard optimization
 AL_OUTER_ITERS    = 40        # max AL outer iterations
 AL_INNER_ITERS    = 300       # Adam steps per outer iteration
@@ -50,16 +81,77 @@ AL_INNER_ITERS    = 300       # Adam steps per outer iteration
 # Written by compute_cost every forward pass; read by the AL outer loop.
 _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
-_last_g_cap_hand:  torch.Tensor | None = None
+_last_g_dof_speed: torch.Tensor | None = None
+_last_cost_terms: dict[str, torch.Tensor] | None = None
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
                  lambda_table: torch.Tensor | None = None,
                  lambda_wrist: torch.Tensor | None = None,
-                 lambda_hand:  torch.Tensor | None = None,
-                 rho_al: float = AL_RHO_INIT):
-    global _last_g_t, _last_g_cap_wrist, _last_g_cap_hand
+                 lambda_dof_speed: torch.Tensor | None = None,
+                 rho_al: float = AL_RHO_INIT,
+                 rho_al_table: float | None = None):
+    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_cost_terms
+
+    n_frames = joint_angles.shape[0]
+    inv_n_frames = 1.0 / float(n_frames)
+    wrist_dyn_contrib = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
+    tip_dyn_contrib = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
+    table_hard_contrib = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
+    wrist_cap_hard_contrib = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
+    approach_soft_contrib = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
+
+    def al_penalty(g, lam_vec=None, rho_override: float | None = None):
+        """Augmented-Lagrangian penalty for a hard constraint g >= 0.
+        lam_vec: dedicated dual variable tensor; auto-sliced to len(g)."""
+        rho_use = rho_al if rho_override is None else rho_override
+        if lam_vec is not None:
+            lam = lam_vec[:len(g)]
+            return lam * g + (rho_use / 2.0) * g ** 2
+        return (rho_use / 2.0) * g ** 2
+
+    def segment_vertical_cylinder_collision_cost(p1_world, p2_world, cylinder_center_world,
+                                                 z_low_world, z_high_world,
+                                                 segment_thickness, cylinder_radius):
+        """Finite arm segment capsule vs finite vertical torso cylinder.
+
+        p1_world, p2_world: segment endpoints in world frame, shape (N, 3)
+        cylinder_center_world: torso-cylinder centerline point, shape (N, 3)
+        z_low_world, z_high_world: per-frame cylinder z bounds, shape (N,)
+        Returns per-frame penetration depth >= 0, shape (N,)
+        """
+        r_total = segment_thickness + cylinder_radius
+        sample_t = torch.linspace(0.0, 1.0, 7, device=p1_world.device, dtype=p1_world.dtype).view(1, -1, 1)
+        pts = p1_world.unsqueeze(1) * (1.0 - sample_t) + p2_world.unsqueeze(1) * sample_t  # (N, 7, 3)
+
+        center_xy = cylinder_center_world[:, :2].unsqueeze(1)  # (N, 1, 2)
+        d_xy = torch.norm(pts[:, :, :2] - center_xy, dim=2)     # (N, 7)
+        radial_pen = torch.relu(r_total - d_xy)                 # (N, 7)
+
+        z_pts = pts[:, :, 2]                                     # (N, 7)
+        z_low = z_low_world.unsqueeze(1)                         # (N, 1)
+        z_high = z_high_world.unsqueeze(1)                       # (N, 1)
+        z_gate_k = 60.0
+        z_gate = torch.sigmoid(z_gate_k * (z_pts - z_low)) * torch.sigmoid(z_gate_k * (z_high - z_pts))
+
+        pen = radial_pen * z_gate                                # (N, 7)
+        return torch.max(pen, dim=1).values                      # (N,)
+
     # L2 cost to target
     l2_cost = 0.*torch.nn.functional.mse_loss(joint_angles, target_joint_angles[:, active_joint_ids])
+
+    # [ABS] Right-arm DOF hard speed limits (rad/s), enforced via AL.
+    # joint_angles are in rad/frame, so convert with current trajectory FPS.
+    dt = 1.0 / float(traj_fps_hz)
+    joint_speed_rad_s = torch.abs(joint_angles[1:] - joint_angles[:-1]) / dt  # (T-1, 7)
+    dof_limit_vec = torch.tensor(
+        [RIGHT_ARM_SPEED_LIMITS[name] for name in active_joint_names],
+        device=joint_angles.device,
+        dtype=joint_angles.dtype,
+    ).unsqueeze(0)  # (1, 7)
+    g_dof_speed = torch.relu(joint_speed_rad_s - dof_limit_vec)  # (T-1, 7), hard violation in rad/s
+    g_dof_speed_flat = g_dof_speed.reshape(-1)
+    _last_g_dof_speed = g_dof_speed_flat.detach()
+    dof_speed_hard_cost = torch.mean(al_penalty(g_dof_speed_flat, lam_vec=lambda_dof_speed))
     
     # Forward kinematics to get link positions
     q_dict = {name: joint_angles[:, i] for i, name in enumerate( active_joint_names ) }
@@ -70,15 +162,45 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     # Collect all link positions
     cost2 = torch.zeros(joint_angles.shape[0], device=joint_angles.device)
     rot_matrix = quaternion_to_matrix(quats)
+    trans_with_z_base = trans + torch.tensor([0., 0., 0.035], device=trans.device)
+
+    torso_center_world = trans_with_z_base
+    for _torso_link_name in ["waist_yaw_link", "torso_link", "base_link"]:
+        if _torso_link_name in fk_results:
+            torso_pos_root = fk_results[_torso_link_name].get_matrix()[:, :3, 3]
+            torso_center_world = torch.bmm(torso_pos_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_base
+            break
+
+    torso_top_world = torso_center_world
+    for _upper_link_name in ["head_link", "neck_link", "chest_link", "upper_torso_link", "imu_link", "torso_link"]:
+        if _upper_link_name in fk_results:
+            upper_pos_root = fk_results[_upper_link_name].get_matrix()[:, :3, 3]
+            torso_top_world = torch.bmm(upper_pos_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_base
+            break
+
+    left_foot_world = torso_center_world
+    right_foot_world = torso_center_world
+    if "left_ankle_roll_link" in fk_results:
+        left_pos_root = fk_results["left_ankle_roll_link"].get_matrix()[:, :3, 3]
+        left_foot_world = torch.bmm(left_pos_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_base
+    if "right_ankle_roll_link" in fk_results:
+        right_pos_root = fk_results["right_ankle_roll_link"].get_matrix()[:, :3, 3]
+        right_foot_world = torch.bmm(right_pos_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_base
+
+    torso_z_low_world = torch.minimum(left_foot_world[:, 2], right_foot_world[:, 2])
+    torso_z_high_world = torch.maximum(
+        torso_top_world[:, 2] + TORSO_CYLINDER_TOP_EXTENSION,
+        torso_z_low_world + 0.05,
+    )
 
     # Iterate over links and apply costs based on link positions and orientations
     for i, (link_name, tf) in enumerate(fk_results.items()):
     
-        def capsule_collision_cost(origin_world, rot_world, segment_length, segment_thickness, collision_site):
+        def capsule_collision_cost(origin_world, rot_world, segment_length, segment_thickness, collision_site, r_obstacle=0.05):
             """Arm capsule vs infinite vertical cylinder obstacle.
 
             The obstacle is an infinite vertical cylinder centred at
-            collision_site XY with radius R_OBSTACLE.  For an infinite-Z
+            collision_site XY with radius r_obstacle.  For an infinite-Z
             cylinder the minimum 3D capsule distance reduces to the 2D
             segment-to-point distance in XY.
 
@@ -86,8 +208,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             x-axis for segment_length, with radius segment_thickness.
             Returns relu(r_total - d_xy) per frame.
             """
-            R_OBSTACLE = 0.05  # obstacle cylinder radius (metres)
-            r_total = segment_thickness + R_OBSTACLE
+            r_total = segment_thickness + r_obstacle
 
             # Arm capsule axis in world frame (local x-axis of link frame)
             axis  = rot_world[:, :, 0]                            # (N, 3)
@@ -109,14 +230,6 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             return torch.relu(r_total - d_xy)                      # (N,) penetration depth
 
-        def al_penalty(g, lam_vec=None):
-            """Augmented-Lagrangian penalty for a hard constraint g >= 0.
-            lam_vec: dedicated dual variable tensor; auto-sliced to len(g)."""
-            if lam_vec is not None:
-                lam = lam_vec[:len(g)]
-                return lam * g + (rho_al / 2.0) * g ** 2
-            return (rho_al / 2.0) * g ** 2
-
         if i == 36: # right wrist pitch link (blue dot in viser)
             pos = tf.get_matrix()[:,:3,3]
             pos_ref = fk_results_ref[link_name].get_matrix()[:,:3,3]
@@ -126,20 +239,22 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             transformed_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans_with_z
             transformed_keypts_ref = torch.bmm(pos_ref.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans_with_z
             
+            # displacement per pair of frames
             rel_dists = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)
 
             # GENERAL COSTS
             # [ABS] Penalize wrist speed changes (acceleration) and high speed relative to own trajectory
-            cost2[1:-1] += torch.abs(rel_dists[1:] - rel_dists[:-1])**2  # smoothness of own speed
-            cost2[1:] += 100*rel_dists**2                               # L2 speed magnitude (dominates large speeds)
-
-            # [ABS] 3D wrist jerk penalty — penalises rapid acceleration changes (vibration/oscillation)
-            # vel[t] = pos[t+1]-pos[t] (N-1, 3), accel[t] = vel[t+1]-vel[t] (N-2, 3), jerk[t] = accel[t+1]-accel[t] (N-3, 3)
-            wrist_vel   = transformed_keypts[1:] - transformed_keypts[:-1]   # (N-1, 3)
-            wrist_accel = wrist_vel[1:] - wrist_vel[:-1]                     # (N-2, 3)
-            wrist_jerk  = wrist_accel[1:] - wrist_accel[:-1]                 # (N-3, 3)
-            cost2[2:-1] += 100. * torch.sum(wrist_jerk ** 2, dim=1)
-
+            wrist_accel = rel_dists[1:] - rel_dists[:-1]
+            wrist_speed_term = 50 * torch.abs(rel_dists) ** 2
+            cost2[1:] += wrist_speed_term # L2 speed magnitude (dominates large speeds)
+            wrist_dyn_contrib += torch.sum(wrist_speed_term) * inv_n_frames
+            wrist_accel_term = 50 * (wrist_accel) ** 2
+            cost2[1:-1] += wrist_accel_term  # acceleration
+            wrist_dyn_contrib += torch.sum(wrist_accel_term) * inv_n_frames
+            wrist_jerk = wrist_accel[1:] - wrist_accel[:-1]
+            wrist_jerk_term = 50. * wrist_jerk ** 2
+            cost2[2:-1] += wrist_jerk_term
+            wrist_dyn_contrib += torch.sum(wrist_jerk_term) * inv_n_frames
 
             # PRE-APPROACH COSTS
 
@@ -157,26 +272,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 cost2[:grab_idx+2] += torch.abs(vals)                     # velocity error
                 cost2[:grab_idx+2] += 10*vals**2                          # L2 speed deviation (dominates large errors)
 
-
-            # RECOMMENDED COSTS
-            # [REF] 1-step and 2-step velocity magnitude matching — penalise deviation of speed from reference
-            # 1-step: speed t→t+1
-            # opt_speed_1 = torch.norm(transformed_keypts[1:] - transformed_keypts[:-1], dim=1)      # (N-1,)
-            # ref_speed_1 = torch.norm(transformed_keypts_ref[1:] - transformed_keypts_ref[:-1], dim=1)  # (N-1,)
-            # cost2[1:] += 10 * (opt_speed_1 - ref_speed_1) ** 2
-
-            # # 2-step: speed t→t+2 (captures stride-level speed)
-            # opt_speed_2 = torch.norm(transformed_keypts[2:] - transformed_keypts[:-2], dim=1)      # (N-2,)
-            # ref_speed_2 = torch.norm(transformed_keypts_ref[2:] - transformed_keypts_ref[:-2], dim=1)  # (N-2,)
-            # cost2[2:] += 10 * (opt_speed_2 - ref_speed_2) ** 2
-
-
             # [REF] Laziness: penalize deviation from rest pose, decaying toward grab_idx
             rest_pose = torch.tensor(init_joint_angles, device=DEVICE)[active_joint_ids]
             # Clamp effective end to actual sequence length — grab_idx can exceed N for some pkl files.
             laziness_end = min(max(grab_idx - 40, 0), joint_angles.shape[0])
             if laziness_end > 0:
-                laziness_weight = torch.linspace(1.0, 0.0, laziness_end, device=DEVICE)
+                laziness_weight = torch.linspace(1.0, 0.0, laziness_end, device=DEVICE) ** 2
                 cost2[:laziness_end] += laziness_weight * torch.sum(torch.abs(joint_angles[:laziness_end] - rest_pose), dim=1)
 
             # INTER-APPROACH COSTS
@@ -190,21 +291,20 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # POST-APPROACH COSTS
 
-            #cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[grab_idx:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
-
+            cost2[grab_idx:] += 10.*(joint_angles[grab_idx:, -6]+0.15)*(joint_angles[grab_idx:, -6]>-0.15)  # [ABS] Penalize right shoulder exceeding -0.15 (absolute joint limit)
+            transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z, device=DEVICE)) # freeze reference height
             
-            #transformed_keypts_ref[grab_idx:, 2] = torch.maximum(transformed_keypts_ref[grab_idx:, 2], torch.tensor(offset_z, device=DEVICE)) # freeze reference height
-            #cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
+            
+            # Defer wrist-to-grab cost application to the hand-link block (i==38),
+            # where the over-table trigger for distance-maximization is computed.
+            _pending_wrist_grab_world = transformed_keypts
+
+
+            cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
 
         elif i == 38: # right hand link (red dot in viser)
             rot_mat = tf.get_matrix()[:,:3,:3]
             rot_mat = torch.bmm(rot_matrix, rot_mat)
-            rot_mat_ref = torch.tensor([[1, 0, 0], 
-                                        [0, 1, 0], 
-                                        [0, 0, 1]], dtype=torch.float32, device=DEVICE).T
-            rot_mat = torch.bmm(rot_mat, rot_mat_ref.unsqueeze(0).expand(rot_mat.shape[0], -1, -1))
-            angle = torch.acos(torch.clamp((rot_mat[:, 0, 0] + rot_mat[:, 1, 1] + rot_mat[:, 2, 2] - 1) / 2, -0.999, .999))
-            #cost2 += 0.3*angle  # [REF] Penalize hand orientation deviating from identity (palm-down)
 
             # Get hand position and rotation in world frame
             hand_tf = tf.get_matrix()                   # (N, 4, 4)
@@ -217,45 +317,56 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # Hand joint origin in world frame — forms the other edge of the swept quad
             transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
 
-
             # INTER-APPROACH COSTS
 
-            # [ABS] Forearm capsule collision — axis runs from wrist origin (link 36) toward hand
-            # origin (link 38), matching the visual in visualize_motions_pick.py.  We use the
-            # stashed _wrist_pos_world from the i==36 branch (already includes the 0.035 offset).
-            if '_wrist_pos_world' in dir():
-                forearm_dir_world = transformed_hand_orig - _wrist_pos_world  # (N, 3)
-                forearm_dist = torch.norm(forearm_dir_world, dim=1, keepdim=True).clamp(min=1e-8)  # (N, 1)
-                forearm_axis_world = forearm_dir_world / forearm_dist          # (N, 3) unit vector
-                # Build a rotation-matrix-like (N, 3, 3) where the first column is our axis.
-                forearm_rot_world = torch.zeros(forearm_axis_world.shape[0], 3, 3, device=DEVICE)
-                forearm_rot_world[:, :, 0] = forearm_axis_world
-                # Fill remaining columns with any orthonormal basis (only col-0 is used by capsule_collision_cost)
-                perp = torch.zeros_like(forearm_axis_world)
-                perp[:, 1] = 1.0
-                dot = (forearm_axis_world * perp).sum(dim=1, keepdim=True)
-                perp = perp - dot * forearm_axis_world
-                perp_norm = torch.norm(perp, dim=1, keepdim=True).clamp(min=1e-8)
-                perp = perp / perp_norm
-                forearm_rot_world[:, :, 1] = perp
-                forearm_rot_world[:, :, 2] = torch.linalg.cross(forearm_axis_world, perp)
-                g_cap_wrist = capsule_collision_cost(
-                    _wrist_pos_world, forearm_rot_world, segment_length=0.25, segment_thickness=0.03,
-                    collision_site=capsule_obs_pos
+            # [ABS] Hard torso-vs-arm collision (AL, rho_other schedule).
+            # Forearm segment runs from wrist origin (i==36) to hand origin (i==38), and
+            # hand segment runs from hand origin to fingertip. Both must stay outside
+            # the torso cylinder centered along robot spine.
+            if '_wrist_pos_world' in locals():
+                g_cap_forearm = segment_vertical_cylinder_collision_cost(
+                    _wrist_pos_world,
+                    transformed_hand_orig,
+                    torso_center_world,
+                    torso_z_low_world,
+                    torso_z_high_world,
+                    segment_thickness=WRIST_TORSO_SEGMENT_RADIUS,
+                    cylinder_radius=TORSO_CYLINDER_RADIUS,
                 )
+                g_cap_hand = segment_vertical_cylinder_collision_cost(
+                    transformed_hand_orig,
+                    transformed_tip,
+                    torso_center_world,
+                    torso_z_low_world,
+                    torso_z_high_world,
+                    segment_thickness=HAND_TORSO_SEGMENT_RADIUS,
+                    cylinder_radius=TORSO_CYLINDER_RADIUS,
+                )
+                g_cap_wrist = torch.maximum(g_cap_forearm, g_cap_hand)
             else:
                 g_cap_wrist = torch.zeros(transformed_hand_orig.shape[0], device=DEVICE)
-            _last_g_cap_wrist = g_cap_wrist[:grab_idx].detach()
-            cost2[:grab_idx] += al_penalty(g_cap_wrist[:grab_idx], lam_vec=lambda_wrist)
+            if TORSO_COLLISIONS_ENABLED:
+                _last_g_cap_wrist = g_cap_wrist.detach()
+                wrist_cap_term = al_penalty(g_cap_wrist, lam_vec=lambda_wrist)
+                cost2 += wrist_cap_term
+                wrist_cap_hard_contrib += torch.sum(wrist_cap_term) * inv_n_frames
+            else:
+                _last_g_cap_wrist = torch.zeros_like(g_cap_wrist).detach()
 
-            # [ABS] Hand capsule collision with grab obstacle — hard constraint via AL
-            hand_rot_world = torch.bmm(rot_matrix, hand_rot)  # (N, 3, 3) world-frame hand orientation
-            g_cap_hand = capsule_collision_cost(
-                transformed_hand_orig, hand_rot_world, segment_length=0.15, segment_thickness=0.04,
-                collision_site=capsule_obs_pos
-            )
-            _last_g_cap_hand = g_cap_hand[:grab_idx].detach()
-            cost2[:grab_idx] += al_penalty(g_cap_hand[:grab_idx], lam_vec=lambda_hand)
+            # Hand neutral orientation penalty: quadratic deviation from neutral straight hand pose
+            # from grab_idx-20 onwards (palm vertical, pointing straight outward)
+            hand_neutral_start = max(grab_idx - 20, 0)
+            if hand_neutral_start < rot_mat.shape[0]:
+                # Define neutral hand orientation: identity rotation in world frame (hand axes aligned with world axes)
+                hand_rot_neutral = torch.eye(3, device=DEVICE, dtype=rot_mat.dtype).unsqueeze(0).expand(rot_mat.shape[0], -1, -1)
+                
+                # Compute rotation difference as Frobenius norm: ||R - R_neutral||_F
+                rot_diff = rot_mat[hand_neutral_start:] - hand_rot_neutral[hand_neutral_start:]
+                rot_dev = torch.norm(rot_diff, p='fro', dim=(1, 2))  # Frobenius norm per frame
+                
+                # Quadratic penalty starting from hand_neutral_start
+                hand_neutral_cost = 30.0 * rot_dev ** 2
+                cost2[hand_neutral_start:] += hand_neutral_cost
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
@@ -331,21 +442,104 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 return torch.maximum(g_point, g_seg)           # (gi,)  hard constraint
 
             # [ABS] Per-frame table collision — hard constraint via AL (g_t >= 0)
-            g_t = table_collision_cost(transformed_tip, transformed_hand_orig, grab_idx)
+            # Enforce over the full trajectory.
+            table_gi = transformed_tip.shape[0]
+            g_t = table_collision_cost(transformed_tip, transformed_hand_orig, table_gi)
             _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy) for hard optimization
-            cost2[:grab_idx] += al_penalty(g_t, lam_vec=lambda_table)
+            table_term = al_penalty(g_t, lam_vec=lambda_table, rho_override=rho_al_table)
+            cost2[:table_gi] += table_term
+            table_hard_contrib += torch.sum(table_term) * inv_n_frames
 
 
-            #[ABS] Penalize rate of change of kinetic energy (v * |Δv| ∝ d(KE)/dt) in the approach window
+            # [ABS] Penalize hand-tip speed changes (acceleration), speed, and jerk
             tip_speed = torch.norm(transformed_tip[1:] - transformed_tip[:-1], dim=1)   # (N-1,) speed per frame
-            tip_power = tip_speed[:-1] * torch.abs(tip_speed[1:] - tip_speed[:-1])      # (N-2,) v·|Δv|
-            w_start = max(grab_idx - TIP_SPEED_WINDOW, 1)
-            w_end = grab_idx
-            cost2[w_start:w_end] += 200. * tip_power[w_start-1:w_end-1]**2
+            tip_speed_term = 25 * torch.abs(tip_speed) ** 2
+            cost2[1:] += tip_speed_term  # L2 speed magnitude (dominates large speeds)
+            tip_dyn_contrib += torch.sum(tip_speed_term) * inv_n_frames
+            tip_accel = tip_speed[1:] - tip_speed[:-1]
+            tip_accel_term = 25 * (tip_accel) ** 2
+            cost2[1:-1] += tip_accel_term  # acceleration
+            tip_dyn_contrib += torch.sum(tip_accel_term) * inv_n_frames
+            tip_jerk = tip_accel[1:] - tip_accel[:-1]
+            tip_jerk_term = 50. * tip_jerk ** 2
+            cost2[2:-1] += tip_jerk_term
+            tip_dyn_contrib += torch.sum(tip_jerk_term) * inv_n_frames
+
+
+            # [SOFT] Hand-tip approach shaping in XY:
+            # Penalize only movements that reduce distance to spoofed capsule location,
+            # with the capsule shifted in +Y (90° clockwise from prior -X shift in XY plane).
+            spoof_capsule_xy = capsule_obs_pos[:2].clone()
+            spoof_capsule_xy[1] += APPROACH_SPOOF_LEFT_X
+            tip_xy_dist = torch.norm(transformed_tip[:grab_idx, :2] - spoof_capsule_xy.unsqueeze(0), dim=1)  # (G,)
+            dist_decrease = torch.relu(tip_xy_dist[:-1] - tip_xy_dist[1:])  # (G-1,), only when moving closer
+            approach_pen = dist_decrease ** 2
+
+            n_trans = approach_pen.shape[0]
+            if n_trans > 0:
+                frame_ids = torch.arange(1, n_trans + 1, device=DEVICE, dtype=joint_angles.dtype)  # destination frames
+                z_table = offset_z
+                x_edge = grab_pos[0] + offset_x
+                tip_above_mask = transformed_tip[:grab_idx, 2] >= z_table
+                tip_past_table_edge_mask = transformed_tip[:grab_idx, 0] >= x_edge
+                taper_start_mask = tip_above_mask & tip_past_table_edge_mask
+                above_idx = torch.nonzero(taper_start_mask, as_tuple=False)
+
+                if above_idx.numel() > 0:
+                    taper_end = int(above_idx[0].item())
+                else:
+                    taper_end = max(grab_idx - 10, 1)
+                taper_end = max(min(taper_end, n_trans), 1)
+
+                taper_start = max(taper_end - 10, 1)
+
+                # Constrain wrist-to-grab only after distance-maximization starts to taper off.
+                # Taper begins at taper_start, so activate from the next frame onward.
+                distance_max_taper_start_frame = taper_start
+                if '_pending_wrist_grab_world' in locals():
+                    wrist_grab_start = max(grab_idx - 25, distance_max_taper_start_frame + 1)
+                    wrist_grab_end = min(grab_idx + 20, _pending_wrist_grab_world.shape[0])
+                    if wrist_grab_end > wrist_grab_start:
+                        wrist_to_grab = _pending_wrist_grab_world[wrist_grab_start:wrist_grab_end] - capsule_obs_pos.unsqueeze(0)
+                        wrist_to_grab_norm = torch.norm(wrist_to_grab, dim=1)
+                        wrist_grab_charb = WRIST_GRAB_CHARB_WEIGHT * (
+                            torch.sqrt(wrist_to_grab_norm ** 2 + WRIST_GRAB_CHARB_EPS ** 2) - WRIST_GRAB_CHARB_EPS
+                        )
+                        cost2[wrist_grab_start:wrist_grab_end] += wrist_grab_charb
+
+                taper = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
+                taper_mask = frame_ids >= float(taper_start)
+                taper_denom = max(taper_end - taper_start, 1)
+                taper_linear = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
+                taper[taper_mask] = taper_linear ** 2
+
+                # Smoothly ramp in from trajectory start up to (grab_idx - 40),
+                # then keep full strength until the existing taper-out window.
+                ramp_end = max(min(grab_idx - 40, n_trans), 1)
+                pre_ramp = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
+                pre_mask = frame_ids <= float(ramp_end)
+                pre_ramp[pre_mask] = (frame_ids[pre_mask] / float(ramp_end)) ** 2
+
+                approach_term = HAND_APPROACH_SOFT_WEIGHT * pre_ramp * taper * approach_pen
+                cost2[1:grab_idx] += approach_term
+                approach_soft_contrib += torch.sum(approach_term) * inv_n_frames
         else:
             continue
 
-    return l2_cost + torch.mean(cost2)
+    mean_cost2 = torch.mean(cost2)
+    total_cost = l2_cost + mean_cost2 + dof_speed_hard_cost
+    _last_cost_terms = {
+        "total": total_cost.detach(),
+        "l2": l2_cost.detach(),
+        "meanCost": mean_cost2.detach(),
+        "dof_speed": dof_speed_hard_cost.detach(),
+        "approach_soft": approach_soft_contrib.detach(),
+        "table_hard": table_hard_contrib.detach(),
+        "wrist_cap_hard": wrist_cap_hard_contrib.detach(),
+        "tip_dyn": tip_dyn_contrib.detach(),
+        "wrist_dyn": wrist_dyn_contrib.detach(),
+    }
+    return total_cost
 
 if VISUALIZE:
     urdf = yourdfpy.URDF.load('../../../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
@@ -366,6 +560,9 @@ if VISUALIZE:
     server.scene.add_mesh_trimesh("/heightmap", heightmap.to_trimesh())
 
 for pkl_path in pkl_paths:
+
+    pkl_base = os.path.basename(pkl_path)
+    print(f"[processing] {pkl_base}")
 
     motion_data = pkl.load(open(pkl_path, 'rb'))
 
@@ -418,17 +615,22 @@ for pkl_path in pkl_paths:
     # DEVICE (GPU when available) for full CUDA parallelism.
     # (All tensors are already on DEVICE from load time above.)
     # -----------------------------------------------------------------------
-    lambda_table = torch.zeros(grab_idx, device=DEVICE)   # table surface dual vars (grab_idx frames)
-    lambda_wrist  = torch.zeros(grab_idx, device=DEVICE)  # wrist capsule dual vars (grab_idx frames)
-    lambda_hand   = torch.zeros(grab_idx, device=DEVICE)  # hand capsule dual vars (grab_idx frames)
+    table_gi = joint_angles.shape[0]
+    lambda_table = torch.zeros(table_gi, device=DEVICE)   # table surface dual vars (full trajectory)
+    wrist_gi = joint_angles.shape[0]
+    lambda_wrist  = torch.zeros(wrist_gi, device=DEVICE)  # torso-vs-wrist capsule dual vars (full trajectory)
+    lambda_dof_speed = torch.zeros((joint_angles.shape[0] - 1) * joint_angles.shape[1], device=DEVICE)
+    # lambda_hand removed: hand collision is now a soft cost, not an AL hard constraint
+    traj_fps_hz = float(motion_data.get("fps", motion_data.get("frame_rate", TRAJ_FPS_DEFAULT)))
     rho_al = AL_RHO_INIT
+    rho_al_table = AL_RHO_INIT_TABLE
 
     converged = False
     for outer_iter in range(AL_OUTER_ITERS):
-        # ---- inner minimisation with fixed dual vars and rho_al ----
+        # ---- inner minimisation with fixed dual vars and rho schedules ----
         # Re-create Adam so stale first/second-moment estimates from the previous
         # (lighter-penalty) outer iteration don't corrupt the step direction now
-        # that rho_al is much larger.
+        # that rho values are larger.
         optimizer = optim.Adam([joint_angles], lr=0.001)
         n_inner = AL_INNER_ITERS
         for i in range(n_inner):
@@ -436,41 +638,60 @@ for pkl_path in pkl_paths:
             cost = compute_cost(joint_angles, trans, quats,
                                 lambda_table=lambda_table,
                                 lambda_wrist=lambda_wrist,
-                                lambda_hand=lambda_hand,
-                                rho_al=rho_al)
+                                lambda_dof_speed=lambda_dof_speed,
+                                rho_al=rho_al,
+                                rho_al_table=rho_al_table)
             cost.backward()
             optimizer.step()
 
         # ---- read last constraint violations written by compute_cost ----
         g_curr       = _last_g_t          # shape (grab_idx,)
-        g_curr_wrist = _last_g_cap_wrist  # shape (grab_idx+20,)
-        g_curr_hand  = _last_g_cap_hand   # shape (grab_idx+20,)
+        g_curr_wrist = _last_g_cap_wrist  # shape (grab_idx,)
+        g_curr_dof_speed = _last_g_dof_speed  # shape ((T-1)*7,)
         if g_curr is None:
             break
 
         # ---- dual (multiplier) update: λ ← max(0, λ + ρ·g) ----
         with torch.no_grad():
-            lambda_table = torch.clamp(lambda_table + rho_al * g_curr, min=0.0)
-            if g_curr_wrist is not None:
+            lambda_table = torch.clamp(lambda_table + rho_al_table * g_curr, min=0.0)
+            if TORSO_COLLISIONS_ENABLED and g_curr_wrist is not None:
                 lambda_wrist = torch.clamp(lambda_wrist + rho_al * g_curr_wrist, min=0.0)
-            if g_curr_hand is not None:
-                lambda_hand  = torch.clamp(lambda_hand  + rho_al * g_curr_hand,  min=0.0)
+            if g_curr_dof_speed is not None:
+                lambda_dof_speed = torch.clamp(lambda_dof_speed + rho_al * g_curr_dof_speed, min=0.0)
 
         max_viol       = float(g_curr.max())
         max_viol_wrist = float(g_curr_wrist.max()) if g_curr_wrist is not None else 0.0
-        max_viol_hand  = float(g_curr_hand.max())  if g_curr_hand  is not None else 0.0
+        max_viol_dof_speed = float(g_curr_dof_speed.max()) if g_curr_dof_speed is not None else 0.0
         print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m  "
-              f"wrist_cap={max_viol_wrist:.2e}m  hand_cap={max_viol_hand:.2e}m  "
-              f"rho={rho_al:.1e}  cost={cost.item():.4f}")
+              f"wrist_cap={max_viol_wrist:.2e}m  dof_speed={max_viol_dof_speed:.2e}rad/s  "
+              f"rho_table={rho_al_table:.1e}  rho_other={rho_al:.1e}  cost={cost.item():.4f}")
+        if _last_cost_terms is not None:
+            app = float(_last_cost_terms["approach_soft"].item())
+            table_c = float(_last_cost_terms["table_hard"].item())
+            wrist_cap_c = float(_last_cost_terms["wrist_cap_hard"].item())
+            tip_c = float(_last_cost_terms["tip_dyn"].item())
+            wrist_c = float(_last_cost_terms["wrist_dyn"].item())
+            dof_c = float(_last_cost_terms["dof_speed"].item())
+            total_c = float(_last_cost_terms["total"].item())
+            mean_cost2_c = float(_last_cost_terms["meanCost"].item())
+            parts_abs = abs(app) + abs(table_c) + abs(wrist_cap_c) + abs(tip_c) + abs(wrist_c) + abs(dof_c)
+            app_share = 100.0 * abs(app) / max(parts_abs, 1e-12)
+            print(
+                f"  [cost-share] app={app:.3e} ({app_share:.1f}% parts)  "
+                f"table={table_c:.2e} selfCollide={wrist_cap_c:.2e} tipDyn={tip_c:.2e} "
+                f"wristDyn={wrist_c:.2e} dof={dof_c:.2e} meanCost={mean_cost2_c:.3e} total={total_c:.3e}"
+            )
 
         if (max_viol < TABLE_CONSTRAINT_TOL and
                 max_viol_wrist < TABLE_CONSTRAINT_TOL and
-                max_viol_hand  < TABLE_CONSTRAINT_TOL):
-            print(f"  -> All constraints satisfied to {TABLE_CONSTRAINT_TOL:.0e} m. Done.")
+                max_viol_dof_speed < DOF_SPEED_CONSTRAINT_TOL):
+            print(f"  -> All constraints satisfied to table/wrist={TABLE_CONSTRAINT_TOL:.0e} m "
+                f"and dof_speed={DOF_SPEED_CONSTRAINT_TOL:.0e} rad/s. Done.")
             converged = True
             break
 
         # ---- increase penalty for next outer iteration ----
+        rho_al_table = min(rho_al_table * AL_RHO_GROWTH_TABLE, AL_RHO_MAX)
         rho_al = min(rho_al * AL_RHO_GROWTH, AL_RHO_MAX)
 
     if not converged:

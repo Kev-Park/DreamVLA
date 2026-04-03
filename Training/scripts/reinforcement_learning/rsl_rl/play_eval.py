@@ -95,13 +95,12 @@ def main():
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
-    print(f"[INFO] Loading experiment from directory: {log_root_path}")
+    print(f"[INFO] Loading experiment from directory: {log_root_path}", flush=True)
     if args_cli.use_pretrained_checkpoint:
         resume_path = get_published_pretrained_checkpoint("rsl_rl", args_cli.task)
-        print(resume_path)
-        import pdb; pdb.set_trace()  # noqa: E702
+        print(resume_path, flush=True)
         if not resume_path:
-            print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
+            print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.", flush=True)
             return
     elif args_cli.checkpoint:
         resume_path = retrieve_file_path(args_cli.checkpoint)
@@ -127,10 +126,10 @@ def main():
     env_cfg.viewer.lookat = (2., 0., 0.)
     env_cfg.observations.policy.enable_corruption = False
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
-    print("Observation space:", env.observation_space)
-    print("Action space:", env.action_space)
+    print("Observation space:", env.observation_space, flush=True)
+    print("Action space:", env.action_space, flush=True)
     from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
-    print(ISAACLAB_NUCLEUS_DIR)
+    print(ISAACLAB_NUCLEUS_DIR, flush=True)
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
@@ -143,14 +142,14 @@ def main():
             "disable_logger": True,
             "name_prefix": "eval_"+args_cli.baseline+"_"+args_cli.id,
         }
-        print("[INFO] Recording videos during training.")
+        print("[INFO] Recording videos during training.", flush=True)
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+    print(f"[INFO]: Loading model checkpoint from: {resume_path}", flush=True)
     # load previously trained model
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     ppo_runner.load(resume_path)
@@ -175,7 +174,7 @@ def main():
     )
 
     dt = env.unwrapped.step_dt
-    print("dt:", dt)
+    print("dt:", dt, flush=True)
 
     # reset environment
     obs, _ = env.get_observations()
@@ -199,7 +198,7 @@ def main():
             
         if args_cli.video:
             timestep += 1
-            print(timestep)
+            print(timestep, flush=True)
             
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
@@ -218,7 +217,7 @@ def main():
     os.makedirs(log_dir + "/eval", exist_ok=True)
     with open(os.path.join(log_dir, "eval", "motions.pkl"), "wb") as f:
         pickle.dump({"joint_angles": joint_angless, "root_pos": root_poss, "root_quats": root_quatss}, f)
-    print("Success rate: ", 100*(torch.sum(env.unwrapped.n_successes > 0)/int(args_cli.num_envs)).detach().cpu().item(), "%")
+    print("Success rate: ", 100*(torch.sum(env.unwrapped.n_successes > 0)/int(args_cli.num_envs)).detach().cpu().item(), "%", flush=True)
 
     # close the simulator
     env.close()
