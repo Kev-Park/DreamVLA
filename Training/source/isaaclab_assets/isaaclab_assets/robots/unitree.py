@@ -378,7 +378,7 @@ G1_CFG = ArticulationCfg(
 
 
 G1_MINIMAL_CFG = G1_CFG.copy()
-G1_MINIMAL_CFG.spawn.usd_path = f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/G1/g1_minimal.usd"
+G1_MINIMAL_CFG.spawn.usd_path = "HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof_with_hands_min_collisions_flat_white.usd"
 """Configuration for the Unitree G1 Humanoid robot with fewer collision meshes.
 
 This configuration removes most collision meshes to speed up simulation.
@@ -387,7 +387,7 @@ This configuration removes most collision meshes to speed up simulation.
 
 G1_29DOF_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Unitree/G1/g1.usd",
+        usd_path="HumanoidVerse/humanoidverse/data/robots/g1/g1_29dof.usd",
         activate_contact_sensors=False,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
