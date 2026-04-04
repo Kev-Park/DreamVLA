@@ -14,7 +14,7 @@ from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 from isaaclab.envs import ManagerBasedRLEnv
 import torch
-from isaaclab.assets import Articulation
+from isaaclab.assets import Articulation, RigidObject
 import isaaclab.utils.math as math_utils
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
@@ -306,6 +306,14 @@ def target_orientation(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scene
         return target_rot_quat * time_mask.unsqueeze(1) + target_post_rot_quat * (1. - time_mask.unsqueeze(1))
 
 
+def rigid_body_mass(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("object")) -> torch.Tensor:
+    """The mass of the rigid body."""
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    masses = asset.root_physx_view.get_masses()
+    return masses.to(env.device)
+
+
 @configclass
 class ObservationsCfg:
     """Observation specifications for the MDP."""
@@ -346,7 +354,7 @@ class ObservationsCfg:
         rel_pose_object = ObsTerm(func=rel_pose_object)
         rel_pose_object_w_link_val = ObsTerm(func=rel_pose_object_w_link, params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])})
         right_hand_pose_val = ObsTerm(func=hand_pose, params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])})
-        object_mass = ObsTerm(func=mdp.rigid_body_mass, params={"asset_cfg": SceneEntityCfg("object")})
+        object_mass = ObsTerm(func=rigid_body_mass, params={"asset_cfg": SceneEntityCfg("object")})
         
         def __post_init__(self):
             self.enable_corruption = True
