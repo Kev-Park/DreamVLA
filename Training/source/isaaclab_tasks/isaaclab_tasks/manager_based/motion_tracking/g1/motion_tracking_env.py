@@ -118,8 +118,8 @@ def reset_joints_for_motion(
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
     if not hasattr(env, 'start_motion_times'):
-        joint_pos = torch.zeros((env.scene.num_envs, 41), device=env.device)
-        joint_vel = torch.zeros((env.scene.num_envs, 41), device=env.device)
+        joint_pos_new = torch.zeros((len(env_ids), 41), device=env.device)
+        joint_vel = torch.zeros((len(env_ids), 41), device=env.device)
     else :
         env.motion_ids[env_ids] = torch.randint(0, env.total_motions, (len(env_ids),), device=env.device)
         motion_times = env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)[env_ids]
