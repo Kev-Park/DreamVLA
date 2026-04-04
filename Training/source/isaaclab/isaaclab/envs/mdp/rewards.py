@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -72,14 +72,6 @@ class is_terminated_term(ManagerTermBase):
 Root penalties.
 """
 
-
-def stand_still_error(env: ManagerBasedRLEnv, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
-    """Penalize offsets from the default joint positions when the command is very small."""
-    asset = env.scene[asset_cfg.name]
-    command = env.command_manager.get_command(command_name)
-    # Penalize motion at zero commands
-    offset = asset.data.default_joint_pos[:, asset_cfg.joint_ids] - asset.data.joint_pos[:, asset_cfg.joint_ids]
-    return torch.sum(torch.abs(offset), dim=1) * (torch.norm(command[:, :2], dim=1) < 0.06)
 
 def lin_vel_z_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize z-axis base linear velocity using L2 squared kernel."""
@@ -157,28 +149,6 @@ def joint_vel_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Ten
     asset: Articulation = env.scene[asset_cfg.name]
     return torch.sum(torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
 
-def contact_switch_penalty(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces")) -> torch.Tensor:
-    """Penalize the contact switch of the feet."""
-    # extract the used quantities (to enable type-hinting)
-    
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1)[:,0] > 10.
-    reward_val = (contacts[:, 0] > 0.5).float() * (env.last_contacts[:, 0] < 0.5).float() + \
-        (contacts[:, 1] > 0.5).float() * (env.last_contacts[:, 1] < 0.5).float() +\
-        2.*(contacts[:, 0] > 0.5).float() * (env.last_contacts[:, 0] < 0.5).float() * (contacts[:, 1] < 0.5).float() +\
-        2.*(contacts[:, 1] > 0.5).float() * (env.last_contacts[:, 1] < 0.5).float() * (contacts[:, 0] < 0.5).float()
-
-    env.last_contacts = contacts.clone()
-    return reward_val.float() 
-
-def both_feet_in_air_penalty(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces")) -> torch.Tensor:
-    """Penalize the contact switch of the feet."""
-    # extract the used quantities (to enable type-hinting)
-    
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1)[:,0] > 10.
-    reward_val = (contacts[:, 0] < 0.5).float() * (contacts[:, 1] < 0.5).float() 
-    return reward_val.float() 
 
 def joint_vel_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize joint velocities on the articulation using L2 squared kernel.
@@ -209,19 +179,6 @@ def joint_deviation_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scene
     return torch.sum(torch.abs(angle), dim=1)
 
 
-def joint_range_violation(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), limits_min: torch.Tensor = torch.zeros(1), limits_max: torch.Tensor = torch.zeros(1)) -> torch.Tensor:
-    """Penalize joint positions that deviate from the default one."""
-    # extract the used quantities (to enable type-hinting)
-    asset: Articulation = env.scene[asset_cfg.name]
-    # compute out of limits constraints
-    angle = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    limits_min = torch.tensor(limits_min, device=env.device, dtype=angle.dtype)
-    limits_max = torch.tensor(limits_max, device=env.device, dtype=angle.dtype)
-    cost = torch.sum((angle < torch.unsqueeze(limits_min, dim=0)) * torch.abs(angle-limits_min),dim=1)
-    cost += torch.sum((angle > torch.unsqueeze(limits_max, dim=0)) * torch.abs(angle-limits_max),dim=1)
-    return cost
-
-
 def joint_pos_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize joint positions if they cross the soft limits.
 
@@ -230,8 +187,6 @@ def joint_pos_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEn
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
     # compute out of limits constraints
-    # print(asset.data.soft_joint_pos_limits[0, asset_cfg.joint_ids, 0])
-    # print(asset.data.soft_joint_pos_limits[0, asset_cfg.joint_ids, 1])
     out_of_limits = -(
         asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 0]
     ).clip(max=0.0)
@@ -311,6 +266,16 @@ def undesired_contacts(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: Sce
     is_contact = torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] > threshold
     # sum over contacts for each environment
     return torch.sum(is_contact, dim=1)
+
+
+def desired_contacts(env, sensor_cfg: SceneEntityCfg, threshold: float = 1.0) -> torch.Tensor:
+    """Penalize if none of the desired contacts are present."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contacts = (
+        contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > threshold
+    )
+    zero_contact = (~contacts).all(dim=1)
+    return 1.0 * zero_contact
 
 
 def contact_forces(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:

@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -59,9 +59,6 @@ def register_task_to_hydra(
     cfg_dict = {"env": env_cfg_dict_, "agent": agent_cfg_dict}
     # replace slices with strings because OmegaConf does not support slices
     cfg_dict = replace_slices_with_strings(cfg_dict)
-    
-    # print(env_cfg_dict.keys())
-    # exit(0)
     # store the configuration to Hydra
     ConfigStore.instance().store(name=task_name, node=cfg_dict)
     return env_cfg, agent_cfg
@@ -85,10 +82,10 @@ def hydra_task_config(task_name: str, agent_cfg_entry_point: str) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             # register the task to Hydra
-            env_cfg, agent_cfg = register_task_to_hydra(task_name, agent_cfg_entry_point)
+            env_cfg, agent_cfg = register_task_to_hydra(task_name.split(":")[-1], agent_cfg_entry_point)
 
             # define the new Hydra main function
-            @hydra.main(config_path=None, config_name=task_name, version_base="1.3")
+            @hydra.main(config_path=None, config_name=task_name.split(":")[-1], version_base="1.3")
             def hydra_main(hydra_env_cfg: DictConfig, env_cfg=env_cfg, agent_cfg=agent_cfg):
                 # convert to a native dictionary
                 hydra_env_cfg = OmegaConf.to_container(hydra_env_cfg, resolve=True)

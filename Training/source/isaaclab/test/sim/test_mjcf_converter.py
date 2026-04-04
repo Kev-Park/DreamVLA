@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -53,6 +53,7 @@ def test_setup_teardown():
     sim.clear_instance()
 
 
+@pytest.mark.isaacsim_ci
 def test_no_change(test_setup_teardown):
     """Call conversion twice. This should not generate a new USD file."""
     sim, mjcf_config = test_setup_teardown
@@ -70,6 +71,7 @@ def test_no_change(test_setup_teardown):
     assert time_usd_file_created == new_time_usd_file_created
 
 
+@pytest.mark.isaacsim_ci
 def test_config_change(test_setup_teardown):
     """Call conversion twice but change the config in the second call. This should generate a new USD file."""
     sim, mjcf_config = test_setup_teardown
@@ -89,6 +91,7 @@ def test_config_change(test_setup_teardown):
     assert time_usd_file_created != new_time_usd_file_created
 
 
+@pytest.mark.isaacsim_ci
 def test_create_prim_from_usd(test_setup_teardown):
     """Call conversion and create a prim from it."""
     sim, mjcf_config = test_setup_teardown

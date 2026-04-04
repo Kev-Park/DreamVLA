@@ -486,7 +486,7 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
 
 if __name__ == "__main__":
 
-    # use with dreamcontrol env
+    # use with dreamcontrol_51 env
 
     import argparse
     parser = argparse.ArgumentParser(description="Visualize pick motions")

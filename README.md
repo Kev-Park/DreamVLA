@@ -49,12 +49,15 @@ DreamControl is a ***scalable system*** for learning human-inspired whole-body h
 
 ## Setup
 
+This repository has been ported to IsaacLab 2.3 and IsaacSim 5.1 under the `Training` workspace.
+The older IsaacLab 2.2 / IsaacSim 4.5 workspace is archived in `Training_old`.
+
 ### Install IsaacSim
 
 Create a conda environment:-
 ```bash
-conda create -n dreamcontrol python=3.10 -y
-conda activate dreamcontrol
+conda create -n dreamcontrol_51 python=3.11 -y
+conda activate dreamcontrol_51
 ```
 
 Next, install a CUDA-enabled PyTorch 2.7.0 build. This step is optional for Linux, but required for Windows to ensure a CUDA-compatible version of PyTorch is installed.
@@ -65,7 +68,7 @@ pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorc
 Then, install IsaacSim:-
 ```bash
 pip install --upgrade pip
-pip install 'isaacsim[all,extscache]==4.5.0' --extra-index-url https://pypi.nvidia.com
+pip install 'isaacsim[all,extscache]==5.1.0' --extra-index-url https://pypi.nvidia.com
 ```
 
 ### Install dependencies for DreamControl

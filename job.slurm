@@ -14,7 +14,7 @@
 
 module purge
 module load anaconda3/2025.6
-conda activate dreamcontrol
+conda activate dreamcontrol_51
 
 #export CUDA_VISIBLE_DEVICES=0
 

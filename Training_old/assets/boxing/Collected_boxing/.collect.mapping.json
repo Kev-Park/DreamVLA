@@ -1,0 +1,107 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/M_48935f62149283_5a866e0ed685f_baseColor.jpg",
+            "source_hash": "fddfc1bef45cf5ad79488d415a1af525226a7db3",
+            "target_url": "./0/M_48935f62149283_5a866e0ed685f_baseColor.jpg",
+            "target_hash": "a1d85602963465be56b395c68fa1c5e9cf08835f"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/Material__3_baseColor.jpg",
+            "source_hash": "c9972ed136916d1681eccedc6c00801d9cb17b4c",
+            "target_url": "./0/Material__3_baseColor.jpg",
+            "target_hash": "15e989331627a1c9a257d4e93eeaa98c71667db8"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/Material__4_baseColor.jpg",
+            "source_hash": "a65f1268608fed39c86fffa3cd4d3af347a2162d",
+            "target_url": "./0/Material__4_baseColor.jpg",
+            "target_hash": "e3cfe2af8e0f57d45ea7a122c8b2be8f28c64936"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/Metal_Aluminum_Anodized_baseColor.jpg",
+            "source_hash": "cd5377a82f120740f961cbf870876f7aab33d116",
+            "target_url": "./0/Metal_Aluminum_Anodized_baseColor.jpg",
+            "target_hash": "96296deb4b7e6431c0ea763fc3bdcd99343aa897"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/Metal_Brushed_baseColor.jpg",
+            "source_hash": "246a9bc6818588b62896e2115215af8134bce47d",
+            "target_url": "./0/Metal_Brushed_baseColor.jpg",
+            "target_hash": "13441e95582a33414841c699fae79b38c5b6e151"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/Metal_Corrugated_Shiny_baseColor.jpg",
+            "source_hash": "d257dd134adff495ad16c2fb0acb4dd533b9f229",
+            "target_url": "./0/Metal_Corrugated_Shiny_baseColor.jpg",
+            "target_hash": "224d9f193aa0663b091569910a9030e2e8c0cf54"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/Wood_Plywood_Knots_baseColor.jpg",
+            "source_hash": "d04eef8c37cc78ae4c87ef33b33a8124779eed8f",
+            "target_url": "./0/Wood_Plywood_Knots_baseColor.jpg",
+            "target_hash": "b79cef8871e8b54ff35a4ff2b2a804565b575a7b"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/_Fencing_Chain_Link_1_baseColor.jpg",
+            "source_hash": "d52bdf71115ef5ea855a9126e93f34b4ded97eb4",
+            "target_url": "./0/_Fencing_Chain_Link_1_baseColor.jpg",
+            "target_hash": "b03851a60f39b7a10198712f020a4fb949a93689"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/_____1_baseColor.jpg",
+            "source_hash": "c130dd40148ed895d1e9609829f4b79a7d82337a",
+            "target_url": "./0/_____1_baseColor.jpg",
+            "target_hash": "261602e3a9ff6436534789d448e7c504a76000f8"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/_____2_baseColor.jpg",
+            "source_hash": "0a24529ff7291994306d778ac26705067e92edcd",
+            "target_url": "./0/_____2_baseColor.jpg",
+            "target_hash": "fb64561488a401ceee34392fe299e2810aa1553f"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/______baseColor.jpg",
+            "source_hash": "edf72556309d919b4e83a8dcb5fe1cff10c1e9f3",
+            "target_url": "./0/______baseColor.jpg",
+            "target_hash": "b47f2f0829c10fbb0b47c12262ff585274187673"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/a02d94ac_a5e6_45c4_b181_fb6aa6e27a57_baseColor.jpg",
+            "source_hash": "9430dbf50d6a7f681ac922f541e7b37e5ae3a84a",
+            "target_url": "./0/a02d94ac_a5e6_45c4_b181_fb6aa6e27a57_baseColor.jpg",
+            "target_hash": "ee702d30aab1af7caa1b83dde944f68c235bd6c8"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/cnwhc_com______GU6ZrxT8_baseColor.jpg",
+            "source_hash": "11ef5257fef462269f9982833a8092ef9bf1d6eb",
+            "target_url": "./0/cnwhc_com______GU6ZrxT8_baseColor.jpg",
+            "target_hash": "138f956c2bfd6f1f026097174158e6a8175eaedc"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/cnwhc_com______UiJuWgsm_baseColor.jpg",
+            "source_hash": "b3d484730abb56eee515f330d6bfd5c38406f1b9",
+            "target_url": "./0/cnwhc_com______UiJuWgsm_baseColor.jpg",
+            "target_hash": "24c05949947de85327a782874695269b4b36cd29"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/cnwhc_com______kh3JWETz_baseColor.jpg",
+            "source_hash": "2b05b9351f3e19a15e0c10fccd74d85da304fd99",
+            "target_url": "./0/cnwhc_com______kh3JWETz_baseColor.jpg",
+            "target_hash": "578cb29bcb39fe644fcde5ce30a05c4d6a5373d8"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/e570892d8441457405814421d0c48198_baseColor.jpg",
+            "source_hash": "5c725dae2e281360382af35fc1359241520b6cb5",
+            "target_url": "./0/e570892d8441457405814421d0c48198_baseColor.jpg",
+            "target_hash": "a21f2ef3bd8b2848c569712574393ef48a6267aa"
+        },
+        {
+            "source_url": "/home/gr/isaaclab-sparky/assets/boxing/0/material_21_baseColor.jpg",
+            "source_hash": "7a5632dc966063f804144e62bf0c1229e6864524",
+            "target_url": "./0/material_21_baseColor.jpg",
+            "target_hash": "3e64f4aaae23f6d2bb645db9fcfaaac42fabae77"
+        }
+    ]
+}

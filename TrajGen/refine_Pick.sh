@@ -1,4 +1,4 @@
-conda activate dreamcontrol
+conda activate dreamcontrol_51
 
 cd sample/Pick_sim2
 rm -r *.pkl

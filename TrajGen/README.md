@@ -20,7 +20,7 @@ pip install git+https://github.com/openai/CLIP.git
 
 Install JAX and JAXLIB with cuda support (Replace cuda12 with your cuda version):
 ```bash
-conda activate dreamcontrol # As latest JAX requires python 3.10, so we need to use the dreamcontrol environment to install JAX.
+conda activate dreamcontrol_51 # As latest JAX requires python 3.10, so we need to use the dreamcontrol_51 environment to install JAX.
 pip install jax[cuda12]
 ```
 

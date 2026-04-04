@@ -4,7 +4,7 @@
 ## Setup environment
 
 ```shell
-conda activate dreamcontrol
+conda activate dreamcontrol_51
 ```
 
 ## (Optional) Generate reference trajectories

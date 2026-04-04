@@ -1,4 +1,4 @@
-conda activate dreamcontrol
+conda activate dreamcontrol_51
 cd sample/Open_Drawer_sim2
 rm -r *.pkl
 cd ../Open_Drawer_sim

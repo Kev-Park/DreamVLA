@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -18,8 +18,8 @@ import sys
 import time
 
 import carb
+import env_benchmark_test_utils as utils
 import pytest
-import test_utils as utils
 
 from isaaclab.utils.pretrained_checkpoint import WORKFLOW_EXPERIMENT_NAME_VARIABLE, WORKFLOW_TRAINER
 
@@ -92,7 +92,7 @@ def test_train_environments(workflow, task_spec, config_path, mode, num_gpus, kp
     env_config = utils.get_env_config(env_configs, mode, workflow, task)
 
     # Skip if config not found
-    if not env_config:
+    if env_config is None:
         pytest.skip(f"No config found for task {task} in {mode} mode")
 
     job_name = f"{workflow}:{task}"

@@ -1,11 +1,11 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
 """Sub-module with utilities for parsing and loading configurations."""
 
-
+import collections
 import gymnasium as gym
 import importlib
 import inspect
@@ -32,6 +32,7 @@ def load_cfg_from_registry(task_name: str, entry_point_key: str) -> dict | objec
             kwargs={"env_entry_point_cfg": "path.to.config:ConfigClass"},
         )
 
+
     The parsed configuration object for above example can be obtained as:
 
     .. code-block:: python
@@ -39,6 +40,7 @@ def load_cfg_from_registry(task_name: str, entry_point_key: str) -> dict | objec
         from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 
         cfg = load_cfg_from_registry("My-Awesome-Task-v0", "env_entry_point_cfg")
+
 
     Args:
         task_name: The name of the environment.
@@ -52,12 +54,30 @@ def load_cfg_from_registry(task_name: str, entry_point_key: str) -> dict | objec
         ValueError: If the entry point key is not available in the gym registry for the task.
     """
     # obtain the configuration entry point
-    cfg_entry_point = gym.spec(task_name).kwargs.get(entry_point_key)
+    cfg_entry_point = gym.spec(task_name.split(":")[-1]).kwargs.get(entry_point_key)
     # check if entry point exists
     if cfg_entry_point is None:
+        # get existing agents and algorithms
+        agents = collections.defaultdict(list)
+        for k in gym.spec(task_name.split(":")[-1]).kwargs:
+            if k.endswith("_cfg_entry_point") and k != "env_cfg_entry_point":
+                spec = (
+                    k.replace("_cfg_entry_point", "")
+                    .replace("rl_games", "rl-games")
+                    .replace("rsl_rl", "rsl-rl")
+                    .split("_")
+                )
+                agent = spec[0].replace("-", "_")
+                algorithms = [item.upper() for item in (spec[1:] if len(spec) > 1 else ["PPO"])]
+                agents[agent].extend(algorithms)
+        msg = "\nExisting RL library (and algorithms) config entry points: "
+        for agent, algorithms in agents.items():
+            msg += f"\n  |-- {agent}: {', '.join(algorithms)}"
+        # raise error
         raise ValueError(
             f"Could not find configuration for the environment: '{task_name}'."
-            f" Please check that the gym registry has the entry point: '{entry_point_key}'."
+            f"\nPlease check that the gym registry has the entry point: '{entry_point_key}'."
+            f"{msg if agents else ''}"
         )
     # parse the default config file
     if isinstance(cfg_entry_point, str) and cfg_entry_point.endswith(".yaml"):
@@ -117,7 +137,7 @@ def parse_env_cfg(
             environment configuration.
     """
     # load the default configuration
-    cfg = load_cfg_from_registry(task_name, "env_cfg_entry_point")
+    cfg = load_cfg_from_registry(task_name.split(":")[-1], "env_cfg_entry_point")
 
     # check that it is not a dict
     # we assume users always use a class for the configuration
@@ -135,17 +155,23 @@ def parse_env_cfg(
 
     return cfg
 
+
 def get_task_name(dir_name: str) -> str:
-    """Get the task name from the directory name.
-    """
+    """Get the task name from a run directory name."""
     words = dir_name.split("-")[5:]
     task_name = ""
     for word in words:
         task_name += word + "-"
     return task_name[:-1]
 
+
 def get_checkpoint_path(
-    log_path: str, run_dir: str = ".*", checkpoint: str = ".*", other_dirs: list[str] = None, sort_alpha: bool = True, task_name: str = None
+    log_path: str,
+    run_dir: str = ".*",
+    checkpoint: str = ".*",
+    other_dirs: list[str] = None,
+    sort_alpha: bool = True,
+    task_name: str = None,
 ) -> str:
     """Get path to the model checkpoint in input directory.
 
@@ -178,20 +204,25 @@ def get_checkpoint_path(
     try:
         if task_name is not None:
             runs = [
-                os.path.join(log_path, run) for run in os.scandir(log_path) if run.is_dir() and re.match(run_dir, run.name) and task_name == get_task_name(run.name)
+                os.path.join(log_path, run)
+                for run in os.scandir(log_path)
+                if run.is_dir() and re.match(run_dir, run.name) and task_name == get_task_name(run.name)
             ]
             if len(runs) > 1:
-                # Pick the run with shortest name
+                # Pick the run with shortest name.
                 runs.sort(key=lambda x: len(x))
                 min_len = len(runs[0])
-                a = 0
+                count = 0
                 for run in runs:
                     if len(run) == min_len:
-                        a += 1
-                runs = runs[:a]
+                        count += 1
+                runs = runs[:count]
         else:
+            # find all runs in the directory that match the regex expression
             runs = [
-                os.path.join(log_path, run) for run in os.scandir(log_path) if run.is_dir() and re.match(run_dir, run.name)
+                os.path.join(log_path, run)
+                for run in os.scandir(log_path)
+                if run.is_dir() and re.match(run_dir, run.name)
             ]
         # sort matched runs by alphabetical order (latest run should be last)
         if sort_alpha:

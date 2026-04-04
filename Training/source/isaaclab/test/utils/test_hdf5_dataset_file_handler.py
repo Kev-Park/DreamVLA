@@ -1,8 +1,7 @@
-# Copyright (c) 2024-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-
 """Launch Isaac Sim Simulator first."""
 
 from isaaclab.app import AppLauncher
@@ -83,6 +82,7 @@ def test_write_and_load_episode(temp_dir, device):
     test_episode = create_test_episode(device)
 
     # write the episode to the dataset
+    test_episode.pre_export()
     dataset_file_handler.write_episode(test_episode)
     dataset_file_handler.flush()
 

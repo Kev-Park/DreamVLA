@@ -1,4 +1,4 @@
-conda activate dreamcontrol
+conda activate dreamcontrol_51
 cd sample/Bimanual_Pick_sim1
 rm -r *.pkl
 cd ../Bimanual_Pick_sim2

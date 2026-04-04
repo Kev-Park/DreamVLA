@@ -1,4 +1,4 @@
-conda activate dreamcontrol
+conda activate dreamcontrol_51
 cd sample/Jump_sim1
 rm -r *.pkl
 cd ../Jump_sim2

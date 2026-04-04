@@ -1,29 +1,26 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
 # needed to import for allowing type-hinting: np.ndarray | None
 from __future__ import annotations
-from isaaclab.markers import VisualizationMarkers
+
 import gymnasium as gym
 import math
 import numpy as np
 import torch
 from collections.abc import Sequence
 from typing import Any, ClassVar
-from isaaclab.markers.config import DEFORMABLE_TARGET_MARKER_CFG
+
 from isaacsim.core.version import get_version
-import isaaclab.sim as sim_utils
-from isaaclab.markers.visualization_markers import VisualizationMarkersCfg
+
 from isaaclab.managers import CommandManager, CurriculumManager, RewardManager, TerminationManager
 from isaaclab.ui.widgets import ManagerLiveVisualizer
 
 from .common import VecEnvStepReturn
 from .manager_based_env import ManagerBasedEnv
 from .manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
-from isaaclab_tasks.utils.motion_lib.motion_lib_robot import MotionLibRobot 
-import pytorch_kinematics as pk2
 
 
 class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
@@ -67,91 +64,6 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
     cfg: ManagerBasedRLEnvCfg
     """Configuration for the environment."""
 
-    def update_visualization_markers(self, keypts):
-        for i in range(39):
-            self.markers[i].visualize(keypts[:,i])
-
-    def _init_motion_lib(self):
-        # self.config_.robot.motion.step_dt = 0.02
-        # config_ = self.load_config()
-        # self.
-        self.visualization_marker_cfg = VisualizationMarkersCfg(
-            markers={
-                "target": sim_utils.SphereCfg(
-                    radius=0.035,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0., 0.)),
-                ),
-            },
-            )
-        self.visualization_marker_cfg_head = VisualizationMarkersCfg(
-            markers={
-                "target": sim_utils.SphereCfg(
-                    radius=0.035,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0., 1.)),
-                ),
-            },
-            )
-        self.visualization_marker_cfg_hand = VisualizationMarkersCfg(
-            markers={
-                "target": sim_utils.SphereCfg(
-                    radius=0.035,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1., 0.)),
-                ),
-            },
-            )
-        self.visualization_marker_cfg_feet = VisualizationMarkersCfg(
-            markers={
-                "target": sim_utils.SphereCfg(
-                    radius=0.035,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1., 0.)),
-                ),
-            },
-            )
-        
-        self.visualization_marker_cfg_goal = VisualizationMarkersCfg(
-            markers={
-                "target": sim_utils.SphereCfg(
-                    radius=0.035,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.6, .3, 0.)),
-                ),
-            },
-            )
-        self.goal_marker = VisualizationMarkers(self.visualization_marker_cfg_goal.replace(prim_path=f"/Visuals/Target/goal"),)
-        self.markers = []
-        for i in range(39):
-            if i == 21:
-                self.markers.append(
-                    VisualizationMarkers(self.visualization_marker_cfg_head.replace(prim_path=f"/Visuals/Target/target_{i}"),)
-                )
-            elif i == 7 or i == 13:
-                self.markers.append(
-                    VisualizationMarkers(self.visualization_marker_cfg_feet.replace(prim_path=f"/Visuals/Target/target_{i}"),)
-                )
-            elif i == 30 or i == 38:
-                self.markers.append(
-                    VisualizationMarkers(self.visualization_marker_cfg_hand.replace(prim_path=f"/Visuals/Target/target_{i}"),)
-                )
-            else :
-                self.markers.append(
-                    VisualizationMarkers(self.visualization_marker_cfg.replace(prim_path=f"/Visuals/Target/target_{i}"),)
-                )
-        self.motion_lib = MotionLibRobot(num_envs=self.scene.num_envs, device=self.sim.device, motion_file=self.cfg.ref_motions_path)
-        # self.motion_lib = MotionLibRobot(num_envs=self.scene.num_envs, device=self.sim.device, motion_file="/home/azureuser/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/locomotion/velocity/config/g1/retargetting_results_27dof/generated")
-        self.motion_lib.load_motions()
-        self.joint_names = ['left_hip_pitch_joint', 'left_hip_roll_joint', 'left_hip_yaw_joint', 'left_knee_joint', 'left_ankle_pitch_joint', 'left_ankle_roll_joint', 'right_hip_pitch_joint', 'right_hip_roll_joint', 'right_hip_yaw_joint', 'right_knee_joint', 'right_ankle_pitch_joint', 'right_ankle_roll_joint', 'waist_yaw_joint', 'left_shoulder_pitch_joint', 'left_shoulder_roll_joint', 'left_shoulder_yaw_joint', 'left_elbow_joint', 'left_wrist_roll_joint', 'left_wrist_pitch_joint', 'left_wrist_yaw_joint', 'right_shoulder_pitch_joint', 'right_shoulder_roll_joint', 'right_shoulder_yaw_joint', 'right_elbow_joint', 'right_wrist_roll_joint', 'right_wrist_pitch_joint', 'right_wrist_yaw_joint']
-        urdf_path = "HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf"
-        self.pk2_robot = pk2.build_chain_from_urdf(open(urdf_path).read())
-        
-        self.total_motions = self.motion_lib.num_motions()
-        self.motion_ids = torch.randint(0, self.total_motions, (self.scene.num_envs,), device=self.device)
-        # self.motion_ids = torch.tensor([0] * self.scene.num_envs, device=self.device)  # Initialize with a default motion ID
-        self.start_motion_times = torch.zeros(self.scene.num_envs, device=self.device)  # Initialize with a default start time
-        self.start_positions = torch.zeros((self.scene.num_envs, 3), device=self.device)  # Initialize with a default start position
-        # res = self._motion_lib.get_motion_state(self.motion_ids, self.motion_times, offset=self.env_origins)
-        # res = self._resample_motion_times(torch.arange(self.num_envs))
-        # self.motion_dt = self._motion_lib._motion_dt
-        self.motion_start_idx = 0
-    
     def __init__(self, cfg: ManagerBasedRLEnvCfg, render_mode: str | None = None, **kwargs):
         """Initialize the environment.
 
@@ -162,25 +74,16 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         """
         # -- counter for curriculum
         self.common_step_counter = 0
-        self.net_movement = torch.tensor([[0.0, 0.0, 0.0],[0.0, 0.0, 0.0]], device="cuda:0")
+
+        # initialize the episode length buffer BEFORE loading the managers to use it in mdp functions.
+        self.episode_length_buf = torch.zeros(cfg.scene.num_envs, device=cfg.sim.device, dtype=torch.long)
+
         # initialize the base class to setup the scene.
         super().__init__(cfg=cfg)
-        self.last_contacts = torch.zeros((self.num_envs, 2), device=self.device)
         # store the render mode
         self.render_mode = render_mode
-        self.haha = 0
-        # self.total_motions = 16440
-        if hasattr(self.cfg, 'ref_motions_path'):
-            self._init_motion_lib()
-        # import pdb; pdb.set_trace()  # noqa: E702
-        # import pdb; pdb.set_trace()  # noqa: E702
+
         # initialize data and constants
-        # -- init buffers
-        self.episode_length_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
-        self.prev_dist = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
-        self.prev_dist1 = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
-        self.n_successes = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
-        # import pdb; pdb.set_trace()  # noqa: E702
         # -- set the framerate of the gym video recorder wrapper so that the playback speed of the produced video matches the simulation
         self.metadata["render_fps"] = 1 / self.step_dt
 
@@ -208,7 +111,6 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         # note: this order is important since observation manager needs to know the command and action managers
         # and the reward manager needs to know the termination manager
         # -- command manager
-        # import pdb; pdb.set_trace()  # noqa: E702
         self.command_manager: CommandManager = CommandManager(self.cfg.commands, self)
         print("[INFO] Command Manager: ", self.command_manager)
 
@@ -268,7 +170,6 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         Returns:
             A tuple containing the observations, rewards, resets (terminated and truncated) and extras.
         """
-        # import pdb; pdb.set_trace()  # noqa: E702
         # process actions
         self.action_manager.process_action(action.to(self.device))
 
@@ -277,13 +178,6 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         # check if we need to do rendering within the physics loop
         # note: checked here once to avoid multiple checks within the loop
         is_rendering = self.sim.has_gui() or self.sim.has_rtx_sensors()
-
-        if self.common_step_counter >10000 and "base_contact" in self.termination_manager.active_terms:
-            self.termination_manager.set_term_cfg("base_contact", None)
-                # del self.termination_manager.active_terms["base_contact"]
-        # else:
-        #     if "base_contact" in self.termination_manager.active_terms :
-        #         print(self.common_step_counter)
 
         # perform physics stepping
         for _ in range(self.cfg.decimation):
@@ -294,6 +188,7 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             self.scene.write_data_to_sim()
             # simulate
             self.sim.step(render=False)
+            self.recorder_manager.record_post_physics_decimation_step()
             # render between steps only if the GUI or an RTX sensor needs it
             # note: we assume the render interval to be the shortest accepted rendering interval.
             #    If a camera needs rendering at a faster frequency, this will lead to unexpected behavior.
@@ -305,7 +200,6 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         # post-step:
         # -- update env counters (used for curriculum generation)
         self.episode_length_buf += 1  # step in current episode (per env)
-        # import pdb; pdb.set_trace()  # noqa: E702
         self.common_step_counter += 1  # total step (common for all envs)
         # -- check terminations
         self.reset_buf = self.termination_manager.compute()
@@ -326,9 +220,6 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             self.recorder_manager.record_pre_reset(reset_env_ids)
 
             self._reset_idx(reset_env_ids)
-            # update articulation kinematics
-            self.scene.write_data_to_sim()
-            self.sim.forward()
 
             # if sensors are added to the scene, make sure we render to reflect changes in reset
             if self.sim.has_rtx_sensors() and self.cfg.rerender_on_reset:
@@ -344,7 +235,7 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             self.event_manager.apply(mode="interval", dt=self.step_dt)
         # -- compute observations
         # note: done after reset to get the correct observations for reset envs
-        self.obs_buf = self.observation_manager.compute()
+        self.obs_buf = self.observation_manager.compute(update_history=True)
 
         # return observations, rewards, resets and extras
         return self.obs_buf, self.reward_buf, self.reset_terminated, self.reset_time_outs, self.extras
@@ -355,7 +246,7 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         By convention, if mode is:
 
         - **human**: Render to the current display and return nothing. Usually for human consumption.
-        - **rgb_array**: Return an numpy.ndarray with shape (x, y, 3), representing RGB values for an
+        - **rgb_array**: Return a numpy.ndarray with shape (x, y, 3), representing RGB values for an
           x-by-y pixel image, suitable for turning into a video.
 
         Args:
@@ -430,7 +321,6 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
     def _configure_gym_env_spaces(self):
         """Configure the action and observation spaces for the Gym environment."""
         # observation space (unbounded since we don't impose any limits)
-        # import pdb; pdb.set_trace()  # noqa: E702
         self.single_observation_space = gym.spaces.Dict()
         for group_name, group_term_names in self.observation_manager.active_terms.items():
             # extract quantities about the group
@@ -441,10 +331,13 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             if has_concatenated_obs:
                 self.single_observation_space[group_name] = gym.spaces.Box(low=-np.inf, high=np.inf, shape=group_dim)
             else:
-                self.single_observation_space[group_name] = gym.spaces.Dict({
-                    term_name: gym.spaces.Box(low=-np.inf, high=np.inf, shape=term_dim)
-                    for term_name, term_dim in zip(group_term_names, group_dim)
-                })
+                group_term_cfgs = self.observation_manager._group_obs_term_cfgs[group_name]
+                term_dict = {}
+                for term_name, term_dim, term_cfg in zip(group_term_names, group_dim, group_term_cfgs):
+                    low = -np.inf if term_cfg.clip is None else term_cfg.clip[0]
+                    high = np.inf if term_cfg.clip is None else term_cfg.clip[1]
+                    term_dict[term_name] = gym.spaces.Box(low=low, high=high, shape=term_dim)
+                self.single_observation_space[group_name] = gym.spaces.Dict(term_dict)
         # action space (unbounded since we don't impose any limits)
         action_dim = sum(self.action_manager.action_term_dim)
         self.single_action_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(action_dim,))
@@ -452,8 +345,6 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         # batch the spaces for vectorized environments
         self.observation_space = gym.vector.utils.batch_space(self.single_observation_space, self.num_envs)
         self.action_space = gym.vector.utils.batch_space(self.single_action_space, self.num_envs)
-        # import pdb; pdb.set_trace()  # noqa: E702
-
 
     def _reset_idx(self, env_ids: Sequence[int]):
         """Reset environments based on specified indices.
@@ -501,4 +392,3 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
 
         # reset the episode length buffer
         self.episode_length_buf[env_ids] = 0
-        # import pdb; pdb.set_trace()  # noqa: E702

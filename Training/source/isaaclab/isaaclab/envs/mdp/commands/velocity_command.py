@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -121,8 +121,6 @@ class UniformVelocityCommand(CommandTerm):
         )
 
     def _resample_command(self, env_ids: Sequence[int]):
-        # torch.random.uniform(0.0, 1.0, size=(len(env_ids),), device=self.device)
-        # probs = torch.rand(size=(len(env_ids),), device=self.device)
         # sample velocity commands
         r = torch.empty(len(env_ids), device=self.device)
         # -- linear velocity - x direction
@@ -132,10 +130,6 @@ class UniformVelocityCommand(CommandTerm):
         # -- ang vel yaw - rotation around z
         self.vel_command_b[env_ids, 2] = r.uniform_(*self.cfg.ranges.ang_vel_z)
         # heading target
-        # self.vel_command_b[env_ids, 0] *= (probs >= 0.3).float()  
-        # self.vel_command_b[env_ids, 1] *= (probs >= 0.3).float()  
-        # self.vel_command_b[env_ids, 2] *= (probs >= 0.3).float()
-
         if self.cfg.heading_command:
             self.heading_target[env_ids] = r.uniform_(*self.cfg.ranges.heading)
             # update heading envs
@@ -169,7 +163,7 @@ class UniformVelocityCommand(CommandTerm):
         # set visibility of markers
         # note: parent only deals with callbacks. not their visibility
         if debug_vis:
-            # create markers if necessary for the first tome
+            # create markers if necessary for the first time
             if not hasattr(self, "goal_vel_visualizer"):
                 # -- goal
                 self.goal_vel_visualizer = VisualizationMarkers(self.cfg.goal_vel_visualizer_cfg)

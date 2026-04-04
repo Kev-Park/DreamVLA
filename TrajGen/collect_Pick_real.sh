@@ -1,6 +1,6 @@
 conda activate omnicontrol
 python -m sample.generate --model_path ./save/omnicontrol_ckpt/model_humanml3d.pt --num_repetitions 1 --task pick_real --output_dir sample/Pick_real --batch_size 1500
-conda activate dreamcontrol
+conda activate dreamcontrol_51
 cd sample/Pick_real1
 # rm -r *.pkl
 cd ../Pick_real2
