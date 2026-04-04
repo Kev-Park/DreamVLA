@@ -450,7 +450,7 @@ class G1PickEnvCfg(G1InteractiveBaseEnvCfg):
                                 [np.sin(theta), np.cos(theta), 0.0], \
                                 [0.0, 0.0, 1.0]])
         rot_mat = rot_z_theta @ rot_mat
-        rot_quat = math_utils.quat_from_matrix(torch.tensor(rot_mat))
+        rot_quat = tuple(math_utils.quat_from_matrix(torch.tensor(rot_mat)).tolist())
         self.scene.camera = CameraCfg(prim_path="{ENV_REGEX_NS}/Camera_new",
                                       spawn=PinholeCameraCfg(
                                           focal_length=18.1476,
@@ -466,7 +466,7 @@ class G1PickEnvCfg(G1InteractiveBaseEnvCfg):
                                           rot=rot_quat,
                                           convention="opengl"
                                       ),)
-        self.scene.camera_robot = CameraCfg(prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
+        self.scene.camera_robot = CameraCfg(prim_path="{ENV_REGEX_NS}/Robot/Camera_robot",
                                       spawn=PinholeCameraCfg(
                                           focal_length=7.6,
                                           focus_distance=400.0,
@@ -505,7 +505,7 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
                                 [np.sin(theta), np.cos(theta), 0.0], \
                                 [0.0, 0.0, 1.0]])
         rot_mat = rot_z_theta @ rot_mat
-        rot_quat = math_utils.quat_from_matrix(torch.tensor(rot_mat))
+        rot_quat = tuple(math_utils.quat_from_matrix(torch.tensor(rot_mat)).tolist())
         self.scene.camera = CameraCfg(prim_path="{ENV_REGEX_NS}/Camera_new",
                                       spawn=PinholeCameraCfg(
                                           focal_length=18.1476,
@@ -521,7 +521,7 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
                                           rot=rot_quat,
                                           convention="opengl"
                                       ),)
-        self.scene.camera_robot = CameraCfg(prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
+        self.scene.camera_robot = CameraCfg(prim_path="{ENV_REGEX_NS}/Robot/Camera_robot",
                                       spawn=PinholeCameraCfg(
                                           focal_length=7.6,
                                           focus_distance=400.0,
