@@ -16,11 +16,35 @@ try:
 except ImportError:
     raise ImportError("Hydra is not installed. Please install it by running 'pip install hydra-core'.")
 
+import torch
+import numpy as np
+
 from isaaclab.envs import DirectRLEnvCfg, ManagerBasedRLEnvCfg
 from isaaclab.envs.utils.spaces import replace_env_cfg_spaces_with_strings, replace_strings_with_env_cfg_spaces
 from isaaclab.utils import replace_slices_with_strings, replace_strings_with_slices
 
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
+
+
+def _convert_tensors_to_lists(obj):
+    """Recursively convert torch.Tensor objects to lists for OmegaConf compatibility.
+    
+    Args:
+        obj: The object to convert (can be dict, list, Tensor, or primitive).
+        
+    Returns:
+        The converted object with all Tensors converted to lists.
+    """
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu().tolist()
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {k: _convert_tensors_to_lists(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_convert_tensors_to_lists(item) for item in obj]
+    else:
+        return obj
 
 
 def register_task_to_hydra(
@@ -59,6 +83,8 @@ def register_task_to_hydra(
     cfg_dict = {"env": env_cfg_dict_, "agent": agent_cfg_dict}
     # replace slices with strings because OmegaConf does not support slices
     cfg_dict = replace_slices_with_strings(cfg_dict)
+    # convert tensors to lists because OmegaConf does not support torch.Tensor
+    cfg_dict = _convert_tensors_to_lists(cfg_dict)
     # store the configuration to Hydra
     ConfigStore.instance().store(name=task_name, node=cfg_dict)
     return env_cfg, agent_cfg
