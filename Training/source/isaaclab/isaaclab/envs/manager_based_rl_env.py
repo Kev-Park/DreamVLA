@@ -81,6 +81,23 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         # initialize the base class to setup the scene.
         super().__init__(cfg=cfg)
         self.start_motion_times = torch.zeros(self.scene.num_envs, device=self.device)
+        if hasattr(cfg, "ref_motions_path"):
+            from isaaclab_tasks.utils.motion_lib.motion_lib_robot import MotionLibRobot
+            import pytorch_kinematics as pk2
+
+            self.motion_lib = MotionLibRobot(
+                num_envs=self.scene.num_envs,
+                device=self.device,
+                motion_file=cfg.ref_motions_path,
+            )
+            self.motion_lib.load_motions()
+            self.total_motions = self.motion_lib.num_motions()
+            self.motion_ids = torch.randint(0, self.total_motions, (self.scene.num_envs,), device=self.device)
+            self.start_positions = torch.zeros((self.scene.num_envs, 3), device=self.device)
+            self.motion_start_idx = 0
+            self.joint_names = self.motion_lib.joint_names
+            urdf_path = "HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf"
+            self.pk2_robot = pk2.build_chain_from_urdf(open(urdf_path).read())
         # store the render mode
         self.render_mode = render_mode
 
