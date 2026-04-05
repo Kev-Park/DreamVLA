@@ -84,6 +84,8 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         if hasattr(cfg, "ref_motions_path"):
             from isaaclab_tasks.utils.motion_lib.motion_lib_robot import MotionLibRobot
             import pytorch_kinematics as pk2
+            from isaaclab.markers import VisualizationMarkers
+            from isaaclab.markers.config import POSITION_GOAL_MARKER_CFG
 
             self.motion_lib = MotionLibRobot(
                 num_envs=self.scene.num_envs,
@@ -98,6 +100,9 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             self.joint_names = self.motion_lib.joint_names
             urdf_path = "HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf"
             self.pk2_robot = pk2.build_chain_from_urdf(open(urdf_path).read())
+            self.goal_marker = VisualizationMarkers(
+                POSITION_GOAL_MARKER_CFG.replace(prim_path="/Visuals/Command/goal_marker")
+            )
         # store the render mode
         self.render_mode = render_mode
 

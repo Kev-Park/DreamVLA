@@ -488,9 +488,9 @@ def target_ref(env: ManagerBasedRLEnv, time_offset: float = 0., visualize_marker
             marker_pos[:, 2] = -0.1
             env.goal_marker.visualize(marker_pos)
         # Update the visualization markers in the environment
-        if time_offset == 0. and visualize_markers:
+        if time_offset == 0. and visualize_markers and hasattr(env, "update_visualization_markers"):
             env.update_visualization_markers(global_keypts)
-        if not visualize_markers:
+        if not visualize_markers and hasattr(env, "update_visualization_markers"):
             marker_pos = torch.zeros_like(global_keypts)
             marker_pos[:, :, 2] = -0.1
             env.update_visualization_markers(marker_pos)
