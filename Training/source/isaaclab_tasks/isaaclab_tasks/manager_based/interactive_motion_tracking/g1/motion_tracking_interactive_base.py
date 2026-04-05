@@ -255,6 +255,8 @@ def object_above_threshold(env: ManagerBasedRLEnv, height_thres = 0.7, fall_thre
     motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
     motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
     if env.num_envs < 1001 :
+        if not hasattr(env, "n_successes"):
+            env.n_successes = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
         env.n_successes += (root_pos[:,2] > height_thres) * motion_res["is_closed"]
     return (has_grasped)*motion_res["is_closed"].float()
 
@@ -347,6 +349,8 @@ def touch_goal(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, thres=0.05, of
     motion_res_next = env.motion_lib.get_motion_state(env.motion_ids, motion_times_next)
     is_closed_next = motion_res_next["is_closed"].float()
     if env.num_envs < 1001 :
+        if not hasattr(env, "n_successes"):
+            env.n_successes = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
         env.n_successes += (reward * is_closed * (1 - is_closed_next)) > 0.
     return reward * is_closed * (1. - is_closed_next)
 
