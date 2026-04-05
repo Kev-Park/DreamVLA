@@ -163,7 +163,8 @@ def main():
     print("dt:", dt)
 
     # reset environment
-    obs, _ = env.get_observations()
+    obs_out = env.get_observations()
+    obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
     timestep = 0
 
     scene_keys = list(env.unwrapped.scene.keys())
