@@ -64,6 +64,8 @@ from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
 import isaaclab.utils.math as math_utils
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+from isaaclab.sensors import CameraCfg
+from isaaclab.sim import PinholeCameraCfg
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
 
@@ -76,7 +78,11 @@ def main():
     # parse configuration
     # exit(0)
     env_cfg = parse_env_cfg(
-        args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
+        args_cli.task,
+        device=args_cli.device,
+        num_envs=args_cli.num_envs,
+        use_fabric=not args_cli.disable_fabric,
+        enable_cameras=bool(args_cli.enable_cameras),
     )
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
@@ -105,8 +111,25 @@ def main():
     env_cfg.viewer.lookat = (2., 0., 0.)
     if args_cli.object_name is not None and args_cli.object_name != "none":
         env_cfg.scene.object.spawn.usd_path = "assets/"+args_cli.object_name+".usd"
-    if hasattr(env_cfg, "enable_cameras_for_collection"):
-        env_cfg.enable_cameras_for_collection = bool(args_cli.enable_cameras)
+    # Ensure robot camera exists whenever camera mode is enabled, even for non-cam task variants.
+    if bool(args_cli.enable_cameras) and not hasattr(env_cfg.scene, "camera_robot"):
+        env_cfg.scene.camera_robot = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/Camera_robot",
+            spawn=PinholeCameraCfg(
+                focal_length=7.6,
+                focus_distance=400.0,
+                horizontal_aperture=20.0,
+                clipping_range=(0.01, 100.0),
+            ),
+            data_types=["rgb"],
+            height=720,
+            width=1280,
+            offset=CameraCfg.OffsetCfg(
+                pos=(0.05, 0.0, 0.36),
+                rot=(0.568, 0.421, -0.421, -0.568),
+                convention="opengl",
+            ),
+        )
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     print("Observation space:", env.observation_space)

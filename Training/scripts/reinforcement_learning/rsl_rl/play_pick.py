@@ -193,7 +193,11 @@ def main():
     # parse configuration
     # exit(0)
     env_cfg = parse_env_cfg(
-        args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
+        args_cli.task,
+        device=args_cli.device,
+        num_envs=args_cli.num_envs,
+        use_fabric=not args_cli.disable_fabric,
+        enable_cameras=bool(args_cli.enable_cameras),
     )
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
@@ -222,9 +226,6 @@ def main():
     env_cfg.viewer.lookat = (2., 0., 0.)
     if args_cli.object_name is not None and args_cli.object_name != "none":
         env_cfg.scene.object.spawn.usd_path = "assets/"+args_cli.object_name+".usd"
-    if hasattr(env_cfg, "enable_cameras_for_collection"):
-        env_cfg.enable_cameras_for_collection = args_cli.video
-
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     print("Observation space:", env.observation_space)
     print("Action space:", env.action_space)

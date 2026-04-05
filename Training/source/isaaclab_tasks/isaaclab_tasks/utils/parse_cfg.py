@@ -117,7 +117,11 @@ def load_cfg_from_registry(task_name: str, entry_point_key: str) -> dict | objec
 
 
 def parse_env_cfg(
-    task_name: str, device: str = "cuda:0", num_envs: int | None = None, use_fabric: bool | None = None
+    task_name: str,
+    device: str = "cuda:0",
+    num_envs: int | None = None,
+    use_fabric: bool | None = None,
+    enable_cameras: bool | None = None,
 ) -> ManagerBasedRLEnvCfg | DirectRLEnvCfg:
     """Parse configuration for an environment and override based on inputs.
 
@@ -127,6 +131,8 @@ def parse_env_cfg(
         num_envs: Number of environments to create. Defaults to None, in which case it is left unchanged.
         use_fabric: Whether to enable/disable fabric interface. If false, all read/write operations go through USD.
             This slows down the simulation but allows seeing the changes in the USD through the USD stage.
+            Defaults to None, in which case it is left unchanged.
+        enable_cameras: Whether to enable camera creation in environment configs that support it.
             Defaults to None, in which case it is left unchanged.
 
     Returns:
@@ -152,6 +158,15 @@ def parse_env_cfg(
     # number of environments
     if num_envs is not None:
         cfg.scene.num_envs = num_envs
+
+    # camera toggles (generic + backward-compatible alias)
+    if enable_cameras is not None:
+        try:
+            cfg.enable_cameras = bool(enable_cameras)
+        except Exception:
+            pass
+        if hasattr(cfg, "enable_cameras_for_collection"):
+            cfg.enable_cameras_for_collection = bool(enable_cameras)
 
     return cfg
 
