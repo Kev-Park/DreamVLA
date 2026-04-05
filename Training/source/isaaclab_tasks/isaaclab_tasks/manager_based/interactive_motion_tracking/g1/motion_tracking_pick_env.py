@@ -476,15 +476,14 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
     scene: MySceneCfg = MySceneCfg(num_envs=8192, env_spacing=2.5)
     terminations: TerminationsCfg = TerminationsCfg()
     actions: ActionsCfg = ActionsCfg()
-    # Enable cameras only for data collection, not for RL training
+    # Enable cameras only when a video-capable run requests them.
     enable_cameras_for_collection: bool = False
 
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
         self.scene.kitchen.init_state.pos = (2.55, 0, 0.4)
-        
-        # Only spawn cameras if explicitly enabled for data collection
+
         if self.enable_cameras_for_collection:
             rot = np.array([0.7538, 0.61221, -0.1505, -0.1853])
             rot_mat = np.array(math_utils.matrix_from_quat(torch.tensor(rot)))
@@ -510,21 +509,21 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
                                               convention="opengl"
                                           ),)
             self.scene.camera_robot = CameraCfg(prim_path="{ENV_REGEX_NS}/Robot/Camera_robot",
-                                          spawn=PinholeCameraCfg(
-                                              focal_length=7.6,
-                                              focus_distance=400.0,
-                                              horizontal_aperture=20.0,
-                                              clipping_range=(0.01, 100.0),
-                                          ),
-                                          data_types=["rgb"],
-                                          height=720,
-                                          width=1280,
-                                          offset=CameraCfg.OffsetCfg(
-                                              pos=(0.05, 0., 0.36),
-                                              rot=(0.568, 0.421, -0.421, -0.568),
-                                              convention="opengl"
-                                          ),
-                                        )
+                                      spawn=PinholeCameraCfg(
+                                          focal_length=7.6,
+                                          focus_distance=400.0,
+                                          horizontal_aperture=20.0,
+                                          clipping_range=(0.01, 100.0),
+                                      ),
+                                      data_types=["rgb"],
+                                      height=720,
+                                      width=1280,
+                                      offset=CameraCfg.OffsetCfg(
+                                          pos=(0.05, 0., 0.36),
+                                          rot=(0.568, 0.421, -0.421, -0.568),
+                                          convention="opengl"
+                                      ),
+                                    )
         self.ref_motions_path = "../TrajGen/sample/Pick_sim2"
 
 @configclass
