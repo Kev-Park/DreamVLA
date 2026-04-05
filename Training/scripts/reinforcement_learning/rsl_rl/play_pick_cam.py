@@ -106,7 +106,7 @@ def main():
     if args_cli.object_name is not None and args_cli.object_name != "none":
         env_cfg.scene.object.spawn.usd_path = "assets/"+args_cli.object_name+".usd"
     if hasattr(env_cfg, "enable_cameras_for_collection"):
-        env_cfg.enable_cameras_for_collection = args_cli.video
+        env_cfg.enable_cameras_for_collection = bool(args_cli.enable_cameras)
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     print("Observation space:", env.observation_space)
