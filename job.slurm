@@ -19,8 +19,15 @@ conda activate dreamcontrol_51
 #export CUDA_VISIBLE_DEVICES=0
 
 cd Training
-#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --device cuda:0 # takes ~6 hours
-#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --video --num_envs 1000 --device cuda:0 # look in Training/logs/rsl_rl/g1, takes ~1 hour
+
 #./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_pick.py --task=Isaac-Motion-Tracking-Pick-v0 --video --num_envs 1 --device cuda:0
+
+
+# relevant berkeley branch commands
+
+#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --device cuda:0 # takes ~6 hours
+
+#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --video --num_envs 1000 --device cuda:0 --path /home/dvij/kevin/DreamVLA/Training/logs/rsl_rl/g1/TRAININGRUNCHECKPOINT
+
 
 ./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_pick_cam.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --video --headless --num_envs 1 --device cuda:0
