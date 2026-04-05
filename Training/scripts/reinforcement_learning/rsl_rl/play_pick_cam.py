@@ -114,7 +114,7 @@ def main():
     # Ensure robot camera exists whenever camera mode is enabled, even for non-cam task variants.
     if bool(args_cli.enable_cameras) and not hasattr(env_cfg.scene, "camera_robot"):
         env_cfg.scene.camera_robot = CameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/Camera_robot",
+            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
             spawn=PinholeCameraCfg(
                 focal_length=7.6,
                 focus_distance=400.0,
