@@ -80,6 +80,7 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
 
         # initialize the base class to setup the scene.
         super().__init__(cfg=cfg)
+        self.start_motion_times = torch.zeros(self.scene.num_envs, device=self.device)
         # store the render mode
         self.render_mode = render_mode
 
