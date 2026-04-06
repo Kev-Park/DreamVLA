@@ -93,7 +93,7 @@ def main():
     if args_cli.use_pretrained_checkpoint:
         resume_path = get_published_pretrained_checkpoint("rsl_rl", args_cli.task)
         print(resume_path)
-        import pdb; pdb.set_trace()  # noqa: E702
+        #import pdb; pdb.set_trace()  # noqa: E702
         if not resume_path:
             print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
             return

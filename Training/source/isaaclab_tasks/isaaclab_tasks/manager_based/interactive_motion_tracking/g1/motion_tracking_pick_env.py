@@ -484,7 +484,20 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
-        self.scene.kitchen.init_state.pos = (2.55, 0, 0.4)
+        self.scene.kitchen = AssetBaseCfg(
+            prim_path="{ENV_REGEX_NS}/Kitchen",
+            spawn=sim_utils.UsdFileCfg(usd_path="assets/HQ Kitchen/Collected_kitchen_flat/kitchen_flat3.usd", scale=(1.0, 1.0, 0.89)),
+            init_state=AssetBaseCfg.InitialStateCfg(pos=(2.1 - 0.06, 1.0, 0.0), rot=(1, 0, 0, 0)),
+        )
+        self.scene.object = RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/Object",
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.35, 0.40, 1.0413], rot=[1, 0, 0, 0]),
+            spawn=sim_utils.UsdFileCfg(
+                usd_path="assets/mustard_bottle.usd",
+                scale=(1.0, 1.0, 1.5),
+                mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+            ),
+        )
 
         enable_cameras = bool(getattr(self, "enable_cameras", False) or self.enable_cameras_for_collection)
         if enable_cameras:
