@@ -260,6 +260,33 @@ def main():
                 frame_h, frame_w = frame_bgr.shape[:2]
                 video_writer_robot = cv2.VideoWriter(robot_video_path, fourcc, video_fps, (frame_w, frame_h))
                 print(f"[INFO] Initialized robot video writer at {frame_w}x{frame_h} @ {video_fps} FPS")
+            
+            # Annotate frame with object height
+            try:
+                object_z = float(env.unwrapped.scene["object"].data.root_pos_w[0, 2].item())
+                label = f"Object z: {object_z:.3f} m"
+            except Exception:
+                label = "Object z: n/a"
+            cv2.putText(
+                frame_bgr,
+                label,
+                (24, 48),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 0, 0),
+                4,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                frame_bgr,
+                label,
+                (24, 48),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
             video_writer_robot.write(frame_bgr)
         
         # image = camera.get_image("rgb")

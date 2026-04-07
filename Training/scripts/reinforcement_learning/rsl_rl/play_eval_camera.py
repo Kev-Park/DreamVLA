@@ -55,8 +55,6 @@ import gymnasium as gym
 import os
 import time
 import torch
-import numpy as np
-import cv2
 
 # from omni.isaac.core.utils.prims import set_prim_pose
 from rsl_rl.runners import OnPolicyRunner
@@ -176,7 +174,6 @@ def main():
 
     # wrap for video recording
     if args_cli.video:
-        env = ObjectHeightOverlayWrapper(env)
         video_kwargs = {
             "video_folder": os.path.join(log_dir, "videos", "play"),
             "step_trigger": lambda step: step == 0,
