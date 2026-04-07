@@ -142,6 +142,15 @@ def main():
     env_cfg.viewer.lookat = (2., 0., 0.)
     env_cfg.observations.policy.enable_corruption = False
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+
+    # Task reward code updates `env.n_successes` only if it already exists.
+    # Initialize it here so success accounting is always available during eval.
+    if not hasattr(env.unwrapped, "n_successes"):
+        env.unwrapped.n_successes = torch.zeros(
+            env.unwrapped.num_envs, device=env.unwrapped.device, dtype=torch.float32
+        )
+        print("[INFO] Initialized env.unwrapped.n_successes for evaluation metrics.", flush=True)
+
     print("Observation space:", env.observation_space, flush=True)
     print("Action space:", env.action_space, flush=True)
     from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
