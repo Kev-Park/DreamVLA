@@ -28,6 +28,8 @@ cd Training
 
 #./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --device cuda:0 # takes ~6 hours
 
-#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --video --num_envs 1000 --device cuda:0 --path /home/dvij/kevin/DreamVLA/Training/logs/rsl_rl/g1/TRAININGRUNCHECKPOINT
+#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --video --num_envs 250 --device cuda:0 --path /home/dvij/kevin/DreamVLA/Training/logs/rsl_rl/g1/TRAININGRUNCHECKPOINT
 
-./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_pick_cam.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --video --headless --num_envs 1 --device cuda:0
+#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_pick_cam.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --video --headless --num_envs 1 --device cuda:0
+
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/collect_pick_cam.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --num_envs 1 --device cuda:0 --output-directory ./datasets/pick_cam

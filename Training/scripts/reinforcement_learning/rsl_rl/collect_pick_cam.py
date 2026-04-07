@@ -1,0 +1,449 @@
+"""Data collection using robot_camera for Isaac-Motion-Tracking-Pick-Cam-v0 --> HDF5 files
+"""
+
+from __future__ import annotations
+
+import argparse
+import builtins
+import copy
+import os
+import random
+import time
+from functools import partial
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+
+import isaaclab.utils.math as math_utils
+
+from isaaclab.app import AppLauncher
+import cli_args  # isort: skip
+
+print = partial(builtins.print, flush=True)
+
+
+# helper functions for getting paths, seeding, etc.
+
+def _resolve_training_root() -> Path:
+    root = os.environ.get("ISAACLAB_PATH")
+    if root:
+        return Path(root).resolve()
+    return Path.cwd().resolve()
+
+
+def _resolve_repo_root() -> Path:
+    return _resolve_training_root().parent
+
+
+def _resolve_assets_root() -> Path:
+    return _resolve_training_root() / "assets"
+
+
+def _resolve_sample_root() -> Path:
+    return _resolve_repo_root() / "TrajGen" / "sample"
+
+
+def _resolve_kitchen_usd() -> Path:
+    return _resolve_assets_root() / "HQ Kitchen" / "Collected_kitchen_flat" / "kitchen_flat3.usd"
+
+
+def _resolve_object_usd(object_name: str) -> Path:
+    normalized_name = object_name[:-4] if object_name.endswith(".usd") else object_name
+    return _resolve_assets_root() / f"{normalized_name}.usd"
+
+
+def _discover_motion_references(requested: list[str] | None) -> list[Path]:
+    sample_root = _resolve_sample_root()
+    if requested:
+        resolved: list[Path] = []
+        for item in requested:
+            candidate = Path(item)
+            if candidate.is_absolute() and candidate.exists():
+                resolved.append(candidate.resolve())
+                continue
+
+            relative_candidate = (sample_root / item).resolve()
+            if relative_candidate.exists():
+                resolved.append(relative_candidate)
+                continue
+
+            if candidate.exists():
+                resolved.append(candidate.resolve())
+                continue
+
+            raise FileNotFoundError(f"Could not resolve motion reference: {item}")
+        return resolved
+
+    motion_dirs = sorted(
+        [path.resolve() for path in sample_root.iterdir() if path.is_dir() and path.name.startswith("Pick")]
+    )
+    if not motion_dirs:
+        raise FileNotFoundError(f"No Pick motion reference directories found under {sample_root}")
+    return motion_dirs
+
+
+def _normalize_object_list(object_list: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for item in object_list:
+        normalized.append(item[:-4] if item.endswith(".usd") else item)
+    return normalized
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(sub_value) for key, sub_value in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, torch.Tensor):
+        return _json_safe(value.detach().cpu().tolist())
+    return value
+
+
+def _seed_for_rollout(base_seed: int, object_index: int, motion_index: int, rollout_index: int, worker_index: int = 0) -> int:
+    return int(base_seed + worker_index * 1_000_000_000 + object_index * 1_000_000 + motion_index * 1_000 + rollout_index)
+
+
+def _set_all_seeds(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def _frame_to_uint8_rgb(frame: np.ndarray) -> np.ndarray:
+    if frame.ndim == 3 and frame.shape[-1] == 4:
+        frame = frame[:, :, :3]
+    frame = np.nan_to_num(frame, nan=0.0, posinf=1.0, neginf=0.0)
+    if frame.dtype != np.uint8:
+        frame = frame.astype(np.float32)
+        if np.max(frame) > 1.5:
+            frame = frame / 255.0
+        frame = np.clip(frame, 0.0, 1.0)
+        frame = np.power(frame, 1.0 / 2.2)
+        frame = (frame * 255.0).clip(0, 255).astype(np.uint8)
+    return frame
+
+
+def _stack_nested(values: list[Any]) -> Any:
+    first_value = values[0]
+    if isinstance(first_value, dict):
+        return {key: _stack_nested([value[key] for value in values]) for key in first_value}
+    return np.stack([np.asarray(value) for value in values], axis=0)
+
+
+def _capture_rollout_state(env, action: torch.Tensor | None = None) -> dict[str, Any]:
+    robot = env.unwrapped.scene["robot"]
+    object_asset = env.unwrapped.scene["object"]
+
+    state: dict[str, Any] = {
+        "robot": {
+            "root_pos_w": robot.data.root_pos_w[0].detach().cpu(),
+            "root_quat_w": robot.data.root_quat_w[0].detach().cpu(),
+            "joint_pos": robot.data.joint_pos[0].detach().cpu(),
+            "joint_vel": robot.data.joint_vel[0].detach().cpu(),
+        },
+        "object": {
+            "root_pos_w": object_asset.data.root_pos_w[0].detach().cpu(),
+            "root_quat_w": object_asset.data.root_quat_w[0].detach().cpu(),
+        },
+    }
+
+    if hasattr(env.unwrapped.scene, "env_origins"):
+        state["robot"]["env_origin"] = env.unwrapped.scene.env_origins[0].detach().cpu()
+
+    if action is not None:
+        state["action"] = action[0].detach().cpu()
+
+    return state
+
+
+def _update_policy_observations(env, obs: torch.Tensor) -> torch.Tensor:
+    robot = env.unwrapped.scene["robot"]
+    object_asset = env.unwrapped.scene["object"]
+    robot_pos_world = robot.data.root_pos_w
+    robot_quat_world = math_utils.quat_unique(robot.data.root_quat_w)
+    object_pos_world = object_asset.data.root_pos_w
+    object_pos_local = math_utils.quat_apply(
+        math_utils.quat_conjugate(robot_quat_world), object_pos_world - robot_pos_world
+    )
+    if object_pos_local.shape[0] > 0:
+        # Preserve the same policy-conditioning behavior used by play_pick_cam.py.
+        obs[:, 52] = object_pos_local[0, 0]
+        obs[:, 53] = object_pos_local[0, 1]
+    return obs
+
+
+def _resolve_checkpoint_path(args_cli, agent_cfg, log_root_path: str) -> str:
+    if args_cli.use_pretrained_checkpoint:
+        from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+
+        resume_path = get_published_pretrained_checkpoint("rsl_rl", args_cli.task)
+        if not resume_path:
+            raise RuntimeError("A pre-trained checkpoint is unavailable for this task.")
+        return resume_path
+
+    if getattr(args_cli, "checkpoint", None):
+        from isaaclab.utils.assets import retrieve_file_path
+
+        return retrieve_file_path(args_cli.checkpoint)
+
+    if getattr(args_cli, "checkpoint_path", None):
+        return args_cli.checkpoint_path
+
+    if getattr(args_cli, "path", None):
+        return args_cli.path
+
+    from isaaclab_tasks.utils import get_checkpoint_path
+
+    return get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+
+
+def _build_env_cfg(base_env_cfg, object_name: str, motion_reference: Path, camera_on: bool):
+    env_cfg = copy.deepcopy(base_env_cfg)
+    env_cfg.enable_cameras_for_collection = camera_on
+    env_cfg.kitchen_usd_path = str(_resolve_kitchen_usd())
+    env_cfg.object_usd_path = str(_resolve_object_usd(object_name))
+    env_cfg.ref_motions_path = str(motion_reference)
+    return env_cfg
+
+
+def _create_policy(env, agent_cfg, resume_path: str):
+    from rsl_rl.runners import OnPolicyRunner
+    from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
+
+    wrapped_env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    runner = OnPolicyRunner(wrapped_env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    runner.load(resume_path)
+    policy = runner.get_inference_policy(device=wrapped_env.unwrapped.device)
+    return wrapped_env, runner, policy
+
+
+def _run_rollout(
+    env,
+    policy,
+    *,
+    max_steps: int,
+    state_on: bool,
+    camera_on: bool,
+    real_time: bool,
+) -> tuple[list[np.ndarray], dict[str, Any] | None, dict[str, Any]]:
+    camera_frames: list[np.ndarray] = []
+    state_history: list[dict[str, Any]] = []
+    rollout_success = False
+    terminated_flag = False
+    truncated_flag = False
+
+    scene_keys = list(env.unwrapped.scene.keys())
+    cam_robot = None
+    if camera_on:
+        if "camera_robot" not in scene_keys:
+            raise RuntimeError(
+                "Required robot camera is missing. "
+                f"Found: {scene_keys}."
+            )
+        cam_robot = env.unwrapped.scene["camera_robot"]
+
+    obs_out = env.reset()
+    obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
+
+    for step_index in range(max_steps):
+        start_time = time.time()
+
+        if camera_on and cam_robot is not None:
+            image_robot = cam_robot.data.output["rgb"]
+            frame_rgb = image_robot[0].cpu().numpy()
+            camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
+
+        obs = _update_policy_observations(env, obs)
+
+        with torch.inference_mode():
+            actions = policy(obs).clone()
+            step_result = env.step(actions)
+
+        if len(step_result) == 5:
+            obs, _, terminated, truncated, info = step_result
+        else:
+            obs, _, done, info = step_result
+            terminated = done
+            truncated = torch.zeros_like(done)
+
+        if state_on:
+            state_history.append(_capture_rollout_state(env, actions))
+
+        terminated_flag = bool(torch.as_tensor(terminated).any().item())
+        truncated_flag = bool(torch.as_tensor(truncated).any().item())
+        if isinstance(info, dict) and "success" in info:
+            success_value = info["success"]
+            if isinstance(success_value, (np.ndarray, torch.Tensor)):
+                rollout_success = bool(np.asarray(success_value).any())
+            else:
+                rollout_success = bool(success_value)
+
+        if terminated_flag or truncated_flag:
+            break
+
+        print(f"[INFO] rollout step {step_index + 1}/{max_steps}")
+
+        sleep_time = env.unwrapped.step_dt - (time.time() - start_time)
+        if real_time and sleep_time > 0:
+            time.sleep(sleep_time)
+
+    raw_state = _stack_nested(state_history) if state_history else None
+    metadata = {
+        "terminated": terminated_flag,
+        "truncated": truncated_flag,
+        "success": rollout_success,
+        "num_steps": len(camera_frames) if camera_on else len(state_history),
+        "camera_on": camera_on,
+        "state_on": state_on,
+    }
+    return camera_frames, raw_state, metadata
+
+
+def main() -> None:
+    """Collect pick rollouts as single-rollout HDF5 files."""
+
+    parser = argparse.ArgumentParser(description="Collect pick rollouts with robot-camera output.")
+    parser.add_argument("--video", action="store_true", default=False, help="Enable robot-camera capture.")
+    parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations.")
+    parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate. Currently only 1 is supported.")
+    parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+    state_group = parser.add_mutually_exclusive_group()
+    state_group.add_argument("--state-on", dest="state_on", action="store_true", help="Record state tensors in the HDF5 file.")
+    state_group.add_argument("--state-off", dest="state_on", action="store_false", help="Do not record state tensors.")
+    parser.add_argument("--use_pretrained_checkpoint", action="store_true", help="Use the pre-trained checkpoint from Nucleus.")
+    parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+    parser.add_argument("--checkpoint-path", type=str, default=None, help="Path to the checkpoint to load.")
+    parser.add_argument("--object-list", nargs="*", default=["mustard_bottle"], help="List of object names to collect.")
+    parser.add_argument("--motion-reference-list", nargs="*", default=None, help="List of motion reference directories. If omitted, all Pick* directories are used.")
+    parser.add_argument("--num-rollouts-per-combo", type=int, default=1, help="Number of rollouts to collect per object-motion combo.")
+    parser.add_argument("--output-directory", type=str, default="./datasets/pick_cam", help="Directory where rollout HDF5 files are written.")
+    parser.add_argument("--rollout-length", type=int, default=500, help="Maximum number of steps per rollout.")
+    parser.add_argument("--seed", type=int, default=0, help="Base seed used for deterministic rollout seeding.")
+    parser.set_defaults(state_on=True)
+
+    cli_args.add_rsl_rl_args(parser)
+    AppLauncher.add_app_launcher_args(parser)
+    args_cli = parser.parse_args()
+
+    if args_cli.task is None:
+        parser.error("--task is required")
+
+    # TO-DO: implement support for parallelized collection here
+    if args_cli.num_envs != 1:
+        raise ValueError(
+            "collect_pick_cam.py currently supports num_envs=1 only. "
+            "Use --num_envs 1 while rollouts are saved one-file-per-rollout."
+        )
+
+    if args_cli.checkpoint_path is not None:
+        args_cli.path = args_cli.checkpoint_path
+        args_cli.checkpoint = args_cli.checkpoint_path
+
+    args_cli.enable_cameras = bool(args_cli.video)
+
+    app_launcher = AppLauncher(args_cli)
+    simulation_app = app_launcher.app
+
+    import gymnasium as gym
+    from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
+    import isaaclab_tasks  # noqa: F401
+    from isaaclab_tasks.utils import parse_env_cfg
+    from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg
+    from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
+
+    from recorder import RolloutRecorder
+
+    print(f"[INFO] ISAACLAB_NUCLEUS_DIR: {ISAACLAB_NUCLEUS_DIR}")
+
+    base_env_cfg = parse_env_cfg(
+        args_cli.task,
+        device=args_cli.device,
+        num_envs=1,
+        use_fabric=not args_cli.disable_fabric,
+        enable_cameras=bool(args_cli.enable_cameras),
+    )
+    agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
+
+    log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
+    print(f"[INFO] Loading experiment from directory: {log_root_path}")
+    resume_path = _resolve_checkpoint_path(args_cli, agent_cfg, log_root_path)
+    print(f"[INFO] Loading checkpoint from: {resume_path}")
+
+    object_list = _normalize_object_list(args_cli.object_list)
+    motion_references = _discover_motion_references(args_cli.motion_reference_list)
+
+    # Build a single policy instance once, then reuse it across all rollouts.
+    template_object = object_list[0]
+    template_motion = motion_references[0]
+    template_env_cfg = _build_env_cfg(base_env_cfg, template_object, template_motion, bool(args_cli.video))
+    template_env = gym.make(args_cli.task, cfg=template_env_cfg, render_mode=None)
+    if isinstance(template_env.unwrapped, DirectMARLEnv):
+        template_env = multi_agent_to_single_agent(template_env)
+
+    template_env, template_runner, policy = _create_policy(template_env, agent_cfg, resume_path)
+    policy_device = template_env.unwrapped.device
+    print(f"[INFO] Policy device: {policy_device}")
+
+    output_root = Path(args_cli.output_directory).resolve()
+    recorder = RolloutRecorder(output_root)
+
+    try:
+        for object_index, object_name in enumerate(object_list):
+            for motion_index, motion_reference in enumerate(motion_references):
+                for rollout_index in range(args_cli.num_rollouts_per_combo):
+                    seed = _seed_for_rollout(args_cli.seed, object_index, motion_index, rollout_index)
+                    _set_all_seeds(seed)
+
+                    env_cfg = _build_env_cfg(base_env_cfg, object_name, motion_reference, bool(args_cli.video))
+                    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+                    if isinstance(env.unwrapped, DirectMARLEnv):
+                        env = multi_agent_to_single_agent(env)
+
+                    rollout_folder = output_root / object_name / motion_reference.name
+                    recorder.output_dir = rollout_folder
+                    recorder.output_dir.mkdir(parents=True, exist_ok=True)
+
+                    camera_frames, raw_state, rollout_metadata = _run_rollout(
+                        env,
+                        policy,
+                        max_steps=args_cli.rollout_length,
+                        state_on=bool(args_cli.state_on),
+                        camera_on=bool(args_cli.video),
+                        real_time=bool(args_cli.real_time),
+                    )
+
+                    file_name = f"rollout_{rollout_index:03d}_seed_{seed}.hdf5"
+                    metadata = {
+                        "object_name": object_name,
+                        "motion_reference": motion_reference.name,
+                        "motion_reference_path": motion_reference,
+                        "seed": seed,
+                        "rollout_index": rollout_index,
+                        "object_index": object_index,
+                        "motion_index": motion_index,
+                        **rollout_metadata,
+                    }
+                    recorder.write_rollout(
+                        file_name,
+                        frames=np.stack(camera_frames, axis=0) if camera_frames else None,
+                        raw_state=raw_state if args_cli.state_on else None,
+                        metadata=metadata,
+                    )
+                    print(f"[INFO] Wrote rollout: {recorder.output_dir / file_name}")
+
+                    env.close()
+    finally:
+        template_env.close()
+        simulation_app.close()
+
+
+if __name__ == "__main__":
+    main()

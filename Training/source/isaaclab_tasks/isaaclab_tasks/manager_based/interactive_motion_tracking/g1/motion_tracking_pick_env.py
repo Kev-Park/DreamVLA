@@ -480,20 +480,28 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
     actions: ActionsCfg = ActionsCfg()
     # Enable cameras only when a video-capable run requests them.
     enable_cameras_for_collection: bool = False
+    ref_motions_path: str = "../TrajGen/sample/Pick_sim2"
+    kitchen_usd_path: str = "assets/HQ Kitchen/Collected_kitchen_flat/kitchen_flat3.usd"
+    object_usd_path: str = "assets/mustard_bottle.usd"
 
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
+        self.ref_motions_path = getattr(self, "ref_motions_path", "../TrajGen/sample/Pick_sim2")
+        self.kitchen_usd_path = getattr(
+            self, "kitchen_usd_path", "assets/HQ Kitchen/Collected_kitchen_flat/kitchen_flat3.usd"
+        )
+        self.object_usd_path = getattr(self, "object_usd_path", "assets/mustard_bottle.usd")
         self.scene.kitchen = AssetBaseCfg(
             prim_path="{ENV_REGEX_NS}/Kitchen",
-            spawn=sim_utils.UsdFileCfg(usd_path="assets/HQ Kitchen/Collected_kitchen_flat/kitchen_flat3.usd", scale=(1.0, 1.0, 0.89)),
+            spawn=sim_utils.UsdFileCfg(usd_path=self.kitchen_usd_path, scale=(1.0, 1.0, 0.89)),
             init_state=AssetBaseCfg.InitialStateCfg(pos=(2.1 - 0.06, 1.0, 0.0), rot=(1, 0, 0, 0)),
         )
         self.scene.object = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Object",
             init_state=RigidObjectCfg.InitialStateCfg(pos=[0.35, 0.40, 1.0413], rot=[1, 0, 0, 0]),
             spawn=sim_utils.UsdFileCfg(
-                usd_path="assets/mustard_bottle.usd",
+                usd_path=self.object_usd_path,
                 scale=(1.0, 1.0, 1.5),
                 mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
             ),

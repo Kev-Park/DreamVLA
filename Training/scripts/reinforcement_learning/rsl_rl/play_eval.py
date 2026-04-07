@@ -34,6 +34,20 @@ parser.add_argument(
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--path", type=str, default=None, help="Path to the task.")
+parser.add_argument(
+    "--max_steps",
+    type=int,
+    default=None,
+    help="Maximum number of environment steps to run for evaluation. Defaults to one episode.",
+)
+
+# optionally store motion data rather than throwing out (for now only successes are recorded so not useful but can later support state-based evaluation)
+parser.add_argument(
+    "--save_motion",
+    action="store_true",
+    default=False,
+    help="Save joint/root trajectories to motions.pkl. Data is collected on CPU to avoid CUDA OOM.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -184,29 +198,39 @@ def main():
     dt = env.unwrapped.step_dt
     print("dt:", dt, flush=True)
 
+    default_max_steps = 500
+    max_steps = args_cli.max_steps if args_cli.max_steps is not None else default_max_steps
+    print(f"[INFO] Running evaluation for max_steps={max_steps}", flush=True)
+
     # reset environment
     obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
     timestep = 0
-    # print("Here???")
     joint_angless = []
     root_poss = []
     root_quatss = []
-    # print("Whats happening???")
     while simulation_app.is_running():
         start_time = time.time()
         # run everything in inference mode
         with torch.inference_mode():
-            actions = policy(obs).clone()
-            joint_angles = env.unwrapped.scene["robot"].data.joint_pos.clone()
-            # print(joint_angles[0])
-            joint_angless.append(joint_angles)
-            root_poss.append(env.unwrapped.scene["robot"].data.root_pos_w.clone() - env.unwrapped.scene.env_origins.clone())
-            root_quatss.append(env.unwrapped.scene["robot"].data.root_quat_w.clone())
+            actions = policy(obs)
+            if args_cli.save_motion:
+                joint_angless.append(env.unwrapped.scene["robot"].data.joint_pos.detach().cpu())
+                root_poss.append(
+                    (
+                        env.unwrapped.scene["robot"].data.root_pos_w
+                        - env.unwrapped.scene.env_origins
+                    ).detach().cpu()
+                )
+                root_quatss.append(env.unwrapped.scene["robot"].data.root_quat_w.detach().cpu())
             obs, _, dones, _ = env.step(actions)
+        timestep += 1
+
+        # Always stop after a bounded number of steps to prevent unbounded runtime/memory growth.
+        if timestep >= max_steps:
+            break
             
         if args_cli.video:
-            timestep += 1
             print(timestep, flush=True)
             
             # Exit the play loop after recording one video
@@ -218,15 +242,21 @@ def main():
         if args_cli.real_time and sleep_time > 0:
             time.sleep(sleep_time)
 
-    joint_angless = torch.cat(joint_angless, dim=0)
-    root_poss = torch.cat(root_poss, dim=0)
-    root_quatss = torch.cat(root_quatss, dim=0)
-    # Save as pkl
-    import pickle
-    os.makedirs(log_dir + "/eval", exist_ok=True)
-    with open(os.path.join(log_dir, "eval", "motions.pkl"), "wb") as f:
-        pickle.dump({"joint_angles": joint_angless, "root_pos": root_poss, "root_quats": root_quatss}, f)
-    print("Success rate: ", 100*(torch.sum(env.unwrapped.n_successes > 0)/int(args_cli.num_envs)).detach().cpu().item(), "%", flush=True)
+    if args_cli.save_motion:
+        joint_angless = torch.cat(joint_angless, dim=0)
+        root_poss = torch.cat(root_poss, dim=0)
+        root_quatss = torch.cat(root_quatss, dim=0)
+        # Save as pkl
+        import pickle
+
+        os.makedirs(log_dir + "/eval", exist_ok=True)
+        with open(os.path.join(log_dir, "eval", "motions.pkl"), "wb") as f:
+            pickle.dump({"joint_angles": joint_angless, "root_pos": root_poss, "root_quats": root_quatss}, f)
+
+    if hasattr(env.unwrapped, "n_successes"):
+        num_envs = int(getattr(args_cli, "num_envs", None) or env.unwrapped.num_envs)
+        success_rate = 100 * (torch.sum(env.unwrapped.n_successes > 0) / num_envs).detach().cpu().item()
+        print("Success rate: ", success_rate, "%", flush=True)
 
     # close the simulator
     env.close()
