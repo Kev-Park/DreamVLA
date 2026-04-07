@@ -486,7 +486,7 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
         super().__post_init__()
         self.scene.kitchen = AssetBaseCfg(
             prim_path="{ENV_REGEX_NS}/Kitchen",
-            spawn=sim_utils.UsdFileCfg(usd_path="assets/HQ Kitchen/Collected_kitchen_flat/kitchen_flat2.usd", scale=(1.0, 1.0, 0.89)),
+            spawn=sim_utils.UsdFileCfg(usd_path="assets/HQ Kitchen/Collected_kitchen_flat/kitchen_flat3.usd", scale=(1.0, 1.0, 0.89)),
             init_state=AssetBaseCfg.InitialStateCfg(pos=(2.1 - 0.06, 1.0, 0.0), rot=(1, 0, 0, 0)),
         )
         self.scene.object = RigidObjectCfg(
