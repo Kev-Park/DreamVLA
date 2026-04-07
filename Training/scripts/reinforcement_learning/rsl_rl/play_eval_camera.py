@@ -55,6 +55,8 @@ import gymnasium as gym
 import os
 import time
 import torch
+import numpy as np
+import cv2
 
 # from omni.isaac.core.utils.prims import set_prim_pose
 from rsl_rl.runners import OnPolicyRunner
@@ -129,6 +131,41 @@ def main():
     env_cfg.viewer.lookat = (2., 0., 0.)
     env_cfg.viewer.resolution = (2560, 1920)
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+
+    class ObjectHeightOverlayWrapper(gym.Wrapper):
+        """Adds object world-z text on rendered frames for debug video capture."""
+
+        def render(self):
+            frame = self.env.render()
+            if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] < 3:
+                return frame
+            annotated = frame.copy()
+            try:
+                object_z = float(self.unwrapped.scene["object"].data.root_pos_w[0, 2].item())
+                label = f"Object z: {object_z:.3f} m"
+            except Exception:
+                label = "Object z: n/a"
+            cv2.putText(
+                annotated,
+                label,
+                (24, 48),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 0, 0),
+                4,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                annotated,
+                label,
+                (24, 48),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            return annotated
     camera_controller = env.unwrapped.viewport_camera_controller
     print("Observation space:", env.observation_space)
     print("Action space:", env.action_space)
@@ -139,6 +176,7 @@ def main():
 
     # wrap for video recording
     if args_cli.video:
+        env = ObjectHeightOverlayWrapper(env)
         video_kwargs = {
             "video_folder": os.path.join(log_dir, "videos", "play"),
             "step_trigger": lambda step: step == 0,
