@@ -34,6 +34,8 @@ parser.add_argument(
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--path", type=str, default=None, help="Path to the task.")
+
+# caps number of steps for a single trajectory
 parser.add_argument(
     "--max_steps",
     type=int,
@@ -200,15 +202,51 @@ def main():
 
     default_max_steps = 500
     max_steps = args_cli.max_steps if args_cli.max_steps is not None else default_max_steps
-    print(f"[INFO] Running evaluation for max_steps={max_steps}", flush=True)
+    num_envs = int(getattr(args_cli, "num_envs", None) or env.unwrapped.num_envs)
+    total_env_steps_target = max_steps * num_envs
+    print(
+        f"[INFO] Running evaluation for per_env_max_steps={max_steps} "
+        f"(total_env_steps_target={total_env_steps_target})",
+        flush=True,
+    )
 
     # reset environment
     obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
     timestep = 0
+    total_env_steps = 0
     joint_angless = []
     root_poss = []
     root_quatss = []
+    fallback_success_count = None
+    fallback_success_source = None
+
+    def _count_successes_from_value(value):
+        if isinstance(value, torch.Tensor):
+            if value.dtype == torch.bool:
+                return int(torch.sum(value).detach().cpu().item())
+            return int(torch.sum(value > 0).detach().cpu().item())
+        if isinstance(value, (list, tuple)):
+            return int(sum(float(v) > 0 for v in value))
+        if isinstance(value, (int, float, bool)):
+            return int(float(value) > 0)
+        return None
+
+    def _extract_success_count_from_info(info_dict):
+        if not isinstance(info_dict, dict):
+            return None, None
+        for key in ("n_successes", "successes", "success", "is_success"):
+            if key in info_dict:
+                count = _count_successes_from_value(info_dict[key])
+                if count is not None:
+                    return count, f"info['{key}']"
+        for nested_key in ("episode", "log", "metrics"):
+            if nested_key in info_dict and isinstance(info_dict[nested_key], dict):
+                count, source = _extract_success_count_from_info(info_dict[nested_key])
+                if count is not None:
+                    return count, f"info['{nested_key}'] -> {source}"
+        return None, None
+
     while simulation_app.is_running():
         start_time = time.time()
         # run everything in inference mode
@@ -223,11 +261,16 @@ def main():
                     ).detach().cpu()
                 )
                 root_quatss.append(env.unwrapped.scene["robot"].data.root_quat_w.detach().cpu())
-            obs, _, dones, _ = env.step(actions)
+            obs, _, dones, infos = env.step(actions)
+            count, source = _extract_success_count_from_info(infos)
+            if count is not None:
+                fallback_success_count = count
+                fallback_success_source = source
         timestep += 1
+        total_env_steps += num_envs
 
-        # Always stop after a bounded number of steps to prevent unbounded runtime/memory growth.
-        if timestep >= max_steps:
+        # Stop after each environment has advanced max_steps transitions.
+        if total_env_steps >= total_env_steps_target:
             break
             
         if args_cli.video:
@@ -254,9 +297,18 @@ def main():
             pickle.dump({"joint_angles": joint_angless, "root_pos": root_poss, "root_quats": root_quatss}, f)
 
     if hasattr(env.unwrapped, "n_successes"):
-        num_envs = int(getattr(args_cli, "num_envs", None) or env.unwrapped.num_envs)
-        success_rate = 100 * (torch.sum(env.unwrapped.n_successes > 0) / num_envs).detach().cpu().item()
-        print("Success rate: ", success_rate, "%", flush=True)
+        num_successes = int(torch.sum(env.unwrapped.n_successes > 0).detach().cpu().item())
+        success_source = "env.unwrapped.n_successes"
+    elif fallback_success_count is not None:
+        num_successes = int(fallback_success_count)
+        success_source = fallback_success_source
+    else:
+        num_successes = 0
+        success_source = "unavailable (defaulted to 0)"
+
+    success_rate = 100.0 * num_successes / max(num_envs, 1)
+    print(f"Number of successes: {num_successes}/{num_envs} [source: {success_source}]", flush=True)
+    print(f"Success rate: {success_rate:.2f}%", flush=True)
 
     # close the simulator
     env.close()
