@@ -236,7 +236,7 @@ class G1Rewards(G1RewardsBase):
         object_above_the_ground = RewTerm(
             func=object_above_threshold,
             weight=.5,    
-            params={"height_thres": 0.95, "fall_thres": 0.9}
+            params={"height_thres": 1.05, "fall_thres": 0.9}
         )
 @configclass
 class TerminationsCfg(TerminationsCfgBase):
