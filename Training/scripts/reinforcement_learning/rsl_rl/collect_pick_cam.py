@@ -16,8 +16,6 @@ from typing import Any
 import numpy as np
 import torch
 
-import isaaclab.utils.math as math_utils
-
 from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
 
@@ -197,6 +195,9 @@ def _capture_rollout_state(env, action: torch.Tensor | None = None) -> dict[str,
 
 
 def _update_policy_observations(env, obs: torch.Tensor) -> torch.Tensor:
+    # Import lazily so omni modules are available after Isaac app initialization.
+    import isaaclab.utils.math as math_utils
+
     robot = env.unwrapped.scene["robot"]
     object_asset = env.unwrapped.scene["object"]
     robot_pos_world = robot.data.root_pos_w
