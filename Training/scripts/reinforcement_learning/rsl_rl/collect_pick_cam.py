@@ -56,19 +56,24 @@ def _resolve_object_usd(object_name: str) -> Path:
 
 def _discover_motion_references(requested: list[str] | None) -> list[Path]:
     sample_root = _resolve_sample_root()
+    pick_sim2_root = sample_root / "Pick_sim2"
+    
     if requested:
         resolved: list[Path] = []
         for item in requested:
+            # Try treating it as a subdirectory ID within Pick_sim2
+            candidate = pick_sim2_root / item
+            if candidate.exists():
+                resolved.append(candidate.resolve())
+                continue
+            
+            # Fallback: try as absolute path
             candidate = Path(item)
             if candidate.is_absolute() and candidate.exists():
                 resolved.append(candidate.resolve())
                 continue
-
-            relative_candidate = (sample_root / item).resolve()
-            if relative_candidate.exists():
-                resolved.append(relative_candidate)
-                continue
-
+            
+            # Try as relative path from current working directory
             if candidate.exists():
                 resolved.append(candidate.resolve())
                 continue
@@ -76,11 +81,15 @@ def _discover_motion_references(requested: list[str] | None) -> list[Path]:
             raise FileNotFoundError(f"Could not resolve motion reference: {item}")
         return resolved
 
+    # Default: all subdirectories within Pick_sim2
+    if not pick_sim2_root.exists():
+        raise FileNotFoundError(f"Pick_sim2 directory not found at {pick_sim2_root}")
+    
     motion_dirs = sorted(
-        [path.resolve() for path in sample_root.iterdir() if path.is_dir() and path.name.startswith("Pick")]
+        [path.resolve() for path in pick_sim2_root.iterdir() if path.is_dir()]
     )
     if not motion_dirs:
-        raise FileNotFoundError(f"No Pick motion reference directories found under {sample_root}")
+        raise FileNotFoundError(f"No motion reference subdirectories found under {pick_sim2_root}")
     return motion_dirs
 
 
@@ -344,7 +353,7 @@ def main() -> None:
     parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
     parser.add_argument("--checkpoint-path", type=str, default=None, help="Path to the checkpoint to load.")
     parser.add_argument("--object-list", nargs="*", default=["mustard_bottle"], help="List of object names to collect.")
-    parser.add_argument("--motion-reference-list", nargs="*", default=None, help="List of motion reference directories. If omitted, all Pick* directories are used.")
+    parser.add_argument("--motion-reference-list", nargs="*", default=None, help="List of motion reference IDs within Pick_sim2. If omitted, all subdirectories within Pick_sim2 are used.")
     parser.add_argument("--num-rollouts-per-combo", type=int, default=1, help="Number of rollouts to collect per object-motion combo.")
     parser.add_argument("--output-directory", type=str, default="./datasets/pick_cam", help="Directory where rollout HDF5 files are written.")
     parser.add_argument("--rollout-length", type=int, default=500, help="Maximum number of steps per rollout.")

@@ -32,4 +32,4 @@ cd Training
 
 #./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_pick_cam.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --video --headless --num_envs 1 --device cuda:0
 
-./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/collect_pick_cam.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --num_envs 1 --device cuda:0 --output-directory ./datasets/pick_cam
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/collect_pick_cam.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --num_envs 1 --device cuda:0 --output-directory ./datasets/pick_cam --checkpoint_path /home/dvij/kevin/DreamVLA/Training/logs/rsl_rl/g1/2026-04-07_16-50-23/model_4999.pt
