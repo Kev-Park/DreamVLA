@@ -52,32 +52,15 @@ def _resolve_object_usd(object_name: str) -> Path:
     return _resolve_assets_root() / f"{normalized_name}.usd"
 
 
-def _discover_motion_references(requested: list[int] | None) -> list[Path]:
+def _discover_motion_references() -> list[Path]:
     sample_root = _resolve_sample_root()
     pick_sim2_root = sample_root / "Pick_sim2"
 
     if not pick_sim2_root.exists():
         raise FileNotFoundError(f"Pick_sim2 directory not found at {pick_sim2_root}")
 
-    if requested:
-        resolved: list[Path] = []
-        for motion_id in requested:
-            candidate = (pick_sim2_root / f"{motion_id}_n.pkl").resolve()
-            if not candidate.exists() or not candidate.is_file():
-                raise FileNotFoundError(
-                    f"Could not resolve motion reference ID {motion_id}. "
-                    f"Expected file: {candidate}"
-                )
-            resolved.append(candidate)
-        return resolved
-
-    # Default: all *_n.pkl files within Pick_sim2.
-    motion_dirs = sorted(
-        [path.resolve() for path in pick_sim2_root.iterdir() if path.is_file() and path.name.endswith("_n.pkl")]
-    )
-    if not motion_dirs:
-        raise FileNotFoundError(f"No *_n.pkl motion reference files found under {pick_sim2_root}")
-    return motion_dirs
+    # Default: use Pick_sim2 directory so motion loader resolves contained *.pkl files.
+    return [pick_sim2_root.resolve()]
 
 
 def _normalize_object_list(object_list: list[str]) -> list[str]:
@@ -343,7 +326,6 @@ def main() -> None:
     parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
     parser.add_argument("--checkpoint-path", type=str, default=None, help="Path to the checkpoint to load.")
     parser.add_argument("--object-list", nargs="*", default=["mustard_bottle"], help="List of object names to collect.")
-    parser.add_argument("--motion-reference-list", nargs="*", type=int, default=None, help="List of integer motion IDs (e.g. 2 3 5) mapped to Pick_sim2/<id>_n.pkl. If omitted, all Pick_sim2/*_n.pkl files are used.")
     parser.add_argument("--num-rollouts-per-combo", type=int, default=1, help="Number of rollouts to collect per object-motion combo.")
     parser.add_argument("--output-directory", type=str, default="./datasets/pick_cam", help="Directory where rollout HDF5 files are written.")
     parser.add_argument("--rollout-length", type=int, default=500, help="Maximum number of steps per rollout.")
@@ -399,7 +381,7 @@ def main() -> None:
     print(f"[INFO] Loading checkpoint from: {resume_path}")
 
     object_list = _normalize_object_list(args_cli.object_list)
-    motion_references = _discover_motion_references(args_cli.motion_reference_list)
+    motion_references = _discover_motion_references()
 
     # Build a single policy instance once, then reuse it across all rollouts.
     template_object = object_list[0]
