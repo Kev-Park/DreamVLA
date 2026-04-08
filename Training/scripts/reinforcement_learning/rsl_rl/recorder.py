@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
 from typing import Any
 
 import h5py
@@ -81,7 +80,6 @@ class RolloutRecorder:
     """Write a single rollout to a standalone HDF5 file."""
 
     output_dir: Path
-    state_formatter: Callable[[dict[str, Any], dict[str, Any] | None], dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -90,23 +88,22 @@ class RolloutRecorder:
         self,
         file_name: str,
         *,
-        frames: np.ndarray | None,
+        frames: np.ndarray,
         raw_state: dict[str, Any] | None,
         metadata: dict[str, Any],
     ) -> Path:
         """Write rollout data to a new HDF5 file and return the file path."""
 
+        if frames is None or frames.size == 0:
+            raise ValueError("Images are mandatory: expected non-empty frame tensor for every rollout.")
+
         file_path = self.output_dir / file_name
         with h5py.File(file_path, "w") as handle:
             handle.attrs["metadata_json"] = json.dumps(_json_safe(metadata))
-            if frames is not None:
-                handle.create_dataset("images", data=frames, compression="gzip", chunks=True)
+            handle.create_dataset("images", data=frames, compression="gzip", chunks=True)
 
             if raw_state is not None:
                 state_group = handle.create_group("state")
-                if self.state_formatter is not None:
-                    formatted_state = self.state_formatter(raw_state, metadata)
-                    _write_value(state_group, "formatted", formatted_state)
                 _write_value(state_group, "raw", raw_state)
 
         return file_path

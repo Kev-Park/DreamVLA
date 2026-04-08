@@ -138,9 +138,30 @@ def _stack_nested(values: list[Any]) -> Any:
     return np.stack([np.asarray(value) for value in values], axis=0)
 
 
+def _get_hand_joint_indices(env) -> tuple[list[int], list[int]]:
+    """Resolve and cache left/right hand joint indices for the current env."""
+
+    cache_attr = "_collect_pick_cam_hand_joint_indices"
+    cached_value = getattr(env.unwrapped, cache_attr, None)
+    if cached_value is not None:
+        return cached_value
+
+    robot = env.unwrapped.scene["robot"]
+    left_ids, _ = robot.find_joints(["left_hand.*"])
+    right_ids, _ = robot.find_joints(["right_hand.*"])
+    resolved = (list(left_ids), list(right_ids))
+    setattr(env.unwrapped, cache_attr, resolved)
+    return resolved
+
+
 def _capture_rollout_state(env, action: torch.Tensor | None = None) -> dict[str, Any]:
     robot = env.unwrapped.scene["robot"]
     object_asset = env.unwrapped.scene["object"]
+    left_hand_joint_ids, right_hand_joint_ids = _get_hand_joint_indices(env)
+
+    joint_pos = robot.data.joint_pos[0]
+    left_finger_joint_pos = joint_pos[left_hand_joint_ids].detach().cpu()
+    right_finger_joint_pos = joint_pos[right_hand_joint_ids].detach().cpu()
 
     state: dict[str, Any] = {
         "robot": {
@@ -148,6 +169,8 @@ def _capture_rollout_state(env, action: torch.Tensor | None = None) -> dict[str,
             "root_quat_w": robot.data.root_quat_w[0].detach().cpu(),
             "joint_pos": robot.data.joint_pos[0].detach().cpu(),
             "joint_vel": robot.data.joint_vel[0].detach().cpu(),
+            "left_finger_joint_pos": left_finger_joint_pos,
+            "right_finger_joint_pos": right_finger_joint_pos,
         },
         "object": {
             "root_pos_w": object_asset.data.root_pos_w[0].detach().cpu(),
@@ -310,8 +333,7 @@ def _run_rollout(
 def main() -> None:
     """Collect pick rollouts as single-rollout HDF5 files."""
 
-    parser = argparse.ArgumentParser(description="Collect pick rollouts with robot-camera output.")
-    parser.add_argument("--video", action="store_true", default=False, help="Enable robot-camera capture.")
+    parser = argparse.ArgumentParser(description="Collect pick rollouts with mandatory robot-camera output.")
     parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations.")
     parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate. Currently only 1 is supported.")
     parser.add_argument("--task", type=str, default=None, help="Name of the task.")
@@ -347,7 +369,7 @@ def main() -> None:
         args_cli.path = args_cli.checkpoint_path
         args_cli.checkpoint = args_cli.checkpoint_path
 
-    args_cli.enable_cameras = bool(args_cli.video)
+    args_cli.enable_cameras = True
 
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
@@ -368,7 +390,7 @@ def main() -> None:
         device=args_cli.device,
         num_envs=1,
         use_fabric=not args_cli.disable_fabric,
-        enable_cameras=bool(args_cli.enable_cameras),
+        enable_cameras=True,
     )
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
@@ -383,7 +405,7 @@ def main() -> None:
     # Build a single policy instance once, then reuse it across all rollouts.
     template_object = object_list[0]
     template_motion = motion_references[0]
-    template_env_cfg = _build_env_cfg(base_env_cfg, template_object, template_motion, bool(args_cli.video))
+    template_env_cfg = _build_env_cfg(base_env_cfg, template_object, template_motion, True)
     template_env = gym.make(args_cli.task, cfg=template_env_cfg, render_mode=None)
     if isinstance(template_env.unwrapped, DirectMARLEnv):
         template_env = multi_agent_to_single_agent(template_env)
@@ -402,7 +424,7 @@ def main() -> None:
                     seed = _seed_for_rollout(args_cli.seed, object_index, motion_index, rollout_index)
                     _set_all_seeds(seed)
 
-                    env_cfg = _build_env_cfg(base_env_cfg, object_name, motion_reference, bool(args_cli.video))
+                    env_cfg = _build_env_cfg(base_env_cfg, object_name, motion_reference, True)
                     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
                     if isinstance(env.unwrapped, DirectMARLEnv):
                         env = multi_agent_to_single_agent(env)
@@ -416,7 +438,7 @@ def main() -> None:
                         policy,
                         max_steps=args_cli.rollout_length,
                         state_on=bool(args_cli.state_on),
-                        camera_on=bool(args_cli.video),
+                        camera_on=True,
                         real_time=bool(args_cli.real_time),
                     )
 
@@ -433,7 +455,7 @@ def main() -> None:
                     }
                     recorder.write_rollout(
                         file_name,
-                        frames=np.stack(camera_frames, axis=0) if camera_frames else None,
+                        frames=np.stack(camera_frames, axis=0),
                         raw_state=raw_state if args_cli.state_on else None,
                         metadata=metadata,
                     )
