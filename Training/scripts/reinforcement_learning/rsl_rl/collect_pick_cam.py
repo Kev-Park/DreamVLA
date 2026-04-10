@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import builtins
 import copy
+import faulthandler
 import os
 import random
 import time
@@ -22,6 +23,7 @@ from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
 
 print = partial(builtins.print, flush=True)
+faulthandler.enable(all_threads=True)
 
 
 # helper functions for getting paths, seeding, etc.
@@ -242,6 +244,7 @@ def _run_rollout(
     camera_on: bool,
     real_time: bool,
 ) -> tuple[list[np.ndarray], dict[str, Any] | None, dict[str, Any]]:
+    print("[TRACE] _run_rollout entered")
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
     rollout_success = False
@@ -249,7 +252,9 @@ def _run_rollout(
     truncated_flag = False
 
     # Mirror play_pick_cam.py initialization flow.
+    print("[TRACE] calling env.get_observations()")
     obs_out = env.get_observations()
+    print("[TRACE] env.get_observations() returned")
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
 
     scene_keys = list(env.unwrapped.scene.keys())
@@ -488,6 +493,7 @@ def main() -> None:
                         f"motion={motion_reference.name} idx={rollout_index} seed={seed}"
                     )
                     print(f"[INFO] simulation_app.is_running before rollout: {simulation_app.is_running()}")
+                    print("[TRACE] invoking _run_rollout")
 
                     camera_frames, raw_state, rollout_metadata = _run_rollout(
                         env,
@@ -498,6 +504,7 @@ def main() -> None:
                         camera_on=True,
                         real_time=bool(args_cli.real_time),
                     )
+                    print("[TRACE] _run_rollout returned to main")
 
                     file_name = (
                         f"{object_name}__{motion_reference.name}__"
