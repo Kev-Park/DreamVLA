@@ -335,10 +335,6 @@ def _run_rollout(
             "Check terminal output above for the last manager/init logs before app shutdown."
         )
 
-    # Maintain explicit reset boundaries between trajectory rollouts.
-    if simulation_app.is_running():
-        env.reset()
-
     metadata = {
         "terminated": terminated_flag,
         "truncated": truncated_flag,
