@@ -242,33 +242,23 @@ def _run_rollout(
     camera_on: bool,
     real_time: bool,
 ) -> tuple[list[np.ndarray], dict[str, Any] | None, dict[str, Any]]:
-    print("[TRACE] _run_rollout: enter")
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
     rollout_success = False
     terminated_flag = False
     truncated_flag = False
 
-    # Mirror play scripts: fetch observations first, then resolve camera scene entity.
-    print("[TRACE] _run_rollout: fetching observations")
+    # Mirror play_pick_cam.py initialization flow.
     obs_out = env.get_observations()
-    print("[TRACE] _run_rollout: observations fetched")
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
-    print("[TRACE] _run_rollout: observations normalized")
 
-    print("[TRACE] _run_rollout: reading scene keys")
     scene_keys = list(env.unwrapped.scene.keys())
-    print(f"[TRACE] _run_rollout: scene keys resolved ({len(scene_keys)})")
-    cam_robot = None
-    if camera_on:
-        print("[TRACE] _run_rollout: resolving camera_robot")
-        if "camera_robot" not in scene_keys:
-            raise RuntimeError(
-                "Required robot camera is missing. "
-                f"Found: {scene_keys}."
-            )
-        cam_robot = env.unwrapped.scene["camera_robot"]
-        print("[TRACE] _run_rollout: camera_robot resolved")
+    if camera_on and "camera_robot" not in scene_keys:
+        raise RuntimeError(
+            "Required robot camera is missing. "
+            f"Found: {scene_keys}."
+        )
+    cam_robot = env.unwrapped.scene["camera_robot"] if camera_on else None
 
     step_index = 0
     if not simulation_app.is_running():
@@ -279,21 +269,23 @@ def _run_rollout(
     while step_index < max_steps and simulation_app.is_running():
         start_time = time.time()
         step_index += 1
-        print(f"[TRACE] _run_rollout: step {step_index} begin")
-
         if camera_on and cam_robot is not None:
             image_robot = cam_robot.data.output["rgb"]
+
+            object_pos_world = env.unwrapped.scene["object"].data.root_pos_w
+            robot_pos_world = env.unwrapped.scene["robot"].data.root_pos_w
+            robot_quat_world = env.unwrapped.scene["robot"].data.root_quat_w
+            object_pos_local = _quat_apply(_quat_conjugate(robot_quat_world), object_pos_world - robot_pos_world)
+
+            obs[:, 52] = object_pos_local[0, 0]
+            obs[:, 53] = object_pos_local[0, 1]
+
             frame_rgb = image_robot[0].cpu().numpy()
             camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
 
-        obs = _update_policy_observations(env, obs)
-        print(f"[TRACE] _run_rollout: step {step_index} observations updated")
-
         with torch.inference_mode():
             actions = policy(obs).clone()
-            print(f"[TRACE] _run_rollout: step {step_index} actions computed")
             step_result = env.step(actions)
-            print(f"[TRACE] _run_rollout: step {step_index} env.step returned")
 
         if len(step_result) == 5:
             obs, _, terminated, truncated, info = step_result
@@ -340,6 +332,20 @@ def _run_rollout(
         "state_on": state_on,
     }
     return camera_frames, raw_state, metadata
+
+
+def _quat_conjugate(quat: torch.Tensor) -> torch.Tensor:
+    # Local helper to avoid importing isaaclab.utils.math at runtime during rollout loop.
+    result = quat.clone()
+    result[..., 1:] = -result[..., 1:]
+    return result
+
+
+def _quat_apply(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    # Local helper equivalent to isaaclab.utils.math.quat_apply for (w, x, y, z).
+    q_xyz = quat[..., 1:]
+    t = 2.0 * torch.cross(q_xyz, vec, dim=-1)
+    return vec + quat[..., 0:1] * t + torch.cross(q_xyz, t, dim=-1)
 
 
 def main() -> None:
