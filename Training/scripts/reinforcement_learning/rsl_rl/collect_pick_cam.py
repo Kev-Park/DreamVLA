@@ -255,15 +255,20 @@ def _run_rollout(
     print("[TRACE] calling env.get_observations()")
     obs_out = env.get_observations()
     print("[TRACE] env.get_observations() returned")
+    print("[TRACE] extracting obs from tuple/scalar")
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
-
+    print("[TRACE] obs extracted")
+    print("[TRACE] fetching scene keys")
     scene_keys = list(env.unwrapped.scene.keys())
+    print(f"[TRACE] scene keys fetched: {scene_keys}")
     if camera_on and "camera_robot" not in scene_keys:
         raise RuntimeError(
             "Required robot camera is missing. "
             f"Found: {scene_keys}."
         )
+    print("[TRACE] resolving cam_robot reference")
     cam_robot = env.unwrapped.scene["camera_robot"] if camera_on else None
+    print("[TRACE] cam_robot resolved")
     if camera_on and cam_robot is not None:
         print("[TRACE] camera_robot resolved successfully")
 
