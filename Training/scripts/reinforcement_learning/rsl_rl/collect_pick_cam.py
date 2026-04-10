@@ -236,6 +236,7 @@ def _run_rollout(
     env,
     policy,
     *,
+    simulation_app,
     max_steps: int,
     state_on: bool,
     camera_on: bool,
@@ -262,7 +263,10 @@ def _run_rollout(
     obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
 
-    for step_index in range(max_steps):
+    step_index = 0
+    if not simulation_app.is_running():
+        print("[WARN] Simulation app is not running at rollout start; no steps will be executed.")
+    while step_index < max_steps and simulation_app.is_running():
         start_time = time.time()
 
         if camera_on and cam_robot is not None:
@@ -299,6 +303,7 @@ def _run_rollout(
             break
 
         print(f"[INFO] rollout step {step_index + 1}/{max_steps}")
+        step_index += 1
 
         sleep_time = env.unwrapped.step_dt - (time.time() - start_time)
         if real_time and sleep_time > 0:
@@ -310,6 +315,8 @@ def _run_rollout(
         "truncated": truncated_flag,
         "success": rollout_success,
         "num_steps": len(camera_frames) if camera_on else len(state_history),
+        "no_steps_executed": step_index == 0,
+        "app_running": bool(simulation_app.is_running()),
         "camera_on": camera_on,
         "state_on": state_on,
     }
@@ -436,6 +443,7 @@ def main() -> None:
                     camera_frames, raw_state, rollout_metadata = _run_rollout(
                         env,
                         policy,
+                        simulation_app=simulation_app,
                         max_steps=args_cli.rollout_length,
                         state_on=bool(args_cli.state_on),
                         camera_on=True,
