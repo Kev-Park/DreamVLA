@@ -239,6 +239,7 @@ def _run_rollout(
     state_on: bool,
     camera_on: bool,
     real_time: bool,
+    reset_at_start: bool,
 ) -> tuple[list[np.ndarray], dict[str, Any] | None, dict[str, Any]]:
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
@@ -246,8 +247,10 @@ def _run_rollout(
     terminated_flag = False
     truncated_flag = False
 
-    # Start each rollout attempt from a fresh reset so it can sample a new trajectory.
-    obs_out = env.reset()
+    if reset_at_start:
+        obs_out = env.reset()
+    else:
+        obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
     obs = obs.clone() if hasattr(obs, "clone") else obs
 
@@ -494,6 +497,7 @@ def main() -> None:
                     if isinstance(env.unwrapped, DirectMARLEnv):
                         env = multi_agent_to_single_agent(env)
 
+                prev_ended_on_done = False
                 for rollout_index in range(args_cli.num_samples):
 
                     seed = _seed_for_rollout(args_cli.seed, object_index, motion_index, rollout_index)
@@ -511,6 +515,7 @@ def main() -> None:
                         state_on=bool(args_cli.state_on),
                         camera_on=True,
                         real_time=bool(args_cli.real_time),
+                        reset_at_start=not prev_ended_on_done,
                     )
                     print(
                         f"[INFO] Completed sample idx={rollout_index} "
@@ -518,6 +523,7 @@ def main() -> None:
                         f"terminated={rollout_metadata['terminated']} "
                         f"truncated={rollout_metadata['truncated']}"
                     )
+                    prev_ended_on_done = bool(rollout_metadata["terminated"] or rollout_metadata["truncated"])
 
                     file_name = (
                         f"{object_name}__{motion_reference.name}__"
