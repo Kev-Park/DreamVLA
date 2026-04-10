@@ -314,7 +314,9 @@ def _run_rollout(
             else:
                 rollout_success = bool(success_value)
 
+        print(f"[DEBUG] step={step_index}: terminated={terminated_flag}, truncated={truncated_flag}, app_running={simulation_app.is_running()}")
         if terminated_flag or truncated_flag:
+            print(f"[DEBUG] Breaking: terminated={terminated_flag}, truncated={truncated_flag}")
             break
 
         print(f"[INFO] rollout step {step_index}/{max_steps}")
@@ -323,12 +325,14 @@ def _run_rollout(
         if real_time and sleep_time > 0:
             time.sleep(sleep_time)
 
+    print(f"[DEBUG] Rollout loop completed. step_index={step_index}, app_running={simulation_app.is_running()}")
     raw_state = _stack_nested(state_history) if state_history else None
     if step_index == 0:
         raise RuntimeError(
             "No rollout steps were executed before SimulationApp stopped. "
             "Check terminal output above for the last manager/init logs before app shutdown."
         )
+    print(f"[DEBUG] About to return from _run_rollout. camera_frames={len(camera_frames)}, raw_state shape={raw_state.shape if raw_state is not None else None}")
     metadata = {
         "terminated": terminated_flag,
         "truncated": truncated_flag,
@@ -495,6 +499,7 @@ def main() -> None:
                         f"motion={motion_reference.name} idx={rollout_index} seed={seed}"
                     )
 
+                    print(f"[DEBUG] Calling _run_rollout")
                     camera_frames, raw_state, rollout_metadata = _run_rollout(
                         env,
                         policy,
@@ -504,6 +509,7 @@ def main() -> None:
                         camera_on=True,
                         real_time=bool(args_cli.real_time),
                     )
+                    print(f"[DEBUG] _run_rollout returned. camera_frames={len(camera_frames)}, raw_state={raw_state is not None}, metadata={rollout_metadata}")
 
                     file_name = (
                         f"{object_name}__{motion_reference.name}__"
@@ -519,6 +525,7 @@ def main() -> None:
                         "motion_index": motion_index,
                         **rollout_metadata,
                     }
+                    print(f"[DEBUG] About to write rollout. file_name={file_name}, frames_shape={np.stack(camera_frames, axis=0).shape if camera_frames else None}")
                     recorder.write_rollout(
                         file_name,
                         frames=np.stack(camera_frames, axis=0),
@@ -531,8 +538,10 @@ def main() -> None:
                     env.close()
         print(f"[INFO] Collection finished. Total rollouts written: {written_rollouts}")
     finally:
+        print("[DEBUG] In finally block. Closing environments and app.")
         template_env.close()
         simulation_app.close()
+        print("[DEBUG] Environments and app closed. Script exiting.")
 
 
 def _main_with_error_report() -> None:
