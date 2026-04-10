@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import builtins
 import copy
-import faulthandler
 import os
 import random
 import time
@@ -23,7 +22,6 @@ from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
 
 print = partial(builtins.print, flush=True)
-faulthandler.enable(all_threads=True)
 
 
 # helper functions for getting paths, seeding, etc.
@@ -244,7 +242,6 @@ def _run_rollout(
     camera_on: bool,
     real_time: bool,
 ) -> tuple[list[np.ndarray], dict[str, Any] | None, dict[str, Any]]:
-    print("[TRACE] _run_rollout entered")
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
     rollout_success = False
@@ -252,25 +249,16 @@ def _run_rollout(
     truncated_flag = False
 
     # Mirror play_pick_cam.py initialization flow.
-    print("[TRACE] calling env.get_observations()")
     obs_out = env.get_observations()
-    print("[TRACE] env.get_observations() returned")
-    print("[TRACE] extracting obs from tuple/scalar")
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
-    print("[TRACE] obs extracted")
-    print("[TRACE] fetching scene keys")
+
     scene_keys = list(env.unwrapped.scene.keys())
-    print(f"[TRACE] scene keys fetched: {scene_keys}")
     if camera_on and "camera_robot" not in scene_keys:
         raise RuntimeError(
             "Required robot camera is missing. "
             f"Found: {scene_keys}."
         )
-    print("[TRACE] resolving cam_robot reference")
     cam_robot = env.unwrapped.scene["camera_robot"] if camera_on else None
-    print("[TRACE] cam_robot resolved")
-    if camera_on and cam_robot is not None:
-        print("[TRACE] camera_robot resolved successfully")
 
     step_index = 0
     if not simulation_app.is_running():
@@ -281,11 +269,7 @@ def _run_rollout(
     while step_index < max_steps and simulation_app.is_running():
         start_time = time.time()
         step_index += 1
-        if step_index == 1:
-            print("[TRACE] entering rollout loop step=1")
         if camera_on and cam_robot is not None:
-            if step_index == 1:
-                print("[TRACE] computing object local coordinates")
             object_pos_world = env.unwrapped.scene["object"].data.root_pos_w
             robot_pos_world = env.unwrapped.scene["robot"].data.root_pos_w
             robot_quat_world = env.unwrapped.scene["robot"].data.root_quat_w
@@ -294,18 +278,11 @@ def _run_rollout(
             obs[:, 52] = object_pos_local[0, 0]
             obs[:, 53] = object_pos_local[0, 1]
 
-        if step_index == 1:
-            print("[TRACE] running policy forward + env.step")
         with torch.inference_mode():
             actions = policy(obs).clone()
             step_result = env.step(actions)
 
-        if step_index == 1:
-            print("[TRACE] env.step returned successfully")
-
         if camera_on and cam_robot is not None:
-            if step_index == 1:
-                print("[TRACE] reading camera output map after env.step")
             camera_output = getattr(cam_robot.data, "output", None)
             if camera_output is None:
                 raise RuntimeError("camera_robot.data.output is unavailable after env.step.")
@@ -314,8 +291,6 @@ def _run_rollout(
                     f"camera_robot output is missing 'rgb'. Available keys: {list(camera_output.keys())}"
                 )
 
-            if step_index == 1:
-                print("[TRACE] converting first camera frame")
             image_robot = camera_output["rgb"]
             frame_rgb = image_robot[0].cpu().numpy()
             camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
@@ -452,9 +427,7 @@ def main() -> None:
         base_env_cfg.seed = args_cli.seed
     
     # Ensure robot camera exists in scene config (required for collection).
-    print("[TRACE] checking camera_robot in env_cfg.scene")
     if not hasattr(base_env_cfg.scene, "camera_robot"):
-        print("[TRACE] camera_robot not found, adding it")
         base_env_cfg.scene.camera_robot = CameraCfg(
             prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
             spawn=PinholeCameraCfg(
@@ -472,9 +445,6 @@ def main() -> None:
                 convention="opengl",
             ),
         )
-        print("[TRACE] camera_robot config added")
-    else:
-        print("[TRACE] camera_robot already in scene")
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
@@ -524,8 +494,6 @@ def main() -> None:
                         f"[INFO] Starting rollout object={object_name} "
                         f"motion={motion_reference.name} idx={rollout_index} seed={seed}"
                     )
-                    print(f"[INFO] simulation_app.is_running before rollout: {simulation_app.is_running()}")
-                    print("[TRACE] invoking _run_rollout")
 
                     camera_frames, raw_state, rollout_metadata = _run_rollout(
                         env,
@@ -536,7 +504,6 @@ def main() -> None:
                         camera_on=True,
                         real_time=bool(args_cli.real_time),
                     )
-                    print("[TRACE] _run_rollout returned to main")
 
                     file_name = (
                         f"{object_name}__{motion_reference.name}__"
