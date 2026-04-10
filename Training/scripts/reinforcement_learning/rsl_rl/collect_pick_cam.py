@@ -242,26 +242,34 @@ def _run_rollout(
     camera_on: bool,
     real_time: bool,
 ) -> tuple[list[np.ndarray], dict[str, Any] | None, dict[str, Any]]:
+    print("[TRACE] _run_rollout: enter")
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
     rollout_success = False
     terminated_flag = False
     truncated_flag = False
 
+    print("[TRACE] _run_rollout: reading scene keys")
     scene_keys = list(env.unwrapped.scene.keys())
+    print(f"[TRACE] _run_rollout: scene keys resolved ({len(scene_keys)})")
     cam_robot = None
     if camera_on:
+        print("[TRACE] _run_rollout: resolving camera_robot")
         if "camera_robot" not in scene_keys:
             raise RuntimeError(
                 "Required robot camera is missing. "
                 f"Found: {scene_keys}."
             )
         cam_robot = env.unwrapped.scene["camera_robot"]
+        print("[TRACE] _run_rollout: camera_robot resolved")
 
     # Mirror play_eval.py / play_pick_cam.py init path: start from current observations.
     # In this codebase, calling reset here can trigger early app shutdown in some runs.
+    print("[TRACE] _run_rollout: fetching observations")
     obs_out = env.get_observations()
+    print("[TRACE] _run_rollout: observations fetched")
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
+    print("[TRACE] _run_rollout: observations normalized")
 
     step_index = 0
     if not simulation_app.is_running():
@@ -272,6 +280,7 @@ def _run_rollout(
     while step_index < max_steps and simulation_app.is_running():
         start_time = time.time()
         step_index += 1
+        print(f"[TRACE] _run_rollout: step {step_index} begin")
 
         if camera_on and cam_robot is not None:
             image_robot = cam_robot.data.output["rgb"]
@@ -279,10 +288,13 @@ def _run_rollout(
             camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
 
         obs = _update_policy_observations(env, obs)
+        print(f"[TRACE] _run_rollout: step {step_index} observations updated")
 
         with torch.inference_mode():
             actions = policy(obs).clone()
+            print(f"[TRACE] _run_rollout: step {step_index} actions computed")
             step_result = env.step(actions)
+            print(f"[TRACE] _run_rollout: step {step_index} env.step returned")
 
         if len(step_result) == 5:
             obs, _, terminated, truncated, info = step_result
