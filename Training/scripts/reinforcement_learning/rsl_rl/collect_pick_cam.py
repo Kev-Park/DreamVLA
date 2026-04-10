@@ -249,6 +249,7 @@ def _run_rollout(
     # Start each rollout attempt from a fresh reset so it can sample a new trajectory.
     obs_out = env.reset()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
+    obs = obs.clone() if hasattr(obs, "clone") else obs
 
     scene_keys = list(env.unwrapped.scene.keys())
     if camera_on and "camera_robot" not in scene_keys:
@@ -485,17 +486,15 @@ def main() -> None:
         for object_index, object_name in enumerate(object_list):
             for motion_index, motion_reference in enumerate(motion_references):
                 use_template_env = object_index == 0 and motion_index == 0
+                if use_template_env:
+                    env = template_env
+                else:
+                    env_cfg = _build_env_cfg(base_env_cfg, object_name, motion_reference, True)
+                    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+                    if isinstance(env.unwrapped, DirectMARLEnv):
+                        env = multi_agent_to_single_agent(env)
+
                 for rollout_index in range(args_cli.num_samples):
-                    # Use a fresh env for each sample to avoid carrying unstable simulator state.
-                    if use_template_env and rollout_index == 0:
-                        env = template_env
-                        close_env_after_sample = False
-                    else:
-                        env_cfg = _build_env_cfg(base_env_cfg, object_name, motion_reference, True)
-                        env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
-                        if isinstance(env.unwrapped, DirectMARLEnv):
-                            env = multi_agent_to_single_agent(env)
-                        close_env_after_sample = True
 
                     seed = _seed_for_rollout(args_cli.seed, object_index, motion_index, rollout_index)
                     _set_all_seeds(seed)
@@ -542,8 +541,8 @@ def main() -> None:
                     )
                     written_rollouts += 1
                     print(f"[INFO] Wrote rollout: {recorder.output_dir / file_name}")
-                    if close_env_after_sample:
-                        env.close()
+                if not use_template_env:
+                    env.close()
         print(f"[INFO] Collection finished. Total rollouts written: {written_rollouts}")
     finally:
         template_env.close()
