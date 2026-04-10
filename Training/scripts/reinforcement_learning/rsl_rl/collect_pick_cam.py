@@ -259,6 +259,8 @@ def _run_rollout(
             f"Found: {scene_keys}."
         )
     cam_robot = env.unwrapped.scene["camera_robot"] if camera_on else None
+    if camera_on and cam_robot is not None:
+        print("[TRACE] camera_robot resolved successfully")
 
     step_index = 0
     if not simulation_app.is_running():
@@ -269,9 +271,11 @@ def _run_rollout(
     while step_index < max_steps and simulation_app.is_running():
         start_time = time.time()
         step_index += 1
+        if step_index == 1:
+            print("[TRACE] entering rollout loop step=1")
         if camera_on and cam_robot is not None:
-            image_robot = cam_robot.data.output["rgb"]
-
+            if step_index == 1:
+                print("[TRACE] computing object local coordinates")
             object_pos_world = env.unwrapped.scene["object"].data.root_pos_w
             robot_pos_world = env.unwrapped.scene["robot"].data.root_pos_w
             robot_quat_world = env.unwrapped.scene["robot"].data.root_quat_w
@@ -280,12 +284,31 @@ def _run_rollout(
             obs[:, 52] = object_pos_local[0, 0]
             obs[:, 53] = object_pos_local[0, 1]
 
-            frame_rgb = image_robot[0].cpu().numpy()
-            camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
-
+        if step_index == 1:
+            print("[TRACE] running policy forward + env.step")
         with torch.inference_mode():
             actions = policy(obs).clone()
             step_result = env.step(actions)
+
+        if step_index == 1:
+            print("[TRACE] env.step returned successfully")
+
+        if camera_on and cam_robot is not None:
+            if step_index == 1:
+                print("[TRACE] reading camera output map after env.step")
+            camera_output = getattr(cam_robot.data, "output", None)
+            if camera_output is None:
+                raise RuntimeError("camera_robot.data.output is unavailable after env.step.")
+            if "rgb" not in camera_output:
+                raise RuntimeError(
+                    f"camera_robot output is missing 'rgb'. Available keys: {list(camera_output.keys())}"
+                )
+
+            if step_index == 1:
+                print("[TRACE] converting first camera frame")
+            image_robot = camera_output["rgb"]
+            frame_rgb = image_robot[0].cpu().numpy()
+            camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
 
         if len(step_result) == 5:
             obs, _, terminated, truncated, info = step_result
