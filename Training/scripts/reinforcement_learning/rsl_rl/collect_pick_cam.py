@@ -317,6 +317,10 @@ def _run_rollout(
 
         if terminated_flag or truncated_flag:
             # End this rollout and move to the next trajectory rollout.
+            print(
+                f"[INFO] Rollout ended early at step {step_index}/{max_steps} "
+                f"(terminated={terminated_flag}, truncated={truncated_flag})"
+            )
             break
 
         print(f"[INFO] rollout step {step_index}/{max_steps}")
@@ -509,6 +513,12 @@ def main() -> None:
                         state_on=bool(args_cli.state_on),
                         camera_on=True,
                         real_time=bool(args_cli.real_time),
+                    )
+                    print(
+                        f"[INFO] Completed sample idx={rollout_index} "
+                        f"steps={rollout_metadata['num_steps']} "
+                        f"terminated={rollout_metadata['terminated']} "
+                        f"truncated={rollout_metadata['truncated']}"
                     )
 
                     file_name = (
