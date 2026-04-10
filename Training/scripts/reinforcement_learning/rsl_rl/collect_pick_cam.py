@@ -268,65 +268,70 @@ def _run_rollout(
         )
     print(f"[DEBUG] Starting rollout loop. max_steps={max_steps}")
     while step_index < max_steps and simulation_app.is_running():
-        print(f"[DEBUG] Loop start: step_index={step_index}, app_running={simulation_app.is_running()}")
-        start_time = time.time()
-        step_index += 1
-        if camera_on and cam_robot is not None:
-            object_pos_world = env.unwrapped.scene["object"].data.root_pos_w
-            robot_pos_world = env.unwrapped.scene["robot"].data.root_pos_w
-            robot_quat_world = env.unwrapped.scene["robot"].data.root_quat_w
-            object_pos_local = _quat_apply(_quat_conjugate(robot_quat_world), object_pos_world - robot_pos_world)
+        try:
+            print(f"[DEBUG] Loop start: step_index={step_index}, app_running={simulation_app.is_running()}")
+            start_time = time.time()
+            step_index += 1
+            if camera_on and cam_robot is not None:
+                object_pos_world = env.unwrapped.scene["object"].data.root_pos_w
+                robot_pos_world = env.unwrapped.scene["robot"].data.root_pos_w
+                robot_quat_world = env.unwrapped.scene["robot"].data.root_quat_w
+                object_pos_local = _quat_apply(_quat_conjugate(robot_quat_world), object_pos_world - robot_pos_world)
 
-            obs[:, 52] = object_pos_local[0, 0]
-            obs[:, 53] = object_pos_local[0, 1]
+                obs[:, 52] = object_pos_local[0, 0]
+                obs[:, 53] = object_pos_local[0, 1]
 
-        with torch.inference_mode():
-            actions = policy(obs).clone()
-            step_result = env.step(actions)
+            with torch.inference_mode():
+                actions = policy(obs).clone()
+                step_result = env.step(actions)
 
-        if camera_on and cam_robot is not None:
-            camera_output = getattr(cam_robot.data, "output", None)
-            if camera_output is None:
-                raise RuntimeError("camera_robot.data.output is unavailable after env.step.")
-            if "rgb" not in camera_output:
-                raise RuntimeError(
-                    f"camera_robot output is missing 'rgb'. Available keys: {list(camera_output.keys())}"
-                )
+            if camera_on and cam_robot is not None:
+                camera_output = getattr(cam_robot.data, "output", None)
+                if camera_output is None:
+                    raise RuntimeError("camera_robot.data.output is unavailable after env.step.")
+                if "rgb" not in camera_output:
+                    raise RuntimeError(
+                        f"camera_robot output is missing 'rgb'. Available keys: {list(camera_output.keys())}"
+                    )
 
-            image_robot = camera_output["rgb"]
-            frame_rgb = image_robot[0].cpu().numpy()
-            camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
+                image_robot = camera_output["rgb"]
+                frame_rgb = image_robot[0].cpu().numpy()
+                camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
 
-        if len(step_result) == 5:
-            obs, _, terminated, truncated, info = step_result
-        else:
-            obs, _, done, info = step_result
-            terminated = done
-            truncated = torch.zeros_like(done)
-
-        if state_on:
-            state_history.append(_capture_rollout_state(env, actions))
-
-        terminated_flag = bool(torch.as_tensor(terminated).any().item())
-        truncated_flag = bool(torch.as_tensor(truncated).any().item())
-        if isinstance(info, dict) and "success" in info:
-            success_value = info["success"]
-            if isinstance(success_value, (np.ndarray, torch.Tensor)):
-                rollout_success = bool(np.asarray(success_value).any())
+            if len(step_result) == 5:
+                obs, _, terminated, truncated, info = step_result
             else:
-                rollout_success = bool(success_value)
+                obs, _, done, info = step_result
+                terminated = done
+                truncated = torch.zeros_like(done)
 
-        print(f"[DEBUG] step={step_index}: terminated={terminated_flag}, truncated={truncated_flag}, app_running={simulation_app.is_running()}")
-        if terminated_flag or truncated_flag:
-            print(f"[DEBUG] Breaking: terminated={terminated_flag}, truncated={truncated_flag}")
+            if state_on:
+                state_history.append(_capture_rollout_state(env, actions))
+
+            terminated_flag = bool(torch.as_tensor(terminated).any().item())
+            truncated_flag = bool(torch.as_tensor(truncated).any().item())
+            if isinstance(info, dict) and "success" in info:
+                success_value = info["success"]
+                if isinstance(success_value, (np.ndarray, torch.Tensor)):
+                    rollout_success = bool(np.asarray(success_value).any())
+                else:
+                    rollout_success = bool(success_value)
+
+            print(f"[DEBUG] step={step_index}: terminated={terminated_flag}, truncated={truncated_flag}, app_running={simulation_app.is_running()}")
+            if terminated_flag or truncated_flag:
+                print(f"[DEBUG] Breaking: terminated={terminated_flag}, truncated={truncated_flag}")
+                break
+
+            print(f"[INFO] rollout step {step_index}/{max_steps}")
+
+            sleep_time = env.unwrapped.step_dt - (time.time() - start_time)
+            if real_time and sleep_time > 0:
+                time.sleep(sleep_time)
+            print(f"[DEBUG] Loop end: about to check while condition. step_index={step_index}, app_running={simulation_app.is_running()}")
+        except Exception as step_exc:
+            print(f"[ERROR] Exception during rollout step {step_index}: {step_exc}")
+            traceback.print_exc()
             break
-
-        print(f"[INFO] rollout step {step_index}/{max_steps}")
-
-        sleep_time = env.unwrapped.step_dt - (time.time() - start_time)
-        if real_time and sleep_time > 0:
-            time.sleep(sleep_time)
-        print(f"[DEBUG] Loop end: about to check while condition. step_index={step_index}, app_running={simulation_app.is_running()}")
     print(f"[DEBUG] Exited while loop. Final step_index={step_index}")
 
 
