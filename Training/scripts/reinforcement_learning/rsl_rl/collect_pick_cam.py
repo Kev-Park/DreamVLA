@@ -266,7 +266,9 @@ def _run_rollout(
             "Simulation app is not running at rollout start. "
             "The app shut down before the first rollout step."
         )
+    print(f"[DEBUG] Starting rollout loop. max_steps={max_steps}")
     while step_index < max_steps and simulation_app.is_running():
+        print(f"[DEBUG] Loop start: step_index={step_index}, app_running={simulation_app.is_running()}")
         start_time = time.time()
         step_index += 1
         if camera_on and cam_robot is not None:
@@ -324,6 +326,9 @@ def _run_rollout(
         sleep_time = env.unwrapped.step_dt - (time.time() - start_time)
         if real_time and sleep_time > 0:
             time.sleep(sleep_time)
+        print(f"[DEBUG] Loop end: about to check while condition. step_index={step_index}, app_running={simulation_app.is_running()}")
+    print(f"[DEBUG] Exited while loop. Final step_index={step_index}")
+
 
     print(f"[DEBUG] Rollout loop completed. step_index={step_index}, app_running={simulation_app.is_running()}")
     raw_state = _stack_nested(state_history) if state_history else None
