@@ -249,6 +249,13 @@ def _run_rollout(
     terminated_flag = False
     truncated_flag = False
 
+    # Mirror play scripts: fetch observations first, then resolve camera scene entity.
+    print("[TRACE] _run_rollout: fetching observations")
+    obs_out = env.get_observations()
+    print("[TRACE] _run_rollout: observations fetched")
+    obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
+    print("[TRACE] _run_rollout: observations normalized")
+
     print("[TRACE] _run_rollout: reading scene keys")
     scene_keys = list(env.unwrapped.scene.keys())
     print(f"[TRACE] _run_rollout: scene keys resolved ({len(scene_keys)})")
@@ -262,14 +269,6 @@ def _run_rollout(
             )
         cam_robot = env.unwrapped.scene["camera_robot"]
         print("[TRACE] _run_rollout: camera_robot resolved")
-
-    # Mirror play_eval.py / play_pick_cam.py init path: start from current observations.
-    # In this codebase, calling reset here can trigger early app shutdown in some runs.
-    print("[TRACE] _run_rollout: fetching observations")
-    obs_out = env.get_observations()
-    print("[TRACE] _run_rollout: observations fetched")
-    obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
-    print("[TRACE] _run_rollout: observations normalized")
 
     step_index = 0
     if not simulation_app.is_running():
