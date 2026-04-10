@@ -305,6 +305,9 @@ def _run_rollout(
                 terminated = done
                 truncated = torch.zeros_like(done)
 
+            # Clone obs to allow inplace updates in the next iteration
+            obs = obs.clone() if hasattr(obs, 'clone') else obs
+
             if state_on:
                 state_history.append(_capture_rollout_state(env, actions))
 
