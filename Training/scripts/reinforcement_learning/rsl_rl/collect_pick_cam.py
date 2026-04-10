@@ -257,7 +257,9 @@ def _run_rollout(
             )
         cam_robot = env.unwrapped.scene["camera_robot"]
 
-    obs_out = env.reset()
+    # Mirror play_eval.py / play_pick_cam.py init path: start from current observations.
+    # In this codebase, calling reset here can trigger early app shutdown in some runs.
+    obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
 
     for step_index in range(max_steps):
