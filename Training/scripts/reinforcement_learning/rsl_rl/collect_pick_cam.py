@@ -265,9 +265,13 @@ def _run_rollout(
 
     step_index = 0
     if not simulation_app.is_running():
-        print("[WARN] Simulation app is not running at rollout start; no steps will be executed.")
+        raise RuntimeError(
+            "Simulation app is not running at rollout start. "
+            "The app shut down before the first rollout step."
+        )
     while step_index < max_steps and simulation_app.is_running():
         start_time = time.time()
+        step_index += 1
 
         if camera_on and cam_robot is not None:
             image_robot = cam_robot.data.output["rgb"]
@@ -302,14 +306,18 @@ def _run_rollout(
         if terminated_flag or truncated_flag:
             break
 
-        print(f"[INFO] rollout step {step_index + 1}/{max_steps}")
-        step_index += 1
+        print(f"[INFO] rollout step {step_index}/{max_steps}")
 
         sleep_time = env.unwrapped.step_dt - (time.time() - start_time)
         if real_time and sleep_time > 0:
             time.sleep(sleep_time)
 
     raw_state = _stack_nested(state_history) if state_history else None
+    if step_index == 0:
+        raise RuntimeError(
+            "No rollout steps were executed before SimulationApp stopped. "
+            "Check terminal output above for the last manager/init logs before app shutdown."
+        )
     metadata = {
         "terminated": terminated_flag,
         "truncated": truncated_flag,
@@ -439,6 +447,7 @@ def main() -> None:
                         f"[INFO] Starting rollout object={object_name} "
                         f"motion={motion_reference.name} idx={rollout_index} seed={seed}"
                     )
+                    print(f"[INFO] simulation_app.is_running before rollout: {simulation_app.is_running()}")
 
                     camera_frames, raw_state, rollout_metadata = _run_rollout(
                         env,
