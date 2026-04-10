@@ -9,6 +9,7 @@ import copy
 import os
 import random
 import time
+import traceback
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -408,6 +409,7 @@ def main() -> None:
     recorder = RolloutRecorder(dated_output_dir)
     recorder.output_dir.mkdir(parents=True, exist_ok=True)
     print(f"[INFO] Saving rollouts to: {recorder.output_dir}")
+    written_rollouts = 0
 
     try:
         for object_index, object_name in enumerate(object_list):
@@ -415,6 +417,10 @@ def main() -> None:
                 for rollout_index in range(args_cli.num_rollouts_per_combo):
                     seed = _seed_for_rollout(args_cli.seed, object_index, motion_index, rollout_index)
                     _set_all_seeds(seed)
+                    print(
+                        f"[INFO] Starting rollout object={object_name} "
+                        f"motion={motion_reference.name} idx={rollout_index} seed={seed}"
+                    )
 
                     env_cfg = _build_env_cfg(base_env_cfg, object_name, motion_reference, True)
                     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
@@ -450,13 +456,24 @@ def main() -> None:
                         raw_state=raw_state if args_cli.state_on else None,
                         metadata=metadata,
                     )
+                    written_rollouts += 1
                     print(f"[INFO] Wrote rollout: {recorder.output_dir / file_name}")
 
                     env.close()
+        print(f"[INFO] Collection finished. Total rollouts written: {written_rollouts}")
     finally:
         template_env.close()
         simulation_app.close()
 
 
+def _main_with_error_report() -> None:
+    try:
+        main()
+    except Exception as exc:
+        print(f"[ERROR] collect_pick_cam.py failed: {exc}")
+        traceback.print_exc()
+        raise
+
+
 if __name__ == "__main__":
-    main()
+    _main_with_error_report()
