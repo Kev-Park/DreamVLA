@@ -433,6 +433,8 @@ def main() -> None:
     from isaaclab_tasks.utils import parse_env_cfg
     from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg
     from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
+    from isaaclab.sensors import CameraCfg
+    from isaaclab.sim import PinholeCameraCfg
 
     from recorder import RolloutRecorder
 
@@ -448,6 +450,31 @@ def main() -> None:
     # Ensure Isaac env creation receives an explicit seed.
     if hasattr(base_env_cfg, "seed"):
         base_env_cfg.seed = args_cli.seed
+    
+    # Ensure robot camera exists in scene config (required for collection).
+    print("[TRACE] checking camera_robot in env_cfg.scene")
+    if not hasattr(base_env_cfg.scene, "camera_robot"):
+        print("[TRACE] camera_robot not found, adding it")
+        base_env_cfg.scene.camera_robot = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
+            spawn=PinholeCameraCfg(
+                focal_length=7.6,
+                focus_distance=400.0,
+                horizontal_aperture=20.0,
+                clipping_range=(0.01, 100.0),
+            ),
+            data_types=["rgb"],
+            height=720,
+            width=1280,
+            offset=CameraCfg.OffsetCfg(
+                pos=(0.05, 0.0, 0.36),
+                rot=(0.568, 0.421, -0.421, -0.568),
+                convention="opengl",
+            ),
+        )
+        print("[TRACE] camera_robot config added")
+    else:
+        print("[TRACE] camera_robot already in scene")
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
