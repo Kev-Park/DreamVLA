@@ -60,8 +60,6 @@ def _discover_motion_references() -> list[Path]:
 
     if not pick_sim2_root.exists():
         raise FileNotFoundError(f"Pick_sim2 directory not found at {pick_sim2_root}")
-
-    # Default: use Pick_sim2 directory so motion loader resolves contained *.pkl files.
     return [pick_sim2_root.resolve()]
 
 
@@ -248,8 +246,8 @@ def _run_rollout(
     terminated_flag = False
     truncated_flag = False
 
-    # Mirror play_pick_cam.py initialization flow.
-    obs_out = env.get_observations()
+    # Start each rollout attempt from a fresh reset so it can sample a new trajectory.
+    obs_out = env.reset()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
 
     scene_keys = list(env.unwrapped.scene.keys())
@@ -266,86 +264,77 @@ def _run_rollout(
             "Simulation app is not running at rollout start. "
             "The app shut down before the first rollout step."
         )
-    print(f"[DEBUG] Starting rollout loop. max_steps={max_steps}")
     while step_index < max_steps and simulation_app.is_running():
-        try:
-            print(f"[DEBUG] Loop start: step_index={step_index}, app_running={simulation_app.is_running()}")
-            start_time = time.time()
-            step_index += 1
-            if camera_on and cam_robot is not None:
-                object_pos_world = env.unwrapped.scene["object"].data.root_pos_w
-                robot_pos_world = env.unwrapped.scene["robot"].data.root_pos_w
-                robot_quat_world = env.unwrapped.scene["robot"].data.root_quat_w
-                object_pos_local = _quat_apply(_quat_conjugate(robot_quat_world), object_pos_world - robot_pos_world)
+        start_time = time.time()
+        step_index += 1
+        if camera_on and cam_robot is not None:
+            object_pos_world = env.unwrapped.scene["object"].data.root_pos_w
+            robot_pos_world = env.unwrapped.scene["robot"].data.root_pos_w
+            robot_quat_world = env.unwrapped.scene["robot"].data.root_quat_w
+            object_pos_local = _quat_apply(_quat_conjugate(robot_quat_world), object_pos_world - robot_pos_world)
 
-                obs[:, 52] = object_pos_local[0, 0]
-                obs[:, 53] = object_pos_local[0, 1]
+            obs[:, 52] = object_pos_local[0, 0]
+            obs[:, 53] = object_pos_local[0, 1]
 
-            with torch.inference_mode():
-                actions = policy(obs).clone()
-                step_result = env.step(actions)
+        with torch.inference_mode():
+            actions = policy(obs).clone()
+            step_result = env.step(actions)
 
-            if camera_on and cam_robot is not None:
-                camera_output = getattr(cam_robot.data, "output", None)
-                if camera_output is None:
-                    raise RuntimeError("camera_robot.data.output is unavailable after env.step.")
-                if "rgb" not in camera_output:
-                    raise RuntimeError(
-                        f"camera_robot output is missing 'rgb'. Available keys: {list(camera_output.keys())}"
-                    )
+        if camera_on and cam_robot is not None:
+            camera_output = getattr(cam_robot.data, "output", None)
+            if camera_output is None:
+                raise RuntimeError("camera_robot.data.output is unavailable after env.step.")
+            if "rgb" not in camera_output:
+                raise RuntimeError(
+                    f"camera_robot output is missing 'rgb'. Available keys: {list(camera_output.keys())}"
+                )
 
-                image_robot = camera_output["rgb"]
-                frame_rgb = image_robot[0].cpu().numpy()
-                camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
+            image_robot = camera_output["rgb"]
+            frame_rgb = image_robot[0].cpu().numpy()
+            camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
 
-            if len(step_result) == 5:
-                obs, _, terminated, truncated, info = step_result
+        if len(step_result) == 5:
+            obs, _, terminated, truncated, info = step_result
+        else:
+            obs, _, done, info = step_result
+            terminated = done
+            truncated = torch.zeros_like(done)
+
+        # Clone obs to allow inplace updates in the next iteration
+        obs = obs.clone() if hasattr(obs, "clone") else obs
+
+        if state_on:
+            state_history.append(_capture_rollout_state(env, actions))
+
+        terminated_flag = bool(torch.as_tensor(terminated).any().item())
+        truncated_flag = bool(torch.as_tensor(truncated).any().item())
+        if isinstance(info, dict) and "success" in info:
+            success_value = info["success"]
+            if isinstance(success_value, (np.ndarray, torch.Tensor)):
+                rollout_success = bool(np.asarray(success_value).any())
             else:
-                obs, _, done, info = step_result
-                terminated = done
-                truncated = torch.zeros_like(done)
+                rollout_success = bool(success_value)
 
-            # Clone obs to allow inplace updates in the next iteration
-            obs = obs.clone() if hasattr(obs, 'clone') else obs
-
-            if state_on:
-                state_history.append(_capture_rollout_state(env, actions))
-
-            terminated_flag = bool(torch.as_tensor(terminated).any().item())
-            truncated_flag = bool(torch.as_tensor(truncated).any().item())
-            if isinstance(info, dict) and "success" in info:
-                success_value = info["success"]
-                if isinstance(success_value, (np.ndarray, torch.Tensor)):
-                    rollout_success = bool(np.asarray(success_value).any())
-                else:
-                    rollout_success = bool(success_value)
-
-            print(f"[DEBUG] step={step_index}: terminated={terminated_flag}, truncated={truncated_flag}, app_running={simulation_app.is_running()}")
-            if terminated_flag or truncated_flag:
-                print(f"[DEBUG] Breaking: terminated={terminated_flag}, truncated={truncated_flag}")
-                break
-
-            print(f"[INFO] rollout step {step_index}/{max_steps}")
-
-            sleep_time = env.unwrapped.step_dt - (time.time() - start_time)
-            if real_time and sleep_time > 0:
-                time.sleep(sleep_time)
-            print(f"[DEBUG] Loop end: about to check while condition. step_index={step_index}, app_running={simulation_app.is_running()}")
-        except Exception as step_exc:
-            print(f"[ERROR] Exception during rollout step {step_index}: {step_exc}")
-            traceback.print_exc()
+        if terminated_flag or truncated_flag:
+            # End this rollout and move to the next trajectory rollout.
             break
-    print(f"[DEBUG] Exited while loop. Final step_index={step_index}")
 
+        print(f"[INFO] rollout step {step_index}/{max_steps}")
 
-    print(f"[DEBUG] Rollout loop completed. step_index={step_index}, app_running={simulation_app.is_running()}")
+        sleep_time = env.unwrapped.step_dt - (time.time() - start_time)
+        if real_time and sleep_time > 0:
+            time.sleep(sleep_time)
     raw_state = _stack_nested(state_history) if state_history else None
     if step_index == 0:
         raise RuntimeError(
             "No rollout steps were executed before SimulationApp stopped. "
             "Check terminal output above for the last manager/init logs before app shutdown."
         )
-    print(f"[DEBUG] About to return from _run_rollout. camera_frames={len(camera_frames)}, raw_state shape={raw_state.shape if raw_state is not None else None}")
+
+    # Maintain explicit reset boundaries between trajectory rollouts.
+    if simulation_app.is_running():
+        env.reset()
+
     metadata = {
         "terminated": terminated_flag,
         "truncated": truncated_flag,
@@ -387,7 +376,7 @@ def main() -> None:
     parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
     parser.add_argument("--checkpoint-path", type=str, default=None, help="Path to the checkpoint to load.")
     parser.add_argument("--object-list", nargs="*", default=["mustard_bottle"], help="List of object names to collect.")
-    parser.add_argument("--num-rollouts-per-combo", type=int, default=1, help="Number of rollouts to collect per object-motion combo.")
+    parser.add_argument("--num-samples", type=int, default=1, help="How many reset-and-rollout samples to collect from the motion directory.")
     parser.add_argument("--output-directory", type=str, default="./datasets/pick_cam", help="Directory where rollout HDF5 files are written.")
     parser.add_argument("--rollout-length", type=int, default=500, help="Maximum number of steps per rollout.")
     parser.add_argument("--seed", type=int, default=0, help="Base seed used for deterministic rollout seeding.")
@@ -504,7 +493,7 @@ def main() -> None:
                     if isinstance(env.unwrapped, DirectMARLEnv):
                         env = multi_agent_to_single_agent(env)
 
-                for rollout_index in range(args_cli.num_rollouts_per_combo):
+                for rollout_index in range(args_cli.num_samples):
                     seed = _seed_for_rollout(args_cli.seed, object_index, motion_index, rollout_index)
                     _set_all_seeds(seed)
                     print(
@@ -512,7 +501,6 @@ def main() -> None:
                         f"motion={motion_reference.name} idx={rollout_index} seed={seed}"
                     )
 
-                    print(f"[DEBUG] Calling _run_rollout")
                     camera_frames, raw_state, rollout_metadata = _run_rollout(
                         env,
                         policy,
@@ -522,7 +510,6 @@ def main() -> None:
                         camera_on=True,
                         real_time=bool(args_cli.real_time),
                     )
-                    print(f"[DEBUG] _run_rollout returned. camera_frames={len(camera_frames)}, raw_state={raw_state is not None}, metadata={rollout_metadata}")
 
                     file_name = (
                         f"{object_name}__{motion_reference.name}__"
@@ -538,7 +525,6 @@ def main() -> None:
                         "motion_index": motion_index,
                         **rollout_metadata,
                     }
-                    print(f"[DEBUG] About to write rollout. file_name={file_name}, frames_shape={np.stack(camera_frames, axis=0).shape if camera_frames else None}")
                     recorder.write_rollout(
                         file_name,
                         frames=np.stack(camera_frames, axis=0),
@@ -551,10 +537,8 @@ def main() -> None:
                     env.close()
         print(f"[INFO] Collection finished. Total rollouts written: {written_rollouts}")
     finally:
-        print("[DEBUG] In finally block. Closing environments and app.")
         template_env.close()
         simulation_app.close()
-        print("[DEBUG] Environments and app closed. Script exiting.")
 
 
 def _main_with_error_report() -> None:
