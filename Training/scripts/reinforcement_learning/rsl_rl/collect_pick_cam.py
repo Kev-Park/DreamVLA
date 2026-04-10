@@ -9,6 +9,7 @@ import copy
 import os
 import random
 import time
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -339,6 +340,9 @@ def main() -> None:
     if args_cli.task is None:
         parser.error("--task is required")
 
+    # Seed global RNGs before any environment is created.
+    _set_all_seeds(args_cli.seed)
+
     # TO-DO: implement support for parallelized collection here
     if args_cli.num_envs != 1:
         raise ValueError(
@@ -373,6 +377,9 @@ def main() -> None:
         use_fabric=not args_cli.disable_fabric,
         enable_cameras=True,
     )
+    # Ensure Isaac env creation receives an explicit seed.
+    if hasattr(base_env_cfg, "seed"):
+        base_env_cfg.seed = args_cli.seed
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
@@ -396,7 +403,11 @@ def main() -> None:
     print(f"[INFO] Policy device: {policy_device}")
 
     output_root = Path(args_cli.output_directory).resolve()
-    recorder = RolloutRecorder(output_root)
+    run_date = datetime.now().strftime("%Y-%m-%d")
+    dated_output_dir = output_root / run_date
+    recorder = RolloutRecorder(dated_output_dir)
+    recorder.output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Saving rollouts to: {recorder.output_dir}")
 
     try:
         for object_index, object_name in enumerate(object_list):
@@ -410,10 +421,6 @@ def main() -> None:
                     if isinstance(env.unwrapped, DirectMARLEnv):
                         env = multi_agent_to_single_agent(env)
 
-                    rollout_folder = output_root / object_name / motion_reference.name
-                    recorder.output_dir = rollout_folder
-                    recorder.output_dir.mkdir(parents=True, exist_ok=True)
-
                     camera_frames, raw_state, rollout_metadata = _run_rollout(
                         env,
                         policy,
@@ -423,7 +430,10 @@ def main() -> None:
                         real_time=bool(args_cli.real_time),
                     )
 
-                    file_name = f"rollout_{rollout_index:03d}_seed_{seed}.hdf5"
+                    file_name = (
+                        f"{object_name}__{motion_reference.name}__"
+                        f"rollout_{rollout_index:03d}_seed_{seed}.hdf5"
+                    )
                     metadata = {
                         "object_name": object_name,
                         "motion_reference": motion_reference.name,
