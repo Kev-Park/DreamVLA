@@ -117,37 +117,52 @@ def _stack_nested(values: list[Any]) -> Any:
     return np.stack([np.asarray(value) for value in values], axis=0)
 
 
-def _debug_preflight_dump(env) -> None:
-    """One-shot preflight dump for teleop schema implementation. DELETE AFTER USE."""
+def _debug_hand_compat_dump(env) -> None:
+    """One-shot Dex3 hand compatibility dump. DELETE AFTER USE."""
     robot = env.unwrapped.scene["robot"]
 
-    print("===== [DEBUG-0A] WRIST LINK NAMES =====")
-    body_names = list(robot.data.body_names)
-    print(f"BODY_NAMES: {body_names}")
-    print(f"HAS_LEFT_WRIST_YAW: {'left_wrist_yaw_link' in body_names}")
-    print(f"HAS_RIGHT_WRIST_YAW: {'right_wrist_yaw_link' in body_names}")
+    print("===== [HAND-1] ALL HAND-LIKE JOINTS =====")
+    all_names = list(robot.data.joint_names)
+    print(f"TOTAL_JOINTS: {len(all_names)}")
+    hand_like = [
+        n for n in all_names
+        if any(tok in n.lower() for tok in ("hand", "finger", "thumb", "index", "middle", "ring", "pinky"))
+    ]
+    print("HAND_LIKE_JOINTS:")
+    for n in hand_like:
+        print(f"   {n}")
 
-    print("===== [DEBUG-0B] PELVIS / ROOT =====")
-    print(f"ROOT_NAME_candidate: {body_names[0]}")
-    print(f"HAS_PELVIS_BODY: {'pelvis' in body_names}")
-    if "pelvis" in body_names:
-        pid, _ = robot.find_bodies(["pelvis"])
-        print(f"PELVIS_BODY_INDEX: {pid}")
-        print(f"PELVIS_POS_W: {robot.data.body_pos_w[0, pid[0]].tolist()}")
-        print(f"ROOT_POS_W: {robot.data.root_pos_w[0].tolist()}")
-        pelvis_quat = robot.data.body_quat_w[0, pid[0]].tolist()
-        root_quat = robot.data.root_quat_w[0].tolist()
-        print(f"PELVIS_QUAT_W: {pelvis_quat}")
-        print(f"ROOT_QUAT_W: {root_quat}")
-
-    print("===== [DEBUG-0C] FINGER JOINTS =====")
+    print("===== [HAND-2] REGEX MATCH =====")
     l_ids, l_names = robot.find_joints(["left_hand.*"])
     r_ids, r_names = robot.find_joints(["right_hand.*"])
-    print(f"LEFT_FINGER_NAMES: {l_names}")
-    print(f"RIGHT_FINGER_NAMES: {r_names}")
-    print(f"LEFT_COUNT: {len(l_ids)}")
-    print(f"RIGHT_COUNT: {len(r_ids)}")
-    print("===== [DEBUG-0 END] =====")
+    print(f"LEFT_HAND_REGEX_COUNT: {len(l_ids)}")
+    print(f"LEFT_HAND_REGEX_NAMES: {l_names}")
+    print(f"RIGHT_HAND_REGEX_COUNT: {len(r_ids)}")
+    print(f"RIGHT_HAND_REGEX_NAMES: {r_names}")
+
+    print("===== [HAND-3] CONSUMER NAME MATCH =====")
+    expected_left = [
+        "left_hand_thumb_0_joint", "left_hand_thumb_1_joint", "left_hand_thumb_2_joint",
+        "left_hand_index_0_joint", "left_hand_index_1_joint",
+        "left_hand_middle_0_joint", "left_hand_middle_1_joint",
+    ]
+    expected_right = [n.replace("left", "right") for n in expected_left]
+    present = set(robot.data.joint_names)
+    print("LEFT_MATCH:")
+    for n in expected_left:
+        print(f"  {n}: {'OK' if n in present else 'MISSING'}")
+    print("RIGHT_MATCH:")
+    for n in expected_right:
+        print(f"  {n}: {'OK' if n in present else 'MISSING'}")
+    print(f"LEFT_ALL_PRESENT: {all(n in present for n in expected_left)}")
+    print(f"RIGHT_ALL_PRESENT: {all(n in present for n in expected_right)}")
+
+    print("===== [HAND-4] ASSET ID =====")
+    robot_cfg = env.unwrapped.cfg.scene.robot
+    print(f"USD_PATH: {getattr(robot_cfg.spawn, 'usd_path', None)}")
+    print(f"ARTICULATION_ROOT: {getattr(robot_cfg, 'articulation_root_prim_path', None)}")
+    print(f"ACTUATORS: {list(getattr(robot_cfg, 'actuators', {}).keys())}")
+    print("===== [HAND END] =====")
 
 
 def _get_hand_joint_indices(env) -> tuple[list[int], list[int]]:
@@ -510,9 +525,9 @@ def main() -> None:
     policy_device = template_env.unwrapped.device
     print(f"[INFO] Policy device: {policy_device}")
 
-    # DEBUG: one-shot preflight dump for teleop schema implementation. DELETE AFTER USE.
+    # DEBUG: one-shot Dex3 hand compatibility dump. DELETE AFTER USE.
     template_env.reset()
-    _debug_preflight_dump(template_env)
+    _debug_hand_compat_dump(template_env)
 
     output_root = Path(args_cli.output_directory).resolve()
     run_date = datetime.now().strftime("%Y-%m-%d")
