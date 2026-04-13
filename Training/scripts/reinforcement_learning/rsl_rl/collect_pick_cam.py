@@ -635,9 +635,19 @@ def main() -> None:
                         f"[INFO] Completed sample idx={rollout_index} "
                         f"steps={rollout_metadata['num_steps']} "
                         f"terminated={rollout_metadata['terminated']} "
-                        f"truncated={rollout_metadata['truncated']}"
+                        f"truncated={rollout_metadata['truncated']} "
+                        f"success={rollout_metadata['success']}"
                     )
                     prev_ended_on_done = bool(rollout_metadata["terminated"] or rollout_metadata["truncated"])
+
+                    if not rollout_metadata["success"]:
+                        print(
+                            f"[INFO] REJECTED rollout object={object_name} "
+                            f"motion={motion_reference.name} idx={rollout_index} seed={seed} "
+                            f"reason=success=False (terminated={rollout_metadata['terminated']}, "
+                            f"truncated={rollout_metadata['truncated']})"
+                        )
+                        continue
 
                     file_name = (
                         f"{object_name}__{motion_reference.name}__"
