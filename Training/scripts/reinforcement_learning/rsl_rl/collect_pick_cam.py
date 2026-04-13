@@ -117,6 +117,39 @@ def _stack_nested(values: list[Any]) -> Any:
     return np.stack([np.asarray(value) for value in values], axis=0)
 
 
+def _debug_preflight_dump(env) -> None:
+    """One-shot preflight dump for teleop schema implementation. DELETE AFTER USE."""
+    robot = env.unwrapped.scene["robot"]
+
+    print("===== [DEBUG-0A] WRIST LINK NAMES =====")
+    body_names = list(robot.data.body_names)
+    print(f"BODY_NAMES: {body_names}")
+    print(f"HAS_LEFT_WRIST_YAW: {'left_wrist_yaw_link' in body_names}")
+    print(f"HAS_RIGHT_WRIST_YAW: {'right_wrist_yaw_link' in body_names}")
+
+    print("===== [DEBUG-0B] PELVIS / ROOT =====")
+    print(f"ROOT_NAME_candidate: {body_names[0]}")
+    print(f"HAS_PELVIS_BODY: {'pelvis' in body_names}")
+    if "pelvis" in body_names:
+        pid, _ = robot.find_bodies(["pelvis"])
+        print(f"PELVIS_BODY_INDEX: {pid}")
+        print(f"PELVIS_POS_W: {robot.data.body_pos_w[0, pid[0]].tolist()}")
+        print(f"ROOT_POS_W: {robot.data.root_pos_w[0].tolist()}")
+        pelvis_quat = robot.data.body_quat_w[0, pid[0]].tolist()
+        root_quat = robot.data.root_quat_w[0].tolist()
+        print(f"PELVIS_QUAT_W: {pelvis_quat}")
+        print(f"ROOT_QUAT_W: {root_quat}")
+
+    print("===== [DEBUG-0C] FINGER JOINTS =====")
+    l_ids, l_names = robot.find_joints(["left_hand.*"])
+    r_ids, r_names = robot.find_joints(["right_hand.*"])
+    print(f"LEFT_FINGER_NAMES: {l_names}")
+    print(f"RIGHT_FINGER_NAMES: {r_names}")
+    print(f"LEFT_COUNT: {len(l_ids)}")
+    print(f"RIGHT_COUNT: {len(r_ids)}")
+    print("===== [DEBUG-0 END] =====")
+
+
 def _get_hand_joint_indices(env) -> tuple[list[int], list[int]]:
     """Resolve and cache left/right hand joint indices for the current env."""
 
@@ -476,6 +509,10 @@ def main() -> None:
     template_env, template_runner, policy = _create_policy(template_env, agent_cfg, resume_path)
     policy_device = template_env.unwrapped.device
     print(f"[INFO] Policy device: {policy_device}")
+
+    # DEBUG: one-shot preflight dump for teleop schema implementation. DELETE AFTER USE.
+    template_env.reset()
+    _debug_preflight_dump(template_env)
 
     output_root = Path(args_cli.output_directory).resolve()
     run_date = datetime.now().strftime("%Y-%m-%d")
