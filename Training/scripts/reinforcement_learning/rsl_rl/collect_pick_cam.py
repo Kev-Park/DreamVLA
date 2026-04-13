@@ -117,31 +117,50 @@ def _stack_nested(values: list[Any]) -> Any:
     return np.stack([np.asarray(value) for value in values], axis=0)
 
 
-def _debug_wrist_and_pelvis_dump(env) -> None:
-    """One-shot wrist-link / pelvis-body dump for teleop schema bring-up. DELETE AFTER USE."""
+def _get_wrist_body_indices(env) -> tuple[int, int, str, str]:
+    """Resolve and cache left/right wrist body indices for the current env.
+
+    Names must match the consumer pinocchio model (decoupled_wbc): left_wrist_yaw_link /
+    right_wrist_yaw_link. Presence was verified via [DEBUG-0A].
+    """
+
+    cache_attr = "_collect_pick_cam_wrist_body_indices"
+    cached = getattr(env.unwrapped, cache_attr, None)
+    if cached is not None:
+        return cached
+
     robot = env.unwrapped.scene["robot"]
+    left_name = "left_wrist_yaw_link"
+    right_name = "right_wrist_yaw_link"
+    left_ids, left_names = robot.find_bodies([left_name])
+    right_ids, right_names = robot.find_bodies([right_name])
 
-    print("===== [DEBUG-0A] WRIST LINK NAMES =====")
-    body_names = list(robot.data.body_names)
-    print(f"BODY_COUNT: {len(body_names)}")
-    print("BODY_NAMES:")
-    for n in body_names:
-        print(f"  {n}")
-    print(f"HAS_LEFT_WRIST_YAW:  {'left_wrist_yaw_link'  in body_names}")
-    print(f"HAS_RIGHT_WRIST_YAW: {'right_wrist_yaw_link' in body_names}")
+    if len(left_ids) != 1 or len(right_ids) != 1:
+        raise RuntimeError(
+            f"Expected exactly one match each for {left_name!r} and {right_name!r}, "
+            f"got left={left_names} right={right_names}. "
+            "Check the USD link naming against the consumer repo."
+        )
 
-    print("===== [DEBUG-0B] PELVIS / ROOT =====")
-    print(f"ROOT_NAME_candidate: {body_names[0]}")
-    has_pelvis = "pelvis" in body_names
-    print(f"HAS_PELVIS_BODY: {has_pelvis}")
-    if has_pelvis:
-        pid, _ = robot.find_bodies(["pelvis"])
-        print(f"PELVIS_BODY_INDEX: {pid}")
-        print(f"PELVIS_POS_W:  {robot.data.body_pos_w[0, pid[0]].tolist()}")
-        print(f"ROOT_POS_W:    {robot.data.root_pos_w[0].tolist()}")
-        print(f"PELVIS_QUAT_W: {robot.data.body_quat_w[0, pid[0]].tolist()}")
-        print(f"ROOT_QUAT_W:   {robot.data.root_quat_w[0].tolist()}")
-    print("===== [DEBUG-0 END] =====")
+    resolved = (int(left_ids[0]), int(right_ids[0]), left_name, right_name)
+    setattr(env.unwrapped, cache_attr, resolved)
+    return resolved
+
+
+def _get_finger_joint_names(env) -> tuple[list[str], list[str]]:
+    """Resolve and cache left/right finger joint names in find_joints() order."""
+
+    cache_attr = "_collect_pick_cam_finger_joint_names"
+    cached = getattr(env.unwrapped, cache_attr, None)
+    if cached is not None:
+        return cached
+
+    robot = env.unwrapped.scene["robot"]
+    _, left_names = robot.find_joints(["left_hand.*"])
+    _, right_names = robot.find_joints(["right_hand.*"])
+    resolved = (list(left_names), list(right_names))
+    setattr(env.unwrapped, cache_attr, resolved)
+    return resolved
 
 
 def _get_hand_joint_indices(env) -> tuple[list[int], list[int]]:
@@ -158,6 +177,48 @@ def _get_hand_joint_indices(env) -> tuple[list[int], list[int]]:
     resolved = (list(left_ids), list(right_ids))
     setattr(env.unwrapped, cache_attr, resolved)
     return resolved
+
+
+def _capture_teleop_frame(env) -> dict[str, torch.Tensor]:
+    """Capture one frame of pelvis-relative wrist poses as 4x4 float64 SE(3) matrices.
+
+    Uses robot.data.root_pos_w / root_quat_w as the pelvis reference. [DEBUG-0B] verified
+    root_pos_w is bit-identical to pelvis body pose and root_quat_w matches pelvis_quat to
+    within ~5e-12, so the fast root_* path is equivalent to an explicit pelvis body lookup.
+    """
+
+    import isaaclab.utils.math as math_utils
+
+    left_idx, right_idx, _, _ = _get_wrist_body_indices(env)
+    robot = env.unwrapped.scene["robot"]
+
+    root_pos_w = robot.data.root_pos_w[0:1]
+    root_quat_w = robot.data.root_quat_w[0:1]
+    left_pos_w = robot.data.body_pos_w[0:1, left_idx]
+    left_quat_w = robot.data.body_quat_w[0:1, left_idx]
+    right_pos_w = robot.data.body_pos_w[0:1, right_idx]
+    right_quat_w = robot.data.body_quat_w[0:1, right_idx]
+
+    left_pos_p, left_quat_p = math_utils.subtract_frame_transforms(
+        root_pos_w, root_quat_w, left_pos_w, left_quat_w,
+    )
+    right_pos_p, right_quat_p = math_utils.subtract_frame_transforms(
+        root_pos_w, root_quat_w, right_pos_w, right_quat_w,
+    )
+
+    left_R = math_utils.matrix_from_quat(left_quat_p)[0].to(torch.float64).cpu()
+    right_R = math_utils.matrix_from_quat(right_quat_p)[0].to(torch.float64).cpu()
+    left_t = left_pos_p[0].to(torch.float64).cpu()
+    right_t = right_pos_p[0].to(torch.float64).cpu()
+
+    left_T = torch.eye(4, dtype=torch.float64)
+    right_T = torch.eye(4, dtype=torch.float64)
+    left_T[:3, :3] = left_R
+    left_T[:3, 3] = left_t
+    right_T[:3, :3] = right_R
+    right_T[:3, 3] = right_t
+
+    return {"left_wrist": left_T, "right_wrist": right_T}
 
 
 def _capture_rollout_state(env, action: torch.Tensor | None = None) -> dict[str, Any]:
@@ -267,9 +328,10 @@ def _run_rollout(
     camera_on: bool,
     real_time: bool,
     reset_at_start: bool,
-) -> tuple[list[np.ndarray], dict[str, Any] | None, dict[str, Any]]:
+) -> tuple[list[np.ndarray], dict[str, Any] | None, dict[str, Any], dict[str, Any] | None]:
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
+    teleop_history: list[dict[str, torch.Tensor]] = []
     rollout_success = False
     terminated_flag = False
     truncated_flag = False
@@ -336,6 +398,7 @@ def _run_rollout(
 
         if state_on:
             state_history.append(_capture_rollout_state(env, actions))
+            teleop_history.append(_capture_teleop_frame(env))
 
         terminated_flag = bool(torch.as_tensor(terminated).any().item())
         truncated_flag = bool(torch.as_tensor(truncated).any().item())
@@ -366,6 +429,30 @@ def _run_rollout(
             "Check terminal output above for the last manager/init logs before app shutdown."
         )
 
+    teleop_payload: dict[str, Any] | None = None
+    if teleop_history:
+        teleop_stacked = _stack_nested(teleop_history)
+        left_wrist_np = np.asarray(teleop_stacked["left_wrist"], dtype=np.float64)
+        right_wrist_np = np.asarray(teleop_stacked["right_wrist"], dtype=np.float64)
+        num_frames = left_wrist_np.shape[0]
+        step_dt = float(env.unwrapped.step_dt)
+        left_finger_names, right_finger_names = _get_finger_joint_names(env)
+        teleop_payload = {
+            "left_wrist": left_wrist_np,
+            "right_wrist": right_wrist_np,
+            "timestamps": np.arange(num_frames, dtype=np.float64) * step_dt,
+            "step_dt": step_dt,
+            "source_robot": "unitree_g1_27dof_dex3",
+            "left_body_name": "left_wrist_yaw_link",
+            "right_body_name": "right_wrist_yaw_link",
+            "finger_joints": {
+                "left": np.asarray(raw_state["robot"]["left_finger_joint_pos"], dtype=np.float64),
+                "right": np.asarray(raw_state["robot"]["right_finger_joint_pos"], dtype=np.float64),
+                "left_names": left_finger_names,
+                "right_names": right_finger_names,
+            },
+        }
+
     metadata = {
         "terminated": terminated_flag,
         "truncated": truncated_flag,
@@ -376,7 +463,7 @@ def _run_rollout(
         "camera_on": camera_on,
         "state_on": state_on,
     }
-    return camera_frames, raw_state, metadata
+    return camera_frames, raw_state, metadata, teleop_payload
 
 
 def _quat_conjugate(quat: torch.Tensor) -> torch.Tensor:
@@ -504,10 +591,6 @@ def main() -> None:
     policy_device = template_env.unwrapped.device
     print(f"[INFO] Policy device: {policy_device}")
 
-    # DEBUG: one-shot wrist-link / pelvis-body dump. DELETE AFTER USE.
-    template_env.reset()
-    _debug_wrist_and_pelvis_dump(template_env)
-
     output_root = Path(args_cli.output_directory).resolve()
     run_date = datetime.now().strftime("%Y-%m-%d")
     dated_output_dir = output_root / run_date
@@ -538,7 +621,7 @@ def main() -> None:
                         f"motion={motion_reference.name} idx={rollout_index} seed={seed}"
                     )
 
-                    camera_frames, raw_state, rollout_metadata = _run_rollout(
+                    camera_frames, raw_state, rollout_metadata, teleop_payload = _run_rollout(
                         env,
                         policy,
                         simulation_app=simulation_app,
@@ -575,6 +658,7 @@ def main() -> None:
                         frames=np.stack(camera_frames, axis=0),
                         raw_state=raw_state if args_cli.state_on else None,
                         metadata=metadata,
+                        teleop=teleop_payload,
                     )
                     written_rollouts += 1
                     print(f"[INFO] Wrote rollout: {recorder.output_dir / file_name}")

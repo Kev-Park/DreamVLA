@@ -91,6 +91,7 @@ class RolloutRecorder:
         frames: np.ndarray,
         raw_state: dict[str, Any] | None,
         metadata: dict[str, Any],
+        teleop: dict[str, Any] | None = None,
     ) -> Path:
         """Write rollout data to a new HDF5 file and return the file path."""
 
@@ -106,4 +107,78 @@ class RolloutRecorder:
                 state_group = handle.create_group("state")
                 _write_value(state_group, "raw", raw_state)
 
+            if teleop is not None:
+                self._write_teleop_group(handle, teleop)
+
         return file_path
+
+    def _write_teleop_group(self, handle: h5py.File, teleop: dict[str, Any]) -> None:
+        g = handle.create_group("teleop")
+
+        lw = np.asarray(teleop["left_wrist"], dtype=np.float64)
+        rw = np.asarray(teleop["right_wrist"], dtype=np.float64)
+        if lw.ndim != 3 or lw.shape[1:] != (4, 4):
+            raise ValueError(f"teleop.left_wrist: bad shape {lw.shape}, expected (N, 4, 4)")
+        if rw.shape != lw.shape:
+            raise ValueError(f"teleop shape mismatch: left={lw.shape} right={rw.shape}")
+
+        self._validate_se3_batch(lw, "left_wrist")
+        self._validate_se3_batch(rw, "right_wrist")
+
+        g.create_dataset("left_wrist", data=lw, compression="gzip")
+        g.create_dataset("right_wrist", data=rw, compression="gzip")
+        g.create_dataset(
+            "timestamps",
+            data=np.asarray(teleop["timestamps"], dtype=np.float64),
+            compression="gzip",
+        )
+
+        cal = g.create_group("calibration")
+        cal.create_dataset("left_wrist", data=lw[0])
+        cal.create_dataset("right_wrist", data=rw[0])
+
+        finger_joints = teleop.get("finger_joints")
+        if finger_joints is not None:
+            fj = g.create_group("finger_joints")
+            fj.create_dataset(
+                "left",
+                data=np.asarray(finger_joints["left"], dtype=np.float64),
+                compression="gzip",
+            )
+            fj.create_dataset(
+                "right",
+                data=np.asarray(finger_joints["right"], dtype=np.float64),
+                compression="gzip",
+            )
+            str_dt = h5py.string_dtype("utf-8")
+            fj.create_dataset(
+                "left_finger_joint_names",
+                data=np.array(list(finger_joints["left_names"]), dtype=str_dt),
+            )
+            fj.create_dataset(
+                "right_finger_joint_names",
+                data=np.array(list(finger_joints["right_names"]), dtype=str_dt),
+            )
+
+        g.attrs["schema_version"] = 1
+        g.attrs["frame"] = "pelvis"
+        g.attrs["rotation_layout"] = "R|t; 0 0 0 1"
+        g.attrs["quaternion_convention"] = "not_stored"
+        g.attrs["source_robot"] = teleop.get("source_robot", "unknown")
+        g.attrs["left_body_name"] = teleop.get("left_body_name", "left_wrist_yaw_link")
+        g.attrs["right_body_name"] = teleop.get("right_body_name", "right_wrist_yaw_link")
+        g.attrs["step_dt"] = float(teleop.get("step_dt", 0.0))
+
+    @staticmethod
+    def _validate_se3_batch(T: np.ndarray, label: str) -> None:
+        bottom = T[:, 3, :]
+        if not np.allclose(bottom, np.array([0.0, 0.0, 0.0, 1.0]), atol=1e-6):
+            raise ValueError(f"{label}: bottom row not [0,0,0,1]")
+        R = T[:, :3, :3]
+        gram = np.einsum("nij,nkj->nik", R, R)
+        if not np.allclose(gram, np.eye(3)[None], atol=1e-5):
+            raise ValueError(f"{label}: rotation not orthonormal")
+        dets = np.linalg.det(R)
+        if not np.allclose(dets, 1.0, atol=1e-5):
+            bad = np.where(np.abs(dets - 1.0) > 1e-5)[0]
+            raise ValueError(f"{label}: det != +1 at frames {bad[:5].tolist()}")
