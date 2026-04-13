@@ -98,10 +98,6 @@ class RolloutRecorder:
         if frames is None or frames.size == 0:
             raise ValueError("Images are mandatory: expected non-empty frame tensor for every rollout.")
 
-        print(f"[TELEOP-TRACE] recorder.write_rollout file={file_name} "
-              f"raw_state_is_none={raw_state is None} "
-              f"teleop_is_none={teleop is None}")
-
         file_path = self.output_dir / file_name
         with h5py.File(file_path, "w") as handle:
             handle.attrs["metadata_json"] = json.dumps(_json_safe(metadata))
@@ -112,9 +108,7 @@ class RolloutRecorder:
                 _write_value(state_group, "raw", raw_state)
 
             if teleop is not None:
-                print(f"[TELEOP-TRACE] entering _write_teleop_group, keys={list(teleop.keys())}")
                 self._write_teleop_group(handle, teleop)
-                print(f"[TELEOP-TRACE] _write_teleop_group done, /teleop in file={'teleop' in handle}")
 
         return file_path
 

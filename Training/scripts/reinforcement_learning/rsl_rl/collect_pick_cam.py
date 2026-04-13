@@ -429,10 +429,6 @@ def _run_rollout(
             "Check terminal output above for the last manager/init logs before app shutdown."
         )
 
-    print(f"[TELEOP-TRACE] state_on={state_on} "
-          f"state_history_len={len(state_history)} "
-          f"teleop_history_len={len(teleop_history)}")
-
     teleop_payload: dict[str, Any] | None = None
     if teleop_history:
         teleop_stacked = _stack_nested(teleop_history)
@@ -456,9 +452,6 @@ def _run_rollout(
                 "right_names": right_finger_names,
             },
         }
-        print(f"[TELEOP-TRACE] teleop_payload built: N={num_frames} "
-              f"lw_shape={left_wrist_np.shape} rw_shape={right_wrist_np.shape} "
-              f"step_dt={step_dt}")
 
     metadata = {
         "terminated": terminated_flag,
