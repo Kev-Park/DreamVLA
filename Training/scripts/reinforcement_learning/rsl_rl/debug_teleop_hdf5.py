@@ -76,8 +76,15 @@ def _matrix_to_quat_wxyz(R: np.ndarray) -> np.ndarray:
 def debug_1_schema(path: Path) -> None:
     print(f"===== [DEBUG-1] SCHEMA ({path.name}) =====")
     with h5py.File(path, "r") as f:
+        def _walk(name: str, obj) -> None:
+            kind = "G" if isinstance(obj, h5py.Group) else f"D{getattr(obj, 'shape', '')}"
+            print(f"  [{kind}] {name}")
+        print("FULL_STRUCTURE:")
+        f.visititems(_walk)
+        print(f"ROOT_ATTRS_KEYS: {list(f.attrs.keys())}")
         print(f"HAS_TELEOP_GROUP:             {'teleop' in f}")
         print(f"HAS_STATE_RAW_TELEOP (want F): {'state/raw/teleop' in f}")
+        print(f"HAS_STATE_GROUP:              {'state' in f}")
         if "teleop" not in f:
             print("no /teleop group -> aborting schema check")
             return
@@ -106,6 +113,9 @@ def debug_1_schema(path: Path) -> None:
 def debug_2_se3(path: Path) -> None:
     print(f"===== [DEBUG-2] SE(3) VALIDITY ({path.name}) =====")
     with h5py.File(path, "r") as f:
+        if "teleop" not in f:
+            print("no /teleop group -> skip")
+            return
         for side in ("left_wrist", "right_wrist"):
             T = f[f"teleop/{side}"][...]
             R = T[:, :3, :3]
@@ -123,6 +133,9 @@ def debug_2_se3(path: Path) -> None:
 def debug_3_frame0(path: Path) -> None:
     print(f"===== [DEBUG-3] FRAME-0 SANITY ({path.name}) =====")
     with h5py.File(path, "r") as f:
+        if "teleop" not in f:
+            print("no /teleop group -> skip")
+            return
         lw0 = f["teleop/left_wrist"][0]
         rw0 = f["teleop/right_wrist"][0]
         print(f"LW0_TRANS (pelvis-frame, m): {lw0[:3, 3].tolist()}")
@@ -141,6 +154,9 @@ def debug_3_frame0(path: Path) -> None:
 def debug_4_locomotion_invariance(path: Path) -> None:
     print(f"===== [DEBUG-4] LOCOMOTION INVARIANCE ({path.name}) =====")
     with h5py.File(path, "r") as f:
+        if "teleop" not in f:
+            print("no /teleop group -> skip")
+            return
         lw = f["teleop/left_wrist"][...]
         rw = f["teleop/right_wrist"][...]
         lt0, lt_last = lw[0, :3, 3], lw[-1, :3, 3]
@@ -167,6 +183,9 @@ def debug_5_fk_roundtrip(path: Path) -> None:
     implied frame from the previous step's root pose — consistency-only."""
     print(f"===== [DEBUG-5] FK ROUND-TRIP (self-consistent, {path.name}) =====")
     with h5py.File(path, "r") as f:
+        if "teleop" not in f:
+            print("no /teleop group -> skip")
+            return
         if "state/raw/robot/root_pos_w" not in f:
             print("state/raw/robot/root_pos_w missing -> skip")
             return
