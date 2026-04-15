@@ -92,8 +92,31 @@ class RolloutRecorder:
         raw_state: dict[str, Any] | None,
         metadata: dict[str, Any],
         teleop: dict[str, Any] | None = None,
+        env_args: dict[str, Any] | None = None,
     ) -> Path:
-        """Write rollout data to a new HDF5 file and return the file path."""
+        """Write rollout data in robomimic-style HDF5 layout (Part A v2,
+        ``schema_version=2``).
+
+        Layout::
+
+            /data
+              @total      int
+              @env_args   json string
+              /demo_0
+                /obs
+                  ego_view_image                  (N, H, W, 3) u8
+                  robot0_joint_pos                (N, J)       f64
+                  robot0_joint_vel                (N, J)       f64
+                  robot0_root_pos_w               (N, 3)       f64
+                  robot0_root_quat_w              (N, 4)       f64  wxyz
+                  robot0_left_finger_joint_pos    (N, K_L)     f64
+                  robot0_right_finger_joint_pos   (N, K_R)     f64
+                  object_pos                      (N, 3)       f64
+                  object_quat                     (N, 4)       f64  wxyz
+                actions                           (N, A)       f64
+                /teleop                           (see _write_teleop_group)
+            /  @metadata_json    json string
+        """
 
         if frames is None or frames.size == 0:
             raise ValueError("Images are mandatory: expected non-empty frame tensor for every rollout.")
@@ -101,32 +124,89 @@ class RolloutRecorder:
         file_path = self.output_dir / file_name
         with h5py.File(file_path, "w") as handle:
             handle.attrs["metadata_json"] = json.dumps(_json_safe(metadata))
-            handle.create_dataset("images", data=frames, compression="gzip", chunks=True)
 
-            if raw_state is not None:
-                state_group = handle.create_group("state")
-                _write_value(state_group, "raw", raw_state)
+            data_grp = handle.create_group("data")
+            n_frames = int(frames.shape[0])
+            data_grp.attrs["total"] = n_frames
+            if env_args is not None:
+                data_grp.attrs["env_args"] = json.dumps(_json_safe(env_args))
+
+            demo_grp = data_grp.create_group("demo_0")
+            obs_grp = demo_grp.create_group("obs")
+            obs_grp.create_dataset(
+                "ego_view_image", data=frames, compression="gzip", chunks=True
+            )
+
+            obs_rename = {
+                "joint_pos": "robot0_joint_pos",
+                "joint_vel": "robot0_joint_vel",
+                "root_pos_w": "robot0_root_pos_w",
+                "root_quat_w": "robot0_root_quat_w",
+                "left_finger_joint_pos": "robot0_left_finger_joint_pos",
+                "right_finger_joint_pos": "robot0_right_finger_joint_pos",
+            }
+            if raw_state is not None and isinstance(raw_state.get("robot"), dict):
+                for src, dst in obs_rename.items():
+                    if src in raw_state["robot"]:
+                        obs_grp.create_dataset(
+                            dst,
+                            data=np.asarray(
+                                _to_numpy(raw_state["robot"][src]), dtype=np.float64
+                            ),
+                            compression="gzip",
+                        )
+
+            if raw_state is not None and isinstance(raw_state.get("object"), dict):
+                obj = raw_state["object"]
+                if "root_pos_w" in obj:
+                    obs_grp.create_dataset(
+                        "object_pos",
+                        data=np.asarray(_to_numpy(obj["root_pos_w"]), dtype=np.float64),
+                        compression="gzip",
+                    )
+                if "root_quat_w" in obj:
+                    obs_grp.create_dataset(
+                        "object_quat",
+                        data=np.asarray(_to_numpy(obj["root_quat_w"]), dtype=np.float64),
+                        compression="gzip",
+                    )
+
+            if raw_state is not None and "action" in raw_state:
+                demo_grp.create_dataset(
+                    "actions",
+                    data=np.asarray(_to_numpy(raw_state["action"]), dtype=np.float64),
+                    compression="gzip",
+                )
 
             if teleop is not None:
-                self._write_teleop_group(handle, teleop)
+                self._write_teleop_group(demo_grp, teleop)
 
         return file_path
 
-    def _write_teleop_group(self, handle: h5py.File, teleop: dict[str, Any]) -> None:
-        g = handle.create_group("teleop")
+    def _write_teleop_group(self, parent: h5py.Group, teleop: dict[str, Any]) -> None:
+        g = parent.create_group("teleop")
 
         lw = np.asarray(teleop["left_wrist"], dtype=np.float64)
         rw = np.asarray(teleop["right_wrist"], dtype=np.float64)
-        if lw.ndim != 3 or lw.shape[1:] != (4, 4):
-            raise ValueError(f"teleop.left_wrist: bad shape {lw.shape}, expected (N, 4, 4)")
-        if rw.shape != lw.shape:
-            raise ValueError(f"teleop shape mismatch: left={lw.shape} right={rw.shape}")
+        if "torso_pose" not in teleop:
+            raise ValueError(
+                "teleop payload is missing 'torso_pose' — required by Part A v2."
+            )
+        tp = np.asarray(teleop["torso_pose"], dtype=np.float64)
 
-        self._validate_se3_batch(lw, "left_wrist")
-        self._validate_se3_batch(rw, "right_wrist")
+        for arr, label in ((lw, "left_wrist"), (rw, "right_wrist"), (tp, "torso_pose")):
+            if arr.ndim != 3 or arr.shape[1:] != (4, 4):
+                raise ValueError(f"teleop.{label}: bad shape {arr.shape}, expected (N, 4, 4)")
+            self._validate_se3_batch(arr, label)
+        if rw.shape != lw.shape or tp.shape != lw.shape:
+            raise ValueError(
+                f"teleop frame count mismatch: left={lw.shape[0]} "
+                f"right={rw.shape[0]} torso={tp.shape[0]}"
+            )
 
         g.create_dataset("left_wrist", data=lw, compression="gzip")
         g.create_dataset("right_wrist", data=rw, compression="gzip")
+        g.create_dataset("torso_pose", data=tp, compression="gzip")
         g.create_dataset(
             "timestamps",
             data=np.asarray(teleop["timestamps"], dtype=np.float64),
@@ -136,6 +216,7 @@ class RolloutRecorder:
         cal = g.create_group("calibration")
         cal.create_dataset("left_wrist", data=lw[0])
         cal.create_dataset("right_wrist", data=rw[0])
+        cal.create_dataset("torso_pose", data=tp[0])
 
         finger_joints = teleop.get("finger_joints")
         if finger_joints is not None:
@@ -160,13 +241,14 @@ class RolloutRecorder:
                 data=np.array(list(finger_joints["right_names"]), dtype=str_dt),
             )
 
-        g.attrs["schema_version"] = 1
+        g.attrs["schema_version"] = 2
         g.attrs["frame"] = "pelvis"
         g.attrs["rotation_layout"] = "R|t; 0 0 0 1"
-        g.attrs["quaternion_convention"] = "not_stored"
+        g.attrs["quaternion_convention"] = "wxyz"
         g.attrs["source_robot"] = teleop.get("source_robot", "unknown")
         g.attrs["left_body_name"] = teleop.get("left_body_name", "left_wrist_yaw_link")
         g.attrs["right_body_name"] = teleop.get("right_body_name", "right_wrist_yaw_link")
+        g.attrs["torso_body_name"] = teleop.get("torso_body_name", "torso_link")
         g.attrs["step_dt"] = float(teleop.get("step_dt", 0.0))
 
     @staticmethod

@@ -163,6 +163,79 @@ def _get_finger_joint_names(env) -> tuple[list[str], list[str]]:
     return resolved
 
 
+def _get_torso_body_index(env) -> tuple[int, str]:
+    """Resolve and cache the torso_link body index for the current env.
+
+    Required for the VR 3-point teleop representation: the consumer's "neck"
+    point is torso_link FK + a +0.35 m local Z offset (see
+    G1_KEY_FRAME_OFFSETS in gear_sonic).
+    """
+
+    cache_attr = "_collect_pick_cam_torso_body_index"
+    cached = getattr(env.unwrapped, cache_attr, None)
+    if cached is not None:
+        return cached
+
+    robot = env.unwrapped.scene["robot"]
+    name = "torso_link"
+    ids, names = robot.find_bodies([name])
+    if len(ids) != 1:
+        raise RuntimeError(
+            f"Expected exactly one match for {name!r}, got {names}. "
+            "torso_link is required for Part A v2."
+        )
+    resolved = (int(ids[0]), name)
+    setattr(env.unwrapped, cache_attr, resolved)
+    return resolved
+
+
+def _build_env_args(env, *, task_name: str | None) -> dict[str, Any]:
+    """Build the robomimic-style env_args metadata dict for one env.
+
+    Cached on env.unwrapped so it's only computed once per env. Joint and body
+    name lists are pulled directly from the live articulation.
+    """
+
+    cache_attr = "_collect_pick_cam_env_args"
+    cached = getattr(env.unwrapped, cache_attr, None)
+    if cached is not None:
+        return cached
+
+    robot = env.unwrapped.scene["robot"]
+    joint_names = list(robot.data.joint_names)
+    body_names = list(robot.data.body_names)
+    left_finger_names, right_finger_names = _get_finger_joint_names(env)
+    num_finger = len(left_finger_names) + len(right_finger_names)
+
+    step_dt = float(env.unwrapped.step_dt) if env.unwrapped.step_dt else 0.0
+    fps = int(round(1.0 / step_dt)) if step_dt > 0 else 0
+
+    usd_path = ""
+    try:
+        usd_path = str(getattr(env.unwrapped.cfg.scene.robot.spawn, "usd_path", "") or "")
+    except Exception:
+        usd_path = ""
+
+    env_args = {
+        "robot_name": "unitree_g1_27dof_dex3",
+        "robot_usd": Path(usd_path).name if usd_path else "",
+        "task_name": task_name or "",
+        "fps": fps,
+        "step_dt": step_dt,
+        "num_joints": len(joint_names),
+        "num_body_joints": max(len(joint_names) - num_finger, 0),
+        "num_finger_joints": num_finger,
+        "joint_names": joint_names,
+        "body_names": body_names,
+        "left_finger_joint_names": list(left_finger_names),
+        "right_finger_joint_names": list(right_finger_names),
+        "producer": "collect_pick_cam.py",
+        "producer_version": 2,
+    }
+    setattr(env.unwrapped, cache_attr, env_args)
+    return env_args
+
+
 def _get_hand_joint_indices(env) -> tuple[list[int], list[int]]:
     """Resolve and cache left/right hand joint indices for the current env."""
 
@@ -180,16 +253,23 @@ def _get_hand_joint_indices(env) -> tuple[list[int], list[int]]:
 
 
 def _capture_teleop_frame(env) -> dict[str, torch.Tensor]:
-    """Capture one frame of pelvis-relative wrist poses as 4x4 float64 SE(3) matrices.
+    """Capture one frame of pelvis-relative wrist + torso poses as 4x4 float64
+    SE(3) matrices.
 
-    Uses robot.data.root_pos_w / root_quat_w as the pelvis reference. [DEBUG-0B] verified
-    root_pos_w is bit-identical to pelvis body pose and root_quat_w matches pelvis_quat to
-    within ~5e-12, so the fast root_* path is equivalent to an explicit pelvis body lookup.
+    Uses robot.data.root_pos_w / root_quat_w as the pelvis reference. [DEBUG-0B]
+    verified root_pos_w is bit-identical to pelvis body pose and root_quat_w
+    matches pelvis_quat to within ~5e-12, so the fast root_* path is equivalent
+    to an explicit pelvis body lookup.
+
+    Returns 4x4 matrices for left_wrist, right_wrist, and torso_pose. The torso
+    entry is required by Part A v2 for the consumer's VR 3-point representation
+    (torso_link FK + 0.35 m local Z offset = "neck" point).
     """
 
     import isaaclab.utils.math as math_utils
 
     left_idx, right_idx, _, _ = _get_wrist_body_indices(env)
+    torso_idx, _ = _get_torso_body_index(env)
     robot = env.unwrapped.scene["robot"]
 
     root_pos_w = robot.data.root_pos_w[0:1]
@@ -198,6 +278,8 @@ def _capture_teleop_frame(env) -> dict[str, torch.Tensor]:
     left_quat_w = robot.data.body_quat_w[0:1, left_idx]
     right_pos_w = robot.data.body_pos_w[0:1, right_idx]
     right_quat_w = robot.data.body_quat_w[0:1, right_idx]
+    torso_pos_w = robot.data.body_pos_w[0:1, torso_idx]
+    torso_quat_w = robot.data.body_quat_w[0:1, torso_idx]
 
     left_pos_p, left_quat_p = math_utils.subtract_frame_transforms(
         root_pos_w, root_quat_w, left_pos_w, left_quat_w,
@@ -205,20 +287,28 @@ def _capture_teleop_frame(env) -> dict[str, torch.Tensor]:
     right_pos_p, right_quat_p = math_utils.subtract_frame_transforms(
         root_pos_w, root_quat_w, right_pos_w, right_quat_w,
     )
+    torso_pos_p, torso_quat_p = math_utils.subtract_frame_transforms(
+        root_pos_w, root_quat_w, torso_pos_w, torso_quat_w,
+    )
 
     left_R = math_utils.matrix_from_quat(left_quat_p)[0].to(torch.float64).cpu()
     right_R = math_utils.matrix_from_quat(right_quat_p)[0].to(torch.float64).cpu()
+    torso_R = math_utils.matrix_from_quat(torso_quat_p)[0].to(torch.float64).cpu()
     left_t = left_pos_p[0].to(torch.float64).cpu()
     right_t = right_pos_p[0].to(torch.float64).cpu()
+    torso_t = torso_pos_p[0].to(torch.float64).cpu()
 
-    left_T = torch.eye(4, dtype=torch.float64)
-    right_T = torch.eye(4, dtype=torch.float64)
-    left_T[:3, :3] = left_R
-    left_T[:3, 3] = left_t
-    right_T[:3, :3] = right_R
-    right_T[:3, 3] = right_t
+    def _se3(R_mat: torch.Tensor, t_vec: torch.Tensor) -> torch.Tensor:
+        T = torch.eye(4, dtype=torch.float64)
+        T[:3, :3] = R_mat
+        T[:3, 3] = t_vec
+        return T
 
-    return {"left_wrist": left_T, "right_wrist": right_T}
+    return {
+        "left_wrist": _se3(left_R, left_t),
+        "right_wrist": _se3(right_R, right_t),
+        "torso_pose": _se3(torso_R, torso_t),
+    }
 
 
 def _capture_rollout_state(env, action: torch.Tensor | None = None) -> dict[str, Any]:
@@ -434,17 +524,20 @@ def _run_rollout(
         teleop_stacked = _stack_nested(teleop_history)
         left_wrist_np = np.asarray(teleop_stacked["left_wrist"], dtype=np.float64)
         right_wrist_np = np.asarray(teleop_stacked["right_wrist"], dtype=np.float64)
+        torso_pose_np = np.asarray(teleop_stacked["torso_pose"], dtype=np.float64)
         num_frames = left_wrist_np.shape[0]
         step_dt = float(env.unwrapped.step_dt)
         left_finger_names, right_finger_names = _get_finger_joint_names(env)
         teleop_payload = {
             "left_wrist": left_wrist_np,
             "right_wrist": right_wrist_np,
+            "torso_pose": torso_pose_np,
             "timestamps": np.arange(num_frames, dtype=np.float64) * step_dt,
             "step_dt": step_dt,
             "source_robot": "unitree_g1_27dof_dex3",
             "left_body_name": "left_wrist_yaw_link",
             "right_body_name": "right_wrist_yaw_link",
+            "torso_body_name": "torso_link",
             "finger_joints": {
                 "left": np.asarray(raw_state["robot"]["left_finger_joint_pos"], dtype=np.float64),
                 "right": np.asarray(raw_state["robot"]["right_finger_joint_pos"], dtype=np.float64),
@@ -663,12 +756,14 @@ def main() -> None:
                         "motion_index": motion_index,
                         **rollout_metadata,
                     }
+                    env_args = _build_env_args(env, task_name=args_cli.task)
                     recorder.write_rollout(
                         file_name,
                         frames=np.stack(camera_frames, axis=0),
                         raw_state=raw_state if args_cli.state_on else None,
                         metadata=metadata,
                         teleop=teleop_payload,
+                        env_args=env_args,
                     )
                     written_rollouts += 1
                     print(f"[INFO] Wrote rollout: {recorder.output_dir / file_name}")
