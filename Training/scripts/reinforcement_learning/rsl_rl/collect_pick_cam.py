@@ -556,10 +556,13 @@ def _run_rollout(
     n_successes_delta = env.unwrapped.n_successes - n_successes_start
     rollout_success = bool((n_successes_delta > 0).any().item())
 
-    # Error termination = terminated (robot fall/tilt/contact), not a time_out.
+    # Error termination = `terminated` fired *before* reaching max_steps.
     # Isaac Lab routes `time_out=True` DoneTerms to `truncated`, so `terminated`
-    # alone reliably signals an error end.
-    error_terminated = terminated_flag
+    # signals a fall/tilt/contact end — but the same conditions can also fire
+    # on the final step as the motion reference runs out and the robot drifts,
+    # which is not an early failure. Gate on step_index < max_steps so rollouts
+    # that ran the full length are never rejected.
+    error_terminated = terminated_flag and step_index < max_steps
 
     metadata = {
         "terminated": terminated_flag,
