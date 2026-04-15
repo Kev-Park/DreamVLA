@@ -433,6 +433,17 @@ def _run_rollout(
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
     obs = obs.clone() if hasattr(obs, "clone") else obs
 
+    # Match play_eval.py's success criterion: env.unwrapped.n_successes > 0.
+    # The reward function only increments n_successes when num_envs < 1001 and
+    # the attribute already exists, so initialize it here if missing.
+    if not hasattr(env.unwrapped, "n_successes"):
+        env.unwrapped.n_successes = torch.zeros(
+            env.unwrapped.num_envs, device=env.unwrapped.device, dtype=torch.long
+        )
+    # n_successes accumulates across rollouts, so snapshot the starting count
+    # and compare against it at the end of this rollout.
+    n_successes_start = env.unwrapped.n_successes.detach().clone()
+
     scene_keys = list(env.unwrapped.scene.keys())
     if camera_on and "camera_robot" not in scene_keys:
         raise RuntimeError(
@@ -477,9 +488,9 @@ def _run_rollout(
             camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
 
         if len(step_result) == 5:
-            obs, _, terminated, truncated, info = step_result
+            obs, _, terminated, truncated, _ = step_result
         else:
-            obs, _, done, info = step_result
+            obs, _, done, _ = step_result
             terminated = done
             truncated = torch.zeros_like(done)
 
@@ -492,12 +503,6 @@ def _run_rollout(
 
         terminated_flag = bool(torch.as_tensor(terminated).any().item())
         truncated_flag = bool(torch.as_tensor(truncated).any().item())
-        if isinstance(info, dict) and "success" in info:
-            success_value = info["success"]
-            if isinstance(success_value, (np.ndarray, torch.Tensor)):
-                rollout_success = bool(np.asarray(success_value).any())
-            else:
-                rollout_success = bool(success_value)
 
         if terminated_flag or truncated_flag:
             # End this rollout and move to the next trajectory rollout.
@@ -546,9 +551,20 @@ def _run_rollout(
             },
         }
 
+    # Success matches play_eval.py: n_successes incremented at least once during
+    # this rollout (object lifted above height_thres while the grasp is closed).
+    n_successes_delta = env.unwrapped.n_successes - n_successes_start
+    rollout_success = bool((n_successes_delta > 0).any().item())
+
+    # Error termination = terminated (robot fall/tilt/contact), not a time_out.
+    # Isaac Lab routes `time_out=True` DoneTerms to `truncated`, so `terminated`
+    # alone reliably signals an error end.
+    error_terminated = terminated_flag
+
     metadata = {
         "terminated": terminated_flag,
         "truncated": truncated_flag,
+        "error_terminated": error_terminated,
         "success": rollout_success,
         "num_steps": len(camera_frames) if camera_on else len(state_history),
         "no_steps_executed": step_index == 0,
@@ -733,11 +749,11 @@ def main() -> None:
                     )
                     prev_ended_on_done = bool(rollout_metadata["terminated"] or rollout_metadata["truncated"])
 
-                    if not rollout_metadata["success"]:
+                    if rollout_metadata["error_terminated"]:
                         print(
                             f"[INFO] REJECTED rollout object={object_name} "
                             f"motion={motion_reference.name} idx={rollout_index} seed={seed} "
-                            f"reason=success=False (terminated={rollout_metadata['terminated']}, "
+                            f"reason=error_terminated (success={rollout_metadata['success']}, "
                             f"truncated={rollout_metadata['truncated']})"
                         )
                         continue
