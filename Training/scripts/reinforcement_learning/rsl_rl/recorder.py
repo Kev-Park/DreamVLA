@@ -264,3 +264,71 @@ class RolloutRecorder:
         if not np.allclose(dets, 1.0, atol=1e-5):
             bad = np.where(np.abs(dets - 1.0) > 1e-5)[0]
             raise ValueError(f"{label}: det != +1 at frames {bad[:5].tolist()}")
+
+
+def replay_hdf5(
+    hdf5_path: Path,
+    output_path: Path | None = None,
+    fps: float | None = None,
+) -> Path:
+    """Write the ego_view_image frames stored in a rollout HDF5 to an mp4."""
+    import cv2  # lazy: only required when replaying
+
+    with h5py.File(hdf5_path, "r") as handle:
+        frames = np.asarray(handle["data/demo_0/obs/ego_view_image"])
+        if fps is None:
+            teleop = handle.get("data/demo_0/teleop")
+            if teleop is not None:
+                step_dt = float(teleop.attrs.get("step_dt", 0.0) or 0.0)
+                if step_dt > 0:
+                    fps = 1.0 / step_dt
+
+    if fps is None:
+        fps = 50.0
+    if output_path is None:
+        output_path = hdf5_path.with_suffix(".mp4")
+
+    if frames.ndim != 4 or frames.shape[-1] != 3:
+        raise ValueError(
+            f"ego_view_image has unexpected shape {frames.shape}; expected (N, H, W, 3)."
+        )
+    if frames.dtype != np.uint8:
+        raise ValueError(f"ego_view_image has dtype {frames.dtype}; expected uint8.")
+
+    n_frames, height, width, _ = frames.shape
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output_path), fourcc, float(fps), (width, height))
+    if not writer.isOpened():
+        raise RuntimeError(f"Failed to open VideoWriter for {output_path}")
+    try:
+        for frame_rgb in frames:
+            writer.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+    finally:
+        writer.release()
+
+    print(f"Wrote {n_frames} frames at {fps:.2f} fps -> {output_path}")
+    return output_path
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Replay a rollout HDF5 by writing its ego_view_image frames to an mp4.",
+    )
+    parser.add_argument("hdf5_path", type=Path, help="Path to the rollout HDF5 file.")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Output video path. Defaults to <hdf5_path>.mp4.",
+    )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Playback fps. Defaults to 1/teleop.step_dt, else 50.",
+    )
+    args = parser.parse_args()
+
+    replay_hdf5(args.hdf5_path, args.output, args.fps)
