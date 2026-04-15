@@ -26,7 +26,10 @@ cd Training
 
 # relevant berkeley branch commands
 
-#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --device cuda:0 # takes ~6 hours
+# IMPORTANT: EXPORT PROPER JAX SETTINGS
+# export XLA_PYTHON_CLIENT_PREALLOCATE=false
+# optional: export XLA_PYTHON_CLIENT_ALLOCATOR=platform
+#./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Motion-Tracking-Pick-v0 --headless --device cuda:0 # takes ~6 hours
 
 #./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play_eval.py --task=Isaac-Motion-Tracking-Pick-Cam-v0 --headless --video --num_envs 250 --device cuda:0 --path /home/dvij/kevin/DreamVLA/Training/logs/rsl_rl/g1/TRAININGRUNCHECKPOINT
 
