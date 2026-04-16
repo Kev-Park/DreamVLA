@@ -245,10 +245,15 @@ def _get_hand_joint_indices(env) -> tuple[list[int], list[int]]:
         return cached_value
 
     robot = env.unwrapped.scene["robot"]
-    left_ids, _ = robot.find_joints(["left_hand.*"])
-    right_ids, _ = robot.find_joints(["right_hand.*"])
+    left_ids, left_names = robot.find_joints(["left_hand.*"])
+    right_ids, right_names = robot.find_joints(["right_hand.*"])
     resolved = (list(left_ids), list(right_ids))
     setattr(env.unwrapped, cache_attr, resolved)
+    print(
+        f"[INFO] Resolved hand joints (total articulation joints={len(robot.data.joint_names)}):\n"
+        f"       left  ids={list(left_ids)} names={list(left_names)}\n"
+        f"       right ids={list(right_ids)} names={list(right_names)}"
+    )
     return resolved
 
 
@@ -523,6 +528,23 @@ def _run_rollout(
             "No rollout steps were executed before SimulationApp stopped. "
             "Check terminal output above for the last manager/init logs before app shutdown."
         )
+
+    # Sanity check: finger joints should be non-zero given the ActionsCfg targets.
+    # If they are all zero we either failed to read the live sim state or the
+    # policy never commanded them — either way the user needs to know.
+    if raw_state is not None and isinstance(raw_state.get("robot"), dict):
+        for side in ("left_finger_joint_pos", "right_finger_joint_pos"):
+            arr = raw_state["robot"].get(side)
+            if arr is None:
+                continue
+            arr_np = np.asarray(arr)
+            if arr_np.size == 0:
+                print(f"[WARN] {side}: captured array is empty (shape={arr_np.shape}).")
+            elif not np.any(arr_np):
+                print(
+                    f"[WARN] {side}: captured array is all zeros "
+                    f"(shape={arr_np.shape}). Check finger actuation / indexing."
+                )
 
     teleop_payload: dict[str, Any] | None = None
     if teleop_history:
