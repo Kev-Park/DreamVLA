@@ -616,6 +616,8 @@ def main() -> None:
     parser.add_argument("--num-samples", type=int, default=1, help="How many reset-and-rollout samples to collect from the motion directory.")
     parser.add_argument("--output-directory", type=str, default="./datasets/pick_cam", help="Directory where rollout HDF5 files are written.")
     parser.add_argument("--rollout-length", type=int, default=500, help="Maximum number of steps per rollout.")
+    parser.add_argument("--image-width", type=int, default=640, help="Width (px) of the captured ego-view frames.")
+    parser.add_argument("--image-height", type=int, default=480, help="Height (px) of the captured ego-view frames.")
     parser.add_argument("--seed", type=int, default=0, help="Base seed used for deterministic rollout seeding.")
     parser.set_defaults(state_on=True)
 
@@ -687,8 +689,8 @@ def main() -> None:
                 clipping_range=(0.01, 100.0),
             ),
             data_types=["rgb"],
-            height=720,
-            width=1280,
+            height=int(args_cli.image_height),
+            width=int(args_cli.image_width),
             offset=CameraCfg.OffsetCfg(
                 pos=(0.05, 0.0, 0.36),
                 rot=(0.568, 0.421, -0.421, -0.568),
