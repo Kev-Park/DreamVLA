@@ -245,15 +245,10 @@ def _get_hand_joint_indices(env) -> tuple[list[int], list[int]]:
         return cached_value
 
     robot = env.unwrapped.scene["robot"]
-    left_ids, left_names = robot.find_joints(["left_hand.*"])
-    right_ids, right_names = robot.find_joints(["right_hand.*"])
+    left_ids, _ = robot.find_joints(["left_hand.*"])
+    right_ids, _ = robot.find_joints(["right_hand.*"])
     resolved = (list(left_ids), list(right_ids))
     setattr(env.unwrapped, cache_attr, resolved)
-    print(
-        f"[INFO] Resolved hand joints (total articulation joints={len(robot.data.joint_names)}):\n"
-        f"       left  ids={list(left_ids)} names={list(left_names)}\n"
-        f"       right ids={list(right_ids)} names={list(right_names)}"
-    )
     return resolved
 
 
@@ -477,12 +472,16 @@ def _run_rollout(
 
         with torch.inference_mode():
             actions = policy(obs).clone()
-            step_result = env.step(actions)
 
+        # Capture the frame and state that the policy *saw* this step, before
+        # applying the action. Reading the RTX camera buffer before env.step
+        # matches play_pick_cam.py's pattern and avoids the splotchy reflection
+        # noise that appears when the buffer is read immediately after the
+        # in-step render (the denoiser hasn't accumulated enough subframes yet).
         if camera_on and cam_robot is not None:
             camera_output = getattr(cam_robot.data, "output", None)
             if camera_output is None:
-                raise RuntimeError("camera_robot.data.output is unavailable after env.step.")
+                raise RuntimeError("camera_robot.data.output is unavailable.")
             if "rgb" not in camera_output:
                 raise RuntimeError(
                     f"camera_robot output is missing 'rgb'. Available keys: {list(camera_output.keys())}"
@@ -491,6 +490,13 @@ def _run_rollout(
             image_robot = camera_output["rgb"]
             frame_rgb = image_robot[0].cpu().numpy()
             camera_frames.append(_frame_to_uint8_rgb(frame_rgb))
+
+        if state_on:
+            state_history.append(_capture_rollout_state(env, actions))
+            teleop_history.append(_capture_teleop_frame(env))
+
+        with torch.inference_mode():
+            step_result = env.step(actions)
 
         if len(step_result) == 5:
             obs, _, terminated, truncated, _ = step_result
@@ -501,10 +507,6 @@ def _run_rollout(
 
         # Clone obs to allow inplace updates in the next iteration
         obs = obs.clone() if hasattr(obs, "clone") else obs
-
-        if state_on:
-            state_history.append(_capture_rollout_state(env, actions))
-            teleop_history.append(_capture_teleop_frame(env))
 
         terminated_flag = bool(torch.as_tensor(terminated).any().item())
         truncated_flag = bool(torch.as_tensor(truncated).any().item())
@@ -528,23 +530,6 @@ def _run_rollout(
             "No rollout steps were executed before SimulationApp stopped. "
             "Check terminal output above for the last manager/init logs before app shutdown."
         )
-
-    # Sanity check: finger joints should be non-zero given the ActionsCfg targets.
-    # If they are all zero we either failed to read the live sim state or the
-    # policy never commanded them — either way the user needs to know.
-    if raw_state is not None and isinstance(raw_state.get("robot"), dict):
-        for side in ("left_finger_joint_pos", "right_finger_joint_pos"):
-            arr = raw_state["robot"].get(side)
-            if arr is None:
-                continue
-            arr_np = np.asarray(arr)
-            if arr_np.size == 0:
-                print(f"[WARN] {side}: captured array is empty (shape={arr_np.shape}).")
-            elif not np.any(arr_np):
-                print(
-                    f"[WARN] {side}: captured array is all zeros "
-                    f"(shape={arr_np.shape}). Check finger actuation / indexing."
-                )
 
     teleop_payload: dict[str, Any] | None = None
     if teleop_history:
