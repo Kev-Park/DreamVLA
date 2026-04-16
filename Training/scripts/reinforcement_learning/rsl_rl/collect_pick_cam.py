@@ -418,7 +418,6 @@ def _run_rollout(
     camera_on: bool,
     real_time: bool,
     reset_at_start: bool,
-    denoiser_warmup_ticks: int = 16,
 ) -> tuple[list[np.ndarray], dict[str, Any] | None, dict[str, Any], dict[str, Any] | None]:
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
@@ -433,19 +432,6 @@ def _run_rollout(
         obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
     obs = obs.clone() if hasattr(obs, "clone") else obs
-
-    # Warm up the RTX denoiser after reset. The robot-mounted camera has moved
-    # (reset teleports the robot to its initial pose), so the denoiser's
-    # temporal accumulation is invalidated. Without a warmup, the first many
-    # captured frames show splotchy noise on reflective surfaces (e.g. the
-    # kitchen floor's ceiling reflection). play_pick_cam.py never calls
-    # env.reset(), which is why it doesn't see this. We explicitly tick the
-    # sim renderer several times here to rebuild temporal history before any
-    # frames are captured.
-    if camera_on and reset_at_start and denoiser_warmup_ticks > 0:
-        print(f"[INFO] Warming up RTX denoiser for {denoiser_warmup_ticks} ticks after reset.")
-        for _ in range(denoiser_warmup_ticks):
-            env.unwrapped.sim.render()
 
     # Match play_eval.py's success criterion: env.unwrapped.n_successes > 0.
     # The reward function only increments n_successes when num_envs < 1001 and
@@ -630,16 +616,6 @@ def main() -> None:
     parser.add_argument("--num-samples", type=int, default=1, help="How many reset-and-rollout samples to collect from the motion directory.")
     parser.add_argument("--output-directory", type=str, default="./datasets/pick_cam", help="Directory where rollout HDF5 files are written.")
     parser.add_argument("--rollout-length", type=int, default=500, help="Maximum number of steps per rollout.")
-    parser.add_argument(
-        "--denoiser-warmup-ticks",
-        type=int,
-        default=16,
-        help=(
-            "Number of sim.render() ticks to run after env.reset() before capturing frames. "
-            "Rebuilds the RTX denoiser's temporal accumulation after the robot-mounted camera "
-            "teleports during reset. Set to 0 to disable."
-        ),
-    )
     parser.add_argument("--seed", type=int, default=0, help="Base seed used for deterministic rollout seeding.")
     parser.set_defaults(state_on=True)
 
@@ -665,6 +641,13 @@ def main() -> None:
         args_cli.checkpoint = args_cli.checkpoint_path
 
     args_cli.enable_cameras = True
+    # Force AppLauncher to keep the default viewport render product active. In
+    # headless runs without this, AppLauncher disables /isaaclab/render/active_viewport
+    # (see app_launcher._resolve_viewport_settings), which changes how RTX
+    # reflections get sampled for the on-robot camera and produces noisy/black
+    # splotches on the kitchen floor's ceiling reflection. play_pick_cam.py
+    # sets this implicitly via its --video flag.
+    args_cli.video = True
 
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
@@ -773,7 +756,6 @@ def main() -> None:
                         camera_on=True,
                         real_time=bool(args_cli.real_time),
                         reset_at_start=not prev_ended_on_done,
-                        denoiser_warmup_ticks=int(args_cli.denoiser_warmup_ticks),
                     )
                     print(
                         f"[INFO] Completed sample idx={rollout_index} "
