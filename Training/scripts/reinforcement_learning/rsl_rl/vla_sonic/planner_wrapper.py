@@ -18,7 +18,10 @@ import numpy as np
 
 
 # Canonical planner input names, in the order declared by the ONNX model.
-# Matches docs/source/references/planner_onnx.md.
+# Matches docs/source/references/planner_onnx.md. The first 6 are the "primary"
+# inputs callers typically care about; the last 5 are rarely-used extras
+# (waypoint override + sampling controls) that the wrapper fills with
+# documented defaults unless the caller passes explicit values.
 _PLANNER_INPUTS = (
     "context_mujoco_qpos",
     "target_vel",
@@ -26,15 +29,25 @@ _PLANNER_INPUTS = (
     "movement_direction",
     "facing_direction",
     "height",
+    "random_seed",
+    "has_specific_target",
+    "specific_target_positions",
+    "specific_target_headings",
+    "allowed_pred_num_tokens",
 )
 
 _PLANNER_INPUT_SPECS: dict[str, tuple[tuple[int, ...], np.dtype]] = {
-    "context_mujoco_qpos": ((1, 4, 36), np.float32),
-    "target_vel":          ((1,),       np.float32),
-    "mode":                ((1,),       np.int64),
-    "movement_direction":  ((1, 3),     np.float32),
-    "facing_direction":    ((1, 3),     np.float32),
-    "height":              ((1,),       np.float32),
+    "context_mujoco_qpos":       ((1, 4, 36), np.float32),
+    "target_vel":                ((1,),       np.float32),
+    "mode":                      ((1,),       np.int64),
+    "movement_direction":        ((1, 3),     np.float32),
+    "facing_direction":          ((1, 3),     np.float32),
+    "height":                    ((1,),       np.float32),
+    "random_seed":               ((1,),       np.int64),
+    "has_specific_target":       ((1, 1),     np.int64),
+    "specific_target_positions": ((1, 4, 3),  np.float32),
+    "specific_target_headings":  ((1, 4),     np.float32),
+    "allowed_pred_num_tokens":   ((1, 11),    np.int64),
 }
 
 
@@ -115,15 +128,43 @@ class PlannerWrapper:
         movement_direction: np.ndarray,
         facing_direction: np.ndarray,
         height: np.ndarray,
+        random_seed: np.ndarray | int = 1234,
+        has_specific_target: np.ndarray | int = 0,
+        specific_target_positions: np.ndarray | None = None,
+        specific_target_headings: np.ndarray | None = None,
+        allowed_pred_num_tokens: np.ndarray | None = None,
     ) -> PlannerOutput:
-        """Run one planner inference. All inputs are shape-validated + dtype-cast."""
+        """Run one planner inference. All inputs are shape-validated + dtype-cast.
+
+        The first six kwargs are the "primary" inputs every caller should set.
+        The last five default to values that disable waypoint override and
+        allow any predicted token count — matches the Python example at
+        gear_sonic_deploy/docs planner_onnx.md.
+        """
+        # Fill scalar defaults for the rarely-used extra inputs.
+        if np.ndim(random_seed) == 0:
+            random_seed = np.array([random_seed], dtype=np.int64)
+        if np.ndim(has_specific_target) == 0:
+            has_specific_target = np.array([[has_specific_target]], dtype=np.int64)
+        if specific_target_positions is None:
+            specific_target_positions = np.zeros((1, 4, 3), dtype=np.float32)
+        if specific_target_headings is None:
+            specific_target_headings = np.zeros((1, 4), dtype=np.float32)
+        if allowed_pred_num_tokens is None:
+            allowed_pred_num_tokens = np.ones((1, 11), dtype=np.int64)
+
         feeds: dict[str, np.ndarray] = {
-            "context_mujoco_qpos": _ensure(context_mujoco_qpos, *_PLANNER_INPUT_SPECS["context_mujoco_qpos"]),
-            "target_vel":          _ensure(target_vel,          *_PLANNER_INPUT_SPECS["target_vel"]),
-            "mode":                _ensure(mode,                *_PLANNER_INPUT_SPECS["mode"]),
-            "movement_direction":  _ensure(movement_direction,  *_PLANNER_INPUT_SPECS["movement_direction"]),
-            "facing_direction":    _ensure(facing_direction,    *_PLANNER_INPUT_SPECS["facing_direction"]),
-            "height":              _ensure(height,              *_PLANNER_INPUT_SPECS["height"]),
+            "context_mujoco_qpos":       _ensure(context_mujoco_qpos,       *_PLANNER_INPUT_SPECS["context_mujoco_qpos"]),
+            "target_vel":                _ensure(target_vel,                *_PLANNER_INPUT_SPECS["target_vel"]),
+            "mode":                      _ensure(mode,                      *_PLANNER_INPUT_SPECS["mode"]),
+            "movement_direction":        _ensure(movement_direction,        *_PLANNER_INPUT_SPECS["movement_direction"]),
+            "facing_direction":          _ensure(facing_direction,          *_PLANNER_INPUT_SPECS["facing_direction"]),
+            "height":                    _ensure(height,                    *_PLANNER_INPUT_SPECS["height"]),
+            "random_seed":               _ensure(random_seed,               *_PLANNER_INPUT_SPECS["random_seed"]),
+            "has_specific_target":       _ensure(has_specific_target,       *_PLANNER_INPUT_SPECS["has_specific_target"]),
+            "specific_target_positions": _ensure(specific_target_positions, *_PLANNER_INPUT_SPECS["specific_target_positions"]),
+            "specific_target_headings":  _ensure(specific_target_headings,  *_PLANNER_INPUT_SPECS["specific_target_headings"]),
+            "allowed_pred_num_tokens":   _ensure(allowed_pred_num_tokens,   *_PLANNER_INPUT_SPECS["allowed_pred_num_tokens"]),
         }
         outputs = self.session.run(self.output_names, feeds)
         named = dict(zip(self.output_names, outputs))
