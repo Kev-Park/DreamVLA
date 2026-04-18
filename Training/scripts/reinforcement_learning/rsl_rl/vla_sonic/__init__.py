@@ -24,6 +24,7 @@ Shipped once weights land (Stage 2c):
 - planner_to_utm:  planner output + VLA upper-body → UTM tokenizer input.
 """
 
+# Eager re-exports: modules that have no heavy dependencies.
 from .frame_transforms import (
     speed_to_mode,
     quat_wxyz_to_xyzw,
@@ -35,7 +36,10 @@ from .frame_transforms import (
     pelvis_relative_pose,
 )
 from .planner_wrapper import PlannerWrapper
-from .obs_to_policy import ObsToPolicyAdapter, ObsAdapterConfig
+
+# obs_to_policy is NOT eagerly imported: it depends on gear_sonic + a live
+# Isaac Lab env. Import it explicitly at use-site:
+#     from vla_sonic.obs_to_policy import ObsToPolicyAdapter, ObsAdapterConfig
 
 __all__ = [
     "speed_to_mode",
@@ -47,6 +51,4 @@ __all__ = [
     "world_vel_to_body",
     "pelvis_relative_pose",
     "PlannerWrapper",
-    "ObsToPolicyAdapter",
-    "ObsAdapterConfig",
 ]
