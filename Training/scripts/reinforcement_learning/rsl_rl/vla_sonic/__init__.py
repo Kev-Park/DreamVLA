@@ -36,6 +36,7 @@ from .frame_transforms import (
     pelvis_relative_pose,
 )
 from .planner_wrapper import PlannerWrapper
+from .utm_wrapper import UtmWrapper
 
 # obs_to_policy is NOT eagerly imported: it depends on gear_sonic + a live
 # Isaac Lab env. Import it explicitly at use-site:
@@ -51,4 +52,5 @@ __all__ = [
     "world_vel_to_body",
     "pelvis_relative_pose",
     "PlannerWrapper",
+    "UtmWrapper",
 ]
