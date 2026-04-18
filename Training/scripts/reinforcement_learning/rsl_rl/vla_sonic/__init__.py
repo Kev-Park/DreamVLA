@@ -48,6 +48,7 @@ from .planner_to_utm import (
     DECODER_SLICES,
     DECODER_TOTAL_DIM,
 )
+from .vla_to_planner import build_planner_inputs, PlannerInputs
 
 # obs_to_policy is NOT eagerly imported: it depends on gear_sonic + a live
 # Isaac Lab env. Import it explicitly at use-site:
@@ -73,4 +74,6 @@ __all__ = [
     "DECODER_LAYOUT",
     "DECODER_SLICES",
     "DECODER_TOTAL_DIM",
+    "build_planner_inputs",
+    "PlannerInputs",
 ]
