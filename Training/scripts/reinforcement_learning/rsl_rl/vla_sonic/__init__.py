@@ -37,6 +37,17 @@ from .frame_transforms import (
 )
 from .planner_wrapper import PlannerWrapper
 from .utm_wrapper import UtmWrapper
+from .planner_to_utm import (
+    build_encoder_obs,
+    build_decoder_obs,
+    rot6d_to_quat_wxyz,
+    ENCODER_LAYOUT,
+    ENCODER_SLICES,
+    ENCODER_TOTAL_DIM,
+    DECODER_LAYOUT,
+    DECODER_SLICES,
+    DECODER_TOTAL_DIM,
+)
 
 # obs_to_policy is NOT eagerly imported: it depends on gear_sonic + a live
 # Isaac Lab env. Import it explicitly at use-site:
@@ -53,4 +64,13 @@ __all__ = [
     "pelvis_relative_pose",
     "PlannerWrapper",
     "UtmWrapper",
+    "build_encoder_obs",
+    "build_decoder_obs",
+    "rot6d_to_quat_wxyz",
+    "ENCODER_LAYOUT",
+    "ENCODER_SLICES",
+    "ENCODER_TOTAL_DIM",
+    "DECODER_LAYOUT",
+    "DECODER_SLICES",
+    "DECODER_TOTAL_DIM",
 ]
