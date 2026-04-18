@@ -118,15 +118,21 @@ ENCODER_MODE_TELEOP = 1  # mode_id for teleop (see observation_config.yaml)
 def rot6d_to_quat_wxyz(rot6d: np.ndarray) -> np.ndarray:
     """Convert SONIC-style 6D rotation → quaternion (wxyz scalar-first).
 
-    Input convention (matches gear_sonic's quat_to_rot6d):
-        rot6d = [r00, r10, r01, r11, r02, r12]  — first 2 columns of a 3x3 rotmat,
-        flattened column-wise.
+    Input convention (matches gear_sonic's
+    ``utils/data_collection/transforms.py::quat_to_rot6d``):
+
+        rot6d[..., 0:3]  = first column of R  (R[:, 0])
+        rot6d[..., 3:6]  = second column of R (R[:, 1])
+
+    So identity has rot6d = [1, 0, 0, 0, 1, 0]. The third column is
+    reconstructed as the cross product of the first two (after Gram-Schmidt
+    orthonormalization to guarantee a proper right-handed rotation matrix).
 
     Works on any leading batch shape: input (..., 6) → output (..., 4).
     """
-    r = np.asarray(rot6d, dtype=np.float64).reshape(*np.asarray(rot6d).shape[:-1], 3, 2, order="F")
-    col1 = r[..., :, 0]
-    col2 = r[..., :, 1]
+    rot6d = np.asarray(rot6d, dtype=np.float64)
+    col1 = rot6d[..., 0:3]
+    col2 = rot6d[..., 3:6]
     # Gram-Schmidt: normalize col1, then orthogonalize col2, then cross.
     col1 = col1 / (np.linalg.norm(col1, axis=-1, keepdims=True) + 1e-12)
     col2 = col2 - (col1 * col2).sum(axis=-1, keepdims=True) * col1
