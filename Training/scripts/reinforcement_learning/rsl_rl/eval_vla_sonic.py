@@ -116,11 +116,9 @@ from vla_sonic import (  # noqa: E402
 from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
 from vla_sonic.planner_to_utm import rot6d_to_quat_wxyz  # noqa: E402 — (unused here but kept for reference)
 from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter  # noqa: E402
+from vla_sonic.simple_robot_model import SimpleG1RobotModel  # noqa: E402
 
 from gr00t.policy.gr00t_policy import Gr00tPolicy  # noqa: E402
-
-# gear_sonic's RobotModel provides the joint-group layout the VLA was trained with.
-from gear_sonic.data.robot_model.instantiation.g1 import instantiate_g1_robot_model  # noqa: E402
 
 
 # =========================================================================
@@ -306,7 +304,7 @@ def main() -> int:
     planner = PlannerWrapper(args.planner_onnx)
 
     # --- 4. Obs adapter & joint-order perm -----------------------------
-    robot_model = instantiate_g1_robot_model(waist_location="lower_body")
+    robot_model = SimpleG1RobotModel.build()
     obs_adapter = ObsToPolicyAdapter(
         env,
         ObsAdapterConfig(
