@@ -488,7 +488,12 @@ def main() -> int:
             planner_out = planner.run(**planner_inputs.as_kwargs())
 
             # 7e. Extract anchor + lower-body trajectory from planner output.
-            anchor_pos_w, anchor_quat_wxyz, anchor_rot6d = extract_anchor_pose(planner_out.mujoco_qpos)
+            anchor_pos_w, anchor_quat_wxyz, _unused_anchor_rot6d = extract_anchor_pose(planner_out.mujoco_qpos)
+            # Bug #3 fix: dataset stored target_body_orientation = identity_target_rot6d
+            # (see convert_isaac_hdf5_to_lerobot.py:403). The encoder's
+            # motion_anchor_orientation slot was always identity during training,
+            # so feed identity here instead of a planner-derived rot6d.
+            anchor_rot6d = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
             lb_pos, lb_vel = extract_lower_body_future(planner_out.mujoco_qpos)
 
             # 7f. VR 3-point from VLA (world frame; encoder builder does the anchor-local transform).
