@@ -50,6 +50,12 @@ from .planner_to_utm import (
 )
 from .vla_to_planner import build_planner_inputs, PlannerInputs
 from .decoder_history import HistoryBuffer, DecoderHistory
+from .action_assembler import (
+    utm_body_29_to_env_27,
+    utm_plus_vla_to_env_action,
+    WAIST_ROLL_IDX,
+    WAIST_PITCH_IDX,
+)
 
 # obs_to_policy is NOT eagerly imported: it depends on gear_sonic + a live
 # Isaac Lab env. Import it explicitly at use-site:
@@ -79,4 +85,8 @@ __all__ = [
     "PlannerInputs",
     "HistoryBuffer",
     "DecoderHistory",
+    "utm_body_29_to_env_27",
+    "utm_plus_vla_to_env_action",
+    "WAIST_ROLL_IDX",
+    "WAIST_PITCH_IDX",
 ]
