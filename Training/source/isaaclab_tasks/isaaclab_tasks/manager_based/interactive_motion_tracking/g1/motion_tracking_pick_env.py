@@ -596,7 +596,22 @@ class ContinuousFingersActionsCfg(ActionsCfg):
     Action values are absolute joint position targets (``use_default_offset=False``,
     ``offset=0.0``) so the VLA's predicted finger positions, which match the
     dataset's ``observation.state`` convention, map 1:1 to action slots.
+
+    The body ``joint_pos`` action is ALSO overridden to pass-through (scale=1.0,
+    no default offset). The base env used ``scale=0.5, use_default_offset=True``
+    for RL training; at VLA+SONIC eval we apply the canonical
+    ``q = default + utm * g1_action_scale`` transform in Python (see
+    ``vla_sonic.action_assembler``) and feed absolute joint targets to the env,
+    so the env must not re-apply its own default+scale.
     """
+    joint_pos = mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=JointNamesOrder,
+        preserve_order=True,
+        scale=1.0,
+        use_default_offset=False,
+        offset=0.0,
+    )
     left_hand_action = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=[
