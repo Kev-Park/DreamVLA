@@ -296,52 +296,54 @@ def _read_camera_rgb(env, key: str, *, verbose: bool = False) -> np.ndarray | No
 # =========================================================================
 
 def _inject_cameras(env_cfg) -> None:
-    """Add 3rd-person `camera` and robot-mounted `camera_robot` to the scene cfg."""
-    if not hasattr(env_cfg.scene, "camera"):
-        # Rotation matches motion_tracking_pick_env.py:512-519.
-        rot = np.array([0.7538, 0.61221, -0.1505, -0.1853])
-        rot_mat = np.array(math_utils.matrix_from_quat(torch.tensor(rot)))
-        theta = -np.pi * 0.75
-        rot_z = np.array([
-            [np.cos(theta), -np.sin(theta), 0.0],
-            [np.sin(theta),  np.cos(theta), 0.0],
-            [0.0, 0.0, 1.0],
-        ])
-        rot_mat = rot_z @ rot_mat
-        rot_quat = tuple(math_utils.quat_from_matrix(torch.tensor(rot_mat)).tolist())
-        env_cfg.scene.camera = CameraCfg(
-            prim_path="{ENV_REGEX_NS}/Camera_new",
-            spawn=PinholeCameraCfg(
-                focal_length=18.1476,
-                focus_distance=400.0,
-                horizontal_aperture=20.955,
-                clipping_range=(0.1, 10000.0),
-            ),
-            data_types=["rgb"],
-            height=1920, width=2560,
-            offset=CameraCfg.OffsetCfg(
-                pos=(-1.03 + 2.1 - 0.034, 4.05 - 0.9, 1.31),
-                rot=rot_quat,
-                convention="opengl",
-            ),
-        )
-    if not hasattr(env_cfg.scene, "camera_robot"):
-        env_cfg.scene.camera_robot = CameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
-            spawn=PinholeCameraCfg(
-                focal_length=7.6,
-                focus_distance=400.0,
-                horizontal_aperture=20.0,
-                clipping_range=(0.01, 100.0),
-            ),
-            data_types=["rgb"],
-            height=720, width=1280,
-            offset=CameraCfg.OffsetCfg(
-                pos=(0.05, 0.0, 0.36),
-                rot=(0.568, 0.421, -0.421, -0.568),
-                convention="opengl",
-            ),
-        )
+    """Force-set 3rd-person `camera` and robot-mounted `camera_robot` on the scene cfg.
+
+    Overwriting unconditionally because SceneCfg dataclasses often declare
+    these fields as annotations even when the env cfg's ``__post_init__`` did
+    not assign a value — ``hasattr`` returns True for annotated-but-unset.
+    """
+    rot = np.array([0.7538, 0.61221, -0.1505, -0.1853])
+    rot_mat = np.array(math_utils.matrix_from_quat(torch.tensor(rot)))
+    theta = -np.pi * 0.75
+    rot_z = np.array([
+        [np.cos(theta), -np.sin(theta), 0.0],
+        [np.sin(theta),  np.cos(theta), 0.0],
+        [0.0, 0.0, 1.0],
+    ])
+    rot_mat = rot_z @ rot_mat
+    rot_quat = tuple(math_utils.quat_from_matrix(torch.tensor(rot_mat)).tolist())
+    env_cfg.scene.camera = CameraCfg(
+        prim_path="{ENV_REGEX_NS}/Camera_new",
+        spawn=PinholeCameraCfg(
+            focal_length=18.1476,
+            focus_distance=400.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.1, 10000.0),
+        ),
+        data_types=["rgb"],
+        height=1920, width=2560,
+        offset=CameraCfg.OffsetCfg(
+            pos=(-1.03 + 2.1 - 0.034, 4.05 - 0.9, 1.31),
+            rot=rot_quat,
+            convention="opengl",
+        ),
+    )
+    env_cfg.scene.camera_robot = CameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
+        spawn=PinholeCameraCfg(
+            focal_length=7.6,
+            focus_distance=400.0,
+            horizontal_aperture=20.0,
+            clipping_range=(0.01, 100.0),
+        ),
+        data_types=["rgb"],
+        height=720, width=1280,
+        offset=CameraCfg.OffsetCfg(
+            pos=(0.05, 0.0, 0.36),
+            rot=(0.568, 0.421, -0.421, -0.568),
+            convention="opengl",
+        ),
+    )
 
 
 # =========================================================================
