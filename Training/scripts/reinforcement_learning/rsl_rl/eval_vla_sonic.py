@@ -146,8 +146,9 @@ assert len(UTM_29_JOINT_NAMES) == 29
 def build_isaac_to_utm_perm(isaac_joint_names: list[str]) -> np.ndarray:
     """Return (29,) array of Isaac indices s.t. ``isaac_q[perm] == utm_q``.
 
-    Fails loudly if any UTM joint is missing from Isaac — means the env's robot
-    asset doesn't expose the expected 29 DoF.
+    Entries are -1 for UTM joints that don't exist on the Isaac robot
+    (expected: waist_roll/pitch are absent from the env's 27-DoF G1). Callers
+    must mask and zero-fill those entries via ``_gather_with_mask``.
     """
     name_to_idx = {n: i for i, n in enumerate(isaac_joint_names)}
     perm = np.full(29, -1, dtype=np.int64)
@@ -159,11 +160,16 @@ def build_isaac_to_utm_perm(isaac_joint_names: list[str]) -> np.ndarray:
         else:
             perm[i] = idx
     if missing:
-        raise RuntimeError(
-            f"Isaac robot is missing UTM-expected joints: {missing}. "
-            "Check the G1 URDF / articulation cfg."
-        )
+        print(f"[perm] UTM joints absent on Isaac robot (zero-filling): {missing}")
     return perm
+
+
+def _gather_with_mask(isaac_values: np.ndarray, perm: np.ndarray) -> np.ndarray:
+    """Apply the permutation, filling ``perm < 0`` positions with 0."""
+    out = np.zeros(perm.shape[0], dtype=np.float32)
+    valid = perm >= 0
+    out[valid] = isaac_values[perm[valid]]
+    return out
 
 
 # =========================================================================
@@ -357,8 +363,8 @@ def main() -> int:
             # 7c. Push current env state into history BEFORE planner so context is up to date.
             q_isaac = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
             qd_isaac = robot.data.joint_vel[0].detach().cpu().numpy().astype(np.float32)
-            q_utm = q_isaac[isaac_to_utm_perm]
-            qd_utm = qd_isaac[isaac_to_utm_perm]
+            q_utm = _gather_with_mask(q_isaac, isaac_to_utm_perm)
+            qd_utm = _gather_with_mask(qd_isaac, isaac_to_utm_perm)
             root_pos_w = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
             root_quat_w = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)  # wxyz
             root_ang_vel_b = robot.data.root_ang_vel_b[0].detach().cpu().numpy().astype(np.float32)
