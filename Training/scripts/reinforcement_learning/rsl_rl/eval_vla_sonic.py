@@ -98,6 +98,9 @@ import torch  # noqa: E402
 
 import isaaclab_tasks  # noqa: E402,F401  # registers tasks
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
+from isaaclab.sensors import CameraCfg  # noqa: E402
+from isaaclab.sim import PinholeCameraCfg  # noqa: E402
+import isaaclab.utils.math as math_utils  # noqa: E402
 
 # Ensure vla_sonic package is importable from its parent dir.
 _HERE = Path(__file__).resolve().parent
@@ -290,10 +293,12 @@ def main() -> int:
         num_envs=args.num_envs,
         enable_cameras=True,
     )
-    # The env cfg's __post_init__ adds camera + camera_robot only when
-    # ``enable_cameras_for_collection`` is True on the cfg itself (the
-    # AppLauncher-level ``--enable_cameras`` doesn't flip this).
-    env_cfg.enable_cameras_for_collection = True
+    # The env cfg's __post_init__ adds cameras only when
+    # ``enable_cameras_for_collection`` is True on the cfg at construction time
+    # — too late to flip after parse_env_cfg. So inject them manually here,
+    # matching the offsets from motion_tracking_pick_env.py (3rd-person)
+    # and collect_pick_cam.py:683-699 (robot-mounted d435).
+    _inject_cameras(env_cfg)
     env = gym.make(args.task, cfg=env_cfg)
     print(f"[env] {args.task}  action_space={env.action_space}")
 
