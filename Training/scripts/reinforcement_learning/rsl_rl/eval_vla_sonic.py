@@ -442,6 +442,15 @@ def main() -> int:
                 # Gr00tPolicy.get_action returns either a dict or (dict, ...) tuple.
                 vla_chunk = vla_out[0] if isinstance(vla_out, tuple) else vla_out
                 chunk_step = 0
+                if step == 0:
+                    print("\n[VLA @ step 0] action-dict dump (t=0 slice, batch=0):")
+                    for k in sorted(vla_chunk.keys()):
+                        arr = np.asarray(vla_chunk[k])
+                        if arr.ndim == 3:  # (B, T, D)
+                            slice_ = arr[0, 0]
+                        else:
+                            slice_ = arr.reshape(-1)
+                        print(f"  {k} [shape {tuple(arr.shape)}] = {slice_.round(4).tolist()}")
 
             # 7b. Extract this chunk-step's VLA slice.
             t_idx = chunk_step
