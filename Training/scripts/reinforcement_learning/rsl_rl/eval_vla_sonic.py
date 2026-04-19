@@ -58,12 +58,14 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--vla-checkpoint", required=True)
     parser.add_argument("--embodiment-tag", default="new_embodiment")
     parser.add_argument("--language", default="pick up the mustard bottle")
+    # Default paths assume DreamVLA/ and GR00T-WholeBodyControl/ are sibling repos,
+    # and you run this script from DreamVLA/Training/. Override if your layout differs.
     parser.add_argument("--encoder-onnx",
-                        default="../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx")
+                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx")
     parser.add_argument("--decoder-onnx",
-                        default="../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx")
+                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx")
     parser.add_argument("--planner-onnx",
-                        default="../GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx")
+                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx")
     parser.add_argument("--record-video", default=None,
                         help="Output prefix for MP4 files. Saves both third-person + ego.")
     parser.add_argument("--video-fps", type=int, default=50)
