@@ -266,14 +266,24 @@ class VideoWriter:
         self._writer.close()
 
 
-def _read_camera_rgb(env, key: str) -> np.ndarray | None:
-    cam = env.unwrapped.scene.get(key, None) if hasattr(env.unwrapped.scene, "get") else None
-    if cam is None:
-        try:
-            cam = env.unwrapped.scene[key]
-        except KeyError:
-            return None
-    rgb = cam.data.output["rgb"][0, ..., :3]
+def _read_camera_rgb(env, key: str, *, verbose: bool = False) -> np.ndarray | None:
+    try:
+        cam = env.unwrapped.scene[key]
+    except KeyError:
+        if verbose:
+            print(f"[video] scene has no '{key}'")
+        return None
+    try:
+        output = cam.data.output
+    except Exception as e:  # noqa: BLE001
+        if verbose:
+            print(f"[video] {key}: cam.data.output failed: {e}")
+        return None
+    if "rgb" not in output:
+        if verbose:
+            print(f"[video] {key}: no 'rgb' key in output, have {list(output.keys())}")
+        return None
+    rgb = output["rgb"][0, ..., :3]
     if rgb.dtype != torch.uint8:
         rgb = rgb.clamp(0.0, 255.0).to(torch.uint8)
     return rgb.cpu().numpy()
@@ -393,9 +403,19 @@ def main() -> int:
     writers: dict[str, VideoWriter] = {}
     if args.record_video:
         prefix = Path(args.record_video)
-        writers["camera"] = VideoWriter(prefix.with_name(prefix.name + "_third_person.mp4"), args.video_fps)
-        writers["camera_robot"] = VideoWriter(prefix.with_name(prefix.name + "_ego.mp4"), args.video_fps)
-        print(f"[video] writing {writers['camera'].path} and {writers['camera_robot'].path}")
+        # Diagnose scene cameras before creating writers.
+        scene_keys = list(env.unwrapped.scene.keys()) if hasattr(env.unwrapped.scene, "keys") else []
+        print(f"[video] scene entities: {scene_keys}")
+        if "camera" in scene_keys:
+            writers["camera"] = VideoWriter(prefix.with_name(prefix.name + "_third_person.mp4"), args.video_fps)
+        else:
+            print("[video] 3rd-person 'camera' missing — skipping third_person.mp4")
+        if "camera_robot" in scene_keys:
+            writers["camera_robot"] = VideoWriter(prefix.with_name(prefix.name + "_ego.mp4"), args.video_fps)
+        else:
+            print("[video] ego 'camera_robot' missing — skipping ego.mp4")
+        for key, w in writers.items():
+            print(f"[video] writing {w.path}")
 
     # --- 7. Rollout -----------------------------------------------------
     action_space_dim = env.action_space.shape[-1]
@@ -488,6 +508,15 @@ def main() -> int:
                 vla_action=vla_chunk,
                 t_index=t_idx,
             )  # (41,)
+            if step < 3:
+                print(f"[step {step}] utm_body_29[:15] = {utm_body_29[:15].round(3).tolist()}")
+                print(f"[step {step}]   env body[:12] (legs)        = {env_action_np[:12].round(3).tolist()}")
+                print(f"[step {step}]   env body[12]   (waist_yaw)  = {env_action_np[12].round(3)}")
+                print(f"[step {step}]   env body[13:27] (arms)      = {env_action_np[13:27].round(3).tolist()}")
+                print(f"[step {step}]   env left fingers[27:34]     = {env_action_np[27:34].round(3).tolist()}")
+                print(f"[step {step}]   env right fingers[34:41]    = {env_action_np[34:41].round(3).tolist()}")
+                cur_q_isaac = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
+                print(f"[step {step}]   robot current joint_pos[:12] = {cur_q_isaac[:12].round(3).tolist()}")
             env_action = torch.as_tensor(env_action_np[None, :], device="cuda:0", dtype=torch.float32)
 
             # 7i. Step.
