@@ -290,6 +290,10 @@ def main() -> int:
         num_envs=args.num_envs,
         enable_cameras=True,
     )
+    # The env cfg's __post_init__ adds camera + camera_robot only when
+    # ``enable_cameras_for_collection`` is True on the cfg itself (the
+    # AppLauncher-level ``--enable_cameras`` doesn't flip this).
+    env_cfg.enable_cameras_for_collection = True
     env = gym.make(args.task, cfg=env_cfg)
     print(f"[env] {args.task}  action_space={env.action_space}")
 
