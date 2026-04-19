@@ -587,3 +587,36 @@ class G1PickPlayEnvCfg(G1InteractiveBaseEnvCfg):
         self.decimation = 4
         self.episode_length_s = 10.0
         self.sim.dt = 0.005
+
+
+@configclass
+class ContinuousFingersActionsCfg(ActionsCfg):
+    """Continuous 7-DoF finger control per hand, replacing the binary open/close.
+
+    Action values are absolute joint position targets (``use_default_offset=False``,
+    ``offset=0.0``) so the VLA's predicted finger positions, which match the
+    dataset's ``observation.state`` convention, map 1:1 to action slots.
+    """
+    left_hand_action = mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=[
+            "left_hand_thumb_0_joint", "left_hand_thumb_1_joint", "left_hand_thumb_2_joint",
+            "left_hand_index_0_joint", "left_hand_index_1_joint",
+            "left_hand_middle_0_joint", "left_hand_middle_1_joint",
+        ],
+        preserve_order=True, scale=1.0, use_default_offset=False, offset=0.0,
+    )
+    right_hand_action = mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=[
+            "right_hand_thumb_0_joint", "right_hand_thumb_1_joint", "right_hand_thumb_2_joint",
+            "right_hand_index_0_joint", "right_hand_index_1_joint",
+            "right_hand_middle_0_joint", "right_hand_middle_1_joint",
+        ],
+        preserve_order=True, scale=1.0, use_default_offset=False, offset=0.0,
+    )
+
+
+@configclass
+class G1PickCamContinuousFingersEnvCfg(G1PickCamEnvCfg):
+    actions: ContinuousFingersActionsCfg = ContinuousFingersActionsCfg()
