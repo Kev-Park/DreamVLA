@@ -192,12 +192,12 @@ def build_encoder_obs(
     assert pts_local.shape[0] == 9, f"vr_3pt_position must be 9-D; got {pts_local.shape}"
     buf[ENCODER_SLICES["vr_3point_local_target"]] = pts_local
 
-    # VR 3-point orientation: rot6d → quat_wxyz (world) → anchor-local quat_wxyz.
+    # VR 3-point orientation: converter stored rot6d of pelvis-local rotation
+    # matrices (from subtract_frame_transforms), so the VLA's rot6d is already
+    # pelvis-local. Only conversion rot6d → quat_wxyz is needed; no anchor
+    # transform (doing so was the Bug #2 double-transform).
     rot6d = np.asarray(vr_3pt_rot6d, dtype=np.float32).reshape(3, 6)
-    quats_world_wxyz = rot6d_to_quat_wxyz(rot6d)  # (3, 4)
-    quats_local_wxyz = np.stack([
-        world_to_anchor_local_orientation(q, anchor_quat_wxyz) for q in quats_world_wxyz
-    ]).astype(np.float32)
+    quats_local_wxyz = rot6d_to_quat_wxyz(rot6d).astype(np.float32)  # (3, 4)
     buf[ENCODER_SLICES["vr_3point_local_orn_target"]] = quats_local_wxyz.reshape(-1)
 
     return buf[None, :]  # (1, 1762)
