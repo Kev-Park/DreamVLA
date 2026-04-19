@@ -149,14 +149,19 @@ def build_encoder_obs(
     *,
     # Anchor frame for VR 3-point transforms. At VLA inference, this comes
     # from the kinematic planner's first predicted frame.
-    anchor_pos_world: np.ndarray,       # (3,)
+    anchor_pos_world: np.ndarray,       # (3,)  — kept for backward compat / debug
     anchor_quat_wxyz: np.ndarray,       # (4,)
     anchor_rot6d: np.ndarray,           # (6,) — same anchor in rot6d form
     # Lower-body motion from the planner's mujoco_qpos output.
     lower_body_positions_future: np.ndarray,   # (10, 12)
     lower_body_velocities_future: np.ndarray,  # (10, 12)
-    # VR 3-point targets in WORLD frame (as the VLA emits them).
-    vr_3pt_position_world: np.ndarray,    # (9,)   [3 points × (x,y,z)]
+    # VR 3-point targets in ANCHOR-LOCAL frame. Renamed from ..._world: the
+    # dataset-convention matches ``collect_pick_cam.py::_subtract_frame_transforms``
+    # which already produces pelvis-local poses. The VLA learned this convention,
+    # so at inference we pass through to the encoder WITHOUT any further
+    # world→anchor transform (doing so would double-transform and scramble the
+    # encoder obs — historically observed as instant ragdoll at step 0).
+    vr_3pt_position_anchor_local: np.ndarray,   # (9,)   [3 points × (x,y,z)]
     vr_3pt_rot6d: np.ndarray,             # (18,)  [3 points × rot6d]
 ) -> np.ndarray:
     """Assemble the (1, 1762) float32 encoder input for teleop mode.
@@ -182,12 +187,10 @@ def build_encoder_obs(
     buf[ENCODER_SLICES["motion_joint_positions_lowerbody_10frame_step5"]] = lb_pos
     buf[ENCODER_SLICES["motion_joint_velocities_lowerbody_10frame_step5"]] = lb_vel
 
-    # VR 3-point position: transform world → anchor-local.
-    pts_world = np.asarray(vr_3pt_position_world, dtype=np.float32).reshape(3, 3)
-    pts_local = world_to_anchor_local_position(
-        pts_world, np.asarray(anchor_pos_world, dtype=np.float32), anchor_quat_wxyz
-    ).astype(np.float32)
-    buf[ENCODER_SLICES["vr_3point_local_target"]] = pts_local.reshape(-1)
+    # VR 3-point position: VLA already outputs pelvis-local, pass through unchanged.
+    pts_local = np.asarray(vr_3pt_position_anchor_local, dtype=np.float32).reshape(-1)
+    assert pts_local.shape[0] == 9, f"vr_3pt_position must be 9-D; got {pts_local.shape}"
+    buf[ENCODER_SLICES["vr_3point_local_target"]] = pts_local
 
     # VR 3-point orientation: rot6d → quat_wxyz (world) → anchor-local quat_wxyz.
     rot6d = np.asarray(vr_3pt_rot6d, dtype=np.float32).reshape(3, 6)

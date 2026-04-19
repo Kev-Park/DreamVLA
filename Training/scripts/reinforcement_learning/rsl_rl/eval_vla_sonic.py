@@ -501,7 +501,9 @@ def main() -> int:
                 anchor_rot6d=anchor_rot6d,
                 lower_body_positions_future=lb_pos,
                 lower_body_velocities_future=lb_vel,
-                vr_3pt_position_world=vr_pos_world,
+                # VLA output is already pelvis-local (matches converter's
+                # subtract_frame_transforms step); no further transform needed.
+                vr_3pt_position_anchor_local=vr_pos_world,
                 vr_3pt_rot6d=vr_rot6d,
             )
             token = utm.run_encoder({"obs_dict": enc_obs}).reshape(-1)  # (64,)
