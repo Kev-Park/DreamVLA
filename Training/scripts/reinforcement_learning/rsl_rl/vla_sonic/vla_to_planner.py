@@ -97,21 +97,48 @@ def build_planner_inputs(
             raise ValueError(f"vla_action['{key}'] must be 3D (B, T, D); got shape {arr.shape}")
         return arr[batch_index, t_index]  # (D,)
 
-    movement  = _pick("planner_movement")   # (3,)
-    facing    = _pick("planner_facing")     # (3,)
-    speed_arr = _pick("planner_speed")      # (1,)
-    height_arr= _pick("planner_height")     # (1,)
+    movement  = _pick("planner_movement")   # (3,) VLA's raw root velocity (m/s, world frame)
+    facing    = _pick("planner_facing")     # (3,) unit vector, world frame
+    speed_arr = _pick("planner_speed")      # (1,) horizontal scalar speed
+    height_arr= _pick("planner_height")     # (1,) root z, meters
 
     speed_scalar = float(speed_arr.reshape(-1)[0])
     if clip_negative_speed:
         speed_scalar = max(0.0, speed_scalar)
     mode_int = speed_to_mode(speed_scalar)
 
+    # Build planner's `movement_direction`: per localmotion_kplanner.hpp:62 it's
+    # a horizontal unit vector. VLA's `planner_movement` is a 3D velocity that
+    # includes the root's Z-component (crouching while picking → big -Z). Passing
+    # the raw value as "direction" confuses the planner since the interpretation
+    # is a unit-length direction, not a velocity. Fix:
+    #   - Drop Z, keep only horizontal components.
+    #   - Zero out if IDLE (mode 0) — the direction is irrelevant when not moving.
+    #   - Normalize to unit length if a meaningful direction remains.
+    movement_dir = np.array([movement[0], movement[1], 0.0], dtype=np.float32)
+    if mode_int == 0:
+        movement_dir[:] = 0.0
+    else:
+        horiz_norm = float(np.linalg.norm(movement_dir[:2]))
+        if horiz_norm > 1e-6:
+            movement_dir[:2] /= horiz_norm
+        else:
+            movement_dir[:] = 0.0
+
+    # Facing: VLA emits near-unit horizontal vector per the converter convention,
+    # but defensively project to xy and renormalize if length is off.
+    facing_xy = np.array([facing[0], facing[1], 0.0], dtype=np.float32)
+    facing_norm = float(np.linalg.norm(facing_xy[:2]))
+    if facing_norm > 1e-6:
+        facing_xy[:2] /= facing_norm
+    else:
+        facing_xy[0] = 1.0  # fallback: forward
+
     return PlannerInputs(
         context_mujoco_qpos=context,
         target_vel=np.array([speed_scalar], dtype=np.float32),
         mode=np.array([mode_int], dtype=np.int64),
-        movement_direction=movement.reshape(1, 3).astype(np.float32),
-        facing_direction=facing.reshape(1, 3).astype(np.float32),
+        movement_direction=movement_dir.reshape(1, 3),
+        facing_direction=facing_xy.reshape(1, 3),
         height=np.array([float(height_arr.reshape(-1)[0])], dtype=np.float32),
     )
