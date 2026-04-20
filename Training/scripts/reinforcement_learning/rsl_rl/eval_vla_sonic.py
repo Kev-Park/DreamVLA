@@ -378,7 +378,7 @@ def _inject_cameras(env_cfg) -> None:
             clipping_range=(0.01, 100.0),
         ),
         data_types=["rgb"],
-        height=720, width=1280,
+        height=480, width=640,
         offset=CameraCfg.OffsetCfg(
             pos=(0.05, 0.0, 0.36),
             rot=(0.568, 0.421, -0.421, -0.568),
@@ -407,6 +407,10 @@ def main() -> int:
     # matching the offsets from motion_tracking_pick_env.py (3rd-person)
     # and collect_pick_cam.py:683-699 (robot-mounted d435).
     _inject_cameras(env_cfg)
+    # Spawn robot with feet on the floor. The base reset event adds 0.15 m above
+    # the motion reference by default (for training robustness), but at eval time
+    # we want ground contact from step 0.
+    env_cfg.events.reset_base.params["offset_z"] = 0.0
     env = gym.make(args.task, cfg=env_cfg)
     print(f"[env] {args.task}  action_space={env.action_space}")
 
