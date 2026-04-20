@@ -828,3 +828,13 @@ class G1PickCamContinuousFingersEnvCfg(G1PickCamEnvCfg):
         # transform produces the motion the UTM was trained against. Without
         # this, Isaac's stiffer gains (2-5x SONIC's) cause violent overshoot.
         self.scene.robot.actuators = _build_sonic_matched_actuators()
+        # Verification trace — spot-check a few gains so we can confirm the
+        # override actually landed at env init time (cfg-level override can be
+        # silently clobbered downstream by USD-baked gains or SceneCfg copies).
+        legs = self.scene.robot.actuators["legs"]
+        print(f"[SONIC-gains] legs.stiffness = {legs.stiffness}")
+        print(f"[SONIC-gains] legs.damping   = {legs.damping}")
+        arms = self.scene.robot.actuators["arms"]
+        print(f"[SONIC-gains] arms.stiffness = {arms.stiffness}")
+        feet = self.scene.robot.actuators["feet"]
+        print(f"[SONIC-gains] feet.stiffness = {feet.stiffness} damping = {feet.damping}")
