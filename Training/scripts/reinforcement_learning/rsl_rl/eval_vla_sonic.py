@@ -231,25 +231,27 @@ ENCODER_FUTURE_FRAME_INDICES = list(range(0, 50, 5))
 PLANNER_OUTPUT_FPS = 30.0
 
 
-def extract_anchor_pose(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return (anchor_pos_world, anchor_quat_wxyz, anchor_rot6d) from frame 0."""
+def extract_anchor_pose(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return (anchor_pos_world, anchor_quat_wxyz) from planner frame 0.
+
+    The caller must compute anchor_rot6d itself in C++ row-wise format:
+        R_mat[:, :2].flatten('C') — identity → [1,0,0,1,0,0].
+    Do NOT compute rot6d here; gear_sonic col-major format [col0,col1] differs
+    at positions [3,4] and would feed wrong data to the encoder.
+    """
     frame0 = mujoco_qpos[0, 0]  # (36,)
     anchor_pos = np.asarray(frame0[PLANNER_ROOT_POS_SLICE], dtype=np.float32).copy()
     anchor_quat = np.asarray(frame0[PLANNER_ROOT_QUAT_SLICE], dtype=np.float32).copy()
-    # rot6d from quat: columns 0 and 1 of the rotation matrix.
-    from scipy.spatial.transform import Rotation as R
-    R_mat = R.from_quat(quat_wxyz_to_xyzw(anchor_quat)).as_matrix().astype(np.float32)
-    rot6d = np.concatenate([R_mat[:, 0], R_mat[:, 1]]).astype(np.float32)  # (6,)
-    return anchor_pos, anchor_quat, rot6d
+    return anchor_pos, anchor_quat
 
 
 def extract_lower_body_future(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Return (positions (10,12), velocities (10,12)) at the encoder's subsample grid.
 
-    The 12 joints are in SONIC-IsaacLab-interleaved order:
-    [L_hip_pitch, R_hip_pitch, L_hip_roll, R_hip_roll, L_hip_yaw, R_hip_yaw,
-     L_knee,      R_knee,      L_ankle_pitch, R_ankle_pitch,
-     L_ankle_roll, R_ankle_roll]
+    The 12 joints are in MuJoCo order (left-leg-all-6 then right-leg-all-6):
+    [L_hip_pitch, L_hip_roll, L_hip_yaw, L_knee, L_ankle_pitch, L_ankle_roll,
+     R_hip_pitch, R_hip_roll, R_hip_yaw, R_knee, R_ankle_pitch, R_ankle_roll]
+    This matches the encoder's training convention (policy_parameters.hpp:93).
     """
     qpos = np.asarray(mujoco_qpos[0], dtype=np.float32)  # (N, 36)
     n_frames = qpos.shape[0]
@@ -407,10 +409,6 @@ def main() -> int:
     # matching the offsets from motion_tracking_pick_env.py (3rd-person)
     # and collect_pick_cam.py:683-699 (robot-mounted d435).
     _inject_cameras(env_cfg)
-    # Spawn robot with feet on the floor. The base reset event adds 0.15 m above
-    # the motion reference by default (for training robustness), but at eval time
-    # we want ground contact from step 0.
-    env_cfg.events.reset_base.params["offset_z"] = 0.0
     env = gym.make(args.task, cfg=env_cfg)
     print(f"[env] {args.task}  action_space={env.action_space}")
 
@@ -475,6 +473,7 @@ def main() -> int:
         print(f"\n[episode {ep}]")
         obs, info = env.reset()
         history.reset()
+        prev_utm_body_29 = np.zeros(29, dtype=np.float32)
 
         vla_chunk: dict | None = None
         chunk_step = 0
@@ -563,7 +562,7 @@ def main() -> int:
                 print(f"  out[45] legs[:6] = {planner_out.mujoco_qpos[0, 45, 7:13].round(4).tolist() if planner_out.num_pred_frames > 45 else 'N/A'}")
 
             # 7e. Extract anchor + lower-body trajectory from planner output.
-            anchor_pos_w, anchor_quat_wxyz, _unused_anchor_rot6d = extract_anchor_pose(planner_out.mujoco_qpos)
+            anchor_pos_w, anchor_quat_wxyz = extract_anchor_pose(planner_out.mujoco_qpos)
             # motion_anchor_orientation: C++ GatherMotionAnchorOrientationMutiFrame stores
             # the RELATIVE rotation (robot_base_inv × planner_frame0) as first-2-columns of
             # the rotation matrix, flattened ROW-WISE: [R[0,0], R[0,1], R[1,0], R[1,1], R[2,0], R[2,1]].

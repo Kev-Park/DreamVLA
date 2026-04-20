@@ -178,7 +178,7 @@ class EventCfg:
         func=reset_root_state_for_motion,
         mode="reset",
         params={
-            "offset_z": 0.15
+            "offset_z": 0.0
         }
     )
 
