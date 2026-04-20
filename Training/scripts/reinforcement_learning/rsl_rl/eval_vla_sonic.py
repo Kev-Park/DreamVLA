@@ -487,6 +487,29 @@ def main() -> int:
             )
             planner_out = planner.run(**planner_inputs.as_kwargs())
 
+            if step == 0:
+                ctx_last = planner_inputs.context_mujoco_qpos[0, -1]  # (36,)
+                out_first = planner_out.mujoco_qpos[0, 0]            # (36,)
+                print("\n[PLANNER @ step 0] inputs:")
+                print(f"  target_vel = {planner_inputs.target_vel.tolist()}")
+                print(f"  mode = {planner_inputs.mode.tolist()}")
+                print(f"  movement_direction = {planner_inputs.movement_direction[0].round(4).tolist()}")
+                print(f"  facing_direction   = {planner_inputs.facing_direction[0].round(4).tolist()}")
+                print(f"  height = {planner_inputs.height.tolist()}")
+                print(f"  context[-1] root_pos  = {ctx_last[0:3].round(4).tolist()}")
+                print(f"  context[-1] root_quat = {ctx_last[3:7].round(4).tolist()}")
+                print(f"  context[-1] legs[:12] = {ctx_last[7:19].round(4).tolist()}")
+                print("[PLANNER @ step 0] outputs:")
+                print(f"  num_pred_frames = {planner_out.num_pred_frames}")
+                print(f"  out[0] root_pos  = {out_first[0:3].round(4).tolist()}")
+                print(f"  out[0] root_quat = {out_first[3:7].round(4).tolist()}")
+                print(f"  out[0] legs[:12] = {out_first[7:19].round(4).tolist()}")
+                diff = np.abs(out_first - ctx_last)
+                print(f"  |out[0] - context[-1]| max = {diff.max():.4f}, mean = {diff.mean():.4f}")
+                # Lower-body future samples at encoder grid (0, 5, 10, ..., 45).
+                print(f"  out[5]  legs[:6] = {planner_out.mujoco_qpos[0, 5, 7:13].round(4).tolist() if planner_out.num_pred_frames > 5 else 'N/A'}")
+                print(f"  out[45] legs[:6] = {planner_out.mujoco_qpos[0, 45, 7:13].round(4).tolist() if planner_out.num_pred_frames > 45 else 'N/A'}")
+
             # 7e. Extract anchor + lower-body trajectory from planner output.
             anchor_pos_w, anchor_quat_wxyz, _unused_anchor_rot6d = extract_anchor_pose(planner_out.mujoco_qpos)
             # Bug #3 fix: dataset stored target_body_orientation = identity_target_rot6d
