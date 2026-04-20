@@ -560,11 +560,17 @@ def main() -> int:
 
             # 7e. Extract anchor + lower-body trajectory from planner output.
             anchor_pos_w, anchor_quat_wxyz, _unused_anchor_rot6d = extract_anchor_pose(planner_out.mujoco_qpos)
-            # Bug #3 fix: dataset stored target_body_orientation = identity_target_rot6d
-            # (see convert_isaac_hdf5_to_lerobot.py:403). The encoder's
-            # motion_anchor_orientation slot was always identity during training,
-            # so feed identity here instead of a planner-derived rot6d.
-            anchor_rot6d = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+            # motion_anchor_orientation: C++ GatherMotionAnchorOrientationMutiFrame stores
+            # the RELATIVE rotation (robot_base_inv × planner_frame0) as first-2-columns of
+            # the rotation matrix, flattened ROW-WISE: [R[0,0], R[0,1], R[1,0], R[1,1], R[2,0], R[2,1]].
+            # (identity → [1, 0, 0, 1, 0, 0], NOT the gear_sonic col-major rot6d [1, 0, 0, 0, 1, 0])
+            # We compute the actual relative rotation to match training.
+            _R_robot = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
+            _R_anchor = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
+            _R_rel_mat = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
+            anchor_rot6d = _R_rel_mat[:, :2].flatten('C').astype(np.float32)  # C++ row-wise
+            if step == 0:
+                print(f"\n[ENC @ step 0] anchor_rot6d (C++ row-wise, identity→[1,0,0,1,0,0]) = {anchor_rot6d.round(4).tolist()}")
             lb_pos, lb_vel = extract_lower_body_future(planner_out.mujoco_qpos)
 
             # 7f. VR 3-point from VLA (world frame; encoder builder does the anchor-local transform).
