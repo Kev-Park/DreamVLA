@@ -122,11 +122,28 @@ _G1_DEFAULT_ANGLES_MUJOCO = np.array([
     0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,          # right arm
 ], dtype=np.float32)
 
+# Empirical global action-scale multiplier. The deploy reference's formula
+# ``0.25 * effort_limit / stiffness`` produces scales in [0.075, 0.55] which,
+# when applied to our UTM ONNX output, yields joint-target deltas 10× larger
+# than the expected "hold current pose" deltas derived by inverse-mapping the
+# dataset's observation.state through the same formula. Diagnostic heredocs
+# (feeding dataset step-0 inputs through the UTM and grid-searching the
+# multiplier) showed that ×0.1 makes the UTM's output match the expected
+# small-delta magnitudes (~0.3 rad max vs ~6 rad). Best current hypothesis:
+# SONIC's training used an additional 0.1× scalar on top of the formula that
+# the deploy C++ implicitly applies elsewhere.
+#
+# TODO: confirm against SONIC training config (look for `action_scale` or
+# `action_scale_multiplier` in `gear_sonic/config/actor_critic/*.yaml`).
+_SONIC_EMPIRICAL_ACTION_SCALE_MULT = 0.1
+
 # Pre-permute into SONIC-IsaacLab order so we can do element-wise arithmetic
 # with the UTM decoder's (SONIC-ordered) output.
 # Given MUJOCO_TO_ISAACLAB[mj_idx] = sonic_idx, the inverse ISAACLAB_TO_MUJOCO[s_idx] = mj_idx
 # tells us which MuJoCo-ordered value to place at each SONIC index.
-G1_ACTION_SCALE_SONIC = _G1_ACTION_SCALE_MUJOCO[ISAACLAB_TO_MUJOCO].astype(np.float32)
+G1_ACTION_SCALE_SONIC = (
+    _G1_ACTION_SCALE_MUJOCO[ISAACLAB_TO_MUJOCO] * _SONIC_EMPIRICAL_ACTION_SCALE_MULT
+).astype(np.float32)
 G1_DEFAULT_ANGLES_SONIC = _G1_DEFAULT_ANGLES_MUJOCO[ISAACLAB_TO_MUJOCO].astype(np.float32)
 
 
