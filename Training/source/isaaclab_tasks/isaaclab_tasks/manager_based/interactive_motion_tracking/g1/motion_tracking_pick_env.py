@@ -27,7 +27,192 @@ from isaac_utils.rotations import(
 )
 from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking_interactive_base import G1InteractiveBaseEnvCfg, hand_state_target, hand_state_target_1, rel_pose_object_w_link, object_above_threshold, reset_object_state, rel_pose_object, hand_pose, object_approach_reward_right, G1Rewards as G1RewardsBase, TerminationsCfg as TerminationsCfgBase, ActionsCfg as ActionsCfgBase, MySceneCfg as MySceneCfgBase, EventCfg as EventCfgBase
 from isaaclab_assets import G1_MINIMAL_CFG  # isort: skip
+from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder
+
+
+# =========================================================================
+# SONIC-matched actuator configuration.
+# Physical motor constants copied verbatim from
+# ``GR00T-WholeBodyControl/gear_sonic/envs/manager_env/robots/g1.py:10-26``,
+# which in turn match the deploy reference at
+# ``gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/policy_parameters.hpp``.
+# The SONIC UTM policy was trained against these gains. Using them here keeps
+# the sim's joint PD response matched to training — critical when applying the
+# canonical action transform ``q_target = default + utm * 0.25 * effort/K``
+# (see vla_sonic/action_assembler.py). Isaac's default G1_MINIMAL_CFG uses
+# 2-5x stiffer gains, which turn the same commanded delta into 2-5x the torque
+# and makes the robot overshoot violently.
+# =========================================================================
+
+_SONIC_ARMATURE_5020 = 0.003609725
+_SONIC_ARMATURE_7520_14 = 0.010177520
+_SONIC_ARMATURE_7520_22 = 0.025101925
+_SONIC_ARMATURE_4010 = 0.00425
+_SONIC_NATURAL_FREQ = 10.0 * 2.0 * 3.1415926535  # 10 Hz
+_SONIC_DAMPING_RATIO = 2.0
+
+_SONIC_STIFFNESS_5020 = _SONIC_ARMATURE_5020 * _SONIC_NATURAL_FREQ ** 2
+_SONIC_STIFFNESS_7520_14 = _SONIC_ARMATURE_7520_14 * _SONIC_NATURAL_FREQ ** 2
+_SONIC_STIFFNESS_7520_22 = _SONIC_ARMATURE_7520_22 * _SONIC_NATURAL_FREQ ** 2
+_SONIC_STIFFNESS_4010 = _SONIC_ARMATURE_4010 * _SONIC_NATURAL_FREQ ** 2
+_SONIC_DAMPING_5020 = 2.0 * _SONIC_DAMPING_RATIO * _SONIC_ARMATURE_5020 * _SONIC_NATURAL_FREQ
+_SONIC_DAMPING_7520_14 = 2.0 * _SONIC_DAMPING_RATIO * _SONIC_ARMATURE_7520_14 * _SONIC_NATURAL_FREQ
+_SONIC_DAMPING_7520_22 = 2.0 * _SONIC_DAMPING_RATIO * _SONIC_ARMATURE_7520_22 * _SONIC_NATURAL_FREQ
+_SONIC_DAMPING_4010 = 2.0 * _SONIC_DAMPING_RATIO * _SONIC_ARMATURE_4010 * _SONIC_NATURAL_FREQ
+
+
+def _build_sonic_matched_actuators() -> dict:
+    """Return an ``actuators`` dict replacing Isaac's default gains with SONIC's.
+
+    Covers every actuated joint in our 27-DoF env plus the 14 continuous
+    finger joints (finger actuator gains are left at Isaac's defaults; SONIC
+    training doesn't specify hand gains).
+    """
+    return {
+        "legs": ImplicitActuatorCfg(
+            joint_names_expr=[
+                ".*_hip_yaw_joint",
+                ".*_hip_roll_joint",
+                ".*_hip_pitch_joint",
+                ".*_knee_joint",
+            ],
+            effort_limit_sim={
+                ".*_hip_yaw_joint": 88.0,
+                ".*_hip_roll_joint": 139.0,
+                ".*_hip_pitch_joint": 139.0,
+                ".*_knee_joint": 139.0,
+            },
+            velocity_limit_sim={
+                ".*_hip_yaw_joint": 32.0,
+                ".*_hip_roll_joint": 20.0,
+                ".*_hip_pitch_joint": 20.0,
+                ".*_knee_joint": 20.0,
+            },
+            stiffness={
+                ".*_hip_pitch_joint": _SONIC_STIFFNESS_7520_22,
+                ".*_hip_roll_joint": _SONIC_STIFFNESS_7520_22,
+                ".*_hip_yaw_joint": _SONIC_STIFFNESS_7520_14,
+                ".*_knee_joint": _SONIC_STIFFNESS_7520_22,
+            },
+            damping={
+                ".*_hip_pitch_joint": _SONIC_DAMPING_7520_22,
+                ".*_hip_roll_joint": _SONIC_DAMPING_7520_22,
+                ".*_hip_yaw_joint": _SONIC_DAMPING_7520_14,
+                ".*_knee_joint": _SONIC_DAMPING_7520_22,
+            },
+            armature={
+                ".*_hip_pitch_joint": _SONIC_ARMATURE_7520_22,
+                ".*_hip_roll_joint": _SONIC_ARMATURE_7520_22,
+                ".*_hip_yaw_joint": _SONIC_ARMATURE_7520_14,
+                ".*_knee_joint": _SONIC_ARMATURE_7520_22,
+            },
+        ),
+        "feet": ImplicitActuatorCfg(
+            effort_limit_sim=50.0,
+            velocity_limit_sim=37.0,
+            joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
+            stiffness=2.0 * _SONIC_STIFFNESS_5020,
+            damping=2.0 * _SONIC_DAMPING_5020,
+            armature=2.0 * _SONIC_ARMATURE_5020,
+        ),
+        "waist_yaw": ImplicitActuatorCfg(
+            effort_limit_sim=88,
+            velocity_limit_sim=32.0,
+            joint_names_expr=["waist_yaw_joint"],
+            stiffness=_SONIC_STIFFNESS_7520_14,
+            damping=_SONIC_DAMPING_7520_14,
+            armature=_SONIC_ARMATURE_7520_14,
+        ),
+        "arms": ImplicitActuatorCfg(
+            joint_names_expr=[
+                ".*_shoulder_pitch_joint",
+                ".*_shoulder_roll_joint",
+                ".*_shoulder_yaw_joint",
+                ".*_elbow_joint",
+                ".*_wrist_roll_joint",
+                ".*_wrist_pitch_joint",
+                ".*_wrist_yaw_joint",
+            ],
+            effort_limit_sim={
+                ".*_shoulder_pitch_joint": 25.0,
+                ".*_shoulder_roll_joint": 25.0,
+                ".*_shoulder_yaw_joint": 25.0,
+                ".*_elbow_joint": 25.0,
+                ".*_wrist_roll_joint": 25.0,
+                ".*_wrist_pitch_joint": 5.0,
+                ".*_wrist_yaw_joint": 5.0,
+            },
+            velocity_limit_sim={
+                ".*_shoulder_pitch_joint": 37.0,
+                ".*_shoulder_roll_joint": 37.0,
+                ".*_shoulder_yaw_joint": 37.0,
+                ".*_elbow_joint": 37.0,
+                ".*_wrist_roll_joint": 37.0,
+                ".*_wrist_pitch_joint": 22.0,
+                ".*_wrist_yaw_joint": 22.0,
+            },
+            stiffness={
+                ".*_shoulder_pitch_joint": _SONIC_STIFFNESS_5020,
+                ".*_shoulder_roll_joint": _SONIC_STIFFNESS_5020,
+                ".*_shoulder_yaw_joint": _SONIC_STIFFNESS_5020,
+                ".*_elbow_joint": _SONIC_STIFFNESS_5020,
+                ".*_wrist_roll_joint": _SONIC_STIFFNESS_5020,
+                ".*_wrist_pitch_joint": _SONIC_STIFFNESS_4010,
+                ".*_wrist_yaw_joint": _SONIC_STIFFNESS_4010,
+            },
+            damping={
+                ".*_shoulder_pitch_joint": _SONIC_DAMPING_5020,
+                ".*_shoulder_roll_joint": _SONIC_DAMPING_5020,
+                ".*_shoulder_yaw_joint": _SONIC_DAMPING_5020,
+                ".*_elbow_joint": _SONIC_DAMPING_5020,
+                ".*_wrist_roll_joint": _SONIC_DAMPING_5020,
+                ".*_wrist_pitch_joint": _SONIC_DAMPING_4010,
+                ".*_wrist_yaw_joint": _SONIC_DAMPING_4010,
+            },
+            armature={
+                ".*_shoulder_pitch_joint": _SONIC_ARMATURE_5020,
+                ".*_shoulder_roll_joint": _SONIC_ARMATURE_5020,
+                ".*_shoulder_yaw_joint": _SONIC_ARMATURE_5020,
+                ".*_elbow_joint": _SONIC_ARMATURE_5020,
+                ".*_wrist_roll_joint": _SONIC_ARMATURE_5020,
+                ".*_wrist_pitch_joint": _SONIC_ARMATURE_4010,
+                ".*_wrist_yaw_joint": _SONIC_ARMATURE_4010,
+            },
+        ),
+        # SONIC training doesn't actuate hands. Keep Isaac's defaults for the
+        # 14 finger joints — numbers copied from G1_MINIMAL_CFG.
+        "hands": ImplicitActuatorCfg(
+            joint_names_expr=[
+                "left_hand_index_.*",
+                "left_hand_middle_.*",
+                "left_hand_thumb_0_joint",
+                "left_hand_thumb_1_joint",
+                "left_hand_thumb_2_joint",
+                "right_hand_index_.*",
+                "right_hand_middle_.*",
+                "right_hand_thumb_0_joint",
+                "right_hand_thumb_1_joint",
+                "right_hand_thumb_2_joint",
+            ],
+            effort_limit_sim=3.0,
+            velocity_limit_sim=1.0,
+            stiffness=5.0,
+            damping=1.25,
+            armature={
+                "left_hand_index_.*": 0.001,
+                "left_hand_middle_.*": 0.001,
+                "left_hand_thumb_0_joint": 0.001,
+                "left_hand_thumb_1_joint": 0.001,
+                "left_hand_thumb_2_joint": 0.001,
+                "right_hand_index_.*": 0.001,
+                "right_hand_middle_.*": 0.001,
+                "right_hand_thumb_0_joint": 0.001,
+                "right_hand_thumb_1_joint": 0.001,
+                "right_hand_thumb_2_joint": 0.001,
+            },
+        ),
+    }
 
 VISUALIZE_MARKERS = True
 TRACKING = True
@@ -635,3 +820,11 @@ class ContinuousFingersActionsCfg(ActionsCfg):
 @configclass
 class G1PickCamContinuousFingersEnvCfg(G1PickCamEnvCfg):
     actions: ContinuousFingersActionsCfg = ContinuousFingersActionsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Replace Isaac's default G1 actuator gains with SONIC-training-matched
+        # values so that the canonical ``q_target = default + utm * scale``
+        # transform produces the motion the UTM was trained against. Without
+        # this, Isaac's stiffer gains (2-5x SONIC's) cause violent overshoot.
+        self.scene.robot.actuators = _build_sonic_matched_actuators()
