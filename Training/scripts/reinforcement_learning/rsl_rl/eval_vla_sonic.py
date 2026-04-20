@@ -128,20 +128,43 @@ from gr00t.policy.gr00t_policy import Gr00tPolicy  # noqa: E402
 # Joint-order helpers: Isaac's robot → UTM's 29-DoF MuJoCo order.
 # =========================================================================
 
+# SONIC-IsaacLab 29-DoF joint order — the order the UTM ONNX models see on
+# BOTH input (history joint positions/velocities/last_actions) and output
+# (decoder body action). Reconstructed from
+# GR00T-WholeBodyControl/gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/
+#   policy_parameters.hpp:100 (isaaclab_to_mujoco = MuJoCo order in IsaacLab index).
+# This interleaves left/right pairs at each kinematic level — very different
+# from the obvious "left leg then right leg" DEFAULT_DOF_ANGLES ordering.
 UTM_29_JOINT_NAMES = [
-    # Legs (0–11) — matches DEFAULT_DOF_ANGLES in g1_29dof_sonic_model12.yaml.
-    "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
-    "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
-    "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
-    "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
-    # Waist (12–14)
-    "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
-    # Left arm (15–21)
-    "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
-    "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
-    # Right arm (22–28)
-    "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
-    "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+    "left_hip_pitch_joint",       # 0
+    "right_hip_pitch_joint",      # 1
+    "waist_yaw_joint",            # 2
+    "left_hip_roll_joint",        # 3
+    "right_hip_roll_joint",       # 4
+    "waist_roll_joint",           # 5  <-- drop when mapping to env
+    "left_hip_yaw_joint",         # 6
+    "right_hip_yaw_joint",        # 7
+    "waist_pitch_joint",          # 8  <-- drop when mapping to env
+    "left_knee_joint",            # 9
+    "right_knee_joint",           # 10
+    "left_shoulder_pitch_joint",  # 11
+    "right_shoulder_pitch_joint", # 12
+    "left_ankle_pitch_joint",     # 13
+    "right_ankle_pitch_joint",    # 14
+    "left_shoulder_roll_joint",   # 15
+    "right_shoulder_roll_joint",  # 16
+    "left_ankle_roll_joint",      # 17
+    "right_ankle_roll_joint",     # 18
+    "left_shoulder_yaw_joint",    # 19
+    "right_shoulder_yaw_joint",   # 20
+    "left_elbow_joint",           # 21
+    "right_elbow_joint",          # 22
+    "left_wrist_roll_joint",      # 23
+    "right_wrist_roll_joint",     # 24
+    "left_wrist_pitch_joint",     # 25
+    "right_wrist_pitch_joint",    # 26
+    "left_wrist_yaw_joint",       # 27
+    "right_wrist_yaw_joint",      # 28
 ]
 assert len(UTM_29_JOINT_NAMES) == 29
 
@@ -187,8 +210,15 @@ PLANNER_ROOT_POS_SLICE = slice(0, 3)
 PLANNER_ROOT_QUAT_SLICE = slice(3, 7)
 PLANNER_JOINTS_SLICE = slice(7, 36)
 
-# Lower body = legs only (indices 0–11 of the 29 joints) = qpos[7:19].
-LOWER_BODY_JOINT_SLICE = slice(7, 19)  # 12 joints
+# Lower body = legs (12 joints). The encoder's
+# ``motion_joint_positions_lowerbody_10frame_step5`` slot expects values in
+# SONIC-IsaacLab interleaved order. The planner's mujoco_qpos is in MuJoCo
+# order, so we gather with an explicit index list (plus the +7 offset for the
+# root pose prefix). Source: policy_parameters.hpp:97
+# `lower_body_joint_isaaclab_order_in_mujoco_index = {0,6,1,7,2,8,3,9,4,10,5,11}`.
+LOWER_BODY_QPOS_INDICES_SONIC_ORDER = np.array(
+    [7 + i for i in [0, 6, 1, 7, 2, 8, 3, 9, 4, 10, 5, 11]], dtype=np.int64
+)
 
 # Encoder expects 10 future frames at step 5 (frames [0, 5, 10, ..., 45]).
 ENCODER_FUTURE_FRAME_INDICES = list(range(0, 50, 5))
@@ -210,7 +240,13 @@ def extract_anchor_pose(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray
 
 
 def extract_lower_body_future(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return (positions (10,12), velocities (10,12)) at the encoder's subsample grid."""
+    """Return (positions (10,12), velocities (10,12)) at the encoder's subsample grid.
+
+    The 12 joints are in SONIC-IsaacLab-interleaved order:
+    [L_hip_pitch, R_hip_pitch, L_hip_roll, R_hip_roll, L_hip_yaw, R_hip_yaw,
+     L_knee,      R_knee,      L_ankle_pitch, R_ankle_pitch,
+     L_ankle_roll, R_ankle_roll]
+    """
     qpos = np.asarray(mujoco_qpos[0], dtype=np.float32)  # (N, 36)
     n_frames = qpos.shape[0]
     need = max(ENCODER_FUTURE_FRAME_INDICES) + 1
@@ -218,7 +254,8 @@ def extract_lower_body_future(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.n
         # Pad by repeating the last frame so the slicer doesn't error.
         pad = np.repeat(qpos[-1:], need - n_frames, axis=0)
         qpos = np.concatenate([qpos, pad], axis=0)
-    lb_all = qpos[:, LOWER_BODY_JOINT_SLICE]  # (N, 12)
+    # Gather the 12 lower-body joints in SONIC-IsaacLab interleaved order.
+    lb_all = qpos[:, LOWER_BODY_QPOS_INDICES_SONIC_ORDER]  # (N, 12) SONIC-IsaacLab order
     # Velocities at 30 Hz: central differences over the full trajectory, then subsample.
     vel_all = np.gradient(lb_all, 1.0 / PLANNER_OUTPUT_FPS, axis=0).astype(np.float32)
     pos = lb_all[ENCODER_FUTURE_FRAME_INDICES].astype(np.float32)  # (10, 12)
