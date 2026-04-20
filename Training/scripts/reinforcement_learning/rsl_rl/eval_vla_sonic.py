@@ -213,12 +213,15 @@ PLANNER_JOINTS_SLICE = slice(7, 36)
 
 # Lower body = legs (12 joints). The encoder's
 # ``motion_joint_positions_lowerbody_10frame_step5`` slot expects values in
-# SONIC-IsaacLab interleaved order. The planner's mujoco_qpos is in MuJoCo
-# order, so we gather with an explicit index list (plus the +7 offset for the
-# root pose prefix). Source: policy_parameters.hpp:97
-# `lower_body_joint_isaaclab_order_in_mujoco_index = {0,6,1,7,2,8,3,9,4,10,5,11}`.
-LOWER_BODY_QPOS_INDICES_SONIC_ORDER = np.array(
-    [7 + i for i in [0, 6, 1, 7, 2, 8, 3, 9, 4, 10, 5, 11]], dtype=np.int64
+# **MuJoCo order** — left-leg-all-6 (pitch, roll, yaw, knee, apitch, aroll)
+# then right-leg-all-6 — per policy_parameters.hpp:93:
+#   lower_body_joint_mujoco_order_in_mujoco_index = {0,1,2,3,4,5,6,7,8,9,10,11}
+# Earlier I used an interleaved L/R order — that was the bug scrambling the
+# encoder's leg inputs, causing the decoder to emit wild leg commands.
+# The planner's mujoco_qpos is already in MuJoCo order; just slice the first
+# 12 joint slots after the 7-element root prefix.
+LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER = np.array(
+    [7 + i for i in range(12)], dtype=np.int64,
 )
 
 # Encoder expects 10 future frames at step 5 (frames [0, 5, 10, ..., 45]).
@@ -256,7 +259,7 @@ def extract_lower_body_future(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.n
         pad = np.repeat(qpos[-1:], need - n_frames, axis=0)
         qpos = np.concatenate([qpos, pad], axis=0)
     # Gather the 12 lower-body joints in SONIC-IsaacLab interleaved order.
-    lb_all = qpos[:, LOWER_BODY_QPOS_INDICES_SONIC_ORDER]  # (N, 12) SONIC-IsaacLab order
+    lb_all = qpos[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER]  # (N, 12) MuJoCo order
     # Velocities at 30 Hz: central differences over the full trajectory, then subsample.
     vel_all = np.gradient(lb_all, 1.0 / PLANNER_OUTPUT_FPS, axis=0).astype(np.float32)
     pos = lb_all[ENCODER_FUTURE_FRAME_INDICES].astype(np.float32)  # (10, 12)
