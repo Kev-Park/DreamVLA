@@ -116,6 +116,7 @@ from vla_sonic import (  # noqa: E402
     build_planner_inputs,
     utm_plus_vla_to_env_action,
 )
+from vla_sonic.action_assembler import MUJOCO_TO_ISAACLAB  # noqa: E402
 from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
 from vla_sonic.planner_to_utm import rot6d_to_quat_wxyz  # noqa: E402 — (unused here but kept for reference)
 from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter  # noqa: E402
@@ -495,8 +496,15 @@ def main() -> int:
             # 7c. Push current env state into history BEFORE planner so context is up to date.
             q_isaac = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
             qd_isaac = robot.data.joint_vel[0].detach().cpu().numpy().astype(np.float32)
-            q_utm = _gather_with_mask(q_isaac, isaac_to_utm_perm)
-            qd_utm = _gather_with_mask(qd_isaac, isaac_to_utm_perm)
+            # History buffer expects joint state in SONIC-IsaacLab order (what the
+            # UTM decoder was trained with). UTM_29_JOINT_NAMES is in SONIC order,
+            # so isaac_to_utm_perm produces SONIC-ordered values.
+            q_sonic = _gather_with_mask(q_isaac, isaac_to_utm_perm)
+            qd_sonic = _gather_with_mask(qd_isaac, isaac_to_utm_perm)
+            # The planner's context_mujoco_qpos needs MuJoCo order (per its name).
+            # Convert SONIC -> MuJoCo via the cross-reference permutation from
+            # policy_parameters.hpp (MUJOCO_TO_ISAACLAB[mj_idx] = sonic_idx).
+            q_mujoco = q_sonic[MUJOCO_TO_ISAACLAB]
             root_pos_w = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
             root_quat_w = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)  # wxyz
             root_ang_vel_b = robot.data.root_ang_vel_b[0].detach().cpu().numpy().astype(np.float32)
@@ -505,11 +513,11 @@ def main() -> int:
             gravity_body = R.from_quat(quat_wxyz_to_xyzw(root_quat_w)).inv().apply(
                 np.array([0.0, 0.0, -1.0], dtype=np.float32)
             ).astype(np.float32)
-            mujoco_qpos = np.concatenate([root_pos_w, root_quat_w, q_utm]).astype(np.float32)
+            mujoco_qpos = np.concatenate([root_pos_w, root_quat_w, q_mujoco]).astype(np.float32)
 
             history.push(
-                joint_pos=q_utm,
-                joint_vel=qd_utm,
+                joint_pos=q_sonic,
+                joint_vel=qd_sonic,
                 last_action=prev_utm_body_29,
                 base_ang_vel=root_ang_vel_b,
                 gravity_dir=gravity_body,
@@ -582,7 +590,7 @@ def main() -> int:
 
             # 7h. Assemble env action.
             env_action_np = utm_plus_vla_to_env_action(
-                utm_body_29=utm_body_29,
+                utm_body_29_sonic=utm_body_29,
                 vla_action=vla_chunk,
                 t_index=t_idx,
             )  # (41,)
