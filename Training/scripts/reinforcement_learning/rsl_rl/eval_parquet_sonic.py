@@ -253,7 +253,8 @@ class ParquetActionStreamer:
         self._arrays: dict[str, np.ndarray] = {}
 
         def _cell(val, dtype):
-            return val.astype(dtype) if isinstance(val, np.ndarray) else np.array(val, dtype=dtype)
+            arr = val.astype(dtype) if isinstance(val, np.ndarray) else np.array(val, dtype=dtype)
+            return np.atleast_1d(arr)
 
         missing = [col for col in _PARQUET_COL_MAP if col not in df.columns]
         if missing:
