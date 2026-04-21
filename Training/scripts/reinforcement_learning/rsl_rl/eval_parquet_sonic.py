@@ -588,6 +588,7 @@ def main() -> int:
     _inject_cameras(env_cfg)
     env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array")
     print(f"[env] {args.task}  action_space={env.action_space}")
+    print(f"[render] has_rtx_sensors={env.unwrapped.sim.has_rtx_sensors()}")
 
     # --- 3. Build SONIC wrappers --------------------------------------
     print(f"[utm] encoder={args.encoder_onnx}")
@@ -634,6 +635,8 @@ def main() -> int:
         print(f"\n[episode {ep}]")
         obs, info = env.reset()
         env.step(zero_action)   # warm-up camera buffer
+        _APP.update()           # flush warm-up render to annotators
+        _APP.update()
         history.reset()
 
         # Open video writers on first episode after Isaac Lab is fully up.
@@ -784,12 +787,24 @@ def main() -> int:
                 print(f"[step {step}] joint_pos max_delta={delta.max():.6f}  "
                       f"mean_delta={delta.mean():.6f}  rew={float(rew[0]):.4f}")
 
-            # 7i. Video frames.
+            # 7i. Flush RTX render pipeline before reading cameras.
+            # eval_vla_sonic.py gets this flush for free from VLA inference time;
+            # here we must be explicit so the annotators deliver the current frame.
+            _APP.update()
+            _APP.update()
+
+            # 7j. Video frames.
             if writers:
+                _prev_frame = getattr(main, "_prev_cam_frame", {})
                 for key, w in writers.items():
                     frame = _read_camera_rgb(env, key)
                     if frame is not None:
+                        if step < 5 and key in _prev_frame:
+                            diff = int(np.abs(frame.astype(np.int32) - _prev_frame[key].astype(np.int32)).max())
+                            print(f"[step {step}] camera '{key}' max_pixel_diff_from_prev={diff}")
+                        _prev_frame[key] = frame.copy()
                         w.write(frame)
+                main._prev_cam_frame = _prev_frame
 
             prev_utm_body_29 = utm_body_29
             chunk_step += 1
