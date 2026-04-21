@@ -630,8 +630,11 @@ def main() -> int:
 
     for ep in range(args.num_episodes):
         print(f"\n[episode {ep}]")
+        print(f"[episode {ep}] calling env.reset()...")
         obs, info = env.reset()
+        print(f"[episode {ep}] env.reset() done, calling warm-up env.step()...")
         env.step(zero_action)   # warm-up camera buffer
+        print(f"[episode {ep}] warm-up done, entering step loop")
         history.reset()
         prev_utm_body_29 = np.zeros(29, dtype=np.float32)
 
