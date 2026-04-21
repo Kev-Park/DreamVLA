@@ -772,11 +772,16 @@ def main() -> int:
             env_action = torch.as_tensor(
                 env_action_np[None, :], device="cuda:0", dtype=torch.float32)
 
-            # 7h. Step + explicit render so RTX camera buffers update in headless mode.
-            obs, rew, term, trunc, info = env.step(env_action)
+            # 7h. Render BEFORE stepping: _APP.update() inside sim.render() flushes
+            #     the RTX annotator.  scene.update() inside env.step() then reads
+            #     that fresh annotator data into cam.data.output["rgb"].
+            #     (render_mode=None → env.step() never calls sim.render() itself,
+            #     so without this call cameras always return the initial frame.)
             env.unwrapped.sim.render()
+            obs, rew, term, trunc, info = env.step(env_action)
 
-            # 7i. Video frames (read after explicit render — buffer is fresh).
+            # 7i. Video frames (cam.data.output was populated by scene.update()
+            #     reading the annotator we just flushed above).
             if writers:
                 for key, w in writers.items():
                     frame = _read_camera_rgb(env, key)
