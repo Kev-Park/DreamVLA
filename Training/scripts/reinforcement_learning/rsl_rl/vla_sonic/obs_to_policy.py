@@ -169,6 +169,12 @@ class ObsToPolicyAdapter:
                 f"Scene has no '{self.cfg.camera_scene_key}'. "
                 "Use G1PickCamEnvCfg or equivalent --enable_cameras env variant."
             )
+        available = list(self._camera.data.output.keys())
+        if "rgb" not in available:
+            raise RuntimeError(
+                f"Camera '{self.cfg.camera_scene_key}' has no 'rgb' output yet "
+                f"(available: {available}). Call env.step() at least once after reset."
+            )
         rgb = self._camera.data.output["rgb"][0]  # (H_src, W_src, 3 or 4), GPU tensor
         rgb = rgb[..., :3]
 

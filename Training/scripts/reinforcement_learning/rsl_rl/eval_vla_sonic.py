@@ -576,6 +576,10 @@ def main() -> int:
     for ep in range(args.num_episodes):
         print(f"\n[episode {ep}]")
         obs, info = env.reset()
+        # Isaac Lab camera sensors are populated on env.step(), not env.reset().
+        # One silent warm-up step fills the camera buffer so obs_adapter() can
+        # read ego-view pixels without blocking on an empty output dict.
+        env.step(zero_action)
         history.reset()
         prev_utm_body_29 = np.zeros(29, dtype=np.float32)
 
