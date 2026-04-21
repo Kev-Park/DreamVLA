@@ -517,9 +517,9 @@ class VLAVisWriter:
 
         # ── Render to numpy → video ───────────────────────────────────────────
         self._fig.canvas.draw()
-        buf = np.frombuffer(self._fig.canvas.tostring_rgb(), dtype=np.uint8)
         w, h = self._fig.canvas.get_width_height()
-        self._writer.append_data(buf.reshape(h, w, 3))
+        buf = np.frombuffer(self._fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
+        self._writer.append_data(buf[:, :, :3])
 
     def close(self) -> None:
         self._writer.close()
