@@ -308,6 +308,224 @@ class VideoWriter:
         self._writer.close()
 
 
+class VLAVisWriter:
+    """Renders VLA output skeleton to an MP4 using matplotlib offscreen (Agg).
+
+    Shows the predicted vr_3pt skeleton (positions + orientation axes), trail,
+    planner state, and the actual robot root position from the env — all without
+    any Isaac Lab UI dependencies.
+    """
+
+    _AXIS_LEN = 0.08          # orientation quiver length (m)
+    _TRAIL_ALPHA_MIN = 0.15
+    _BG  = "#0d1117"
+    _FG  = "#e6edf3"
+    _C_LW = (0.33, 0.53, 1.00)   # blue  — left wrist
+    _C_RW = (1.00, 0.33, 0.27)   # red   — right wrist
+    _C_NK = (0.27, 0.87, 0.40)   # green — neck
+    _C_RT = (1.00, 0.80, 0.00)   # gold  — robot root (env)
+
+    def __init__(self, path: Path, fps: int, trail_len: int = 60):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers projection
+        self._plt = plt
+
+        fig = plt.figure(figsize=(14, 8), facecolor=self._BG, dpi=100)
+        fig.patch.set_facecolor(self._BG)
+        self._ax3d  = fig.add_axes([0.00, 0.00, 0.65, 1.00], projection="3d")
+        self._ax_txt = fig.add_axes([0.65, 0.00, 0.35, 1.00])
+        self._ax3d.set_facecolor(self._BG)
+        self._ax_txt.set_facecolor(self._BG)
+        self._ax_txt.axis("off")
+        self._fig = fig
+
+        self._trails: dict[str, list] = {"lw": [], "rw": [], "nk": []}
+        self._trail_len = trail_len
+
+        import imageio
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._writer = imageio.get_writer(str(path), fps=fps, codec="libx264", quality=7)
+        self.path = path
+
+    @staticmethod
+    def _rot6d_to_matrix(r6d: np.ndarray) -> np.ndarray:
+        """First-two-columns 6D → 3×3 rotation matrix."""
+        col0 = r6d[:3].astype(np.float64)
+        col1 = r6d[3:6].astype(np.float64)
+        n0 = np.linalg.norm(col0)
+        if n0 > 1e-8:
+            col0 /= n0
+        col1 -= np.dot(col1, col0) * col0
+        n1 = np.linalg.norm(col1)
+        if n1 > 1e-8:
+            col1 /= n1
+        return np.stack([col0, col1, np.cross(col0, col1)], axis=1)
+
+    def write(
+        self,
+        vr_pos: np.ndarray,           # (9,)  lwrist/rwrist/neck xyz
+        vr_rot6d: np.ndarray,         # (18,) rot6d per point
+        root_pos: np.ndarray,         # (3,)  actual env robot root position
+        planner_mode: int,
+        planner_speed: float,
+        planner_height: float,
+        planner_facing: np.ndarray,   # (3,)
+        planner_movement: np.ndarray, # (3,)
+        step: int,
+    ) -> None:
+        lw_pos = vr_pos[0:3].astype(np.float64)
+        rw_pos = vr_pos[3:6].astype(np.float64)
+        nk_pos = vr_pos[6:9].astype(np.float64)
+        lw_R = self._rot6d_to_matrix(vr_rot6d[0:6])
+        rw_R = self._rot6d_to_matrix(vr_rot6d[6:12])
+        nk_R = self._rot6d_to_matrix(vr_rot6d[12:18])
+
+        for key, pt in [("lw", lw_pos), ("rw", rw_pos), ("nk", nk_pos)]:
+            self._trails[key].append(pt.copy())
+            if len(self._trails[key]) > self._trail_len:
+                self._trails[key].pop(0)
+
+        # ── 3D axes ──────────────────────────────────────────────────────────
+        ax = self._ax3d
+        ax.cla()
+        ax.set_facecolor(self._BG)
+        for pane in [ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane]:
+            pane.fill = False
+            pane.set_edgecolor("#2d3040")
+        ax.tick_params(colors=self._FG, labelsize=7)
+        for axis_obj in [ax.xaxis, ax.yaxis, ax.zaxis]:
+            axis_obj.label.set_color(self._FG)
+        ax.set_xlabel("X (m)", fontsize=8)
+        ax.set_ylabel("Y (m)", fontsize=8)
+        ax.set_zlabel("Z (m)", fontsize=8)
+        ax.set_title(f"VLA output — step {step}", color=self._FG, fontsize=10, pad=4)
+
+        # Center view on neck; fixed ±1.2 m cube
+        cx, cy, cz = nk_pos
+        half = 1.2
+        ax.set_xlim(cx - half, cx + half)
+        ax.set_ylim(cy - half, cy + half)
+        ax.set_zlim(cz - half, cz + half)
+        ax.set_box_aspect([1, 1, 1])
+
+        # Sparse ground grid at z = 0
+        gs = np.linspace(-half, half, 6)
+        for g in gs:
+            ax.plot([cx + g, cx + g], [cy - half, cy + half], [0, 0],
+                    color="#2d3040", lw=0.5, alpha=0.6)
+            ax.plot([cx - half, cx + half], [cy + g, cy + g], [0, 0],
+                    color="#2d3040", lw=0.5, alpha=0.6)
+
+        # Trails (fading alpha)
+        for key, color in [("lw", self._C_LW), ("rw", self._C_RW), ("nk", self._C_NK)]:
+            trail = self._trails[key]
+            if len(trail) >= 2:
+                pts = np.array(trail)
+                k = len(pts)
+                for i in range(k - 1):
+                    alpha = self._TRAIL_ALPHA_MIN + (1.0 - self._TRAIL_ALPHA_MIN) * (i / (k - 1))
+                    ax.plot(pts[i:i+2, 0], pts[i:i+2, 1], pts[i:i+2, 2],
+                            color=color, lw=1.5, alpha=alpha)
+
+        # Actual robot root (env state) + facing arrow
+        rp = root_pos.astype(np.float64)
+        ax.scatter(*rp, color=self._C_RT, s=100, zorder=5, depthshade=False)
+        fv = planner_facing.astype(np.float64)
+        ax.quiver(*rp, *(fv * 0.4), color=self._C_RT, lw=2, arrow_length_ratio=0.25)
+
+        # VR 3-point spheres + labels
+        for pos, color, label in [
+            (lw_pos, self._C_LW, "L wrist"),
+            (rw_pos, self._C_RW, "R wrist"),
+            (nk_pos, self._C_NK, "Neck"),
+        ]:
+            ax.scatter(*pos, color=color, s=220, zorder=6, depthshade=False)
+            ax.text(pos[0], pos[1], pos[2] + 0.07, label,
+                    color=color, fontsize=7, ha="center")
+
+        # Skeleton lines: neck → each wrist
+        for start, end, color in [
+            (lw_pos, nk_pos, self._C_LW),
+            (rw_pos, nk_pos, self._C_RW),
+        ]:
+            ax.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]],
+                    color=color, lw=2.5, alpha=0.85)
+
+        # Torso stub: neck → estimated torso_link (reverse TORSO_LOCAL_OFFSET)
+        torso_est = nk_pos - nk_R[:, 2] * 0.35
+        ax.plot([nk_pos[0], torso_est[0]], [nk_pos[1], torso_est[1]],
+                [nk_pos[2], torso_est[2]], color="#888888", lw=2.0, alpha=0.6)
+
+        # Orientation axes per VR point (red=X, green=Y, blue=Z)
+        a = self._AXIS_LEN
+        for pos, R_mat in [(lw_pos, lw_R), (rw_pos, rw_R), (nk_pos, nk_R)]:
+            ax.quiver(*pos, *(R_mat[:, 0] * a), color="#ff4444", lw=1.5,
+                      arrow_length_ratio=0.35)
+            ax.quiver(*pos, *(R_mat[:, 1] * a), color="#44ff44", lw=1.5,
+                      arrow_length_ratio=0.35)
+            ax.quiver(*pos, *(R_mat[:, 2] * a), color="#4488ff", lw=1.5,
+                      arrow_length_ratio=0.35)
+
+        ax.view_init(elev=20, azim=-60)
+
+        # ── Info panel ────────────────────────────────────────────────────────
+        _PLANNER_MODE_LABELS = {0: "IDLE", 1: "SLOW_WALK", 2: "WALK", 3: "RUN"}
+        mode_str = _PLANNER_MODE_LABELS.get(planner_mode, f"MODE_{planner_mode}")
+        mv = planner_movement.astype(np.float64)
+        fv = planner_facing.astype(np.float64)
+
+        lines = [
+            ("VLA OUTPUT", True, "#f7d060"),
+            ("", False, self._FG),
+            ("── Planner ──────────────────", False, "#888899"),
+            (f"Mode:   {mode_str}", False, self._FG),
+            (f"Speed:  {planner_speed:.3f} m/s", False, self._FG),
+            (f"Height: {planner_height:.3f} m", False, self._FG),
+            (f"Facing:  [{fv[0]:+.3f}, {fv[1]:+.3f}, {fv[2]:+.3f}]", False, self._FG),
+            (f"Move:    [{mv[0]:+.3f}, {mv[1]:+.3f}, {mv[2]:+.3f}]", False, self._FG),
+            ("", False, self._FG),
+            ("── VR 3-pt Positions ─────────", False, "#888899"),
+            (f"L wrist  [{lw_pos[0]:+.3f}, {lw_pos[1]:+.3f}, {lw_pos[2]:+.3f}]",
+             False, "#5588ff"),
+            (f"R wrist  [{rw_pos[0]:+.3f}, {rw_pos[1]:+.3f}, {rw_pos[2]:+.3f}]",
+             False, "#ff5544"),
+            (f"Neck     [{nk_pos[0]:+.3f}, {nk_pos[1]:+.3f}, {nk_pos[2]:+.3f}]",
+             False, "#44dd66"),
+            ("", False, self._FG),
+            ("── Arm lengths ───────────────", False, "#888899"),
+            (f"L arm:  {np.linalg.norm(lw_pos - nk_pos):.3f} m", False, self._FG),
+            (f"R arm:  {np.linalg.norm(rw_pos - nk_pos):.3f} m", False, self._FG),
+            (f"Wrists: {np.linalg.norm(lw_pos - rw_pos):.3f} m", False, self._FG),
+            ("", False, self._FG),
+            ("── Robot root (env) ──────────", False, "#888899"),
+            (f"[{rp[0]:+.3f}, {rp[1]:+.3f}, {rp[2]:+.3f}]", False, "#ffcc00"),
+        ]
+
+        axt = self._ax_txt
+        axt.cla()
+        axt.set_facecolor(self._BG)
+        axt.axis("off")
+        y, dy = 0.97, 0.042
+        for text, bold, color in lines:
+            axt.text(0.04, y, text, transform=axt.transAxes,
+                     color=color, fontsize=9 if bold else 8,
+                     fontweight="bold" if bold else "normal",
+                     fontfamily="monospace", va="top")
+            y -= dy
+
+        # ── Render to numpy → video ───────────────────────────────────────────
+        self._fig.canvas.draw()
+        buf = np.frombuffer(self._fig.canvas.tostring_rgb(), dtype=np.uint8)
+        w, h = self._fig.canvas.get_width_height()
+        self._writer.append_data(buf.reshape(h, w, 3))
+
+    def close(self) -> None:
+        self._writer.close()
+        self._plt.close(self._fig)
+
+
 def _read_camera_rgb(env, key: str, *, verbose: bool = False) -> np.ndarray | None:
     try:
         cam = env.unwrapped.scene[key]
@@ -461,6 +679,14 @@ def main() -> int:
         for key, w in writers.items():
             print(f"[video] writing {w.path}")
 
+    vla_vis_writer: VLAVisWriter | None = None
+    if args.record_video:
+        vla_vis_writer = VLAVisWriter(
+            prefix.with_name(prefix.name + "_vla_skeleton.mp4"),
+            fps=args.video_fps,
+        )
+        print(f"[video] writing {vla_vis_writer.path}")
+
     # --- 7. Rollout -----------------------------------------------------
     action_space_dim = env.action_space.shape[-1]
     zero_action = torch.zeros((args.num_envs, action_space_dim), device="cuda:0", dtype=torch.float32)
@@ -582,6 +808,22 @@ def main() -> int:
             # 7f. VR 3-point from VLA (world frame; encoder builder does the anchor-local transform).
             vr_pos_world, vr_rot6d = extract_vr_3pt(vla_chunk, t_index=t_idx)
 
+            # 7f-vis. Render VLA skeleton frame (no-op when --record-video not set).
+            if vla_vis_writer is not None:
+                vla_vis_writer.write(
+                    vr_pos=vr_pos_world,
+                    vr_rot6d=vr_rot6d,
+                    root_pos=root_pos_w,
+                    planner_mode=int(np.atleast_1d(planner_inputs.mode).flat[0]),
+                    planner_speed=float(np.atleast_1d(planner_inputs.target_vel).flat[0]),
+                    planner_height=float(np.atleast_1d(planner_inputs.height).flat[0]),
+                    planner_facing=np.asarray(planner_inputs.facing_direction[0],
+                                              dtype=np.float32),
+                    planner_movement=np.asarray(planner_inputs.movement_direction[0],
+                                                dtype=np.float32),
+                    step=step,
+                )
+
             # 7g. Build encoder obs → run encoder → build decoder obs → run decoder.
             enc_obs = build_encoder_obs(
                 anchor_pos_world=anchor_pos_w,
@@ -642,6 +884,8 @@ def main() -> int:
 
     for w in writers.values():
         w.close()
+    if vla_vis_writer is not None:
+        vla_vis_writer.close()
 
     env.close()
     _APP.close()
