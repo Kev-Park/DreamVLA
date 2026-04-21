@@ -661,31 +661,11 @@ def main() -> int:
     # --- 5. History buffer for decoder + planner context ---------------
     history = HistoryBuffer()
 
-    # --- 6. Video writers (optional) -----------------------------------
+    # --- 6. Video writers — opened after Isaac Lab initializes to avoid
+    #         matplotlib thread conflicts with Omniverse during env.reset().
     writers: dict[str, VideoWriter] = {}
-    if args.record_video:
-        prefix = Path(args.record_video)
-        # Diagnose scene cameras before creating writers.
-        scene_keys = list(env.unwrapped.scene.keys()) if hasattr(env.unwrapped.scene, "keys") else []
-        print(f"[video] scene entities: {scene_keys}")
-        if "camera" in scene_keys:
-            writers["camera"] = VideoWriter(prefix.with_name(prefix.name + "_third_person.mp4"), args.video_fps)
-        else:
-            print("[video] 3rd-person 'camera' missing — skipping third_person.mp4")
-        if "camera_robot" in scene_keys:
-            writers["camera_robot"] = VideoWriter(prefix.with_name(prefix.name + "_ego.mp4"), args.video_fps)
-        else:
-            print("[video] ego 'camera_robot' missing — skipping ego.mp4")
-        for key, w in writers.items():
-            print(f"[video] writing {w.path}")
-
     vla_vis_writer: VLAVisWriter | None = None
-    if args.record_video:
-        vla_vis_writer = VLAVisWriter(
-            prefix.with_name(prefix.name + "_vla_skeleton.mp4"),
-            fps=args.video_fps,
-        )
-        print(f"[video] writing {vla_vis_writer.path}")
+    prefix: Path | None = Path(args.record_video) if args.record_video else None
 
     # --- 7. Rollout -----------------------------------------------------
     action_space_dim = env.action_space.shape[-1]
@@ -703,6 +683,26 @@ def main() -> int:
         env.step(zero_action)
         history.reset()
         prev_utm_body_29 = np.zeros(29, dtype=np.float32)
+
+        # Open video writers on first episode after Isaac Lab is fully up.
+        if ep == 0 and prefix is not None and not writers:
+            scene_keys = list(env.unwrapped.scene.keys()) if hasattr(env.unwrapped.scene, "keys") else []
+            print(f"[video] scene entities: {scene_keys}")
+            if "camera" in scene_keys:
+                writers["camera"] = VideoWriter(prefix.with_name(prefix.name + "_third_person.mp4"), args.video_fps)
+            else:
+                print("[video] 3rd-person 'camera' missing — skipping third_person.mp4")
+            if "camera_robot" in scene_keys:
+                writers["camera_robot"] = VideoWriter(prefix.with_name(prefix.name + "_ego.mp4"), args.video_fps)
+            else:
+                print("[video] ego 'camera_robot' missing — skipping ego.mp4")
+            for key, w in writers.items():
+                print(f"[video] writing {w.path}")
+            vla_vis_writer = VLAVisWriter(
+                prefix.with_name(prefix.name + "_vla_skeleton.mp4"),
+                fps=args.video_fps,
+            )
+            print(f"[video] writing {vla_vis_writer.path}")
 
         vla_chunk: dict | None = None
         chunk_step = 0
