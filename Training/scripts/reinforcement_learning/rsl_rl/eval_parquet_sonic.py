@@ -605,6 +605,15 @@ def main() -> int:
     prefix: Path | None = Path(args.record_video) if args.record_video else None
 
     # --- 7. Rollout ---------------------------------------------------
+    # Force CUDA context initialisation before env.reset().  eval_vla_sonic.py
+    # does this implicitly by loading Gr00tPolicy on cuda:0; without a VLA we
+    # must do it explicitly or env.reset() deadlocks at the Python level.
+    print("[cuda] warming up CUDA context...")
+    _dummy = torch.zeros(1, device="cuda:0")
+    torch.cuda.synchronize()
+    del _dummy
+    print("[cuda] ready")
+
     action_space_dim = env.action_space.shape[-1]
     zero_action      = torch.zeros((args.num_envs, action_space_dim),
                                    device="cuda:0", dtype=torch.float32)
