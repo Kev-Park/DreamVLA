@@ -299,11 +299,14 @@ class VideoWriter:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._writer = imageio.get_writer(str(path), fps=fps, codec="libx264", quality=7)
         self.path = path
+        self.frame_count = 0
 
     def write(self, frame_rgb: np.ndarray) -> None:
         self._writer.append_data(frame_rgb)
+        self.frame_count += 1
 
     def close(self) -> None:
+        print(f"[video] {self.path.name}: {self.frame_count} frames written")
         self._writer.close()
 
 
@@ -772,9 +775,14 @@ def main() -> int:
             env_action = torch.as_tensor(
                 env_action_np[None, :], device="cuda:0", dtype=torch.float32)
 
-            # 7h. Step. render_mode="rgb_array" ensures Isaac Lab calls sim.render()
-            #     inside env.step() so camera annotators are flushed each step.
+            # 7h. Step.
+            q_pre = robot.data.joint_pos[0].detach().cpu().numpy() if step < 5 else None
             obs, rew, term, trunc, info = env.step(env_action)
+            if step < 5:
+                q_post = robot.data.joint_pos[0].detach().cpu().numpy()
+                delta = np.abs(q_post - q_pre)
+                print(f"[step {step}] joint_pos max_delta={delta.max():.6f}  "
+                      f"mean_delta={delta.mean():.6f}  rew={float(rew[0]):.4f}")
 
             # 7i. Video frames.
             if writers:
