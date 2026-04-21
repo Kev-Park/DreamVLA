@@ -658,16 +658,6 @@ def main() -> int:
         chunk_step = 0
 
         for step in range(max_steps):
-            # 7a. Capture camera BEFORE env.step so the RTX denoiser has had a
-            #     full step to accumulate.  Reading after env.step() gives stale
-            #     or half-denoised pixels because the async render hasn't finished.
-            #     (matches collect_pick_cam.py's established pattern)
-            if writers:
-                for key, w in writers.items():
-                    frame = _read_camera_rgb(env, key)
-                    if frame is not None:
-                        w.write(frame)
-
             # 7b. Refresh action chunk from parquet every chunk_size steps.
             if parquet_chunk is None or chunk_step >= args.chunk_size:
                 parquet_chunk = streamer.get_chunk(step, args.chunk_size)
@@ -782,8 +772,16 @@ def main() -> int:
             env_action = torch.as_tensor(
                 env_action_np[None, :], device="cuda:0", dtype=torch.float32)
 
-            # 7h. Step.
+            # 7h. Step + explicit render so RTX camera buffers update in headless mode.
             obs, rew, term, trunc, info = env.step(env_action)
+            env.unwrapped.sim.render()
+
+            # 7i. Video frames (read after explicit render — buffer is fresh).
+            if writers:
+                for key, w in writers.items():
+                    frame = _read_camera_rgb(env, key)
+                    if frame is not None:
+                        w.write(frame)
 
             prev_utm_body_29 = utm_body_29
             chunk_step += 1
