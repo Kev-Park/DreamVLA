@@ -583,7 +583,7 @@ def main() -> int:
         args.task, device="cuda:0", num_envs=args.num_envs, enable_cameras=True,
     )
     _inject_cameras(env_cfg)
-    env = gym.make(args.task, cfg=env_cfg)
+    env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array")
     print(f"[env] {args.task}  action_space={env.action_space}")
 
     # --- 3. Build SONIC wrappers --------------------------------------
@@ -772,16 +772,11 @@ def main() -> int:
             env_action = torch.as_tensor(
                 env_action_np[None, :], device="cuda:0", dtype=torch.float32)
 
-            # 7h. Render BEFORE stepping: _APP.update() inside sim.render() flushes
-            #     the RTX annotator.  scene.update() inside env.step() then reads
-            #     that fresh annotator data into cam.data.output["rgb"].
-            #     (render_mode=None → env.step() never calls sim.render() itself,
-            #     so without this call cameras always return the initial frame.)
-            env.unwrapped.sim.render()
+            # 7h. Step. render_mode="rgb_array" ensures Isaac Lab calls sim.render()
+            #     inside env.step() so camera annotators are flushed each step.
             obs, rew, term, trunc, info = env.step(env_action)
 
-            # 7i. Video frames (cam.data.output was populated by scene.update()
-            #     reading the annotator we just flushed above).
+            # 7i. Video frames.
             if writers:
                 for key, w in writers.items():
                     frame = _read_camera_rgb(env, key)
