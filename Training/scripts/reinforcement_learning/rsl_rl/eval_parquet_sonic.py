@@ -658,7 +658,17 @@ def main() -> int:
         chunk_step = 0
 
         for step in range(max_steps):
-            # 7a. Refresh action chunk from parquet every chunk_size steps.
+            # 7a. Capture camera BEFORE env.step so the RTX denoiser has had a
+            #     full step to accumulate.  Reading after env.step() gives stale
+            #     or half-denoised pixels because the async render hasn't finished.
+            #     (matches collect_pick_cam.py's established pattern)
+            if writers:
+                for key, w in writers.items():
+                    frame = _read_camera_rgb(env, key)
+                    if frame is not None:
+                        w.write(frame)
+
+            # 7b. Refresh action chunk from parquet every chunk_size steps.
             if parquet_chunk is None or chunk_step >= args.chunk_size:
                 parquet_chunk = streamer.get_chunk(step, args.chunk_size)
                 chunk_step = 0
@@ -774,13 +784,6 @@ def main() -> int:
 
             # 7h. Step.
             obs, rew, term, trunc, info = env.step(env_action)
-
-            # 7i. Video frames.
-            if writers:
-                for key, w in writers.items():
-                    frame = _read_camera_rgb(env, key)
-                    if frame is not None:
-                        w.write(frame)
 
             prev_utm_body_29 = utm_body_29
             chunk_step += 1
