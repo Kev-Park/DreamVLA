@@ -605,14 +605,16 @@ def main() -> int:
     prefix: Path | None = Path(args.record_video) if args.record_video else None
 
     # --- 7. Rollout ---------------------------------------------------
-    # Force CUDA context initialisation before env.reset().  eval_vla_sonic.py
-    # does this implicitly by loading Gr00tPolicy on cuda:0; without a VLA we
-    # must do it explicitly or env.reset() deadlocks at the Python level.
-    print("[cuda] warming up CUDA context...")
-    _dummy = torch.zeros(1, device="cuda:0")
-    torch.cuda.synchronize()
-    del _dummy
-    print("[cuda] ready")
+    # Prime the Omniverse physics pipeline before the episode loop.
+    # eval_vla_sonic.py gets this for free because loading Gr00tPolicy takes
+    # ~30-60 s, giving Isaac Lab's background threads time to finish initialising.
+    # Without a VLA to load, env.reset() is called before those threads are
+    # ready and hangs.  robot.find_bodies() is a blocking Isaac Lab call that
+    # acts as the synchronisation point — it returns only once the articulation
+    # data is fully populated, which requires the sim pipeline to be up.
+    print("[sim] priming physics pipeline (robot.find_bodies sync)...")
+    robot.find_bodies(["left_wrist_yaw_link", "right_wrist_yaw_link"])
+    print("[sim] ready")
 
     action_space_dim = env.action_space.shape[-1]
     zero_action      = torch.zeros((args.num_envs, action_space_dim),
