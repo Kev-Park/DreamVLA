@@ -258,7 +258,7 @@ def update_frame(
         handles["eef_rw"].position = tuple(eef[7:10])
 
     # Root frame: neck_xy + planner_height_z, oriented by root_quat
-    height = float(data["planner_height"][fi][0]) if data["planner_height"] is not None else 0.0
+    height = float(np.atleast_1d(data["planner_height"][fi])[0]) if data["planner_height"] is not None else 0.0
     root_pos = np.array([nk_pos[0], nk_pos[1], height])
     root_wxyz = (1.0, 0.0, 0.0, 0.0)
     if data["root_quat"] is not None:
@@ -299,9 +299,9 @@ def update_frame(
 
     # ── HUD text ──────────────────────────────────────────────────────────────
 
-    mode_int = int(data["planner_mode"][fi][0]) if data["planner_mode"] is not None else 0
+    mode_int = int(np.atleast_1d(data["planner_mode"][fi])[0]) if data["planner_mode"] is not None else 0
     mode_str = PLANNER_MODE_LABELS.get(mode_int, f"MODE_{mode_int}")
-    speed    = float(data["planner_speed"][fi][0]) if data["planner_speed"] is not None else 0.0
+    speed    = float(np.atleast_1d(data["planner_speed"][fi])[0]) if data["planner_speed"] is not None else 0.0
     mov      = data["planner_movement"][fi] if data["planner_movement"] is not None else np.zeros(3)
     facing_v = data["planner_facing"][fi]   if data["planner_facing"]   is not None else np.zeros(3)
     grav     = data["proj_gravity"][fi]     if data["proj_gravity"]     is not None else np.zeros(3)
