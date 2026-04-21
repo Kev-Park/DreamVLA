@@ -70,10 +70,6 @@ def _parse_cli() -> argparse.Namespace:
                         help="Output prefix for MP4 files. Saves both third-person + ego.")
     parser.add_argument("--video-fps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--viser-port", type=int, default=None,
-                        help="If set, stream VR 3-point targets + robot root to a Viser viewer "
-                             "on this port. SSH-tunnel: ssh -L PORT:localhost:PORT <host>. "
-                             "Install: pip install viser")
     # AppLauncher args get appended below.
     return parser
 
@@ -122,7 +118,6 @@ from vla_sonic import (  # noqa: E402
 )
 from vla_sonic.action_assembler import MUJOCO_TO_ISAACLAB  # noqa: E402
 from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
-from vla_sonic.planner_to_utm import rot6d_to_quat_wxyz  # noqa: E402 — (unused here but kept for reference)
 from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter  # noqa: E402
 from vla_sonic.simple_robot_model import SimpleG1RobotModel  # noqa: E402
 
@@ -337,101 +332,6 @@ def _read_camera_rgb(env, key: str, *, verbose: bool = False) -> np.ndarray | No
 
 
 # =========================================================================
-# Viser VR visualizer — optional, gated by --viser-port.
-# =========================================================================
-
-class _ViserVRViz:
-    """Streams VR 3-point targets + robot root pose to a Viser 3D viewer.
-
-    Point order (per VLA output convention): [left_wrist, right_wrist, neck].
-    VLA outputs vr_3pt_position in pelvis-local frame; this class transforms
-    each point/frame to world space for display.
-
-    SSH tunnel to view on local machine:
-        ssh -L <port>:localhost:<port> <remote-host>
-    then open http://localhost:<port> in a browser.
-    """
-
-    _LABELS = ("left_wrist", "right_wrist", "neck")
-    _COLORS = (
-        (220,  50,  50),  # red   — left wrist
-        ( 50, 100, 220),  # blue  — right wrist
-        ( 50, 180,  50),  # green — neck
-    )
-
-    def __init__(self, port: int) -> None:
-        import viser
-        self._server = viser.ViserServer(port=port)
-        actual = self._server.get_port()
-        print(
-            f"[viser] Viewer on http://localhost:{actual}\n"
-            f"[viser] SSH tunnel: ssh -L {actual}:localhost:{actual} <host>"
-        )
-
-    def log_step(
-        self,
-        root_pos_w: np.ndarray,               # (3,)  world-frame pelvis position
-        root_quat_wxyz: np.ndarray,           # (4,)  wxyz scalar-first
-        vr_pos_pelvis_local: np.ndarray,      # (9,)  [lwrist|rwrist|neck] xyz, pelvis-local
-        vr_rot6d_pelvis_local: np.ndarray,    # (18,) 3×6D col-major rot6d, pelvis-local
-        vla_chunk: dict | None = None,        # full action dict for trajectory trail
-        t_index: int = 0,
-    ) -> None:
-        from scipy.spatial.transform import Rotation as _R
-
-        R_pelvis = _R.from_quat(quat_wxyz_to_xyzw(root_quat_wxyz))
-        pts_local = vr_pos_pelvis_local.reshape(3, 3)   # (3, xyz)
-        pts_world = (R_pelvis.apply(pts_local) + root_pos_w).astype(np.float32)
-
-        # Robot root frame.
-        self._server.scene.add_frame(
-            "/robot/root",
-            wxyz=root_quat_wxyz,
-            position=root_pos_w,
-            axes_length=0.25,
-            axes_radius=0.012,
-        )
-
-        # Convert pelvis-local rot6d → world quaternions.
-        quats_local_wxyz = rot6d_to_quat_wxyz(
-            vr_rot6d_pelvis_local.reshape(3, 6)
-        ).astype(np.float32)  # (3, 4) wxyz
-
-        for i, (label, color) in enumerate(zip(self._LABELS, self._COLORS)):
-            R_local = _R.from_quat(quat_wxyz_to_xyzw(quats_local_wxyz[i]))
-            q_world_xyzw = (R_pelvis * R_local).as_quat()
-            q_world_wxyz = np.array(
-                [q_world_xyzw[3], q_world_xyzw[0], q_world_xyzw[1], q_world_xyzw[2]],
-                dtype=np.float32,
-            )
-            self._server.scene.add_frame(
-                f"/vr/{label}",
-                wxyz=q_world_wxyz,
-                position=pts_world[i],
-                axes_length=0.12,
-                axes_radius=0.007,
-            )
-
-        # Predicted trajectory trail for all T steps in the current chunk.
-        if vla_chunk is not None and "vr_3pt_position" in vla_chunk:
-            traj = np.asarray(vla_chunk["vr_3pt_position"], dtype=np.float32)
-            if traj.ndim == 3:  # (B, T, 9)
-                traj = traj[0]  # (T, 9)
-            T = traj.shape[0]
-            for i, (label, color) in enumerate(zip(self._LABELS, self._COLORS)):
-                pts_t_local = traj[:, i*3:(i+1)*3]              # (T, 3) pelvis-local
-                pts_t_world = R_pelvis.apply(pts_t_local) + root_pos_w  # (T, 3)
-                self._server.scene.add_point_cloud(
-                    f"/vr_trail/{label}",
-                    points=pts_t_world.astype(np.float32),
-                    colors=np.tile(
-                        np.array(color, dtype=np.uint8), (T, 1)
-                    ),
-                    point_size=0.012,
-                )
-
-
-# =========================================================================
 # Camera injection — the env cfg's __post_init__ ran inside parse_env_cfg
 # before we had a handle to flip `enable_cameras_for_collection`, so we wire
 # the two cameras directly into the scene config here.
@@ -542,11 +442,6 @@ def main() -> int:
 
     # --- 5. History buffer for decoder + planner context ---------------
     history = HistoryBuffer()
-
-    # --- 5b. Optional Viser VR visualizer ------------------------------
-    viser_viz: _ViserVRViz | None = (
-        _ViserVRViz(args.viser_port) if args.viser_port is not None else None
-    )
 
     # --- 6. Video writers (optional) -----------------------------------
     writers: dict[str, VideoWriter] = {}
@@ -686,16 +581,6 @@ def main() -> int:
 
             # 7f. VR 3-point from VLA (world frame; encoder builder does the anchor-local transform).
             vr_pos_world, vr_rot6d = extract_vr_3pt(vla_chunk, t_index=t_idx)
-
-            if viser_viz is not None:
-                viser_viz.log_step(
-                    root_pos_w=root_pos_w,
-                    root_quat_wxyz=root_quat_w,
-                    vr_pos_pelvis_local=vr_pos_world,
-                    vr_rot6d_pelvis_local=vr_rot6d,
-                    vla_chunk=vla_chunk,
-                    t_index=t_idx,
-                )
 
             # 7g. Build encoder obs → run encoder → build decoder obs → run decoder.
             enc_obs = build_encoder_obs(
