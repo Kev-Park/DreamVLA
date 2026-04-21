@@ -605,15 +605,19 @@ def main() -> int:
     prefix: Path | None = Path(args.record_video) if args.record_video else None
 
     # --- 7. Rollout ---------------------------------------------------
-    # Prime the Omniverse physics pipeline before the episode loop.
-    # eval_vla_sonic.py gets this for free because loading Gr00tPolicy takes
-    # ~30-60 s, giving Isaac Lab's background threads time to finish initialising.
-    # Without a VLA to load, env.reset() is called before those threads are
-    # ready and hangs.  robot.find_bodies() is a blocking Isaac Lab call that
-    # acts as the synchronisation point — it returns only once the articulation
-    # data is fully populated, which requires the sim pipeline to be up.
-    print("[sim] priming physics pipeline (robot.find_bodies sync)...")
-    robot.find_bodies(["left_wrist_yaw_link", "right_wrist_yaw_link"])
+    # Pump the Omniverse application event loop before the first env.reset().
+    #
+    # Isaac Lab compiles PhysX / USD / render shaders on first use and needs
+    # the app event loop to be ticked while that happens.  eval_vla_sonic.py
+    # gets this for free: loading Gr00tPolicy takes several minutes, during
+    # which _APP.update() is called implicitly by torch / the Kit framework.
+    # Without a VLA we must do it explicitly, otherwise env.reset() blocks
+    # waiting for compilation that never progresses.
+    import time as _time
+    print("[sim] pumping Omniverse event loop to let physics initialise...")
+    for _i in range(60):
+        _APP.update()
+        _time.sleep(0.5)
     print("[sim] ready")
 
     action_space_dim = env.action_space.shape[-1]
