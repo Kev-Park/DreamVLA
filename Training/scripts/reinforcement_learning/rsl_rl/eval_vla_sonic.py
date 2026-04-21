@@ -362,9 +362,10 @@ class _ViserVRViz:
     def __init__(self, port: int) -> None:
         import viser
         self._server = viser.ViserServer(port=port)
+        actual = self._server.get_port()
         print(
-            f"[viser] Viewer on http://localhost:{port}\n"
-            f"[viser] SSH tunnel: ssh -L {port}:localhost:{port} <host>"
+            f"[viser] Viewer on http://localhost:{actual}\n"
+            f"[viser] SSH tunnel: ssh -L {actual}:localhost:{actual} <host>"
         )
 
     def log_step(
