@@ -787,6 +787,7 @@ def main() -> int:
             chunk_step += 1
 
             if bool(term[0] if term.ndim > 0 else term):
+                print(f"[step {step}] terminated  rew={float(rew[0]):.4f}")
                 break
 
         n_succ = int(getattr(env.unwrapped, "n_successes", 0))
