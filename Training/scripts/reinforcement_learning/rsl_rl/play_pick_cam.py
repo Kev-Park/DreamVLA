@@ -131,6 +131,36 @@ def main():
             ),
         )
 
+    # Ensure third-person camera exists whenever camera mode is enabled.
+    if bool(args_cli.enable_cameras) and not hasattr(env_cfg.scene, "camera"):
+        import numpy as _np
+        _rot = _np.array([0.7538, 0.61221, -0.1505, -0.1853])
+        _rot_mat = _np.array(math_utils.matrix_from_quat(torch.tensor(_rot)))
+        _theta = -_np.pi * 0.75
+        _rot_z = _np.array([
+            [_np.cos(_theta), -_np.sin(_theta), 0.0],
+            [_np.sin(_theta),  _np.cos(_theta), 0.0],
+            [0.0,              0.0,              1.0],
+        ])
+        _rot_quat = tuple(math_utils.quat_from_matrix(torch.tensor(_rot_z @ _rot_mat)).tolist())
+        env_cfg.scene.camera = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Camera_new",
+            spawn=PinholeCameraCfg(
+                focal_length=18.1476,
+                focus_distance=400.0,
+                horizontal_aperture=20.955,
+                clipping_range=(0.01, 100.0),
+            ),
+            data_types=["rgb"],
+            height=1920,
+            width=2560,
+            offset=CameraCfg.OffsetCfg(
+                pos=(-1.03 + 2.1 - 0.034, 4.05 - 0.9, 1.31),
+                rot=_rot_quat,
+                convention="opengl",
+            ),
+        )
+
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     print("Observation space:", env.observation_space)
     print("Action space:", env.action_space)
