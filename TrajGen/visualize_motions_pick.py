@@ -140,7 +140,7 @@ def _find_first_name(candidates, names):
 def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
          hand_length=0.15, hand_thickness=0.04, collision_cylinder_radius=0.05,
          torso_cylinder_radius=0.125, torso_cylinder_top_extension=0.35,
-         approach_spoof_left_x=0.24):
+         approach_spoof_left_x=0.24, show_human=False):
     
     urdf = yourdfpy.URDF.load('../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf')
     #urdf = yourdfpy.URDF.load('../../HumanoidVerse/humanoidverse/data/robots/g1/g1_paddle_hand_rigid.urdf')
@@ -150,12 +150,10 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
     print( len(robot.joints.actuated_names ) )
 
     print("1. Loading data...")
-    HUMAN_DATA = load_pickle(human_data_path)
+    if show_human:
+        HUMAN_DATA = load_pickle(human_data_path)
+        smpl_keypoints = HUMAN_DATA['poses'][0, :]
     G1_DATA = load_pickle(g1_data_path)
-    #print(G1_DATA["grab_idx"])
-    #print(G1_DATA)
-    # exit(0)
-    smpl_keypoints = HUMAN_DATA['poses'][0, :]
     #heightmap = HUMAN_DATA['height_map'].numpy()
     heightmap = onp.zeros((1000, 1000), dtype=onp.float32)  # Dummy heightmap for visualization
 
@@ -426,58 +424,40 @@ def main(show_segments=False, forearm_length=0.25, forearm_thickness=0.05,
                 else:
                     grab_sphere.color = (255, 50, 50)  # Red: not yet reached
 
-            skeleton = [
-                [-1, 0], [0, 1], [0, 2], [0, 3], [1, 4], [2, 5], [3, 6], [4, 7],
-                [5, 8], [6, 9], [7, 10], [8, 11], [9, 12], [9, 13], [9, 14],
-                [12, 15], [13, 16], [14, 17], [16, 18], [17, 19], [18, 20], [19, 21]
-            ]
-            # --- End of dummy data ---
+            if show_human:
+                skeleton = [
+                    [-1, 0], [0, 1], [0, 2], [0, 3], [1, 4], [2, 5], [3, 6], [4, 7],
+                    [5, 8], [6, 9], [7, 10], [8, 11], [9, 12], [9, 13], [9, 14],
+                    [12, 15], [13, 16], [14, 17], [16, 18], [17, 19], [18, 20], [19, 21]
+                ]
+                current_smpl_keypoints = smpl_keypoints[min(tstep, len(smpl_keypoints) - 1)]
 
-            # Let's assume 'tstep' is defined elsewhere in your loop
-            current_smpl_keypoints = smpl_keypoints[min(tstep, len(smpl_keypoints) - 1)]
+                line_segment_points_list = []
+                for bone in skeleton:
+                    idx0, idx1 = bone
+                    if idx0 == -1:
+                        continue
+                    if 0 <= idx0 < len(current_smpl_keypoints) and 0 <= idx1 < len(current_smpl_keypoints):
+                        line_segment_points_list.append([current_smpl_keypoints[idx0], current_smpl_keypoints[idx1]])
+                    else:
+                        print(f"Warning: Bone {bone} has out-of-bounds indices for current_smpl_keypoints with shape {current_smpl_keypoints.shape}")
 
-            # Prepare points for the line segments in (N, 2, 3) format
-            line_segment_points_list = []
-            for bone in skeleton:
-                idx0, idx1 = bone
-                # Skip if the first index is -1
-                if idx0 == -1:
-                    continue
-                # Ensure indices are within bounds
-                if 0 <= idx0 < len(current_smpl_keypoints) and 0 <= idx1 < len(current_smpl_keypoints):
-                    start_point = current_smpl_keypoints[idx0]
-                    end_point = current_smpl_keypoints[idx1]
-                    line_segment_points_list.append([start_point, end_point])
-                else:
-                    print(f"Warning: Bone {bone} has out-of-bounds indices for current_smpl_keypoints with shape {current_smpl_keypoints.shape}")
+                if line_segment_points_list:
+                    points_for_lines = onp.array(line_segment_points_list)
+                    colors_for_lines = onp.tile(onp.array([0, 0, 255]), (len(points_for_lines), 2, 1))
+                    server.scene.add_line_segments(
+                        name="/target_skeleton_segments",
+                        points=points_for_lines,
+                        colors=colors_for_lines,
+                        line_width=3.0,
+                    )
 
-            if line_segment_points_list:
-                # Convert to NumPy array of shape (N, 2, 3)
-                points_for_lines = onp.array(line_segment_points_list)
-                num_lines = len(points_for_lines)
-
-                # Prepare colors for the line segments (N, 2, 3)
-                # Let's make each segment uniformly blue. So both endpoints of a segment are blue.
-                # RGB color for blue
-                blue_color = onp.array([0, 0, 255])
-                # Create an array (N, 2, 3) where each [start_color, end_color] pair is [blue, blue]
-                colors_for_lines = onp.tile(blue_color, (num_lines, 2, 1))
-
-
-                server.scene.add_line_segments(
-                    name="/target_skeleton_segments", # Unique name
-                    points=points_for_lines,
-                    colors=colors_for_lines, # (N, 2, 3) array, colors for each endpoint
-                    line_width=3.0, # As per your example
+                server.scene.add_point_cloud(
+                    "/target_keypoints",
+                    onp.array(smpl_keypoints[min(tstep, len(smpl_keypoints) - 1)]),
+                    onp.array((0, 0, 255))[None].repeat(22, axis=0),
+                    point_size=0.01,
                 )
-
-
-            server.scene.add_point_cloud(
-                "/target_keypoints",
-                onp.array(smpl_keypoints[min(tstep, len(smpl_keypoints) - 1)]),
-                onp.array((0, 0, 255))[None].repeat(22, axis=0),
-                point_size=0.01,
-            )
 
         time.sleep(1./20.)
 
@@ -493,6 +473,7 @@ if __name__ == "__main__":
     parser.add_argument("--id", type=int, default=10, help="Motion index to visualize")
     parser.add_argument("--ret_or_ref", type=int, choices=[1, 2], default=1, help="1=retargeted (Pick_sim1), 2=refined (Pick_sim2)")
     parser.add_argument("--segments", action="store_true", default=False, help="Show capsule arm segments instead of spheres")
+    parser.add_argument("--human", action="store_true", default=False, help="Load and display human SMPL skeleton overlay")
     args = parser.parse_args()
 
     # --- Arm capsule visualization tuning (active when --segments is set) ---
@@ -526,6 +507,7 @@ if __name__ == "__main__":
         approach_spoof_left_x=APPROACH_SPOOF_LEFT_X,
         torso_cylinder_radius=TORSO_CYLINDER_RADIUS,
         torso_cylinder_top_extension=TORSO_CYLINDER_TOP_EXTENSION,
+        show_human=args.human,
     )
 
 
