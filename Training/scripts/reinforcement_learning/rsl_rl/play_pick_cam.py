@@ -132,7 +132,9 @@ def main():
         )
 
     # Ensure third-person camera exists whenever camera mode is enabled.
-    if bool(args_cli.enable_cameras) and not hasattr(env_cfg.scene, "camera"):
+    _existing_cam = getattr(env_cfg.scene, "camera", None)
+    print(f"[DEBUG] env_cfg.scene.camera before injection: {_existing_cam!r}")
+    if bool(args_cli.enable_cameras) and not isinstance(_existing_cam, CameraCfg):
         import numpy as _np
         _rot = _np.array([0.7538, 0.61221, -0.1505, -0.1853])
         _rot_mat = _np.array(math_utils.matrix_from_quat(torch.tensor(_rot)))
