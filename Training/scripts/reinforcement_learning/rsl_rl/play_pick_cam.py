@@ -200,15 +200,38 @@ def main():
         )
 
     cam_robot = env.unwrapped.scene["camera_robot"]
+    cam_tp = env.unwrapped.scene["camera"] if "camera" in scene_keys else None
+    if cam_tp is not None:
+        print("[INFO] Third-person camera found — will record a second video.")
+    else:
+        print("[INFO] No third-person camera in scene — skipping third-person video.")
 
     video_folder = os.path.join(log_dir, "videos", "play")
     os.makedirs(video_folder, exist_ok=True)
     robot_video_path = os.path.join(video_folder, args_cli.name)
+    tp_video_path = os.path.join(video_folder, os.path.splitext(args_cli.name)[0] + "_tp.mp4")
     print(f"[INFO] Writing robot camera video to: {robot_video_path}")
+    if cam_tp is not None:
+        print(f"[INFO] Writing third-person camera video to: {tp_video_path}")
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     video_writer_robot = None
+    video_writer_tp = None
     video_fps = max(1, int(round(1.0 / env.unwrapped.step_dt)))
+
+    def _raw_to_bgr(raw_tensor):
+        frame = raw_tensor.cpu().numpy()
+        if frame.ndim == 3 and frame.shape[2] == 4:
+            frame = frame[:, :, :3]
+        frame = np.nan_to_num(frame, nan=0.0, posinf=1.0, neginf=0.0)
+        if frame.dtype != np.uint8:
+            frame = frame.astype(np.float32)
+            if np.max(frame) > 1.5:
+                frame = frame / 255.0
+            frame = np.clip(frame, 0.0, 1.0)
+            frame = np.power(frame, 1.0 / 2.2)
+            frame = (frame * 255.0).clip(0, 255).astype(np.uint8)
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
     printed_frame_stats = False
 
@@ -227,8 +250,8 @@ def main():
         )
         x_new = object_pos_local[0, 0].item()
         y_new = object_pos_local[0, 1].item()
-        
-        
+
+
         for i in range(1):
             frame_rgb = image_robot[i].cpu().numpy()
             if not printed_frame_stats:
@@ -260,7 +283,7 @@ def main():
                 frame_h, frame_w = frame_bgr.shape[:2]
                 video_writer_robot = cv2.VideoWriter(robot_video_path, fourcc, video_fps, (frame_w, frame_h))
                 print(f"[INFO] Initialized robot video writer at {frame_w}x{frame_h} @ {video_fps} FPS")
-            
+
             # Annotate frame with object height
             try:
                 object_z = float(env.unwrapped.scene["object"].data.root_pos_w[0, 2].item())
@@ -288,7 +311,16 @@ def main():
                 cv2.LINE_AA,
             )
             video_writer_robot.write(frame_bgr)
-        
+
+        # Third-person camera recording
+        if cam_tp is not None:
+            frame_bgr_tp = _raw_to_bgr(cam_tp.data.output["rgb"][0])
+            if video_writer_tp is None:
+                h, w = frame_bgr_tp.shape[:2]
+                video_writer_tp = cv2.VideoWriter(tp_video_path, fourcc, video_fps, (w, h))
+                print(f"[INFO] Initialized third-person video writer at {w}x{h} @ {video_fps} FPS")
+            video_writer_tp.write(frame_bgr_tp)
+
         # image = camera.get_image("rgb")
         with torch.inference_mode():
             obs[:,52] = x_new
@@ -299,17 +331,20 @@ def main():
             break
         timestep += 1
         print(timestep)
-            
+
 
         # time delay for real-time evaluation
         sleep_time = dt - (time.time() - start_time)
         if args_cli.real_time and sleep_time > 0:
             time.sleep(sleep_time)
-    
+
     # release video writers
     if video_writer_robot is not None:
         print(f"[INFO] Releasing video writer: {video_writer_robot}")
         video_writer_robot.release()
+    if video_writer_tp is not None:
+        print(f"[INFO] Releasing third-person video writer: {video_writer_tp}")
+        video_writer_tp.release()
     # close the simulator
     env.close()
 
