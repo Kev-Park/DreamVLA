@@ -2,7 +2,7 @@
 
 Reads planner command columns from a LeRobot parquet file, runs the SONIC
 kinematic planner ONNX, then animates the 12 lower-body joint angles as spheres
-in a viser scene on port 8082.  Optionally records the playback to mp4.
+in a viser scene on port 8082.
 
 No Isaac Lab or simulator required — purely planner ONNX + viser.
 
@@ -16,8 +16,7 @@ Lower-body joint order (MuJoCo model order, qpos indices 7–18):
 
 Usage:
     python eval_parquet_kinematic.py \\
-        --parquet /path/to/episode_000000.parquet \\
-        --record-video /path/to/output_dir
+        --parquet /path/to/episode_000000.parquet
 """
 
 from __future__ import annotations
@@ -231,11 +230,7 @@ def _sphere_position(joint_idx: int, angle_rad: float) -> tuple[float, float, fl
     return (x, angle_rad, z)
 
 
-def visualise(
-    joint_angles: np.ndarray,
-    record_video: Path | None,
-    fps: float = 30.0,
-) -> None:
+def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
     """Animate 12 lower-body joint-angle spheres in a viser scene on port 8082.
 
     Each sphere's y position encodes the joint angle in radians; x and z give
@@ -271,22 +266,6 @@ def visualise(
             position=pos,
         )
 
-    # ── optional video recording ─────────────────────────────────────────────
-    video_writer = None
-    if record_video is not None:
-        try:
-            import imageio
-            record_video.mkdir(parents=True, exist_ok=True)
-            video_path = record_video / "kinematic_joints.mp4"
-            video_writer = imageio.get_writer(str(video_path), fps=fps)
-            print(f"[video] recording to {video_path}")
-            print("[video] waiting for a browser client to connect …")
-            while not server.get_clients():
-                time.sleep(0.1)
-        except ImportError:
-            print("[video] imageio not installed — skipping video recording")
-            video_writer = None
-
     dt = 1.0 / fps
     print(f"[viser] animating {n_frames} frames at {fps:.0f} fps …")
 
@@ -309,21 +288,7 @@ def visualise(
             position=(0.0, 0.0, 3.0),
         )
 
-        if video_writer is not None:
-            clients = server.get_clients()
-            if clients:
-                client = list(clients.values())[0]
-                try:
-                    img = client.camera.get_render(height=720, width=1280)
-                    video_writer.append_data(np.array(img))
-                except Exception as exc:
-                    print(f"[video] render failed at frame {frame_idx}: {exc}")
-
         time.sleep(dt)
-
-    if video_writer is not None:
-        video_writer.close()
-        print("[video] saved")
 
     print("[viser] playback complete — server remains open. Ctrl-C to exit.")
     try:
@@ -346,10 +311,6 @@ def main() -> None:
         help="Path to a LeRobot episode_*.parquet file.",
     )
     parser.add_argument(
-        "--record-video", default=None, type=Path,
-        help="Directory to save output videos into.",
-    )
-    parser.add_argument(
         "--planner-onnx", default=_DEFAULT_PLANNER_ONNX,
         help="Path to planner_sonic.onnx (default: GR00T-WholeBodyControl install).",
     )
@@ -361,7 +322,7 @@ def main() -> None:
 
     parquet_arrays, n_frames = load_parquet(args.parquet)
     joint_angles = run_planner(parquet_arrays, n_frames, args.planner_onnx)
-    visualise(joint_angles, args.record_video, fps=args.fps)
+    visualise(joint_angles, fps=args.fps)
 
 
 if __name__ == "__main__":
