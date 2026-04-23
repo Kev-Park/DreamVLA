@@ -275,7 +275,7 @@ def visualise(
     server.scene.world_axes.visible = True
     print("[viser] server running on http://localhost:8082")
 
-    urdf_vis = ViserUrdf(server, Path(urdf_path), root_node_name="robot")
+    urdf_vis = ViserUrdf(server, Path(urdf_path), root_node_name="/robot")
 
     n_frames = full_qpos.shape[0]
     dt = 1.0 / fps
@@ -300,7 +300,7 @@ def visualise(
         angles    = qpos[_LB_QPOS_SLICE]                  # 12 lower-body joints
 
         server.scene.add_frame(
-            "robot",
+            "/robot",
             position=root_pos,
             wxyz=root_wxyz,
             show_axes=False,
