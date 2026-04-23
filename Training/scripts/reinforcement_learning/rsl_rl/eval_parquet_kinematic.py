@@ -247,12 +247,6 @@ def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
 
     n_frames = joint_angles.shape[0]
 
-    # ── static joint labels ──────────────────────────────────────────────────
-    for i, name in enumerate(LOWER_BODY_JOINT_NAMES):
-        x, z = float(_BASE_XZ[i, 0]), float(_BASE_XZ[i, 1])
-        short = name.replace("_joint", "").replace("_", " ")
-        server.scene.add_label(f"/labels/{name}", text=short, position=(x, 0.6, z))
-
     # ── frame counter label ──────────────────────────────────────────────────
     frame_label = server.scene.add_label("/info/frame", text="frame 0", position=(0.0, 0.0, 3.0))
 
