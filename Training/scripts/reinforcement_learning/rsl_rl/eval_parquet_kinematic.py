@@ -180,7 +180,7 @@ def run_planner(
     context[0, :, 3] = 1.0                  # quaternion w (identity orientation)
     context[0, :, 7:36] = _MUJOCO_DEFAULT_ANGLES_29
 
-    joint_angles = np.zeros((n_frames, NUM_JOINTS), dtype=np.float32)
+    full_qpos    = np.zeros((n_frames, 36),         dtype=np.float32)
     planner_log = {
         "movement": np.zeros((n_frames, 3), dtype=np.float32),
         "facing":   np.zeros((n_frames, 3), dtype=np.float32),
@@ -220,7 +220,7 @@ def run_planner(
 
         if out.num_pred_frames > 0:
             first_qpos = out.mujoco_qpos[0, 0]           # (36,)
-            joint_angles[frame] = first_qpos[_LB_QPOS_SLICE]
+            full_qpos[frame] = first_qpos
 
             # Roll context: use up to 4 frames from planner output.
             n_ctx = min(out.num_pred_frames, 4)
@@ -233,15 +233,16 @@ def run_planner(
             zero_frame_count += 1
 
         if frame % 100 == 0:
-            angles_now = joint_angles[frame]
+            lb_now = full_qpos[frame][_LB_QPOS_SLICE]
             print(f"[planner] frame {frame}/{n_frames}  mode={inputs.mode[0]}  "
                   f"num_pred_frames={out.num_pred_frames}  "
-                  f"lb_joints_range=[{angles_now.min():.3f}, {angles_now.max():.3f}]")
+                  f"lb_joints_range=[{lb_now.min():.3f}, {lb_now.max():.3f}]")
 
     if zero_frame_count:
         print(f"[planner] WARNING: {zero_frame_count}/{n_frames} frames returned num_pred_frames=0")
-    print(f"[planner] done — joint_angles range [{joint_angles.min():.3f}, {joint_angles.max():.3f}]")
-    return joint_angles, planner_log
+    lb = full_qpos[:, _LB_QPOS_SLICE]
+    print(f"[planner] done — joint_angles range [{lb.min():.3f}, {lb.max():.3f}]")
+    return full_qpos, planner_log
 
 
 # ============================================================
@@ -256,14 +257,15 @@ _MODE_NAMES = {
 
 
 def visualise(
-    joint_angles: np.ndarray,
+    full_qpos: np.ndarray,
     planner_log: dict,
     urdf_path: str,
     fps: float = 30.0,
 ) -> None:
     """Render the G1 with actual link meshes via ViserUrdf.
 
-    Lower-body joints are animated from the planner output.
+    Root pose (position + orientation) is applied from qpos[0:7].
+    Lower-body joints are animated from qpos[7:19].
     Upper body stays frozen at the URDF default (zero) pose.
     """
     import viser
@@ -273,9 +275,9 @@ def visualise(
     server.scene.world_axes.visible = True
     print("[viser] server running on http://localhost:8082")
 
-    urdf_vis = ViserUrdf(server, Path(urdf_path))
+    urdf_vis = ViserUrdf(server, Path(urdf_path), root_node_name="robot")
 
-    n_frames = joint_angles.shape[0]
+    n_frames = full_qpos.shape[0]
     dt = 1.0 / fps
 
     # ── GUI: playback controls ────────────────────────────────────────────────
@@ -292,7 +294,17 @@ def visualise(
     print(f"[viser] {n_frames} frames at {fps:.0f} fps — Ctrl-C to exit …")
 
     def _apply_frame(idx: int) -> None:
-        angles = joint_angles[idx]
+        qpos = full_qpos[idx]                              # (36,)
+        root_pos  = qpos[0:3].astype(float)               # xyz
+        root_wxyz = qpos[3:7].astype(float)               # w,x,y,z (MuJoCo convention)
+        angles    = qpos[_LB_QPOS_SLICE]                  # 12 lower-body joints
+
+        server.scene.add_frame(
+            "robot",
+            position=root_pos,
+            wxyz=root_wxyz,
+            show_axes=False,
+        )
         urdf_vis.update_cfg({
             name: float(angles[i])
             for i, name in enumerate(LOWER_BODY_JOINT_NAMES)
@@ -357,8 +369,8 @@ def main() -> None:
     args = parser.parse_args()
 
     parquet_arrays, n_frames = load_parquet(args.parquet)
-    joint_angles, planner_log = run_planner(parquet_arrays, n_frames, args.planner_onnx)
-    visualise(joint_angles, planner_log, urdf_path=args.urdf, fps=args.fps)
+    full_qpos, planner_log = run_planner(parquet_arrays, n_frames, args.planner_onnx)
+    visualise(full_qpos, planner_log, urdf_path=args.urdf, fps=args.fps)
 
 
 if __name__ == "__main__":
