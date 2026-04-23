@@ -251,45 +251,33 @@ def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
     # ── frame counter label ──────────────────────────────────────────────────
     server.scene.add_label("/info/frame", text="frame 0", position=(0.0, 0.0, 3.0))
 
-    # ── initial spheres ──────────────────────────────────────────────────────
+    # ── create spheres once ──────────────────────────────────────────────────
+    handles = []
     for i, name in enumerate(LOWER_BODY_JOINT_NAMES):
         r, g, b = _JOINT_COLORS[i]
-        pos = _sphere_position(i, float(joint_angles[0, i]))
-        server.scene.add_icosphere(
+        h = server.scene.add_icosphere(
             f"/joints/{name}",
             radius=0.07,
             color=(r, g, b),
-            position=pos,
+            position=_sphere_position(i, float(joint_angles[0, i])),
         )
+        handles.append(h)
 
     dt = 1.0 / fps
-    print(f"[viser] animating {n_frames} frames at {fps:.0f} fps …")
+    print(f"[viser] looping {n_frames} frames at {fps:.0f} fps — Ctrl-C to exit …")
 
-    for frame_idx in range(n_frames):
-        angles = joint_angles[frame_idx]  # (12,)
-
-        for i, name in enumerate(LOWER_BODY_JOINT_NAMES):
-            r, g, b = _JOINT_COLORS[i]
-            pos = _sphere_position(i, float(angles[i]))
-            server.scene.add_icosphere(
-                f"/joints/{name}",
-                radius=0.07,
-                color=(r, g, b),
-                position=pos,
-            )
-
-        server.scene.add_label(
-            "/info/frame",
-            text=f"frame {frame_idx + 1}/{n_frames}",
-            position=(0.0, 0.0, 3.0),
-        )
-
-        time.sleep(dt)
-
-    print("[viser] playback complete — server remains open. Ctrl-C to exit.")
     try:
         while True:
-            time.sleep(1.0)
+            for frame_idx in range(n_frames):
+                angles = joint_angles[frame_idx]
+                for i, h in enumerate(handles):
+                    h.position = _sphere_position(i, float(angles[i]))
+                server.scene.add_label(
+                    "/info/frame",
+                    text=f"frame {frame_idx + 1}/{n_frames}",
+                    position=(0.0, 0.0, 3.0),
+                )
+                time.sleep(dt)
     except KeyboardInterrupt:
         pass
 
