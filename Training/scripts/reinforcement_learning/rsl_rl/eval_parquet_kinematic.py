@@ -287,11 +287,25 @@ def visualise(
 
     print(f"[viser] {n_frames} frames at {fps:.0f} fps — Ctrl-C to exit …")
 
+    _DIAG_FRAMES = 5
+
     def _apply_frame(idx: int) -> None:
         qpos = full_qpos[idx]
         root_pos  = qpos[0:3].astype(float)
-        root_wxyz = qpos[3:7].astype(float)   # MuJoCo wxyz
+        root_wxyz = qpos[3:7].astype(float)   # MuJoCo wxyz (w,x,y,z)
         angles    = qpos[_LB_QPOS_SLICE]
+
+        # Normalise in case the planner output is slightly off-unit.
+        quat_norm = np.linalg.norm(root_wxyz)
+        if quat_norm > 1e-6:
+            root_wxyz /= quat_norm
+
+        if idx < _DIAG_FRAMES:
+            print(
+                f"[diag frame {idx:3d}]  pos=[{root_pos[0]:+.4f},{root_pos[1]:+.4f},{root_pos[2]:+.4f}]"
+                f"  wxyz=[{root_wxyz[0]:+.4f},{root_wxyz[1]:+.4f},{root_wxyz[2]:+.4f},{root_wxyz[3]:+.4f}]"
+                f"  lb=[{angles.min():+.3f}…{angles.max():+.3f}]"
+            )
 
         server.scene.add_frame("/robot", position=root_pos, wxyz=root_wxyz, show_axes=False)
         urdf_vis.update_cfg({
