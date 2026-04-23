@@ -320,13 +320,13 @@ def visualise(joint_angles: np.ndarray, urdf_path: str, fps: float = 30.0) -> No
         pts = [np.zeros(3)] + [pos.get(n, np.zeros(3)) for n in names]
         return np.array(pts, dtype=np.float32)
 
-    left_line  = server.scene.add_line_strip(
-        "/skeleton/left_leg",  points=_chain_pts(_LEFT_LINKS,  pos0),
-        colors=np.array([_COL_LEFT]  * (len(_LEFT_LINKS)  + 1), dtype=np.uint8), line_width=3.0,
+    left_line  = server.scene.add_spline_catmull_rom(
+        "/skeleton/left_leg",  positions=_chain_pts(_LEFT_LINKS,  pos0),
+        color=_COL_LEFT,  line_width=3.0, tension=1.0,
     )
-    right_line = server.scene.add_line_strip(
-        "/skeleton/right_leg", points=_chain_pts(_RIGHT_LINKS, pos0),
-        colors=np.array([_COL_RIGHT] * (len(_RIGHT_LINKS) + 1), dtype=np.uint8), line_width=3.0,
+    right_line = server.scene.add_spline_catmull_rom(
+        "/skeleton/right_leg", positions=_chain_pts(_RIGHT_LINKS, pos0),
+        color=_COL_RIGHT, line_width=3.0, tension=1.0,
     )
 
     # ── frame counter ────────────────────────────────────────────────────────
