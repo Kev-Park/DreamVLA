@@ -62,6 +62,17 @@ _DEFAULT_URDF = str(
     _HERE / "../../../../Sim2Real/resources/robots/g1_description/g1_29dof.urdf"
 )
 
+# G1 neutral standing pose in MuJoCo order (from policy_parameters.hpp::default_angles).
+# qpos[7:36] should use these values, not zeros, to give the planner a valid context.
+_MUJOCO_DEFAULT_ANGLES_29 = np.array([
+    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,   # left  leg: hp, hr, hy, knee, ap, ar
+    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,   # right leg: hp, hr, hy, knee, ap, ar
+     0.0,   0.0, 0.0,                        # waist: yaw, roll, pitch
+     0.2,   0.2, 0.0, 0.6, 0.0, 0.0, 0.0,  # left  arm: sp, sr, sy, elbow, wr, wp, wy
+     0.2,  -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,  # right arm: sp, sr, sy, elbow, wr, wp, wy
+], dtype=np.float32)
+_MUJOCO_STANDING_Z = 0.793  # typical G1 pelvis height in standing pose (metres)
+
 
 
 # ============================================================
@@ -160,11 +171,23 @@ def run_planner(
     planner = PlannerWrapper(planner_onnx)
     print(f"[planner] loaded {planner_onnx}")
 
-    # Bootstrap context: valid identity quaternion at indices 3-6, zeros elsewhere.
+    # Bootstrap context with the G1's neutral standing pose, not zeros.
+    # Zero joints give the planner a completely straight-legged robot context which
+    # produces degenerate output — the actual standing pose has hip_pitch=-0.312,
+    # knee=0.669, ankle_pitch=-0.363 (from policy_parameters.hpp::default_angles).
     context = np.zeros((1, 4, 36), dtype=np.float32)
-    context[0, :, 3] = 1.0  # w component of root quaternion (w, x, y, z)
+    context[0, :, 2] = _MUJOCO_STANDING_Z   # pelvis z height
+    context[0, :, 3] = 1.0                  # quaternion w (identity orientation)
+    context[0, :, 7:36] = _MUJOCO_DEFAULT_ANGLES_29
 
     joint_angles = np.zeros((n_frames, NUM_JOINTS), dtype=np.float32)
+    planner_log = {
+        "movement": np.zeros((n_frames, 3), dtype=np.float32),
+        "facing":   np.zeros((n_frames, 3), dtype=np.float32),
+        "speed":    np.zeros((n_frames,),   dtype=np.float32),
+        "height":   np.zeros((n_frames,),   dtype=np.float32),
+        "mode":     np.zeros((n_frames,),   dtype=np.int64),
+    }
     zero_frame_count = 0
 
     for frame in range(n_frames):
@@ -185,6 +208,13 @@ def run_planner(
         )
         # Override mode with column-derived or run-flag value.
         inputs.mode = np.array([_get_mode(parquet_arrays, frame)], dtype=np.int64)
+
+        # Log planner inputs for this frame.
+        planner_log["movement"][frame] = inputs.movement_direction[0]
+        planner_log["facing"][frame]   = inputs.facing_direction[0]
+        planner_log["speed"][frame]    = float(inputs.target_vel[0])
+        planner_log["height"][frame]   = float(inputs.height[0])
+        planner_log["mode"][frame]     = int(inputs.mode[0])
 
         out = planner.run(**inputs.as_kwargs())
 
@@ -211,14 +241,26 @@ def run_planner(
     if zero_frame_count:
         print(f"[planner] WARNING: {zero_frame_count}/{n_frames} frames returned num_pred_frames=0")
     print(f"[planner] done — joint_angles range [{joint_angles.min():.3f}, {joint_angles.max():.3f}]")
-    return joint_angles
+    return joint_angles, planner_log
 
 
 # ============================================================
 # Viser visualisation
 # ============================================================
 
-def visualise(joint_angles: np.ndarray, urdf_path: str, fps: float = 30.0) -> None:
+_MODE_NAMES = {
+    0: "IDLE", 1: "SLOW_WALK", 2: "WALK", 3: "RUN",
+    4: "SQUAT", 5: "KNEELTWOLEGS", 6: "KNEELONELEG",
+    7: "LYINGFACEDOWN", 8: "HANDCRAWLING", 9: "IDLEBOXING",
+}
+
+
+def visualise(
+    joint_angles: np.ndarray,
+    planner_log: dict,
+    urdf_path: str,
+    fps: float = 30.0,
+) -> None:
     """Render the G1 with actual link meshes via ViserUrdf.
 
     Lower-body joints are animated from the planner output.
@@ -231,27 +273,58 @@ def visualise(joint_angles: np.ndarray, urdf_path: str, fps: float = 30.0) -> No
     server.scene.world_axes.visible = True
     print("[viser] server running on http://localhost:8082")
 
-    # Load URDF — meshes are resolved relative to the URDF file location.
     urdf_vis = ViserUrdf(server, Path(urdf_path))
-
-    # ── frame counter ────────────────────────────────────────────────────────
-    frame_label = server.scene.add_label("/info/frame", text="frame 0", position=(0.0, 0.0, 1.5))
 
     n_frames = joint_angles.shape[0]
     dt = 1.0 / fps
-    print(f"[viser] looping {n_frames} frames at {fps:.0f} fps — Ctrl-C to exit …")
 
+    # ── GUI: playback controls ────────────────────────────────────────────────
+    with server.gui.add_folder("Playback"):
+        gui_playing = server.gui.add_checkbox("Playing", initial_value=True)
+        gui_slider  = server.gui.add_slider(
+            "Frame", min=0, max=n_frames - 1, step=1, initial_value=0
+        )
+
+    # ── GUI: planner inputs (read-only markdown, updated each frame) ─────────
+    with server.gui.add_folder("Planner Inputs"):
+        gui_inputs_md = server.gui.add_markdown("loading…")
+
+    print(f"[viser] {n_frames} frames at {fps:.0f} fps — Ctrl-C to exit …")
+
+    def _apply_frame(idx: int) -> None:
+        angles = joint_angles[idx]
+        urdf_vis.update_cfg({
+            name: float(angles[i])
+            for i, name in enumerate(LOWER_BODY_JOINT_NAMES)
+        })
+        mv       = planner_log["movement"][idx]
+        fac      = planner_log["facing"][idx]
+        spd      = float(planner_log["speed"][idx])
+        ht       = float(planner_log["height"][idx])
+        mode_id  = int(planner_log["mode"][idx])
+        gui_inputs_md.content = (
+            f"**movement** [{mv[0]:+.2f}, {mv[1]:+.2f}, {mv[2]:+.2f}]  \n"
+            f"**facing**   [{fac[0]:+.2f}, {fac[1]:+.2f}, {fac[2]:+.2f}]  \n"
+            f"**speed**    {spd:.3f} m/s  \n"
+            f"**height**   {ht:.3f} m  \n"
+            f"**mode**     {mode_id} ({_MODE_NAMES.get(mode_id, '?')})"
+        )
+
+    _apply_frame(0)
+
+    frame_idx = 0
     try:
         while True:
-            for frame_idx in range(n_frames):
-                angles = joint_angles[frame_idx]  # (12,)
-                joint_cfg = {
-                    name: float(angles[i])
-                    for i, name in enumerate(LOWER_BODY_JOINT_NAMES)
-                }
-                urdf_vis.update_cfg(joint_cfg)
-                frame_label.text = f"frame {frame_idx + 1}/{n_frames}"
-                time.sleep(dt)
+            if gui_playing.value:
+                frame_idx = (frame_idx + 1) % n_frames
+                gui_slider.value = frame_idx
+                _apply_frame(frame_idx)
+            else:
+                new_idx = int(gui_slider.value)
+                if new_idx != frame_idx:
+                    frame_idx = new_idx
+                    _apply_frame(frame_idx)
+            time.sleep(dt)
     except KeyboardInterrupt:
         pass
 
@@ -284,8 +357,8 @@ def main() -> None:
     args = parser.parse_args()
 
     parquet_arrays, n_frames = load_parquet(args.parquet)
-    joint_angles = run_planner(parquet_arrays, n_frames, args.planner_onnx)
-    visualise(joint_angles, urdf_path=args.urdf, fps=args.fps)
+    joint_angles, planner_log = run_planner(parquet_arrays, n_frames, args.planner_onnx)
+    visualise(joint_angles, planner_log, urdf_path=args.urdf, fps=args.fps)
 
 
 if __name__ == "__main__":
