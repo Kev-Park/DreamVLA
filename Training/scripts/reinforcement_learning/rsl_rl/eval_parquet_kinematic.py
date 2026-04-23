@@ -255,7 +255,7 @@ def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
     for i, name in enumerate(LOWER_BODY_JOINT_NAMES):
         r, g, b = _JOINT_COLORS[i]
         pos = _sphere_position(i, float(joint_angles[0, i]))
-        server.scene.add_icosphere_mesh(
+        server.scene.add_icosphere(
             f"/joints/{name}",
             radius=0.07,
             color=(r, g, b),
@@ -271,7 +271,7 @@ def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
         for i, name in enumerate(LOWER_BODY_JOINT_NAMES):
             r, g, b = _JOINT_COLORS[i]
             pos = _sphere_position(i, float(angles[i]))
-            server.scene.add_icosphere_mesh(
+            server.scene.add_icosphere(
                 f"/joints/{name}",
                 radius=0.07,
                 color=(r, g, b),
