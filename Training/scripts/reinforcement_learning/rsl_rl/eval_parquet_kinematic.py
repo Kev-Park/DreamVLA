@@ -171,6 +171,7 @@ def run_planner(
     context = np.zeros((1, 4, 36), dtype=np.float32)
 
     joint_angles = np.zeros((n_frames, NUM_JOINTS), dtype=np.float32)
+    zero_frame_count = 0
 
     for frame in range(n_frames):
         n = parquet_arrays["planner_movement"].shape[0]
@@ -204,11 +205,18 @@ def run_planner(
                 pad = np.tile(new_ctx[-1:], (4 - n_ctx, 1))
                 new_ctx = np.concatenate([new_ctx, pad], axis=0)
             context = new_ctx[np.newaxis]                  # (1, 4, 36)
+        else:
+            zero_frame_count += 1
 
         if frame % 100 == 0:
-            print(f"[planner] frame {frame}/{n_frames}")
+            angles_now = joint_angles[frame]
+            print(f"[planner] frame {frame}/{n_frames}  mode={inputs.mode[0]}  "
+                  f"num_pred_frames={out.num_pred_frames}  "
+                  f"lb_joints_range=[{angles_now.min():.3f}, {angles_now.max():.3f}]")
 
-    print(f"[planner] done — {n_frames} frames processed")
+    if zero_frame_count:
+        print(f"[planner] WARNING: {zero_frame_count}/{n_frames} frames returned num_pred_frames=0")
+    print(f"[planner] done — joint_angles range [{joint_angles.min():.3f}, {joint_angles.max():.3f}]")
     return joint_angles
 
 
@@ -216,20 +224,26 @@ def run_planner(
 # Viser visualisation
 # ============================================================
 
-def _sphere_position(joint_idx: int, angle_rad: float) -> tuple[float, float, float]:
-    """Return (x, y, z) for a joint sphere given its angle value.
+def _joint_positions(angles: np.ndarray) -> np.ndarray:
+    """Return (12, 3) point positions for the current frame's joint angles.
 
-    The fixed x/z columns give the anatomical layout; y encodes the joint angle
-    so spheres move forward/back as angles change during playback.
+    x/z from the fixed anatomical layout; y encodes the joint angle (radians).
     """
-    x, z = float(_BASE_XZ[joint_idx, 0]), float(_BASE_XZ[joint_idx, 1])
-    return (x, angle_rad, z)
+    pts = np.zeros((NUM_JOINTS, 3), dtype=np.float32)
+    pts[:, 0] = _BASE_XZ[:, 0]   # x: left=-0.4, right=+0.4
+    pts[:, 1] = angles            # y: joint angle in radians
+    pts[:, 2] = _BASE_XZ[:, 1]   # z: hip=top, ankle=bottom
+    return pts
+
+
+# (12, 3) uint8 colour array — left leg blue, right leg orange
+_PC_COLORS = np.array(_JOINT_COLORS, dtype=np.uint8)
 
 
 def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
-    """Animate 12 lower-body joint-angle spheres in a viser scene on port 8082.
+    """Animate 12 lower-body joint-angle points in a viser scene on port 8082.
 
-    Each sphere's y position encodes the joint angle in radians; x and z give
+    Each point's y position encodes the joint angle in radians; x and z give
     the fixed anatomical column layout (left/right × hip-to-ankle).
     """
     import viser
@@ -249,19 +263,15 @@ def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
         server.scene.add_label(f"/labels/{name}", text=short, position=(x, 0.6, z))
 
     # ── frame counter label ──────────────────────────────────────────────────
-    server.scene.add_label("/info/frame", text="frame 0", position=(0.0, 0.0, 3.0))
+    frame_label = server.scene.add_label("/info/frame", text="frame 0", position=(0.0, 0.0, 3.0))
 
-    # ── create spheres once ──────────────────────────────────────────────────
-    handles = []
-    for i, name in enumerate(LOWER_BODY_JOINT_NAMES):
-        r, g, b = _JOINT_COLORS[i]
-        h = server.scene.add_icosphere(
-            f"/joints/{name}",
-            radius=0.07,
-            color=(r, g, b),
-            position=_sphere_position(i, float(joint_angles[0, i])),
-        )
-        handles.append(h)
+    # ── point cloud — one point per joint, created once ──────────────────────
+    pc_handle = server.scene.add_point_cloud(
+        "/joints",
+        points=_joint_positions(joint_angles[0]),
+        colors=_PC_COLORS,
+        point_size=0.08,
+    )
 
     dt = 1.0 / fps
     print(f"[viser] looping {n_frames} frames at {fps:.0f} fps — Ctrl-C to exit …")
@@ -269,14 +279,8 @@ def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
     try:
         while True:
             for frame_idx in range(n_frames):
-                angles = joint_angles[frame_idx]
-                for i, h in enumerate(handles):
-                    h.position = _sphere_position(i, float(angles[i]))
-                server.scene.add_label(
-                    "/info/frame",
-                    text=f"frame {frame_idx + 1}/{n_frames}",
-                    position=(0.0, 0.0, 3.0),
-                )
+                pc_handle.points = _joint_positions(joint_angles[frame_idx])
+                frame_label.text = f"frame {frame_idx + 1}/{n_frames}"
                 time.sleep(dt)
     except KeyboardInterrupt:
         pass
