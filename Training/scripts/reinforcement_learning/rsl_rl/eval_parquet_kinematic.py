@@ -30,10 +30,6 @@ import pandas as pd
 
 _HERE = Path(__file__).resolve().parent
 
-_DEFAULT_PLANNER_ONNX = str(
-    _HERE / "../../GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx"
-)
-
 # ============================================================
 # Joint definitions
 # ============================================================
@@ -311,7 +307,8 @@ def main() -> None:
         help="Path to a LeRobot episode_*.parquet file.",
     )
     parser.add_argument(
-        "--planner-onnx", default=_DEFAULT_PLANNER_ONNX,
+        "--planner-onnx",
+        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx",
         help="Path to planner_sonic.onnx (default: GR00T-WholeBodyControl install).",
     )
     parser.add_argument(
