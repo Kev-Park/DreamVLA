@@ -1,8 +1,9 @@
-"""Parquet-driven kinematic planner eval — standalone viser joint visualiser.
+"""Parquet-driven kinematic planner eval — G1 lower-body FK visualiser.
 
 Reads planner command columns from a LeRobot parquet file, runs the SONIC
-kinematic planner ONNX, then animates the 12 lower-body joint angles as spheres
-in a viser scene on port 8082.
+kinematic planner ONNX, then animates the G1's lower-body skeleton in a
+viser scene on port 8082 using proper forward kinematics (pytorch_kinematics
++ g1_29dof.urdf).  Upper body is frozen at the URDF default pose.
 
 No Isaac Lab or simulator required — purely planner ONNX + viser.
 
@@ -54,21 +55,24 @@ NUM_JOINTS = len(LOWER_BODY_JOINT_NAMES)  # 12
 # MuJoCo body-tree order: left-leg-all-6 then right-leg-all-6 (see action_assembler.py).
 _LB_QPOS_SLICE = slice(7, 19)
 
-# Left leg = blue, right leg = orange (RGB 0-255)
-_JOINT_COLORS: list[tuple[int, int, int]] = (
-    [(51, 102, 230)] * 6    # left leg
-    + [(230, 127, 25)] * 6  # right leg
+# Default URDF path relative to this script.
+# Script lives at: Training/scripts/reinforcement_learning/rsl_rl/
+# URDF lives at:   Sim2Real/resources/robots/g1_description/g1_29dof.urdf
+_DEFAULT_URDF = str(
+    _HERE / "../../../../Sim2Real/resources/robots/g1_description/g1_29dof.urdf"
 )
 
-# Fixed anatomical layout for spheres:
-#   x: left column = -0.4,  right column = +0.4
-#   z: hip at top (2.5), ankle at bottom (0.5),  0.4 m per level
-#   y: updated each frame to encode joint angle (radians)
-_BASE_XZ = np.array(
-    [[-0.4, 2.5 - i * 0.4] for i in range(6)]   # left
-    + [[+0.4, 2.5 - i * 0.4] for i in range(6)], # right
-    dtype=np.float32,
-)  # (12, 2)  columns are [x, z]
+# Links to render per leg, in proximal→distal order.
+# pelvis is the shared root rendered as a single neutral sphere.
+_LEFT_LINKS  = ["left_hip_pitch_link",  "left_hip_roll_link",  "left_hip_yaw_link",
+                "left_knee_link",        "left_ankle_pitch_link", "left_ankle_roll_link"]
+_RIGHT_LINKS = ["right_hip_pitch_link", "right_hip_roll_link", "right_hip_yaw_link",
+                "right_knee_link",       "right_ankle_pitch_link", "right_ankle_roll_link"]
+
+# RGB colours
+_COL_PELVIS = (200, 200, 200)
+_COL_LEFT   = (51,  102, 230)   # blue
+_COL_RIGHT  = (230, 127,  25)   # orange
 
 
 # ============================================================
@@ -222,45 +226,111 @@ def run_planner(
 
 
 # ============================================================
+# Forward kinematics
+# ============================================================
+
+def build_fk_chains(urdf_path: str):
+    """Load two serial FK chains (left/right leg) from the G1 URDF.
+
+    Returns (left_chain, right_chain) as pytorch_kinematics SerialChain objects
+    rooted at `pelvis`, ending at the respective ankle_roll_link.
+    """
+    import pytorch_kinematics as pk
+
+    with open(urdf_path) as f:
+        urdf_str = f.read()
+
+    left_chain = pk.build_serial_chain_from_urdf(
+        urdf_str, "left_ankle_roll_link", root_link_name="pelvis"
+    )
+    right_chain = pk.build_serial_chain_from_urdf(
+        urdf_str, "right_ankle_roll_link", root_link_name="pelvis"
+    )
+    print(f"[fk] left  joints: {left_chain.get_joint_parameter_names()}")
+    print(f"[fk] right joints: {right_chain.get_joint_parameter_names()}")
+    return left_chain, right_chain
+
+
+def fk_positions(left_chain, right_chain, joint_angles_frame: np.ndarray) -> dict[str, np.ndarray]:
+    """Run FK for one frame and return {link_name: (3,) position} for all leg links.
+
+    joint_angles_frame: (12,) in MuJoCo lower-body order
+      [0:6]  left  hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll
+      [6:12] right hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll
+    """
+    import torch
+
+    left_th  = torch.tensor(joint_angles_frame[:6],  dtype=torch.float32).unsqueeze(0)  # (1, 6)
+    right_th = torch.tensor(joint_angles_frame[6:12], dtype=torch.float32).unsqueeze(0)  # (1, 6)
+
+    left_fk  = left_chain.forward_kinematics(left_th,  end_only=False)
+    right_fk = right_chain.forward_kinematics(right_th, end_only=False)
+
+    positions: dict[str, np.ndarray] = {}
+    for name, tf in {**left_fk, **right_fk}.items():
+        mat = tf.get_matrix()  # (1, 4, 4)
+        positions[name] = mat[0, :3, 3].detach().numpy()
+    return positions
+
+
+# ============================================================
 # Viser visualisation
 # ============================================================
 
-def _sphere_position(joint_idx: int, angle_rad: float) -> tuple[float, float, float]:
-    """Return (x, y, z) for a joint sphere. y encodes the joint angle (radians)."""
-    x, z = float(_BASE_XZ[joint_idx, 0]), float(_BASE_XZ[joint_idx, 1])
-    return (x, angle_rad, z)
+def visualise(joint_angles: np.ndarray, urdf_path: str, fps: float = 30.0) -> None:
+    """Animate the G1 lower-body skeleton using FK in a viser scene on port 8082.
 
-
-def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
-    """Animate 12 lower-body joint-angle spheres in a viser scene on port 8082.
-
-    Each sphere's y position encodes the joint angle in radians; x and z give
-    the fixed anatomical column layout (left/right × hip-to-ankle).
+    Upper body is absent — only pelvis + both legs are rendered.
+    Pelvis is fixed at the URDF origin; only leg joints are animated.
     """
     import viser
 
+    left_chain, right_chain = build_fk_chains(urdf_path)
+
     server = viser.ViserServer(port=8082)
     server.scene.world_axes.visible = True
-
     print("[viser] server running on http://localhost:8082")
-    print("[viser] open a browser to view the visualisation")
 
     n_frames = joint_angles.shape[0]
 
-    # ── frame counter label ──────────────────────────────────────────────────
-    frame_label = server.scene.add_label("/info/frame", text="frame 0", position=(0.0, 0.0, 3.0))
+    # Compute initial positions for sphere creation
+    pos0 = fk_positions(left_chain, right_chain, joint_angles[0])
 
-    # ── create spheres once ──────────────────────────────────────────────────
-    handles = []
-    for i, name in enumerate(LOWER_BODY_JOINT_NAMES):
-        r, g, b = _JOINT_COLORS[i]
-        h = server.scene.add_icosphere(
-            f"/joints/{name}",
-            radius=0.07,
-            color=(r, g, b),
-            position=_sphere_position(i, float(joint_angles[0, i])),
+    # ── pelvis (fixed at origin) ─────────────────────────────────────────────
+    server.scene.add_icosphere(
+        "/skeleton/pelvis", radius=0.06, color=_COL_PELVIS, position=(0.0, 0.0, 0.0)
+    )
+
+    # ── per-link sphere handles ──────────────────────────────────────────────
+    link_handles: dict[str, object] = {}
+    for name in _LEFT_LINKS:
+        p = pos0.get(name, np.zeros(3))
+        link_handles[name] = server.scene.add_icosphere(
+            f"/skeleton/{name}", radius=0.05, color=_COL_LEFT, position=tuple(p)
         )
-        handles.append(h)
+    for name in _RIGHT_LINKS:
+        p = pos0.get(name, np.zeros(3))
+        link_handles[name] = server.scene.add_icosphere(
+            f"/skeleton/{name}", radius=0.05, color=_COL_RIGHT, position=tuple(p)
+        )
+
+    # ── kinematic-chain line strips ──────────────────────────────────────────
+    def _chain_pts(names: list[str], pos: dict[str, np.ndarray]) -> np.ndarray:
+        """[pelvis(0,0,0)] + named links → (N+1, 3) point array."""
+        pts = [np.zeros(3)] + [pos.get(n, np.zeros(3)) for n in names]
+        return np.array(pts, dtype=np.float32)
+
+    left_line  = server.scene.add_line_strip(
+        "/skeleton/left_leg",  points=_chain_pts(_LEFT_LINKS,  pos0),
+        colors=np.array([_COL_LEFT]  * (len(_LEFT_LINKS)  + 1), dtype=np.uint8), line_width=3.0,
+    )
+    right_line = server.scene.add_line_strip(
+        "/skeleton/right_leg", points=_chain_pts(_RIGHT_LINKS, pos0),
+        colors=np.array([_COL_RIGHT] * (len(_RIGHT_LINKS) + 1), dtype=np.uint8), line_width=3.0,
+    )
+
+    # ── frame counter ────────────────────────────────────────────────────────
+    frame_label = server.scene.add_label("/info/frame", text="frame 0", position=(0.0, 0.0, 1.5))
 
     dt = 1.0 / fps
     print(f"[viser] looping {n_frames} frames at {fps:.0f} fps — Ctrl-C to exit …")
@@ -268,10 +338,15 @@ def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
     try:
         while True:
             for frame_idx in range(n_frames):
-                angles = joint_angles[frame_idx]
-                for i, h in enumerate(handles):
-                    h.position = _sphere_position(i, float(angles[i]))
-                frame_label.text = f"frame {frame_idx + 1}/{n_frames}"
+                pos = fk_positions(left_chain, right_chain, joint_angles[frame_idx])
+
+                for name, h in link_handles.items():
+                    p = pos.get(name, np.zeros(3))
+                    h.position = tuple(p)
+
+                left_line.points  = _chain_pts(_LEFT_LINKS,  pos)
+                right_line.points = _chain_pts(_RIGHT_LINKS, pos)
+                frame_label.text  = f"frame {frame_idx + 1}/{n_frames}"
                 time.sleep(dt)
     except KeyboardInterrupt:
         pass
@@ -283,7 +358,7 @@ def visualise(joint_angles: np.ndarray, fps: float = 30.0) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Kinematic planner eval — viser lower-body joint visualiser (no sim required)"
+        description="Kinematic planner eval — G1 lower-body FK visualiser (no sim required)"
     )
     parser.add_argument(
         "--parquet", required=True, type=Path,
@@ -292,7 +367,11 @@ def main() -> None:
     parser.add_argument(
         "--planner-onnx",
         default="../../GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx",
-        help="Path to planner_sonic.onnx (default: GR00T-WholeBodyControl install).",
+        help="Path to planner_sonic.onnx.",
+    )
+    parser.add_argument(
+        "--urdf", default=_DEFAULT_URDF,
+        help="Path to g1_29dof.urdf (default: Sim2Real/resources/robots/g1_description/).",
     )
     parser.add_argument(
         "--fps", type=float, default=30.0,
@@ -302,7 +381,7 @@ def main() -> None:
 
     parquet_arrays, n_frames = load_parquet(args.parquet)
     joint_angles = run_planner(parquet_arrays, n_frames, args.planner_onnx)
-    visualise(joint_angles, fps=args.fps)
+    visualise(joint_angles, urdf_path=args.urdf, fps=args.fps)
 
 
 if __name__ == "__main__":
