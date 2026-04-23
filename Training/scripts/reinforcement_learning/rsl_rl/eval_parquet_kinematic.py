@@ -1,19 +1,15 @@
 """Parquet-driven kinematic planner eval — G1 lower-body FK visualiser.
 
 Reads planner command columns from a LeRobot parquet file, runs the SONIC
-kinematic planner ONNX, then animates the G1's lower-body skeleton in a
-viser scene on port 8082 using proper forward kinematics (pytorch_kinematics
-+ g1_29dof.urdf).  Upper body is frozen at the URDF default pose.
+kinematic planner ONNX, then animates the G1's skeleton in a viser scene on
+port 8082 using ViserUrdf + g1_29dof.urdf.  Upper body is frozen at the URDF
+default pose.
 
 No Isaac Lab or simulator required — purely planner ONNX + viser.
 
-Lower-body joint order (MuJoCo model order, qpos indices 7–18):
-  [0]  left_hip_pitch_joint     [6]  right_hip_pitch_joint
-  [1]  left_hip_roll_joint      [7]  right_hip_roll_joint
-  [2]  left_hip_yaw_joint       [8]  right_hip_yaw_joint
-  [3]  left_knee_joint          [9]  right_knee_joint
-  [4]  left_ankle_pitch_joint  [10]  right_ankle_pitch_joint
-  [5]  left_ankle_roll_joint   [11]  right_ankle_roll_joint
+Note: the g1_29dof.urdf omits the ±10° Y body-frame rotations that the MuJoCo
+XML applies to hip_roll/knee links, so individual joint orientations are
+approximate compared to the planner's training model.
 
 Usage:
     python eval_parquet_kinematic.py \\
@@ -262,11 +258,11 @@ def visualise(
     urdf_path: str,
     fps: float = 30.0,
 ) -> None:
-    """Render the G1 with actual link meshes via ViserUrdf.
+    """Render via ViserUrdf on http://localhost:8082.
 
-    Root pose (position + orientation) is applied from qpos[0:7].
-    Lower-body joints are animated from qpos[7:19].
-    Upper body stays frozen at the URDF default (zero) pose.
+    Note: the g1_29dof.urdf omits the ±10° Y body-frame rotations that the
+    MuJoCo XML applies to hip_roll/knee links, so individual joint orientations
+    are approximate. Use visualise_mujoco for accurate FK.
     """
     import viser
     from viser.extras import ViserUrdf
@@ -280,40 +276,32 @@ def visualise(
     n_frames = full_qpos.shape[0]
     dt = 1.0 / fps
 
-    # ── GUI: playback controls ────────────────────────────────────────────────
     with server.gui.add_folder("Playback"):
         gui_playing = server.gui.add_checkbox("Playing", initial_value=True)
         gui_slider  = server.gui.add_slider(
             "Frame", min=0, max=n_frames - 1, step=1, initial_value=0
         )
 
-    # ── GUI: planner inputs (read-only markdown, updated each frame) ─────────
     with server.gui.add_folder("Planner Inputs"):
         gui_inputs_md = server.gui.add_markdown("loading…")
 
     print(f"[viser] {n_frames} frames at {fps:.0f} fps — Ctrl-C to exit …")
 
     def _apply_frame(idx: int) -> None:
-        qpos = full_qpos[idx]                              # (36,)
-        root_pos  = qpos[0:3].astype(float)               # xyz
-        root_wxyz = qpos[3:7].astype(float)               # w,x,y,z (MuJoCo convention)
-        angles    = qpos[_LB_QPOS_SLICE]                  # 12 lower-body joints
+        qpos = full_qpos[idx]
+        root_pos  = qpos[0:3].astype(float)
+        root_wxyz = qpos[3:7].astype(float)   # MuJoCo wxyz
+        angles    = qpos[_LB_QPOS_SLICE]
 
-        server.scene.add_frame(
-            "/robot",
-            position=root_pos,
-            wxyz=root_wxyz,
-            show_axes=False,
-        )
+        server.scene.add_frame("/robot", position=root_pos, wxyz=root_wxyz, show_axes=False)
         urdf_vis.update_cfg({
-            name: float(angles[i])
-            for i, name in enumerate(LOWER_BODY_JOINT_NAMES)
+            name: float(angles[i]) for i, name in enumerate(LOWER_BODY_JOINT_NAMES)
         })
-        mv       = planner_log["movement"][idx]
-        fac      = planner_log["facing"][idx]
-        spd      = float(planner_log["speed"][idx])
-        ht       = float(planner_log["height"][idx])
-        mode_id  = int(planner_log["mode"][idx])
+        mv      = planner_log["movement"][idx]
+        fac     = planner_log["facing"][idx]
+        spd     = float(planner_log["speed"][idx])
+        ht      = float(planner_log["height"][idx])
+        mode_id = int(planner_log["mode"][idx])
         gui_inputs_md.content = (
             f"**movement** [{mv[0]:+.2f}, {mv[1]:+.2f}, {mv[2]:+.2f}]  \n"
             f"**facing**   [{fac[0]:+.2f}, {fac[1]:+.2f}, {fac[2]:+.2f}]  \n"
