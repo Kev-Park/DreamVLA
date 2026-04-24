@@ -22,8 +22,6 @@ import argparse
 import time
 from pathlib import Path
 
-from collections import deque
-
 import numpy as np
 import pandas as pd
 
@@ -173,15 +171,16 @@ def run_planner(
     planner = PlannerWrapper(planner_onnx)
     print(f"[planner] loaded {planner_onnx}")
 
-    # Bootstrap: rolling queue of 4 frames, one frame appended per 20 Hz step.
-    # Matches inference-time behaviour where each control step pushes one real
-    # qpos frame onto the queue and pops the oldest.
-    # Initialised to 4 identical standing-pose frames (robot at rest).
-    _standing = np.zeros(36, dtype=np.float32)
-    _standing[2]    = _MUJOCO_STANDING_Z
-    _standing[3]    = 1.0
-    _standing[7:36] = _MUJOCO_DEFAULT_ANGLES_29
-    ctx_queue = deque([_standing.copy() for _ in range(4)], maxlen=4)
+    _PLANNER_HZ  = 30.0
+    _EVAL_HZ     = 20.0
+    _CTX_ADVANCE = round(_PLANNER_HZ / _EVAL_HZ)  # 2: advance 2 planner frames per 20 Hz step
+
+    # Bootstrap: 4 identical standing frames at 30 Hz spacing, matching
+    # UpdateContextFromMotion(gen_time + n/30.0) in localmotion_kplanner.hpp.
+    context = np.zeros((1, 4, 36), dtype=np.float32)
+    context[0, :, 2]    = _MUJOCO_STANDING_Z
+    context[0, :, 3]    = 1.0
+    context[0, :, 7:36] = _MUJOCO_DEFAULT_ANGLES_29
 
     full_qpos   = np.zeros((n_frames, 36), dtype=np.float32)
     planner_log = {
@@ -205,7 +204,7 @@ def run_planner(
 
         inputs = build_planner_inputs(
             vla_action=chunk,
-            context_mujoco_qpos=np.stack(list(ctx_queue))[np.newaxis],
+            context_mujoco_qpos=context,
             t_index=0,
             batch_index=0,
         )
@@ -223,8 +222,16 @@ def run_planner(
 
         if out.num_pred_frames > 0:
             full_qpos[frame] = out.mujoco_qpos[0, 0]   # frame 0 = current predicted state
-            # Push frame 0 onto the rolling queue (oldest frame auto-dropped).
-            ctx_queue.append(out.mujoco_qpos[0, 0].copy())
+            # Advance context by _CTX_ADVANCE (2) planner frames, then take 4 consecutive
+            # frames from this single prediction — all at 30 Hz (33 ms) spacing.
+            # This matches UpdateContextFromMotion: gen_time + n/30.0.
+            adv     = min(_CTX_ADVANCE, out.num_pred_frames - 1)
+            ctx_end = min(adv + 4, out.num_pred_frames)
+            new_ctx = out.mujoco_qpos[0, adv:ctx_end]
+            if new_ctx.shape[0] < 4:
+                pad = np.tile(new_ctx[-1:], (4 - new_ctx.shape[0], 1))
+                new_ctx = np.concatenate([new_ctx, pad], axis=0)
+            context = new_ctx[np.newaxis]
         else:
             zero_frame_count += 1
 
