@@ -218,6 +218,7 @@ def run_planner(
             context_mujoco_qpos=context,
             t_index=0,
             batch_index=0,
+            clip_negative_speed=False,  # preserve -1.0 sentinel (WALK/RUN) as trained
         )
         # Mode is discrete — use floor parquet index.
         inputs.mode = np.array([_get_mode(parquet_arrays, p0)], dtype=np.int64)
@@ -304,13 +305,15 @@ def visualise(
 
     _DIAG_FRAMES = 5
 
+    _PINNED_POS  = np.array([0.0, 0.0, _MUJOCO_STANDING_Z])
+    _PINNED_WXYZ = np.array([1.0, 0.0, 0.0, 0.0])  # identity quaternion
+
     def _apply_frame(idx: int) -> None:
-        qpos = full_qpos[idx]
-        root_pos  = np.array([0.0, 0.0, float(qpos[2])])  # pin XY; keep predicted Z
-        root_wxyz = qpos[3:7].astype(float)                # MuJoCo wxyz (w,x,y,z)
-        angles    = qpos[_LB_QPOS_SLICE]
+        qpos   = full_qpos[idx]
+        angles = qpos[_LB_QPOS_SLICE]
 
         if idx < _DIAG_FRAMES:
+            root_wxyz = qpos[3:7]
             print(
                 f"[diag frame {idx:3d}]  predicted_xy=[{qpos[0]:+.4f},{qpos[1]:+.4f}]"
                 f"  z={qpos[2]:+.4f}"
@@ -318,7 +321,7 @@ def visualise(
                 f"  lb=[{angles.min():+.3f}…{angles.max():+.3f}]"
             )
 
-        server.scene.add_frame("/robot", position=root_pos, wxyz=root_wxyz, show_axes=False)
+        server.scene.add_frame("/robot", position=_PINNED_POS, wxyz=_PINNED_WXYZ, show_axes=False)
         urdf_vis.update_cfg({
             name: float(angles[i]) for i, name in enumerate(LOWER_BODY_JOINT_NAMES)
         })
