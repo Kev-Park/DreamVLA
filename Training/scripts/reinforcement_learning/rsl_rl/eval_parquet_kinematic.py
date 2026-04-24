@@ -22,6 +22,8 @@ import argparse
 import time
 from pathlib import Path
 
+from collections import deque
+
 import numpy as np
 import pandas as pd
 
@@ -150,13 +152,6 @@ def _get_mode(arrays: dict[str, np.ndarray], frame: int) -> int:
 # Planner inference
 # ============================================================
 
-# Planner outputs at 30 Hz; parquet / replanning runs at 20 Hz.
-# Each 20 Hz step = 1/20 s = 1.5 planner frames → advance context by 2 frames per step.
-_PLANNER_HZ = 30.0
-_EVAL_HZ    = 20.0
-_CTX_ADVANCE = round(_PLANNER_HZ / _EVAL_HZ)  # = 2
-
-
 def run_planner(
     parquet_arrays: dict[str, np.ndarray],
     n_frames: int,
@@ -178,14 +173,15 @@ def run_planner(
     planner = PlannerWrapper(planner_onnx)
     print(f"[planner] loaded {planner_onnx}")
 
-    # Bootstrap context with the G1's neutral standing pose, not zeros.
-    # Zero joints give the planner a completely straight-legged robot context which
-    # produces degenerate output — the actual standing pose has hip_pitch=-0.312,
-    # knee=0.669, ankle_pitch=-0.363 (from policy_parameters.hpp::default_angles).
-    context = np.zeros((1, 4, 36), dtype=np.float32)
-    context[0, :, 2] = _MUJOCO_STANDING_Z   # pelvis z height
-    context[0, :, 3] = 1.0                  # quaternion w (identity orientation)
-    context[0, :, 7:36] = _MUJOCO_DEFAULT_ANGLES_29
+    # Bootstrap: rolling queue of 4 frames, one frame appended per 20 Hz step.
+    # Matches inference-time behaviour where each control step pushes one real
+    # qpos frame onto the queue and pops the oldest.
+    # Initialised to 4 identical standing-pose frames (robot at rest).
+    _standing = np.zeros(36, dtype=np.float32)
+    _standing[2]    = _MUJOCO_STANDING_Z
+    _standing[3]    = 1.0
+    _standing[7:36] = _MUJOCO_DEFAULT_ANGLES_29
+    ctx_queue = deque([_standing.copy() for _ in range(4)], maxlen=4)
 
     full_qpos   = np.zeros((n_frames, 36), dtype=np.float32)
     planner_log = {
@@ -209,7 +205,7 @@ def run_planner(
 
         inputs = build_planner_inputs(
             vla_action=chunk,
-            context_mujoco_qpos=context,
+            context_mujoco_qpos=np.stack(list(ctx_queue))[np.newaxis],
             t_index=0,
             batch_index=0,
         )
@@ -227,18 +223,8 @@ def run_planner(
 
         if out.num_pred_frames > 0:
             full_qpos[frame] = out.mujoco_qpos[0, 0]   # frame 0 = current predicted state
-
-            # Advance context by _CTX_ADVANCE frames to match 20 Hz replanning rate.
-            # Frame _CTX_ADVANCE of the current prediction is the robot's expected
-            # state at the start of the next 20 Hz step; use it + 3 following frames
-            # as the 4-frame 30 Hz context window for the next planner call.
-            adv = min(_CTX_ADVANCE, out.num_pred_frames - 1)
-            ctx_end = min(adv + 4, out.num_pred_frames)
-            new_ctx = out.mujoco_qpos[0, adv:ctx_end]          # (≤4, 36)
-            if new_ctx.shape[0] < 4:
-                pad = np.tile(new_ctx[-1:], (4 - new_ctx.shape[0], 1))
-                new_ctx = np.concatenate([new_ctx, pad], axis=0)
-            context = new_ctx[np.newaxis]                       # (1, 4, 36)
+            # Push frame 0 onto the rolling queue (oldest frame auto-dropped).
+            ctx_queue.append(out.mujoco_qpos[0, 0].copy())
         else:
             zero_frame_count += 1
 
@@ -305,15 +291,14 @@ def visualise(
 
     def _apply_frame(idx: int) -> None:
         qpos = full_qpos[idx]
-        root_pos  = qpos[0:3].astype(float)
-        root_wxyz = qpos[3:7].astype(float)   # MuJoCo wxyz (w,x,y,z)
+        root_pos  = np.array([0.0, 0.0, float(qpos[2])])  # pin XY; keep predicted Z
+        root_wxyz = qpos[3:7].astype(float)                # MuJoCo wxyz (w,x,y,z)
         angles    = qpos[_LB_QPOS_SLICE]
-
-        root_wxyz = np.array([1.0, 0.0, 0.0, 0.0])  # strip root rotation — keep position only
 
         if idx < _DIAG_FRAMES:
             print(
-                f"[diag frame {idx:3d}]  pos=[{root_pos[0]:+.4f},{root_pos[1]:+.4f},{root_pos[2]:+.4f}]"
+                f"[diag frame {idx:3d}]  predicted_xy=[{qpos[0]:+.4f},{qpos[1]:+.4f}]"
+                f"  z={qpos[2]:+.4f}"
                 f"  wxyz=[{root_wxyz[0]:+.4f},{root_wxyz[1]:+.4f},{root_wxyz[2]:+.4f},{root_wxyz[3]:+.4f}]"
                 f"  lb=[{angles.min():+.3f}…{angles.max():+.3f}]"
             )
