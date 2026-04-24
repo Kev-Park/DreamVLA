@@ -67,7 +67,7 @@ _MUJOCO_DEFAULT_ANGLES_29 = np.array([
      0.2,   0.2, 0.0, 0.6, 0.0, 0.0, 0.0,  # left  arm: sp, sr, sy, elbow, wr, wp, wy
      0.2,  -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,  # right arm: sp, sr, sy, elbow, wr, wp, wy
 ], dtype=np.float32)
-_MUJOCO_STANDING_Z = 0.793  # typical G1 pelvis height in standing pose (metres)
+_MUJOCO_STANDING_Z = 0.78874  # matches PlannerConfig::default_height in localmotion_kplanner.hpp
 
 
 
@@ -150,15 +150,26 @@ def _get_mode(arrays: dict[str, np.ndarray], frame: int) -> int:
 # Planner inference
 # ============================================================
 
+# Planner outputs at 30 Hz; parquet / replanning runs at 20 Hz.
+# Each 20 Hz step = 1/20 s = 1.5 planner frames → advance context by 2 frames per step.
+_PLANNER_HZ = 30.0
+_EVAL_HZ    = 20.0
+_CTX_ADVANCE = round(_PLANNER_HZ / _EVAL_HZ)  # = 2
+
+
 def run_planner(
     parquet_arrays: dict[str, np.ndarray],
     n_frames: int,
     planner_onnx: str,
 ) -> np.ndarray:
-    """Run the kinematic planner for every parquet frame.
+    """Run the kinematic planner for every parquet frame at 20 Hz.
 
-    Returns joint_angles of shape (n_frames, 12): the lower-body joint angles
-    (radians, MuJoCo order) from the planner's first predicted frame.
+    Replanning rate: 20 Hz (one call per parquet frame).
+    Context advance:  2 planner frames (30 Hz) per 20 Hz step ≈ 67 ms,
+                      matching the 50 ms parquet interval as closely as integer
+                      frames allow.
+
+    Returns (full_qpos, planner_log) where full_qpos has shape (n_frames, 36).
     """
     import sys
     sys.path.insert(0, str(_HERE))
@@ -176,7 +187,7 @@ def run_planner(
     context[0, :, 3] = 1.0                  # quaternion w (identity orientation)
     context[0, :, 7:36] = _MUJOCO_DEFAULT_ANGLES_29
 
-    full_qpos    = np.zeros((n_frames, 36),         dtype=np.float32)
+    full_qpos   = np.zeros((n_frames, 36), dtype=np.float32)
     planner_log = {
         "movement": np.zeros((n_frames, 3), dtype=np.float32),
         "facing":   np.zeros((n_frames, 3), dtype=np.float32),
@@ -215,16 +226,19 @@ def run_planner(
         out = planner.run(**inputs.as_kwargs())
 
         if out.num_pred_frames > 0:
-            first_qpos = out.mujoco_qpos[0, 0]           # (36,)
-            full_qpos[frame] = first_qpos
+            full_qpos[frame] = out.mujoco_qpos[0, 0]   # frame 0 = current predicted state
 
-            # Roll context: use up to 4 frames from planner output.
-            n_ctx = min(out.num_pred_frames, 4)
-            new_ctx = out.mujoco_qpos[0, :n_ctx]          # (n_ctx, 36)
-            if n_ctx < 4:
-                pad = np.tile(new_ctx[-1:], (4 - n_ctx, 1))
+            # Advance context by _CTX_ADVANCE frames to match 20 Hz replanning rate.
+            # Frame _CTX_ADVANCE of the current prediction is the robot's expected
+            # state at the start of the next 20 Hz step; use it + 3 following frames
+            # as the 4-frame 30 Hz context window for the next planner call.
+            adv = min(_CTX_ADVANCE, out.num_pred_frames - 1)
+            ctx_end = min(adv + 4, out.num_pred_frames)
+            new_ctx = out.mujoco_qpos[0, adv:ctx_end]          # (≤4, 36)
+            if new_ctx.shape[0] < 4:
+                pad = np.tile(new_ctx[-1:], (4 - new_ctx.shape[0], 1))
                 new_ctx = np.concatenate([new_ctx, pad], axis=0)
-            context = new_ctx[np.newaxis]                  # (1, 4, 36)
+            context = new_ctx[np.newaxis]                       # (1, 4, 36)
         else:
             zero_frame_count += 1
 
