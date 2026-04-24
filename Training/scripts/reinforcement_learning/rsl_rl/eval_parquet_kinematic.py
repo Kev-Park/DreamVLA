@@ -295,10 +295,7 @@ def visualise(
         root_wxyz = qpos[3:7].astype(float)   # MuJoCo wxyz (w,x,y,z)
         angles    = qpos[_LB_QPOS_SLICE]
 
-        # Normalise in case the planner output is slightly off-unit.
-        quat_norm = np.linalg.norm(root_wxyz)
-        if quat_norm > 1e-6:
-            root_wxyz /= quat_norm
+        root_wxyz = np.array([1.0, 0.0, 0.0, 0.0])  # strip root rotation — keep position only
 
         if idx < _DIAG_FRAMES:
             print(
