@@ -152,17 +152,20 @@ def _get_mode(arrays: dict[str, np.ndarray], frame: int) -> int:
 
 def run_planner(
     parquet_arrays: dict[str, np.ndarray],
-    n_frames: int,
     planner_onnx: str,
 ) -> np.ndarray:
-    """Run the kinematic planner for every parquet frame at 20 Hz.
+    """Run the kinematic planner at a native 30 Hz, upsampling 20 Hz parquet commands.
 
-    Replanning rate: 20 Hz (one call per parquet frame).
-    Context advance:  2 planner frames (30 Hz) per 20 Hz step ≈ 67 ms,
-                      matching the 50 ms parquet interval as closely as integer
-                      frames allow.
+    Parquet data is at 20 Hz (50 ms/frame). The planner and its context were
+    trained at 30 Hz (33.3 ms/frame). We run one planner call per 30 Hz tick
+    and linearly interpolate continuous parquet fields (movement, facing, speed,
+    height) to get values at each 33.3 ms step. Mode is discrete — floor index.
 
-    Returns (full_qpos, planner_log) where full_qpos has shape (n_frames, 36).
+    Context rolling: frames [0..3] from each prediction are fed as the next
+    call's context. These frames are natively 33.3 ms apart (from the same
+    prediction), matching UpdateContextFromMotion: gen_time + n/30.0.
+
+    Returns (full_qpos, planner_log) where full_qpos has shape (n_steps, 36).
     """
     import sys
     sys.path.insert(0, str(_HERE))
@@ -171,34 +174,42 @@ def run_planner(
     planner = PlannerWrapper(planner_onnx)
     print(f"[planner] loaded {planner_onnx}")
 
-    _PLANNER_HZ  = 30.0
-    _EVAL_HZ     = 20.0
-    _CTX_ADVANCE = round(_PLANNER_HZ / _EVAL_HZ)  # 2: advance 2 planner frames per 20 Hz step
+    _PLANNER_HZ = 30.0
+    _PARQUET_HZ = 20.0
+    n_parquet   = parquet_arrays["planner_movement"].shape[0]
+    n_steps     = round(n_parquet * _PLANNER_HZ / _PARQUET_HZ)
+    print(f"[planner] {n_parquet} parquet frames @ {_PARQUET_HZ:.0f} Hz → {n_steps} planner steps @ {_PLANNER_HZ:.0f} Hz")
 
-    # Bootstrap: 4 identical standing frames at 30 Hz spacing, matching
-    # UpdateContextFromMotion(gen_time + n/30.0) in localmotion_kplanner.hpp.
+    # Bootstrap: 4 identical standing frames at 30 Hz spacing.
     context = np.zeros((1, 4, 36), dtype=np.float32)
     context[0, :, 2]    = _MUJOCO_STANDING_Z
     context[0, :, 3]    = 1.0
     context[0, :, 7:36] = _MUJOCO_DEFAULT_ANGLES_29
 
-    full_qpos   = np.zeros((n_frames, 36), dtype=np.float32)
+    full_qpos   = np.zeros((n_steps, 36), dtype=np.float32)
     planner_log = {
-        "movement": np.zeros((n_frames, 3), dtype=np.float32),
-        "facing":   np.zeros((n_frames, 3), dtype=np.float32),
-        "speed":    np.zeros((n_frames,),   dtype=np.float32),
-        "height":   np.zeros((n_frames,),   dtype=np.float32),
-        "mode":     np.zeros((n_frames,),   dtype=np.int64),
+        "movement": np.zeros((n_steps, 3), dtype=np.float32),
+        "facing":   np.zeros((n_steps, 3), dtype=np.float32),
+        "speed":    np.zeros((n_steps,),   dtype=np.float32),
+        "height":   np.zeros((n_steps,),   dtype=np.float32),
+        "mode":     np.zeros((n_steps,),   dtype=np.int64),
     }
     zero_frame_count = 0
 
-    for frame in range(n_frames):
-        n = parquet_arrays["planner_movement"].shape[0]
-        f = min(frame, n - 1)
+    for step in range(n_steps):
+        # Map 30 Hz step → float parquet index, then lerp.
+        pidx_f = step * (_PARQUET_HZ / _PLANNER_HZ)   # e.g. step 3 → 2.0
+        p0     = min(int(pidx_f), n_parquet - 1)
+        p1     = min(p0 + 1, n_parquet - 1)
+        alpha  = pidx_f - int(pidx_f)
 
-        # Build fake vla_chunk shaped (1, 1, D) for build_planner_inputs.
+        def _lerp(key: str) -> np.ndarray:
+            a = parquet_arrays[key][p0].astype(np.float32)
+            b = parquet_arrays[key][p1].astype(np.float32)
+            return (1.0 - alpha) * a + alpha * b
+
         chunk = {
-            key: parquet_arrays[key][f][np.newaxis, np.newaxis]
+            key: _lerp(key)[np.newaxis, np.newaxis]
             for key in ("planner_movement", "planner_facing", "planner_speed", "planner_height")
         }
 
@@ -208,26 +219,23 @@ def run_planner(
             t_index=0,
             batch_index=0,
         )
-        # Override mode with column-derived or run-flag value.
-        inputs.mode = np.array([_get_mode(parquet_arrays, frame)], dtype=np.int64)
+        # Mode is discrete — use floor parquet index.
+        inputs.mode = np.array([_get_mode(parquet_arrays, p0)], dtype=np.int64)
 
-        # Log planner inputs for this frame.
-        planner_log["movement"][frame] = inputs.movement_direction[0]
-        planner_log["facing"][frame]   = inputs.facing_direction[0]
-        planner_log["speed"][frame]    = float(inputs.target_vel[0])
-        planner_log["height"][frame]   = float(inputs.height[0])
-        planner_log["mode"][frame]     = int(inputs.mode[0])
+        # Log planner inputs for this step.
+        planner_log["movement"][step] = inputs.movement_direction[0]
+        planner_log["facing"][step]   = inputs.facing_direction[0]
+        planner_log["speed"][step]    = float(inputs.target_vel[0])
+        planner_log["height"][step]   = float(inputs.height[0])
+        planner_log["mode"][step]     = int(inputs.mode[0])
 
         out = planner.run(**inputs.as_kwargs())
 
         if out.num_pred_frames > 0:
-            full_qpos[frame] = out.mujoco_qpos[0, 0]   # frame 0 = current predicted state
-            # Advance context by _CTX_ADVANCE (2) planner frames, then take 4 consecutive
-            # frames from this single prediction — all at 30 Hz (33 ms) spacing.
-            # This matches UpdateContextFromMotion: gen_time + n/30.0.
-            adv     = min(_CTX_ADVANCE, out.num_pred_frames - 1)
-            ctx_end = min(adv + 4, out.num_pred_frames)
-            new_ctx = out.mujoco_qpos[0, adv:ctx_end]
+            full_qpos[step] = out.mujoco_qpos[0, 0]
+            # Context: frames [0..3] from this prediction — natively 33.3 ms apart.
+            # Matches UpdateContextFromMotion: gen_time + n/30.0.
+            new_ctx = out.mujoco_qpos[0, :4]
             if new_ctx.shape[0] < 4:
                 pad = np.tile(new_ctx[-1:], (4 - new_ctx.shape[0], 1))
                 new_ctx = np.concatenate([new_ctx, pad], axis=0)
@@ -235,14 +243,14 @@ def run_planner(
         else:
             zero_frame_count += 1
 
-        if frame % 100 == 0:
-            lb_now = full_qpos[frame][_LB_QPOS_SLICE]
-            print(f"[planner] frame {frame}/{n_frames}  mode={inputs.mode[0]}  "
+        if step % 100 == 0:
+            lb_now = full_qpos[step][_LB_QPOS_SLICE]
+            print(f"[planner] step {step}/{n_steps}  mode={inputs.mode[0]}  "
                   f"num_pred_frames={out.num_pred_frames}  "
                   f"lb_joints_range=[{lb_now.min():.3f}, {lb_now.max():.3f}]")
 
     if zero_frame_count:
-        print(f"[planner] WARNING: {zero_frame_count}/{n_frames} frames returned num_pred_frames=0")
+        print(f"[planner] WARNING: {zero_frame_count}/{n_steps} steps returned num_pred_frames=0")
     lb = full_qpos[:, _LB_QPOS_SLICE]
     print(f"[planner] done — joint_angles range [{lb.min():.3f}, {lb.max():.3f}]")
     return full_qpos, planner_log
@@ -373,8 +381,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    parquet_arrays, n_frames = load_parquet(args.parquet)
-    full_qpos, planner_log = run_planner(parquet_arrays, n_frames, args.planner_onnx)
+    parquet_arrays, _ = load_parquet(args.parquet)
+    full_qpos, planner_log = run_planner(parquet_arrays, args.planner_onnx)
     visualise(full_qpos, planner_log, urdf_path=args.urdf, fps=args.fps)
 
 
