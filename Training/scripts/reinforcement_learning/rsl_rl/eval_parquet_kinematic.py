@@ -173,7 +173,7 @@ def run_planner(
     print(f"[planner] loaded {planner_onnx}")
 
     _PLANNER_HZ = 30.0
-    _PARQUET_HZ = 20.0
+    _PARQUET_HZ = 50.0
     n_parquet   = parquet_arrays["planner_movement"].shape[0]
     n_steps     = round(n_parquet * _PLANNER_HZ / _PARQUET_HZ)
     print(f"[planner] {n_parquet} parquet frames @ {_PARQUET_HZ:.0f} Hz → {n_steps} planner steps @ {_PLANNER_HZ:.0f} Hz")
