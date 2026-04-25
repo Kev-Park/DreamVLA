@@ -56,7 +56,7 @@ ALL_JOINT_NAMES: list[str] = [
     "right_ankle_roll_joint",
     "waist_yaw_joint",
     "waist_roll_joint",
-    "torso_joint",
+    "waist_pitch_joint",
     "left_shoulder_pitch_joint",
     "left_shoulder_roll_joint",
     "left_shoulder_yaw_joint",
