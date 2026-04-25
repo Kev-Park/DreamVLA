@@ -116,6 +116,30 @@ from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
 
 
 # =========================================================================
+# Planner bootstrap constants (mirrors eval_parquet_kinematic.py).
+# =========================================================================
+
+# G1 neutral standing pose in MuJoCo order (from policy_parameters.hpp::default_angles).
+_MUJOCO_DEFAULT_ANGLES_29 = np.array([
+    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,   # left  leg: hp, hr, hy, knee, ap, ar
+    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,   # right leg: hp, hr, hy, knee, ap, ar
+     0.0,   0.0, 0.0,                        # waist: yaw, roll, pitch
+     0.2,   0.2, 0.0, 0.6, 0.0, 0.0, 0.0,  # left  arm: sp, sr, sy, elbow, wr, wp, wy
+     0.2,  -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,  # right arm: sp, sr, sy, elbow, wr, wp, wy
+], dtype=np.float32)
+_MUJOCO_STANDING_Z = 0.78874
+
+
+def _make_standing_planner_context() -> np.ndarray:
+    """4 identical standing frames → (1, 4, 36) context for the planner bootstrap."""
+    ctx = np.zeros((1, 4, 36), dtype=np.float32)
+    ctx[0, :, 2]    = _MUJOCO_STANDING_Z
+    ctx[0, :, 3]    = 1.0
+    ctx[0, :, 7:36] = _MUJOCO_DEFAULT_ANGLES_29
+    return ctx
+
+
+# =========================================================================
 # Joint-order helpers (identical to eval_vla_sonic.py).
 # =========================================================================
 
@@ -631,6 +655,13 @@ def main() -> int:
     prev_utm_body_29 = np.zeros(29, dtype=np.float32)
     total_successes  = 0
 
+    # Self-rolled planner context: updated from planner output after each call.
+    # Mirrors C++ UpdateContextFromMotion which reads planner_motion_50hz_, NOT sim state.
+    # Context frames are natively 33 ms apart (30 Hz planner output), which is
+    # what the planner was trained on — physics history at 50 Hz would compress
+    # this to 20 ms spacing and degrade planner quality.
+    planner_context = _make_standing_planner_context()
+
     for ep in range(args.num_episodes):
         print(f"\n[episode {ep}]")
         obs, info = env.reset()
@@ -638,6 +669,7 @@ def main() -> int:
         _APP.update()           # flush warm-up render to annotators
         _APP.update()
         history.reset()
+        planner_context = _make_standing_planner_context()
 
         # Open video writers on first episode after Isaac Lab is fully up.
         if ep == 0 and prefix is not None and not writers:
@@ -703,10 +735,20 @@ def main() -> int:
             # 7c. Run kinematic planner on parquet commands.
             planner_inputs = build_planner_inputs(
                 vla_action=parquet_chunk,
-                context_mujoco_qpos=history.planner_context(),
+                context_mujoco_qpos=planner_context,
                 t_index=t_idx,
             )
             planner_out = planner.run(**planner_inputs.as_kwargs())
+
+            # Roll planner context from the output's first 4 frames (30 Hz native spacing).
+            # C++ UpdateContextFromMotion reads planner_motion_50hz_, so context is always
+            # from the planner's own predictions, not from the physics sim state.
+            if planner_out.num_pred_frames > 0:
+                new_ctx = planner_out.mujoco_qpos[0, :4]
+                if new_ctx.shape[0] < 4:
+                    pad = np.tile(new_ctx[-1:], (4 - new_ctx.shape[0], 1))
+                    new_ctx = np.concatenate([new_ctx, pad], axis=0)
+                planner_context = new_ctx[np.newaxis]
 
             if step == 0:
                 ctx_last  = planner_inputs.context_mujoco_qpos[0, -1]
