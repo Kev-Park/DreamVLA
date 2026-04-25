@@ -6,8 +6,9 @@ ViserUrdf on port 8082.
 
 Recording format (one directory per session):
     joint_pos.csv   — (N, 29) joint angles in IsaacLab order
-    body_pos.csv    — (N, 14*3) body link world positions; body_0 = pelvis
-    body_quat.csv   — (N, 14*4) body link world quaternions wxyz; body_0 = pelvis
+    body_pos.csv    — (N, B*3) body link world positions; body_0 = pelvis
+                      B=1 for planner_motion / streamed recordings (root only)
+    body_quat.csv   — (N, B*4) body link world quaternions wxyz; body_0 = pelvis
     joint_vel.csv   — (N, 29)  (not used for visualisation)
 
 Joint order conversion:
@@ -95,8 +96,10 @@ def load_motion(motion_dir: Path) -> dict[str, np.ndarray]:
     body_quat  = _read("body_quat")   # (N, 14*4)
 
     n = joint_pos.shape[0]
-    assert body_pos.shape  == (n, 42), f"body_pos shape {body_pos.shape}"
-    assert body_quat.shape == (n, 56), f"body_quat shape {body_quat.shape}"
+    # C++ MotionRecorder writes only 1 body (root/pelvis) — shape (N, 3) and (N, 4).
+    # Multi-body pkl-converted recordings have shape (N, 14*3) and (N, 14*4).
+    assert body_pos.shape[0]  == n and body_pos.shape[1]  % 3 == 0, f"body_pos shape {body_pos.shape}"
+    assert body_quat.shape[0] == n and body_quat.shape[1] % 4 == 0, f"body_quat shape {body_quat.shape}"
 
     # Lower-body angles in MuJoCo order.
     lb_angles = joint_pos[:, _LB_CSV_COLS]          # (N, 12)
