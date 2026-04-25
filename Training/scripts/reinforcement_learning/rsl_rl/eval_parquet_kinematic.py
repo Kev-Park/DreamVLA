@@ -49,7 +49,6 @@ NUM_JOINTS = len(LOWER_BODY_JOINT_NAMES)  # 12
 
 # Slice into the 36-D mujoco qpos for the 12 lower-body joints.
 # MuJoCo body-tree order: left-leg-all-6 then right-leg-all-6 (see action_assembler.py).
-_LB_QPOS_SLICE = slice(7, 19)
 
 # Default URDF path relative to this script.
 # Script lives at: Training/scripts/reinforcement_learning/rsl_rl/
@@ -69,6 +68,18 @@ _MUJOCO_DEFAULT_ANGLES_29 = np.array([
 ], dtype=np.float32)
 _MUJOCO_STANDING_Z = 0.78874  # matches PlannerConfig::default_height in localmotion_kplanner.hpp
 
+# IsaacLab↔MuJoCo joint permutation (from policy_parameters.hpp::mujoco_to_isaaclab).
+# _MJ_TO_IL[il_idx] = MuJoCo joint index stored at IsaacLab column il_idx.
+# The planner ONNX input/output both use IsaacLab slot ordering for qpos[7:36].
+_MJ_TO_IL = np.array([
+    0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22,
+    4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26, 20, 27, 21, 28,
+], dtype=np.int32)
+_IL_TO_MJ = np.argsort(_MJ_TO_IL)   # _IL_TO_MJ[mj_idx] = IL slot for MuJoCo joint mj_idx
+
+# Bootstrap context: default angles converted from MuJoCo order to IsaacLab slot order.
+# _MJ_TO_IL[il_idx] gives the MuJoCo joint at slot il_idx, so indexing with it reorders.
+_DEFAULT_ANGLES_IL = _MUJOCO_DEFAULT_ANGLES_29[_MJ_TO_IL]  # shape (29,), IsaacLab order
 
 
 # ============================================================
@@ -184,7 +195,7 @@ def run_planner(
     context = np.zeros((1, 4, 36), dtype=np.float32)
     context[0, :, 2]    = _MUJOCO_STANDING_Z
     context[0, :, 3]    = 1.0
-    context[0, :, 7:36] = _MUJOCO_DEFAULT_ANGLES_29
+    context[0, :, 7:36] = _DEFAULT_ANGLES_IL
 
     full_qpos   = np.zeros((n_steps, 36), dtype=np.float32)
     planner_log = {
@@ -245,14 +256,14 @@ def run_planner(
             zero_frame_count += 1
 
         if step % 100 == 0:
-            lb_now = full_qpos[step][_LB_QPOS_SLICE]
+            lb_now = full_qpos[step][7:36][_IL_TO_MJ][:NUM_JOINTS]
             print(f"[planner] step {step}/{n_steps}  mode={inputs.mode[0]}  "
                   f"num_pred_frames={out.num_pred_frames}  "
                   f"lb_joints_range=[{lb_now.min():.3f}, {lb_now.max():.3f}]")
 
     if zero_frame_count:
         print(f"[planner] WARNING: {zero_frame_count}/{n_steps} steps returned num_pred_frames=0")
-    lb = full_qpos[:, _LB_QPOS_SLICE]
+    lb = full_qpos[:, 7:36][:, _IL_TO_MJ][:, :NUM_JOINTS]
     print(f"[planner] done — joint_angles range [{lb.min():.3f}, {lb.max():.3f}]")
     return full_qpos, planner_log
 
@@ -310,7 +321,8 @@ def visualise(
 
     def _apply_frame(idx: int) -> None:
         qpos   = full_qpos[idx]
-        angles = qpos[_LB_QPOS_SLICE]
+        # Planner output qpos[7:36] is in IsaacLab slot order; reorder to MuJoCo order.
+        angles = qpos[7:36][_IL_TO_MJ][:NUM_JOINTS]
 
         if idx < _DIAG_FRAMES:
             root_wxyz = qpos[3:7]
