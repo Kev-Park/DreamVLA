@@ -152,16 +152,16 @@ def run_planner(
     parquet_arrays: dict[str, np.ndarray],
     planner_onnx: str,
 ) -> np.ndarray:
-    """Run the kinematic planner at a native 30 Hz, upsampling 20 Hz parquet commands.
+    """Run the kinematic planner at 30 Hz output rate, replanning at 10 Hz (C++ rate).
 
-    Parquet data is at 20 Hz (50 ms/frame). The planner and its context were
-    trained at 30 Hz (33.3 ms/frame). We run one planner call per 30 Hz tick
-    and linearly interpolate continuous parquet fields (movement, facing, speed,
-    height) to get values at each 33.3 ms step. Mode is discrete — floor index.
+    C++ replans at 10 Hz (every 5 control steps at 50 Hz = every 3 planner frames at
+    30 Hz). Between replans the cached trajectory is played through frame-by-frame.
 
-    Context rolling: frames [0..3] from each prediction are fed as the next
-    call's context. These frames are natively 33.3 ms apart (from the same
-    prediction), matching UpdateContextFromMotion: gen_time + n/30.0.
+    Context rolling matches UpdateContextFromMotion exactly:
+        gen_time = (control_frame + look_ahead_steps) / 50.0
+        context[n] = output_at(gen_time + n/30.0)  for n=0..3
+    At 10 Hz replan this evaluates to frames [3,4,5,6] of the previous 30 Hz output
+    (0.1s of elapsed time = 3 frames at 30 Hz, then 33 ms spacing).
 
     Returns (full_qpos, planner_log) where full_qpos has shape (n_steps, 36).
     """
@@ -172,13 +172,18 @@ def run_planner(
     planner = PlannerWrapper(planner_onnx)
     print(f"[planner] loaded {planner_onnx}")
 
-    _PLANNER_HZ = 30.0
-    _PARQUET_HZ = 50.0
-    n_parquet   = parquet_arrays["planner_movement"].shape[0]
-    n_steps     = round(n_parquet * _PLANNER_HZ / _PARQUET_HZ)
-    print(f"[planner] {n_parquet} parquet frames @ {_PARQUET_HZ:.0f} Hz → {n_steps} planner steps @ {_PLANNER_HZ:.0f} Hz")
+    _PLANNER_HZ   = 30.0
+    _PARQUET_HZ   = 50.0
+    _REPLAN_HZ    = 10.0
+    _REPLAN_STEPS = round(_PLANNER_HZ / _REPLAN_HZ)  # 3: one replan every 0.1 s at 30 Hz
 
-    # Bootstrap: 4 identical standing frames at 30 Hz spacing.
+    n_parquet = parquet_arrays["planner_movement"].shape[0]
+    n_steps   = round(n_parquet * _PLANNER_HZ / _PARQUET_HZ)
+    print(f"[planner] {n_parquet} parquet frames @ {_PARQUET_HZ:.0f} Hz "
+          f"→ {n_steps} steps @ {_PLANNER_HZ:.0f} Hz, replanning @ {_REPLAN_HZ:.0f} Hz")
+
+    # Bootstrap: 4 identical standing frames (matches C++ InitializeContext with
+    # the robot in its default neutral pose at startup).
     context = np.zeros((1, 4, 36), dtype=np.float32)
     context[0, :, 2]    = _MUJOCO_STANDING_Z
     context[0, :, 3]    = 1.0
@@ -194,58 +199,80 @@ def run_planner(
     }
     zero_frame_count = 0
 
+    cached_out  = None  # last planner output; reused for _REPLAN_STEPS steps
+    cached_log  = None  # planner inputs for this cycle (used for in-between log entries)
+
     for step in range(n_steps):
-        # Map 30 Hz step → float parquet index, then lerp.
-        pidx_f = step * (_PARQUET_HZ / _PLANNER_HZ)   # e.g. step 3 → 2.0
-        p0     = min(int(pidx_f), n_parquet - 1)
-        p1     = min(p0 + 1, n_parquet - 1)
-        alpha  = pidx_f - int(pidx_f)
+        traj_step = step % _REPLAN_STEPS  # position within current replan cycle: 0,1,2
 
-        def _lerp(key: str) -> np.ndarray:
-            a = parquet_arrays[key][p0].astype(np.float32)
-            b = parquet_arrays[key][p1].astype(np.float32)
-            return (1.0 - alpha) * a + alpha * b
+        if traj_step == 0:
+            # ── Advance context to current position before replanning ──────────
+            # C++ UpdateContextFromMotion: gen_time = (control_frame+2)/50,
+            # context[n] = output_at(gen_time + n/30). After _REPLAN_STEPS steps
+            # (0.1s) this evaluates to frames [3,4,5,6] of the previous output.
+            if cached_out is not None and cached_out.num_pred_frames > 0:
+                n_pred = cached_out.num_pred_frames
+                cs     = min(_REPLAN_STEPS, n_pred - 1)
+                ctx_4  = cached_out.mujoco_qpos[0, cs : cs + 4]
+                if ctx_4.shape[0] < 4:
+                    pad   = np.tile(ctx_4[-1:], (4 - ctx_4.shape[0], 1))
+                    ctx_4 = np.concatenate([ctx_4, pad])
+                context = ctx_4[np.newaxis]
 
-        chunk = {
-            key: _lerp(key)[np.newaxis, np.newaxis]
-            for key in ("planner_movement", "planner_facing", "planner_speed", "planner_height")
-        }
+            # ── Map 30 Hz step → parquet index and build inputs ───────────────
+            pidx_f = step * (_PARQUET_HZ / _PLANNER_HZ)
+            p0     = min(int(pidx_f), n_parquet - 1)
+            p1     = min(p0 + 1, n_parquet - 1)
+            alpha  = pidx_f - int(pidx_f)
 
-        inputs = build_planner_inputs(
-            vla_action=chunk,
-            context_mujoco_qpos=context,
-            t_index=0,
-            batch_index=0,
-            clip_negative_speed=False,  # preserve -1.0 sentinel (WALK/RUN) as trained
-        )
-        # Mode is discrete — use floor parquet index.
-        inputs.mode = np.array([_get_mode(parquet_arrays, p0)], dtype=np.int64)
+            def _lerp(key: str) -> np.ndarray:
+                a = parquet_arrays[key][p0].astype(np.float32)
+                b = parquet_arrays[key][p1].astype(np.float32)
+                return (1.0 - alpha) * a + alpha * b
 
-        # Log planner inputs for this step.
-        planner_log["movement"][step] = inputs.movement_direction[0]
-        planner_log["facing"][step]   = inputs.facing_direction[0]
-        planner_log["speed"][step]    = float(inputs.target_vel[0])
-        planner_log["height"][step]   = float(inputs.height[0])
-        planner_log["mode"][step]     = int(inputs.mode[0])
+            chunk = {
+                key: _lerp(key)[np.newaxis, np.newaxis]
+                for key in ("planner_movement", "planner_facing",
+                            "planner_speed", "planner_height")
+            }
+            inputs = build_planner_inputs(
+                vla_action=chunk,
+                context_mujoco_qpos=context,
+                t_index=0, batch_index=0, clip_negative_speed=False,
+            )
+            inputs.mode = np.array([_get_mode(parquet_arrays, p0)], dtype=np.int64)
 
-        out = planner.run(**inputs.as_kwargs())
+            out = planner.run(**inputs.as_kwargs())
+            if out.num_pred_frames == 0:
+                zero_frame_count += 1
+            cached_out = out
+            cached_log = {
+                "movement": inputs.movement_direction[0].copy(),
+                "facing":   inputs.facing_direction[0].copy(),
+                "speed":    float(inputs.target_vel[0]),
+                "height":   float(inputs.height[0]),
+                "mode":     int(inputs.mode[0]),
+            }
 
-        if out.num_pred_frames > 0:
-            full_qpos[step] = out.mujoco_qpos[0, 0]
-            # Context: frames [0..3] from this prediction — natively 33.3 ms apart.
-            # Matches UpdateContextFromMotion: gen_time + n/30.0.
-            new_ctx = out.mujoco_qpos[0, :4]
-            if new_ctx.shape[0] < 4:
-                pad = np.tile(new_ctx[-1:], (4 - new_ctx.shape[0], 1))
-                new_ctx = np.concatenate([new_ctx, pad], axis=0)
-            context = new_ctx[np.newaxis]
-        else:
-            zero_frame_count += 1
+        # ── Record log (same command held for the full replan cycle) ─────────
+        if cached_log is not None:
+            planner_log["movement"][step] = cached_log["movement"]
+            planner_log["facing"][step]   = cached_log["facing"]
+            planner_log["speed"][step]    = cached_log["speed"]
+            planner_log["height"][step]   = cached_log["height"]
+            planner_log["mode"][step]     = cached_log["mode"]
 
-        if step % 100 == 0:
-            lb_now = full_qpos[step][7:7+NUM_JOINTS]
-            print(f"[planner] step {step}/{n_steps}  mode={inputs.mode[0]}  "
-                  f"num_pred_frames={out.num_pred_frames}  "
+        # ── Use frame traj_step from the cached trajectory ───────────────────
+        if cached_out is not None and cached_out.num_pred_frames > 0:
+            frame_idx       = min(traj_step, cached_out.num_pred_frames - 1)
+            full_qpos[step] = cached_out.mujoco_qpos[0, frame_idx]
+
+        if step % 30 == 0:
+            lb_now    = full_qpos[step][7:7+NUM_JOINTS]
+            mode_now  = cached_log["mode"] if cached_log else 0
+            n_pred_now = cached_out.num_pred_frames if cached_out else 0
+            print(f"[planner] step {step}/{n_steps}  mode={mode_now}  "
+                  f"num_pred_frames={n_pred_now}  "
                   f"lb_joints_range=[{lb_now.min():.3f}, {lb_now.max():.3f}]")
 
     if zero_frame_count:
