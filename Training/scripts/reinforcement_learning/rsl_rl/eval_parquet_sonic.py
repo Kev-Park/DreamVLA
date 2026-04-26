@@ -210,7 +210,11 @@ PLANNER_JOINTS_SLICE    = slice(7, 36)
 LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER = np.array(
     [7 + i for i in range(12)], dtype=np.int64,
 )
-ENCODER_FUTURE_FRAME_INDICES = list(range(0, 50, 5))
+# C++ uses step_size=5 in the 50 Hz resampled planner sequence → 100 ms/step, 0.9 s lookahead.
+# At the planner's native 30 Hz, 100 ms = 3 frames.  range(0,28,3) = [0,3,6,...,27] = 10 frames.
+# Old value range(0,50,5) gave 167 ms/step (1.5 s lookahead); most frames were padded
+# with the last planner frame because the planner rarely outputs 46+ frames at 30 Hz.
+ENCODER_FUTURE_FRAME_INDICES = list(range(0, 28, 3))
 PLANNER_OUTPUT_FPS = 30.0
 
 
