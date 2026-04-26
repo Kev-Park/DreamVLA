@@ -129,6 +129,35 @@ _MUJOCO_DEFAULT_ANGLES_29 = np.array([
 ], dtype=np.float32)
 _MUJOCO_STANDING_Z = 0.78874
 
+_PLANNER_HZ           = 30.0
+_CTRL_HZ              = 50.0
+_REPLAN_HZ            = 10.0
+_PLANNER_REPLAN_STEPS = int(_CTRL_HZ / _REPLAN_HZ)    # 5 env steps per replan
+_CTX_ADVANCE_FRAMES   = int(_PLANNER_HZ / _REPLAN_HZ)  # 3 planner frames per replan cycle
+
+
+def _make_robot_planner_context(
+    root_pos: np.ndarray,
+    root_quat_wxyz: np.ndarray,
+    q_mujoco: np.ndarray,
+) -> np.ndarray:
+    """Bootstrap: 4 identical frames of current robot state → (1, 4, 36).
+
+    Matches C++ InitializeContext: yaw is zeroed so the planner operates
+    in a yaw-invariant frame.
+    """
+    from scipy.spatial.transform import Rotation as _R
+    xyzw = quat_wxyz_to_xyzw(root_quat_wxyz)
+    euler_zyx = _R.from_quat(xyzw).as_euler("ZYX")
+    euler_zyx[0] = 0.0
+    q_xyzw = _R.from_euler("ZYX", euler_zyx).as_quat().astype(np.float32)
+    q_wxyz = np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]], dtype=np.float32)
+    frame = np.zeros(36, dtype=np.float32)
+    frame[0:3] = root_pos.astype(np.float32)
+    frame[3:7] = q_wxyz
+    frame[7:36] = q_mujoco.astype(np.float32)
+    return np.tile(frame[np.newaxis, np.newaxis, :], (1, 4, 1))
+
 
 def _make_standing_planner_context() -> np.ndarray:
     """4 identical standing frames → (1, 4, 36) context for the planner bootstrap."""
@@ -659,12 +688,9 @@ def main() -> int:
     prev_utm_body_29 = np.zeros(29, dtype=np.float32)
     total_successes  = 0
 
-    # Self-rolled planner context: updated from planner output after each call.
-    # Mirrors C++ UpdateContextFromMotion which reads planner_motion_50hz_, NOT sim state.
-    # Context frames are natively 33 ms apart (30 Hz planner output), which is
-    # what the planner was trained on — physics history at 50 Hz would compress
-    # this to 20 ms spacing and degrade planner quality.
-    planner_context = _make_standing_planner_context()
+    planner_context: np.ndarray | None = None
+    cached_planner_out = None
+    cached_planner_inputs = None
 
     for ep in range(args.num_episodes):
         print(f"\n[episode {ep}]")
@@ -673,7 +699,16 @@ def main() -> int:
         _APP.update()           # flush warm-up render to annotators
         _APP.update()
         history.reset()
-        planner_context = _make_standing_planner_context()
+        planner_traj_sub   = 0
+        cached_planner_out = None
+        cached_planner_inputs = None
+        # Bootstrap context from actual robot state — matches C++ InitializeContext.
+        _q_b  = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
+        _qs_b = _gather_with_mask(_q_b, isaac_to_utm_perm)
+        _qm_b = _qs_b[MUJOCO_TO_ISAACLAB]
+        _rp_b = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
+        _rq_b = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)
+        planner_context = _make_robot_planner_context(_rp_b, _rq_b, _qm_b)
 
         # Open video writers on first episode after Isaac Lab is fully up.
         if ep == 0 and prefix is not None and not writers:
@@ -736,45 +771,55 @@ def main() -> int:
                 mujoco_qpos=mujoco_qpos,
             )
 
-            # 7c. Run kinematic planner on parquet commands.
-            planner_inputs = build_planner_inputs(
-                vla_action=parquet_chunk,
-                context_mujoco_qpos=planner_context,
-                t_index=t_idx,
-            )
-            planner_out = planner.run(**planner_inputs.as_kwargs())
+            # 7c. Run kinematic planner at 10 Hz (every _PLANNER_REPLAN_STEPS env steps).
+            # Context advance: use frames [_CTX_ADVANCE_FRAMES .. _CTX_ADVANCE_FRAMES+4] of
+            # previous output before each replan (C++ UpdateContextFromMotion: gen_time advances
+            # by 0.1 s = 3 planner frames per replan cycle).
+            if planner_traj_sub == 0:
+                if cached_planner_out is not None and cached_planner_out.num_pred_frames > 0:
+                    n_pred = cached_planner_out.num_pred_frames
+                    cs = min(_CTX_ADVANCE_FRAMES, n_pred - 1)
+                    ctx_4 = cached_planner_out.mujoco_qpos[0, cs : cs + 4]
+                    if ctx_4.shape[0] < 4:
+                        pad = np.tile(ctx_4[-1:], (4 - ctx_4.shape[0], 1))
+                        ctx_4 = np.concatenate([ctx_4, pad], axis=0)
+                    planner_context = ctx_4[np.newaxis]
+                planner_inputs = build_planner_inputs(
+                    vla_action=parquet_chunk,
+                    context_mujoco_qpos=planner_context,
+                    t_index=t_idx,
+                )
+                cached_planner_out    = planner.run(**planner_inputs.as_kwargs())
+                cached_planner_inputs = planner_inputs
 
-            # Roll planner context from the output's first 4 frames (30 Hz native spacing).
-            # C++ UpdateContextFromMotion reads planner_motion_50hz_, so context is always
-            # from the planner's own predictions, not from the physics sim state.
-            if planner_out.num_pred_frames > 0:
-                new_ctx = planner_out.mujoco_qpos[0, :4]
-                if new_ctx.shape[0] < 4:
-                    pad = np.tile(new_ctx[-1:], (4 - new_ctx.shape[0], 1))
-                    new_ctx = np.concatenate([new_ctx, pad], axis=0)
-                planner_context = new_ctx[np.newaxis]
+                if step == 0:
+                    out_first = cached_planner_out.mujoco_qpos[0, 0]
+                    print("\n[PLANNER @ step 0] inputs:")
+                    print(f"  target_vel         = {planner_inputs.target_vel.tolist()}")
+                    print(f"  mode               = {planner_inputs.mode.tolist()}")
+                    print(f"  movement_direction = {planner_inputs.movement_direction[0].round(4).tolist()}")
+                    print(f"  facing_direction   = {planner_inputs.facing_direction[0].round(4).tolist()}")
+                    print(f"  height             = {planner_inputs.height.tolist()}")
+                    print("[PLANNER @ step 0] outputs:")
+                    print(f"  out[0] root_pos  = {out_first[0:3].round(4).tolist()}")
+                    print(f"  out[0] root_quat = {out_first[3:7].round(4).tolist()}")
+                    print(f"  out[0] legs[:12] = {out_first[7:19].round(4).tolist()}")
 
-            if step == 0:
-                ctx_last  = planner_inputs.context_mujoco_qpos[0, -1]
-                out_first = planner_out.mujoco_qpos[0, 0]
-                print("\n[PLANNER @ step 0] inputs:")
-                print(f"  target_vel         = {planner_inputs.target_vel.tolist()}")
-                print(f"  mode               = {planner_inputs.mode.tolist()}")
-                print(f"  movement_direction = {planner_inputs.movement_direction[0].round(4).tolist()}")
-                print(f"  facing_direction   = {planner_inputs.facing_direction[0].round(4).tolist()}")
-                print(f"  height             = {planner_inputs.height.tolist()}")
-                print("[PLANNER @ step 0] outputs:")
-                print(f"  out[0] root_pos  = {out_first[0:3].round(4).tolist()}")
-                print(f"  out[0] root_quat = {out_first[3:7].round(4).tolist()}")
-                print(f"  out[0] legs[:12] = {out_first[7:19].round(4).tolist()}")
+            # Select planner frame for this env step within the replan cycle.
+            # round(sub * 30/50): for sub in [0,1,2,3,4] → frames [0,1,1,2,2].
+            planner_frame_idx = round(planner_traj_sub * _PLANNER_HZ / _CTRL_HZ)
+            _n_cached = cached_planner_out.num_pred_frames
+            if planner_frame_idx >= _n_cached:
+                planner_frame_idx = max(0, _n_cached - 1)
+            traj_view = cached_planner_out.mujoco_qpos[:, planner_frame_idx:, :]
 
             # 7d. Extract anchor + lower-body trajectory.
-            anchor_pos_w, anchor_quat_wxyz = extract_anchor_pose(planner_out.mujoco_qpos)
+            anchor_pos_w, anchor_quat_wxyz = extract_anchor_pose(traj_view)
             _R_robot  = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
             _R_anchor = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
             _R_rel_mat = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
             anchor_rot6d = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
-            lb_pos, lb_vel = extract_lower_body_future(planner_out.mujoco_qpos)
+            lb_pos, lb_vel = extract_lower_body_future(traj_view)
 
             # 7e. VR 3-point from parquet chunk.
             vr_pos_world, vr_rot6d = extract_vr_3pt(parquet_chunk, t_index=t_idx)
@@ -785,11 +830,11 @@ def main() -> int:
                     vr_pos=vr_pos_world,
                     vr_rot6d=vr_rot6d,
                     root_pos=root_pos_w,
-                    planner_mode=int(np.atleast_1d(planner_inputs.mode).flat[0]),
-                    planner_speed=float(np.atleast_1d(planner_inputs.target_vel).flat[0]),
-                    planner_height=float(np.atleast_1d(planner_inputs.height).flat[0]),
-                    planner_facing=np.asarray(planner_inputs.facing_direction[0], dtype=np.float32),
-                    planner_movement=np.asarray(planner_inputs.movement_direction[0], dtype=np.float32),
+                    planner_mode=int(np.atleast_1d(cached_planner_inputs.mode).flat[0]),
+                    planner_speed=float(np.atleast_1d(cached_planner_inputs.target_vel).flat[0]),
+                    planner_height=float(np.atleast_1d(cached_planner_inputs.height).flat[0]),
+                    planner_facing=np.asarray(cached_planner_inputs.facing_direction[0], dtype=np.float32),
+                    planner_movement=np.asarray(cached_planner_inputs.movement_direction[0], dtype=np.float32),
                     step=step,
                 )
 
@@ -853,6 +898,7 @@ def main() -> int:
                 main._prev_cam_frame = _prev_frame
 
             prev_utm_body_29 = utm_body_29
+            planner_traj_sub = (planner_traj_sub + 1) % _PLANNER_REPLAN_STEPS
             chunk_step += 1
 
             if bool(term[0] if term.ndim > 0 else term):
