@@ -133,28 +133,28 @@ _PLANNER_HZ           = 30.0
 _CTRL_HZ              = 50.0
 _REPLAN_HZ            = 10.0
 _PLANNER_REPLAN_STEPS = int(_CTRL_HZ / _REPLAN_HZ)    # 5 env steps per replan
+# C++ adds look_ahead_steps=2 to gen_frame_ before computing gen_time, pushing the
+# context start 2/50=0.04 s ahead of the replan boundary (latency compensation).
+# We approximate with cs=3 frames (0.1 s) vs C++'s 0.14 s — a 0.04 s discrepancy.
 _CTX_ADVANCE_FRAMES   = int(_PLANNER_HZ / _REPLAN_HZ)  # 3 planner frames per replan cycle
 
 
 def _make_robot_planner_context(
     root_pos: np.ndarray,
-    root_quat_wxyz: np.ndarray,
+    root_quat_wxyz: np.ndarray,  # noqa: ARG001 — kept for call-site clarity
     q_mujoco: np.ndarray,
 ) -> np.ndarray:
     """Bootstrap: 4 identical frames of current robot state → (1, 4, 36).
 
-    Matches C++ InitializeContext: yaw is zeroed so the planner operates
-    in a yaw-invariant frame.
+    Matches C++ InitializeContext exactly: XY position clamped to origin,
+    identity quaternion (yaw = 0), actual joint positions.
     """
-    from scipy.spatial.transform import Rotation as _R
-    xyzw = quat_wxyz_to_xyzw(root_quat_wxyz)
-    euler_zyx = _R.from_quat(xyzw).as_euler("ZYX")
-    euler_zyx[0] = 0.0
-    q_xyzw = _R.from_euler("ZYX", euler_zyx).as_quat().astype(np.float32)
-    q_wxyz = np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]], dtype=np.float32)
+    # C++ InitializeContext uses (x=0, y=0, z=actual_height) and identity quaternion —
+    # not the actual XY position or yaw-zeroed quat. This normalises the planner frame
+    # to the origin at startup regardless of where the robot spawned.
     frame = np.zeros(36, dtype=np.float32)
-    frame[0:3] = root_pos.astype(np.float32)
-    frame[3:7] = q_wxyz
+    frame[0:3] = np.array([0.0, 0.0, float(root_pos[2])], dtype=np.float32)
+    frame[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # identity quaternion
     frame[7:36] = q_mujoco.astype(np.float32)
     return np.tile(frame[np.newaxis, np.newaxis, :], (1, 4, 1))
 
