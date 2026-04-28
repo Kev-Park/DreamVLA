@@ -132,11 +132,18 @@ _MUJOCO_STANDING_Z = 0.78874
 _PLANNER_HZ           = 30.0
 _CTRL_HZ              = 50.0
 _REPLAN_HZ            = 10.0
-_PLANNER_REPLAN_STEPS = int(_CTRL_HZ / _REPLAN_HZ)    # 5 env steps per replan
-# C++ adds look_ahead_steps=2 to gen_frame_ before computing gen_time, pushing the
-# context start 2/50=0.04 s ahead of the replan boundary (latency compensation).
-# We approximate with cs=3 frames (0.1 s) vs C++'s 0.14 s — a 0.04 s discrepancy.
-_CTX_ADVANCE_FRAMES   = int(_PLANNER_HZ / _REPLAN_HZ)  # 3 planner frames per replan cycle
+_REPLAN_STEPS         = int(_CTRL_HZ / _REPLAN_HZ)      # 5 env steps per replan
+# C++ resamples the planner 30 Hz output to a 50 Hz MotionSequence buffer, then
+# UpdateContextFromMotion samples at gen_frame_ = replan_steps(5) + look_ahead(2) = 7,
+# spacing 50/30 ≈ 1.667 frames between the 4 context frames (= 1/30 s at 50 Hz rate).
+_LOOK_AHEAD_50HZ      = 2                               # C++ motion_look_ahead_steps
+_CTX_START_50HZ       = _REPLAN_STEPS + _LOOK_AHEAD_50HZ  # 7 — 50 Hz start frame for context
+_CTX_SPACING_50HZ     = _CTRL_HZ / _PLANNER_HZ          # ≈ 1.667 50 Hz frames between 30 Hz slots
+# Encoder lookahead: step_size=5 at 50 Hz (matches C++ GatherMotionJointPositionsMultiFrame),
+# giving 100 ms/step, 10 frames, 0.9 s total lookahead.
+_ENC_STEP_50HZ        = 5
+_ENC_FRAMES           = 10
+_ENC_GRAD_DT          = _ENC_STEP_50HZ / _CTRL_HZ       # 0.1 s between selected frames
 
 
 def _make_robot_planner_context(
@@ -166,6 +173,58 @@ def _make_standing_planner_context() -> np.ndarray:
     ctx[0, :, 3]    = 1.0
     ctx[0, :, 7:36] = _MUJOCO_DEFAULT_ANGLES_29
     return ctx
+
+
+def _quat_slerp_wxyz(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
+    """Slerp between two wxyz quaternions. Matches C++ quat_slerp_d."""
+    q0 = q0.astype(np.float64)
+    q1 = q1.astype(np.float64)
+    dot = float(np.dot(q0, q1))
+    if dot < 0.0:
+        q1, dot = -q1, -dot
+    dot = min(dot, 1.0)
+    if dot > 0.9995:
+        return (q0 + t * (q1 - q0)).astype(np.float32)
+    theta0 = float(np.arccos(dot))
+    theta  = theta0 * t
+    sin0   = float(np.sin(theta0))
+    return ((np.sin(theta0 - theta) / sin0) * q0 + (np.sin(theta) / sin0) * q1).astype(np.float32)
+
+
+def _interp_planner_frame(frames: np.ndarray, t_float: float) -> np.ndarray:
+    """Lerp/slerp one frame from a (T, 36) array at fractional index t_float.
+
+    Position (0:3) and joints (7:36) use lerp; quaternion wxyz (3:7) uses slerp.
+    Out-of-range t_float clamps to [0, T-1].
+    """
+    n = frames.shape[0]
+    i0 = int(t_float)
+    frac = t_float - i0
+    i0 = min(max(i0, 0), n - 1)
+    i1 = min(i0 + 1, n - 1)
+    if i0 == i1:
+        frac = 0.0
+    f0, f1 = frames[i0], frames[i1]
+    out = np.empty(36, dtype=np.float32)
+    out[0:3]  = f0[0:3]  + frac * (f1[0:3]  - f0[0:3])
+    out[3:7]  = _quat_slerp_wxyz(f0[3:7], f1[3:7], frac)
+    out[7:36] = f0[7:36] + frac * (f1[7:36] - f0[7:36])
+    return out
+
+
+def _resample_planner_to_50hz(qpos_30hz: np.ndarray) -> np.ndarray:
+    """Resample (1, T_30, 36) planner output → (1, T_50, 36) at 50 Hz.
+
+    Matches the C++ deploy stack: lerp for position/joints, slerp for
+    quaternion. T_50 = round(T_30 * CTRL_HZ / PLANNER_HZ).
+    """
+    frames_30 = qpos_30hz[0]
+    t30 = frames_30.shape[0]
+    t50 = max(1, round(t30 * _CTRL_HZ / _PLANNER_HZ))
+    out = np.stack(
+        [_interp_planner_frame(frames_30, i * _PLANNER_HZ / _CTRL_HZ) for i in range(t50)]
+    )  # (T_50, 36)
+    return out[np.newaxis]  # (1, T_50, 36)
 
 
 # =========================================================================
@@ -691,6 +750,7 @@ def main() -> int:
     planner_context: np.ndarray | None = None
     cached_planner_out = None
     cached_planner_inputs = None
+    cached_out_50hz: np.ndarray | None = None
 
     for ep in range(args.num_episodes):
         print(f"\n[episode {ep}]")
@@ -699,9 +759,10 @@ def main() -> int:
         _APP.update()           # flush warm-up render to annotators
         _APP.update()
         history.reset()
-        planner_traj_sub   = 0
+        planner_step       = 0
         cached_planner_out = None
         cached_planner_inputs = None
+        cached_out_50hz    = None
         # Bootstrap context from actual robot state — matches C++ InitializeContext.
         _q_b  = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
         _qs_b = _gather_with_mask(_q_b, isaac_to_utm_perm)
@@ -771,19 +832,17 @@ def main() -> int:
                 mujoco_qpos=mujoco_qpos,
             )
 
-            # 7c. Run kinematic planner at 10 Hz (every _PLANNER_REPLAN_STEPS env steps).
-            # Context advance: use frames [_CTX_ADVANCE_FRAMES .. _CTX_ADVANCE_FRAMES+4] of
-            # previous output before each replan (C++ UpdateContextFromMotion: gen_time advances
-            # by 0.1 s = 3 planner frames per replan cycle).
-            if planner_traj_sub == 0:
-                if cached_planner_out is not None and cached_planner_out.num_pred_frames > 0:
-                    n_pred = cached_planner_out.num_pred_frames
-                    cs = min(_CTX_ADVANCE_FRAMES, n_pred - 1)
-                    ctx_4 = cached_planner_out.mujoco_qpos[0, cs : cs + 4]
-                    if ctx_4.shape[0] < 4:
-                        pad = np.tile(ctx_4[-1:], (4 - ctx_4.shape[0], 1))
-                        ctx_4 = np.concatenate([ctx_4, pad], axis=0)
-                    planner_context = ctx_4[np.newaxis]
+            # 7c. Run kinematic planner at 10 Hz (every _REPLAN_STEPS env steps).
+            # At replan time, extract new context from the previous 50 Hz buffer at
+            # frames [_CTX_START_50HZ + n*_CTX_SPACING_50HZ for n=0..3], matching
+            # C++ UpdateContextFromMotion with gen_frame_=7 and spacing=50/30.
+            if planner_step == 0:
+                if cached_out_50hz is not None:
+                    ctx_frames = []
+                    for n in range(4):
+                        t_f = _CTX_START_50HZ + n * _CTX_SPACING_50HZ
+                        ctx_frames.append(_interp_planner_frame(cached_out_50hz[0], t_f))
+                    planner_context = np.stack(ctx_frames)[np.newaxis]  # (1, 4, 36)
                 planner_inputs = build_planner_inputs(
                     vla_action=parquet_chunk,
                     context_mujoco_qpos=planner_context,
@@ -791,6 +850,7 @@ def main() -> int:
                 )
                 cached_planner_out    = planner.run(**planner_inputs.as_kwargs())
                 cached_planner_inputs = planner_inputs
+                cached_out_50hz       = _resample_planner_to_50hz(cached_planner_out.mujoco_qpos)
 
                 if step == 0:
                     out_first = cached_planner_out.mujoco_qpos[0, 0]
@@ -805,21 +865,23 @@ def main() -> int:
                     print(f"  out[0] root_quat = {out_first[3:7].round(4).tolist()}")
                     print(f"  out[0] legs[:12] = {out_first[7:19].round(4).tolist()}")
 
-            # Select planner frame for this env step within the replan cycle.
-            # round(sub * 30/50): for sub in [0,1,2,3,4] → frames [0,1,1,2,2].
-            planner_frame_idx = round(planner_traj_sub * _PLANNER_HZ / _CTRL_HZ)
-            _n_cached = cached_planner_out.num_pred_frames
-            if planner_frame_idx >= _n_cached:
-                planner_frame_idx = max(0, _n_cached - 1)
-            traj_view = cached_planner_out.mujoco_qpos[:, planner_frame_idx:, :]
-
-            # 7d. Extract anchor + lower-body trajectory.
-            anchor_pos_w, anchor_quat_wxyz = extract_anchor_pose(traj_view)
+            # 7d. Extract anchor + lower-body trajectory from 50 Hz buffer.
+            # planner_step is the current 50 Hz frame within the replan cycle (0–4).
+            _t50       = cached_out_50hz.shape[1]
+            _frames_50 = cached_out_50hz[0]
+            _cur       = min(planner_step, _t50 - 1)
+            anchor_pos_w     = _frames_50[_cur, PLANNER_ROOT_POS_SLICE].copy()
+            anchor_quat_wxyz = _frames_50[_cur, PLANNER_ROOT_QUAT_SLICE].copy()
             _R_robot  = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
             _R_anchor = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
             _R_rel_mat = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
             anchor_rot6d = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
-            lb_pos, lb_vel = extract_lower_body_future(traj_view)
+            # Encoder lookahead: 10 frames spaced _ENC_STEP_50HZ=5 apart (= 100 ms/step).
+            # Matches C++ GatherMotionJointPositionsMultiFrame with step_size=5.
+            _lb_idx    = [min(planner_step + k * _ENC_STEP_50HZ, _t50 - 1) for k in range(_ENC_FRAMES)]
+            _lb_frames = _frames_50[_lb_idx]                                               # (10, 36)
+            lb_pos = _lb_frames[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER].astype(np.float32)  # (10, 12)
+            lb_vel = np.gradient(lb_pos, _ENC_GRAD_DT, axis=0).astype(np.float32)            # (10, 12)
 
             # 7e. VR 3-point from parquet chunk.
             vr_pos_world, vr_rot6d = extract_vr_3pt(parquet_chunk, t_index=t_idx)
@@ -898,7 +960,7 @@ def main() -> int:
                 main._prev_cam_frame = _prev_frame
 
             prev_utm_body_29 = utm_body_29
-            planner_traj_sub = (planner_traj_sub + 1) % _PLANNER_REPLAN_STEPS
+            planner_step = (planner_step + 1) % _REPLAN_STEPS
             chunk_step += 1
 
             if bool(term[0] if term.ndim > 0 else term):
