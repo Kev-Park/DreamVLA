@@ -382,6 +382,26 @@ def main() -> int:
     env_cfg = parse_env_cfg(
         args.task, device="cuda:0", num_envs=args.num_envs, enable_cameras=True,
     )
+
+    # --- 2a. Equilibrate physics to match MuJoCo (gear_sonic_deploy/scene_full.xml) ---
+    # MuJoCo uses gravity=-7.5 m/s² (not -9.81), floor friction=0.5, body friction=0.5.
+    # IsaacSim defaults differ on all three; mismatches cause systematic under-actuation.
+    # NOTE: verify gravity against the actual GR00T scene file if results are unexpected.
+    env_cfg.sim.gravity = (0.0, 0.0, -7.5)
+    print(f"[physics] gravity overridden to {env_cfg.sim.gravity}")
+    try:
+        env_cfg.scene.terrain.physics_material.static_friction = 0.5
+        env_cfg.scene.terrain.physics_material.dynamic_friction = 0.5
+        print("[physics] terrain friction overridden to static=0.5 dynamic=0.5")
+    except AttributeError:
+        print("[physics] terrain.physics_material not found — skipping friction override")
+    try:
+        env_cfg.events.physics_material.params["static_friction_range"] = (0.5, 0.5)
+        env_cfg.events.physics_material.params["dynamic_friction_range"] = (0.5, 0.5)
+        print("[physics] robot body friction overridden to 0.5")
+    except (AttributeError, KeyError):
+        print("[physics] events.physics_material not found — skipping body friction override")
+
     _inject_cameras(env_cfg)
     env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array")
     print(f"[env] {args.task}  action_space={env.action_space}")

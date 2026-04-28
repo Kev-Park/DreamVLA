@@ -112,9 +112,9 @@ def _build_sonic_matched_actuators() -> dict:
             effort_limit_sim=50.0,
             velocity_limit_sim=37.0,
             joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            stiffness=2.0 * _SONIC_STIFFNESS_5020,
-            damping=2.0 * _SONIC_DAMPING_5020,
-            armature=2.0 * _SONIC_ARMATURE_5020,
+            stiffness=_SONIC_STIFFNESS_5020,
+            damping=_SONIC_DAMPING_5020,
+            armature=_SONIC_ARMATURE_5020,
         ),
         "waist_yaw": ImplicitActuatorCfg(
             effort_limit_sim=88,
