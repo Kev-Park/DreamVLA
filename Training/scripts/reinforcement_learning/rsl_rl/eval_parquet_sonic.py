@@ -130,6 +130,7 @@ _MUJOCO_DEFAULT_ANGLES_29 = np.array([
 _MUJOCO_STANDING_Z = 0.78874
 
 _PLANNER_HZ           = 30.0
+_PARQUET_HZ           = 50.0   # parquet recording rate — same as control rate
 _CTRL_HZ              = 50.0
 _REPLAN_HZ            = 10.0
 _REPLAN_STEPS         = int(_CTRL_HZ / _REPLAN_HZ)      # 5 env steps per replan
@@ -382,6 +383,22 @@ class ParquetActionStreamer:
 
         task = str(df["task"].iloc[0]) if "task" in df.columns else ""
         print(f"[parquet] {self.n_frames} frames  task='{task}'  path={path.name}")
+
+    def get_lerp_frame(self, pidx_f: float) -> dict[str, np.ndarray]:
+        """Return a lerp'd single frame as (1, 1, D) — mirrors kinematic.py formula.
+
+        pidx_f is a fractional parquet index (= step * parquet_hz / ctrl_hz).
+        p0 and p1 are clamped to [0, n_frames-1]; alpha is the fractional part.
+        """
+        p0 = min(int(pidx_f), self.n_frames - 1)
+        p1 = min(p0 + 1, self.n_frames - 1)
+        alpha = pidx_f - int(pidx_f)
+        chunk: dict[str, np.ndarray] = {}
+        for key, arr in self._arrays.items():
+            a = arr[p0].astype(np.float32)
+            b = arr[p1].astype(np.float32)
+            chunk[key] = ((1.0 - alpha) * a + alpha * b)[np.newaxis, np.newaxis]
+        return chunk
 
     def get_chunk(self, frame_start: int, chunk_size: int) -> dict[str, np.ndarray]:
         """Return a fake vla_chunk shaped (1, chunk_size, D) for each key.
@@ -843,10 +860,11 @@ def main() -> int:
                         t_f = _CTX_START_50HZ + n * _CTX_SPACING_50HZ
                         ctx_frames.append(_interp_planner_frame(cached_out_50hz[0], t_f))
                     planner_context = np.stack(ctx_frames)[np.newaxis]  # (1, 4, 36)
-                # Use the exact parquet frame for this env step (parquet is 50 Hz = ctrl rate).
-                # Matches kinematic.py: direct index into the recorded commands rather than
-                # chunk-offset-dependent t_idx, which drifts through the chunk window.
-                _replan_chunk = streamer.get_chunk(step, 1)
+                # kinematic.py formula: pidx_f = step * (parquet_hz / ctrl_hz).
+                # _PARQUET_HZ == _CTRL_HZ == 50 Hz so pidx_f = step (integer, alpha=0),
+                # but the lerp structure is kept explicit to match kinematic.py exactly.
+                _pidx_f = step * (_PARQUET_HZ / _CTRL_HZ)
+                _replan_chunk = streamer.get_lerp_frame(_pidx_f)
                 planner_inputs = build_planner_inputs(
                     vla_action=_replan_chunk,
                     context_mujoco_qpos=planner_context,
@@ -885,7 +903,9 @@ def main() -> int:
             _R_robot  = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
             _R_anchor = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
             _R_rel_mat = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
-            anchor_rot6d = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
+            # SONIC rot6d convention: rot6d[0:3]=R[:,0], rot6d[3:6]=R[:,1] (columns, not rows).
+            # flatten("F") = column-major = col0 then col1. flatten("C") would be wrong.
+            anchor_rot6d = _R_rel_mat[:, :2].flatten("F").astype(np.float32)
             # Encoder lookahead: 10 frames spaced _ENC_STEP_50HZ=5 apart (= 100 ms/step).
             # Matches C++ GatherMotionJointPositionsMultiFrame with step_size=5.
             _lb_idx    = [min(planner_step + k * _ENC_STEP_50HZ, _t50 - 1) for k in range(_ENC_FRAMES)]
