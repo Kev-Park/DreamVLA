@@ -426,6 +426,16 @@ def main() -> int:
         history.reset()
         prev_utm_body_29 = np.zeros(29, dtype=np.float32)
 
+        # Bias-shift: align CSV world-frame positions to sim spawn position.
+        # csv.body_pos[0] is wherever the MuJoCo recording started; sim resets
+        # to its own spawn point.  All anchor_pos_w values are offset by this
+        # constant delta so csv[0] == sim initial root position.
+        _sim_init_pos = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
+        _pos_bias = _sim_init_pos - csv.body_pos[0]
+        print(f"[episode {ep}] pos_bias={_pos_bias.round(4).tolist()}  "
+              f"sim_init={_sim_init_pos.round(4).tolist()}  "
+              f"csv[0]={csv.body_pos[0].round(4).tolist()}")
+
         # Open video writers on first episode.
         if ep == 0 and prefix is not None and not writers:
             scene_keys = list(env.unwrapped.scene.keys()) if hasattr(env.unwrapped.scene, "keys") else []
@@ -484,8 +494,8 @@ def main() -> int:
             # ----------------------------------------------------------
             # 8c. Build encoder observation from CSV data.
             # ----------------------------------------------------------
-            # Anchor pose: CSV root pose at current step.
-            anchor_pos_w     = csv.body_pos[csv_step].copy()
+            # Anchor pose: CSV root pose at current step, bias-shifted to sim frame.
+            anchor_pos_w     = csv.body_pos[csv_step] + _pos_bias
             anchor_quat_wxyz = csv.body_quat[csv_step].copy()
 
             # Anchor rotation relative to robot's current orientation.
