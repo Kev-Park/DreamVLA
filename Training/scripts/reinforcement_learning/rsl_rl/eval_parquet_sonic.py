@@ -216,11 +216,11 @@ def _resample_planner_to_50hz(qpos_30hz: np.ndarray) -> np.ndarray:
     """Resample (1, T_30, 36) planner output → (1, T_50, 36) at 50 Hz.
 
     Matches the C++ deploy stack: lerp for position/joints, slerp for
-    quaternion. T_50 = round(T_30 * CTRL_HZ / PLANNER_HZ).
+    quaternion. T_50 = floor(T_30 / 30 * 50) — same as C++ std::floor.
     """
     frames_30 = qpos_30hz[0]
     t30 = frames_30.shape[0]
-    t50 = max(1, round(t30 * _CTRL_HZ / _PLANNER_HZ))
+    t50 = max(1, int(t30 * _CTRL_HZ / _PLANNER_HZ))
     out = np.stack(
         [_interp_planner_frame(frames_30, i * _PLANNER_HZ / _CTRL_HZ) for i in range(t50)]
     )  # (T_50, 36)
@@ -843,11 +843,21 @@ def main() -> int:
                         t_f = _CTX_START_50HZ + n * _CTX_SPACING_50HZ
                         ctx_frames.append(_interp_planner_frame(cached_out_50hz[0], t_f))
                     planner_context = np.stack(ctx_frames)[np.newaxis]  # (1, 4, 36)
+                # Use the exact parquet frame for this env step (parquet is 50 Hz = ctrl rate).
+                # Matches kinematic.py: direct index into the recorded commands rather than
+                # chunk-offset-dependent t_idx, which drifts through the chunk window.
+                _replan_chunk = streamer.get_chunk(step, 1)
                 planner_inputs = build_planner_inputs(
-                    vla_action=parquet_chunk,
+                    vla_action=_replan_chunk,
                     context_mujoco_qpos=planner_context,
-                    t_index=t_idx,
+                    t_index=0,
+                    clip_negative_speed=False,
                 )
+                # Hardcode SLOW_WALK at 0.2 m/s — all collected parquet episodes use this
+                # gait.  Matches kinematic.py's explicit mode override rather than inferring
+                # mode from speed thresholds.
+                planner_inputs.mode       = np.array([1],   dtype=np.int64)   # SLOW_WALK
+                planner_inputs.target_vel = np.array([0.2], dtype=np.float32)
                 cached_planner_out    = planner.run(**planner_inputs.as_kwargs())
                 cached_planner_inputs = planner_inputs
                 cached_out_50hz       = _resample_planner_to_50hz(cached_planner_out.mujoco_qpos)
@@ -881,7 +891,13 @@ def main() -> int:
             _lb_idx    = [min(planner_step + k * _ENC_STEP_50HZ, _t50 - 1) for k in range(_ENC_FRAMES)]
             _lb_frames = _frames_50[_lb_idx]                                               # (10, 36)
             lb_pos = _lb_frames[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER].astype(np.float32)  # (10, 12)
-            lb_vel = np.gradient(lb_pos, _ENC_GRAD_DT, axis=0).astype(np.float32)            # (10, 12)
+            # Velocities: forward differences on dense 50 Hz buffer, then select sparse frames.
+            # Matches C++: vel[f] = (pos[f+1] - pos[f]) * 50;  last frame copies second-to-last.
+            _lb_dense     = _frames_50[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER].astype(np.float32)  # (T_50, 12)
+            _lb_vel_dense = np.empty_like(_lb_dense)
+            _lb_vel_dense[:-1] = (_lb_dense[1:] - _lb_dense[:-1]) * _CTRL_HZ
+            _lb_vel_dense[-1]  = _lb_vel_dense[-2]
+            lb_vel = _lb_vel_dense[_lb_idx]                                                          # (10, 12)
 
             # 7e. VR 3-point from parquet chunk.
             vr_pos_world, vr_rot6d = extract_vr_3pt(parquet_chunk, t_index=t_idx)
