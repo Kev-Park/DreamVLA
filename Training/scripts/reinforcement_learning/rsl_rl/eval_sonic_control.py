@@ -115,6 +115,7 @@ from vla_sonic import (  # noqa: E402
     build_encoder_obs,
 )
 from vla_sonic.action_assembler import (  # noqa: E402
+    G1_DEFAULT_ANGLES_SONIC,
     MUJOCO_TO_ISAACLAB,
     utm_body_29_to_env_27,
 )
@@ -472,7 +473,7 @@ def main() -> int:
             # 8b. Push robot state into history buffer.
             # ----------------------------------------------------------
             history.push(
-                joint_pos=q_sonic,
+                joint_pos=q_sonic - G1_DEFAULT_ANGLES_SONIC,
                 joint_vel=qd_sonic,
                 last_action=prev_utm_body_29,
                 base_ang_vel=root_ang_vel_b,
@@ -492,8 +493,10 @@ def main() -> int:
             _R_robot  = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
             _R_anchor = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
             _R_rel    = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
-            # SONIC rot6d: first two columns of R (column-major flatten).
-            anchor_rot6d = _R_rel[:, :2].flatten("F").astype(np.float32)
+            # SONIC rot6d: row-wise flatten of first 2 columns (C++ line 677-683).
+            # C++ stores [R₀₀,R₀₁, R₁₀,R₁₁, R₂₀,R₂₁] — row-major.
+            # Must use reshape(-1) / flatten("C"), NOT flatten("F") (column-major).
+            anchor_rot6d = _R_rel[:, :2].reshape(-1).astype(np.float32)
 
             # Lower-body future trajectory from CSV.
             lb_pos, lb_vel = csv.lb_future(csv_step)  # (10, 12) each
