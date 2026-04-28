@@ -79,8 +79,8 @@ def _build_sonic_matched_actuators() -> dict:
             ],
             effort_limit_sim={
                 ".*_hip_yaw_joint": 88.0,
-                ".*_hip_roll_joint": 139.0,
-                ".*_hip_pitch_joint": 139.0,
+                ".*_hip_roll_joint": 88.0,   # MuJoCo XML actuatorfrcrange="-88 88"
+                ".*_hip_pitch_joint": 88.0,  # MuJoCo XML actuatorfrcrange="-88 88"
                 ".*_knee_joint": 139.0,
             },
             velocity_limit_sim={
@@ -123,6 +123,17 @@ def _build_sonic_matched_actuators() -> dict:
             stiffness=_SONIC_STIFFNESS_7520_14,
             damping=_SONIC_DAMPING_7520_14,
             armature=_SONIC_ARMATURE_7520_14,
+        ),
+        # waist_roll/pitch are dropped from the 27-D action space but must have
+        # actuators so they're spring-loaded to 0 rather than free-floating.
+        # MuJoCo actuatorfrcrange="-50 50"; SONIC planner targets ≈ 0 for walking.
+        "waist_roll_pitch": ImplicitActuatorCfg(
+            effort_limit_sim=50.0,
+            velocity_limit_sim=37.0,
+            joint_names_expr=["waist_roll_joint", "waist_pitch_joint"],
+            stiffness=_SONIC_STIFFNESS_5020,
+            damping=_SONIC_DAMPING_5020,
+            armature=_SONIC_ARMATURE_5020,
         ),
         "arms": ImplicitActuatorCfg(
             joint_names_expr=[
