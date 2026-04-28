@@ -115,6 +115,7 @@ from vla_sonic import (  # noqa: E402
     build_encoder_obs,
 )
 from vla_sonic.action_assembler import (  # noqa: E402
+    G1_ACTION_SCALE_SONIC,
     G1_DEFAULT_ANGLES_SONIC,
     MUJOCO_TO_ISAACLAB,
     utm_body_29_to_env_27,
@@ -456,6 +457,38 @@ def main() -> int:
               f"sim_init={_sim_init_pos.round(4).tolist()}  "
               f"csv[0]={csv.body_pos[0].round(4).tolist()}")
 
+        # Pre-fill decoder history with CSV frames 0..9 to seed the correct
+        # initial gait phase.  With all-zero (standing) history the decoder has
+        # no phase signal and outputs symmetric bilateral motion (both feet lift
+        # simultaneously).  Seeding from the recording's opening gait state
+        # breaks that symmetry before the first real sim step.
+        # last_action is approximated by inverting q = default + utm * scale.
+        _scale_inv = 1.0 / G1_ACTION_SCALE_SONIC
+        for _pre in range(10):
+            _ci = min(_pre, csv.n_frames - 1)
+            _q_pre   = csv.joint_pos_sonic[_ci]
+            _qd_pre  = csv.joint_vel_sonic[_ci]
+            _av_pre  = csv.body_ang_vel[_ci]
+            _grav_pre = (
+                R.from_quat(quat_wxyz_to_xyzw(csv.body_quat[_ci]))
+                .inv()
+                .apply(np.array([0.0, 0.0, -1.0], dtype=np.float32))
+                .astype(np.float32)
+            )
+            _rp_pre  = csv.body_pos[_ci] + _pos_bias
+            _mq_pre  = np.concatenate(
+                [_rp_pre, csv.body_quat[_ci], _q_pre[MUJOCO_TO_ISAACLAB]]
+            ).astype(np.float32)
+            history.push(
+                joint_pos=_q_pre - G1_DEFAULT_ANGLES_SONIC,
+                joint_vel=_qd_pre,
+                last_action=(_q_pre - G1_DEFAULT_ANGLES_SONIC) * _scale_inv,
+                base_ang_vel=_av_pre,
+                gravity_dir=_grav_pre,
+                mujoco_qpos=_mq_pre,
+            )
+        print(f"[episode {ep}] decoder history pre-filled from CSV frames 0..9")
+
         # Open video writers on first episode.
         if ep == 0 and prefix is not None and not writers:
             scene_keys = list(env.unwrapped.scene.keys()) if hasattr(env.unwrapped.scene, "keys") else []
@@ -514,9 +547,13 @@ def main() -> int:
             # ----------------------------------------------------------
             # 8c. Build encoder observation from CSV data.
             # ----------------------------------------------------------
-            # Anchor pose: CSV root pose at current step, bias-shifted to sim frame.
-            anchor_pos_w     = csv.body_pos[csv_step] + _pos_bias
+            # Anchor pose: sim robot's live position (anchor_pos_world is unused by
+            # build_encoder_obs — accepted for backward compat only).  Using the live
+            # position keeps this consistent with C++ where the anchor tracks the robot.
+            # CSV orientation is still used for anchor_rot6d (encodes heading error).
+            anchor_pos_w     = root_pos_w.copy()
             anchor_quat_wxyz = csv.body_quat[csv_step].copy()
+            _csv_ref_pos     = csv.body_pos[csv_step] + _pos_bias  # for tracking diagnostic only
 
             # Anchor rotation relative to robot's current orientation.
             # Matches C++ PlannerToUtm::ComputeAnchorOrientation.
@@ -573,7 +610,7 @@ def main() -> int:
                 sim_lb = q_mujoco[:12]
                 lb_err = np.abs(csv_lb - sim_lb)
                 print(f"\n[step {step}] csv_step={csv_step}")
-                print(f"  anchor_pos_w    = {anchor_pos_w.round(4).tolist()}")
+                print(f"  csv_ref_pos     = {_csv_ref_pos.round(4).tolist()}")
                 print(f"  anchor_rot6d    = {anchor_rot6d.round(4).tolist()}")
                 print(f"  lb_pos[0]       = {lb_pos[0].round(4).tolist()}")
                 print(f"  token[:8]       = {token[:8].round(3).tolist()}")
@@ -584,7 +621,7 @@ def main() -> int:
                 csv_lb = csv.joint_pos_mj[csv_step, :12]
                 sim_lb = q_mujoco[:12]
                 lb_err = np.abs(csv_lb - sim_lb)
-                root_err = np.linalg.norm(anchor_pos_w - root_pos_w)
+                root_err = np.linalg.norm(_csv_ref_pos - root_pos_w)
                 print(
                     f"[step {step:4d}] "
                     f"lb_err max={lb_err.max():.4f} mean={lb_err.mean():.4f}  "
