@@ -112,7 +112,6 @@ from vla_sonic import (  # noqa: E402
     HistoryBuffer,
     UtmWrapper,
     build_decoder_obs,
-    build_encoder_obs,
 )
 from vla_sonic.action_assembler import (  # noqa: E402
     G1_ACTION_SCALE_SONIC,
@@ -121,6 +120,7 @@ from vla_sonic.action_assembler import (  # noqa: E402
     utm_body_29_to_env_27,
 )
 from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
+from vla_sonic.planner_to_utm import ENCODER_SLICES, ENCODER_TOTAL_DIM  # noqa: E402
 
 
 # =========================================================================
@@ -221,6 +221,23 @@ class CsvMotionData:
         lb_vel = self.joint_vel_mj[indices, :12].astype(np.float32)
         return lb_pos, lb_vel
 
+    def full_body_future(self, step: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return full 29-joint future trajectory + root quats for g1 encoder mode.
+
+        Extracts 10 frames at 5-step spacing (100 ms/step, 0.9 s total).
+
+        Returns:
+            pos:   (10, 29) float32 — all joints in MuJoCo order
+            vel:   (10, 29) float32 — forward-difference velocities in MuJoCo order
+            quats: (10,  4) float32 — root orientation wxyz
+        """
+        n = self.n_frames
+        indices = [min(step + k * _ENC_STEP_50HZ, n - 1) for k in range(_ENC_FRAMES)]
+        pos   = self.joint_pos_mj[indices, :].astype(np.float32)  # (10, 29)
+        vel   = self.joint_vel_mj[indices, :].astype(np.float32)  # (10, 29)
+        quats = self.body_quat[indices, :].astype(np.float32)     # (10,  4) wxyz
+        return pos, vel, quats
+
 
 # =========================================================================
 # Joint-order bridge: Isaac Lab env → SONIC-IsaacLab.
@@ -283,67 +300,6 @@ def _gather(isaac_values: np.ndarray, perm: np.ndarray) -> np.ndarray:
     valid = perm >= 0
     out[valid] = isaac_values[perm[valid]]
     return out
-
-
-# =========================================================================
-# VR 3-point FK helpers (replicates collect_pick_cam.py::_capture_teleop_frame).
-# =========================================================================
-
-_NECK_Z_OFFSET = np.float32(0.35)  # torso_link local-Z offset to "neck" point
-
-
-def _vr_body_indices(robot) -> tuple[int, int, int]:
-    """Return (left_wrist_idx, right_wrist_idx, torso_idx) for the robot asset.
-
-    Body order matches training data: left_wrist_yaw_link, right_wrist_yaw_link,
-    torso_link (neck = torso + 0.35 m local Z).
-    """
-    def _find(name: str) -> int:
-        ids, names = robot.find_bodies([name])
-        if len(ids) != 1:
-            raise RuntimeError(f"Expected 1 match for body {name!r}, got {names}")
-        return int(ids[0])
-    return _find("left_wrist_yaw_link"), _find("right_wrist_yaw_link"), _find("torso_link")
-
-
-def _vr_from_fk(
-    robot,
-    root_pos_w: np.ndarray,      # (3,) float32 world
-    root_quat_w: np.ndarray,     # (4,) float32 wxyz world
-    wrist_l_idx: int,
-    wrist_r_idx: int,
-    torso_idx: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute pelvis-local VR 3-point positions (9,) and rot6d (18,).
-
-    Point order: [left_wrist, right_wrist, neck] — matches training parquet.
-    rot6d convention: first two COLUMNS of local rotation matrix, concatenated.
-    Neck = torso_link FK + 0.35 m along torso's local Z in pelvis frame.
-    """
-    R_pelvis_inv = R.from_quat(quat_wxyz_to_xyzw(root_quat_w)).inv()
-
-    def _local(idx: int) -> tuple[np.ndarray, np.ndarray]:
-        pos_w  = robot.data.body_pos_w[0, idx].detach().cpu().numpy().astype(np.float32)
-        quat_w = robot.data.body_quat_w[0, idx].detach().cpu().numpy().astype(np.float32)
-        pos_local = R_pelvis_inv.apply(pos_w - root_pos_w).astype(np.float32)
-        R_local   = (R_pelvis_inv * R.from_quat(quat_wxyz_to_xyzw(quat_w))).as_matrix().astype(np.float32)
-        return pos_local, R_local
-
-    pos_l, R_l = _local(wrist_l_idx)
-    pos_r, R_r = _local(wrist_r_idx)
-    pos_t, R_t = _local(torso_idx)
-
-    neck_pos = pos_t + R_t @ np.array([0.0, 0.0, _NECK_Z_OFFSET], dtype=np.float32)
-
-    vr_pos  = np.concatenate([pos_l, pos_r, neck_pos]).astype(np.float32)
-    # rot6d: first two columns of rotation matrix (column-major convention)
-    vr_rot6d = np.concatenate([
-        R_l[:, 0], R_l[:, 1],
-        R_r[:, 0], R_r[:, 1],
-        R_t[:, 0], R_t[:, 1],
-    ]).astype(np.float32)
-
-    return vr_pos, vr_rot6d
 
 
 # =========================================================================
@@ -471,10 +427,6 @@ def main() -> int:
     robot = env.unwrapped.scene["robot"]
     isaac_to_utm_perm = _build_isaac_to_utm_perm(list(robot.data.joint_names))
 
-    # --- 4b. VR 3-point body indices (left wrist, right wrist, torso) --
-    _vr_l_idx, _vr_r_idx, _vr_t_idx = _vr_body_indices(robot)
-    print(f"[vr_fk] body indices: left_wrist={_vr_l_idx} right_wrist={_vr_r_idx} torso={_vr_t_idx}")
-
     # --- 5. History buffer --------------------------------------------
     history = HistoryBuffer()
 
@@ -547,20 +499,6 @@ def main() -> int:
             )
         print(f"[episode {ep}] decoder history pre-filled from CSV frames 0..9")
 
-        # VR 3-point: computed ONCE from the robot's initial (default) pose.
-        # Using live-sim FK every step creates a feedback loop through the encoder
-        # (arm drift → different VR → different token → more drift → collapse).
-        # The C++ recording used actual VR controller positions; we don't have those.
-        # Holding the initial default-pose wrist/neck positions constant is in-
-        # distribution for the encoder and decouples it from the sim arm state.
-        _init_root_pos_w  = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
-        _init_root_quat_w = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)
-        _vr_pos_ep, _vr_rot6d_ep = _vr_from_fk(
-            robot, _init_root_pos_w, _init_root_quat_w,
-            _vr_l_idx, _vr_r_idx, _vr_t_idx,
-        )
-        print(f"[episode {ep}] VR 3pt pos (pelvis-local): {_vr_pos_ep.round(3).tolist()}")
-
         # Open video writers on first episode.
         if ep == 0 and prefix is not None and not writers:
             scene_keys = list(env.unwrapped.scene.keys()) if hasattr(env.unwrapped.scene, "keys") else []
@@ -617,42 +555,29 @@ def main() -> int:
             )
 
             # ----------------------------------------------------------
-            # 8c. Build encoder observation from CSV data.
+            # 8c. Build encoder observation (g1 mode, mode_id=0).
+            # Uses full 29-joint future trajectory + anchor orientation history
+            # from CSV. No VR inputs required for this mode.
             # ----------------------------------------------------------
-            # Anchor pose: sim robot's live position (anchor_pos_world is unused by
-            # build_encoder_obs — accepted for backward compat only).  Using the live
-            # position keeps this consistent with C++ where the anchor tracks the robot.
-            # CSV orientation is still used for anchor_rot6d (encodes heading error).
-            anchor_pos_w     = root_pos_w.copy()
-            anchor_quat_wxyz = csv.body_quat[csv_step].copy()
-            _csv_ref_pos     = csv.body_pos[csv_step] + _pos_bias  # for tracking diagnostic only
+            _csv_ref_pos = csv.body_pos[csv_step] + _pos_bias  # tracking diagnostic only
+            _R_robot = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
 
-            # Anchor rotation relative to robot's current orientation.
-            # Matches C++ PlannerToUtm::ComputeAnchorOrientation.
-            _R_robot  = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
-            _R_anchor = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
-            _R_rel    = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
-            # SONIC rot6d: row-wise flatten of first 2 columns (C++ line 677-683).
-            # C++ stores [R₀₀,R₀₁, R₁₀,R₁₁, R₂₀,R₂₁] — row-major.
-            # Must use reshape(-1) / flatten("C"), NOT flatten("F") (column-major).
-            anchor_rot6d = _R_rel[:, :2].reshape(-1).astype(np.float32)
+            fb_pos, fb_vel, fb_quats = csv.full_body_future(csv_step)  # (10,29),(10,29),(10,4)
 
-            # Lower-body future trajectory from CSV.
-            lb_pos, lb_vel = csv.lb_future(csv_step)  # (10, 12) each
+            # Anchor orientation history: reference heading relative to robot's current
+            # orientation, expressed as rot6d (row-major first two columns of R_rel).
+            anchor_rot6d_history = np.zeros((10, 6), dtype=np.float32)
+            for _k in range(10):
+                _R_ref_k = R.from_quat(quat_wxyz_to_xyzw(fb_quats[_k]))
+                _R_rel_k = (_R_robot.inv() * _R_ref_k).as_matrix().astype(np.float32)
+                anchor_rot6d_history[_k] = _R_rel_k[:, :2].reshape(-1)
 
-            # VR 3-point: fixed at episode-start default pose (see pre-fill block).
-            vr_pos   = _vr_pos_ep
-            vr_rot6d = _vr_rot6d_ep
-
-            enc_obs = build_encoder_obs(
-                anchor_pos_world=anchor_pos_w,
-                anchor_quat_wxyz=anchor_quat_wxyz,
-                anchor_rot6d=anchor_rot6d,
-                lower_body_positions_future=lb_pos,
-                lower_body_velocities_future=lb_vel,
-                vr_3pt_position_anchor_local=vr_pos,
-                vr_3pt_rot6d=vr_rot6d,
-            )  # (1, 1762)
+            enc_buf = np.zeros((ENCODER_TOTAL_DIM,), dtype=np.float32)
+            enc_buf[ENCODER_SLICES["encoder_mode_4"]] = np.zeros(4, dtype=np.float32)  # mode_id=0
+            enc_buf[ENCODER_SLICES["motion_joint_positions_10frame_step5"]]    = fb_pos.reshape(-1)
+            enc_buf[ENCODER_SLICES["motion_joint_velocities_10frame_step5"]]   = fb_vel.reshape(-1)
+            enc_buf[ENCODER_SLICES["motion_anchor_orientation_10frame_step5"]] = anchor_rot6d_history.reshape(-1)
+            enc_obs = enc_buf[None, :]  # (1, 1762)
 
             # ----------------------------------------------------------
             # 8d. Run encoder → token.
@@ -682,13 +607,13 @@ def main() -> int:
                 sim_lb = q_mujoco[:12]
                 lb_err = np.abs(csv_lb - sim_lb)
                 print(f"\n[step {step}] csv_step={csv_step}")
-                print(f"  csv_ref_pos     = {_csv_ref_pos.round(4).tolist()}")
-                print(f"  anchor_rot6d    = {anchor_rot6d.round(4).tolist()}")
-                print(f"  lb_pos[0]       = {lb_pos[0].round(4).tolist()}")
-                print(f"  token[:8]       = {token[:8].round(3).tolist()}")
-                print(f"  utm_body_29[:12]= {utm_body_29[:12].round(3).tolist()}")
-                print(f"  body_27[:12]    = {body_27[:12].round(3).tolist()}")
-                print(f"  lb_tracking_err = max={lb_err.max():.4f} mean={lb_err.mean():.4f}")
+                print(f"  csv_ref_pos          = {_csv_ref_pos.round(4).tolist()}")
+                print(f"  anchor_rot6d_hist[0] = {anchor_rot6d_history[0].round(4).tolist()}")
+                print(f"  fb_pos[0,:12]        = {fb_pos[0, :12].round(4).tolist()}")
+                print(f"  token[:8]            = {token[:8].round(3).tolist()}")
+                print(f"  utm_body_29[:12]     = {utm_body_29[:12].round(3).tolist()}")
+                print(f"  body_27[:12]         = {body_27[:12].round(3).tolist()}")
+                print(f"  lb_tracking_err      = max={lb_err.max():.4f} mean={lb_err.mean():.4f}")
             elif step % 100 == 0:
                 csv_lb = csv.joint_pos_mj[csv_step, :12]
                 sim_lb = q_mujoco[:12]
