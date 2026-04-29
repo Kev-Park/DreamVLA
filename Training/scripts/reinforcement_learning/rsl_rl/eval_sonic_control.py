@@ -547,6 +547,20 @@ def main() -> int:
             )
         print(f"[episode {ep}] decoder history pre-filled from CSV frames 0..9")
 
+        # VR 3-point: computed ONCE from the robot's initial (default) pose.
+        # Using live-sim FK every step creates a feedback loop through the encoder
+        # (arm drift → different VR → different token → more drift → collapse).
+        # The C++ recording used actual VR controller positions; we don't have those.
+        # Holding the initial default-pose wrist/neck positions constant is in-
+        # distribution for the encoder and decouples it from the sim arm state.
+        _init_root_pos_w  = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
+        _init_root_quat_w = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)
+        _vr_pos_ep, _vr_rot6d_ep = _vr_from_fk(
+            robot, _init_root_pos_w, _init_root_quat_w,
+            _vr_l_idx, _vr_r_idx, _vr_t_idx,
+        )
+        print(f"[episode {ep}] VR 3pt pos (pelvis-local): {_vr_pos_ep.round(3).tolist()}")
+
         # Open video writers on first episode.
         if ep == 0 and prefix is not None and not writers:
             scene_keys = list(env.unwrapped.scene.keys()) if hasattr(env.unwrapped.scene, "keys") else []
@@ -626,13 +640,9 @@ def main() -> int:
             # Lower-body future trajectory from CSV.
             lb_pos, lb_vel = csv.lb_future(csv_step)  # (10, 12) each
 
-            # VR 3-point: FK-computed pelvis-local wrist + neck poses.
-            # Matches collect_pick_cam.py::_capture_teleop_frame convention.
-            # Passing zeros was out-of-distribution for the encoder.
-            vr_pos, vr_rot6d = _vr_from_fk(
-                robot, root_pos_w, root_quat_w,
-                _vr_l_idx, _vr_r_idx, _vr_t_idx,
-            )
+            # VR 3-point: fixed at episode-start default pose (see pre-fill block).
+            vr_pos   = _vr_pos_ep
+            vr_rot6d = _vr_rot6d_ep
 
             enc_obs = build_encoder_obs(
                 anchor_pos_world=anchor_pos_w,
