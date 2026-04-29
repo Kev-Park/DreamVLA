@@ -131,13 +131,6 @@ _CTRL_HZ      = 50.0
 _ENC_STEP_50HZ = 5      # 100 ms between encoder lookahead frames
 _ENC_FRAMES   = 10      # 0.9 s total lookahead
 
-# VR 3-point identity: 3 × identity rot6d (first two columns of I), positions zeros.
-# Used for locomotion-only testing where no wrist/head targets are tracked.
-_VR_ROT6D_IDENTITY = np.tile(
-    np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32), 3
-)  # (18,)
-_VR_POS_ZERO = np.zeros(9, dtype=np.float32)  # (9,)
-
 
 # =========================================================================
 # CSV loader.
@@ -293,6 +286,67 @@ def _gather(isaac_values: np.ndarray, perm: np.ndarray) -> np.ndarray:
 
 
 # =========================================================================
+# VR 3-point FK helpers (replicates collect_pick_cam.py::_capture_teleop_frame).
+# =========================================================================
+
+_NECK_Z_OFFSET = np.float32(0.35)  # torso_link local-Z offset to "neck" point
+
+
+def _vr_body_indices(robot) -> tuple[int, int, int]:
+    """Return (left_wrist_idx, right_wrist_idx, torso_idx) for the robot asset.
+
+    Body order matches training data: left_wrist_yaw_link, right_wrist_yaw_link,
+    torso_link (neck = torso + 0.35 m local Z).
+    """
+    def _find(name: str) -> int:
+        ids, names = robot.find_bodies([name])
+        if len(ids) != 1:
+            raise RuntimeError(f"Expected 1 match for body {name!r}, got {names}")
+        return int(ids[0])
+    return _find("left_wrist_yaw_link"), _find("right_wrist_yaw_link"), _find("torso_link")
+
+
+def _vr_from_fk(
+    robot,
+    root_pos_w: np.ndarray,      # (3,) float32 world
+    root_quat_w: np.ndarray,     # (4,) float32 wxyz world
+    wrist_l_idx: int,
+    wrist_r_idx: int,
+    torso_idx: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute pelvis-local VR 3-point positions (9,) and rot6d (18,).
+
+    Point order: [left_wrist, right_wrist, neck] — matches training parquet.
+    rot6d convention: first two COLUMNS of local rotation matrix, concatenated.
+    Neck = torso_link FK + 0.35 m along torso's local Z in pelvis frame.
+    """
+    R_pelvis_inv = R.from_quat(quat_wxyz_to_xyzw(root_quat_w)).inv()
+
+    def _local(idx: int) -> tuple[np.ndarray, np.ndarray]:
+        pos_w  = robot.data.body_pos_w[0, idx].detach().cpu().numpy().astype(np.float32)
+        quat_w = robot.data.body_quat_w[0, idx].detach().cpu().numpy().astype(np.float32)
+        pos_local = R_pelvis_inv.apply(pos_w - root_pos_w).astype(np.float32)
+        R_local   = (R_pelvis_inv * R.from_quat(quat_wxyz_to_xyzw(quat_w))).as_matrix().astype(np.float32)
+        return pos_local, R_local
+
+    pos_l, R_l = _local(wrist_l_idx)
+    pos_r, R_r = _local(wrist_r_idx)
+    pos_t, R_t = _local(torso_idx)
+
+    neck_pos = pos_t + R_t @ np.array([0.0, 0.0, _NECK_Z_OFFSET], dtype=np.float32)
+
+    vr_pos  = np.concatenate([pos_l, pos_r, neck_pos]).astype(np.float32)
+    # rot6d: first two columns of rotation matrix (column-major convention)
+    vr_rot6d = np.concatenate([
+        R_l[:, 0], R_l[:, 1],
+        R_r[:, 0], R_r[:, 1],
+        R_t[:, 0], R_t[:, 1],
+    ]).astype(np.float32)
+
+    return vr_pos, vr_rot6d
+
+
+# =========================================================================
 # Camera helpers (identical to eval_parquet_sonic.py).
 # =========================================================================
 
@@ -416,6 +470,10 @@ def main() -> int:
     # --- 4. Joint-order permutation (Isaac Lab → SONIC-IsaacLab) ------
     robot = env.unwrapped.scene["robot"]
     isaac_to_utm_perm = _build_isaac_to_utm_perm(list(robot.data.joint_names))
+
+    # --- 4b. VR 3-point body indices (left wrist, right wrist, torso) --
+    _vr_l_idx, _vr_r_idx, _vr_t_idx = _vr_body_indices(robot)
+    print(f"[vr_fk] body indices: left_wrist={_vr_l_idx} right_wrist={_vr_r_idx} torso={_vr_t_idx}")
 
     # --- 5. History buffer --------------------------------------------
     history = HistoryBuffer()
@@ -568,9 +626,13 @@ def main() -> int:
             # Lower-body future trajectory from CSV.
             lb_pos, lb_vel = csv.lb_future(csv_step)  # (10, 12) each
 
-            # VR 3-point: zeros/identity for locomotion (no wrist targets).
-            vr_pos   = _VR_POS_ZERO
-            vr_rot6d = _VR_ROT6D_IDENTITY
+            # VR 3-point: FK-computed pelvis-local wrist + neck poses.
+            # Matches collect_pick_cam.py::_capture_teleop_frame convention.
+            # Passing zeros was out-of-distribution for the encoder.
+            vr_pos, vr_rot6d = _vr_from_fk(
+                robot, root_pos_w, root_quat_w,
+                _vr_l_idx, _vr_r_idx, _vr_t_idx,
+            )
 
             enc_obs = build_encoder_obs(
                 anchor_pos_world=anchor_pos_w,
