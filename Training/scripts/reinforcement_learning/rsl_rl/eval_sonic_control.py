@@ -148,6 +148,13 @@ _CTRL_HZ      = 50.0
 _ENC_STEP_50HZ = 5      # 100 ms between encoder lookahead frames
 _ENC_FRAMES   = 10      # 0.9 s total lookahead
 
+# SONIC-IsaacLab indices for arm joints (shoulders, elbows, wrists).
+# Ankles are at SONIC slots 13,14,17,18 — interleaved between shoulder slots 11-18 —
+# so we cannot zero a contiguous range; these explicit indices skip ankles.
+_ARM_SONIC_IDX = np.array(
+    [11, 12, 15, 16, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28], dtype=np.int64
+)
+
 
 # =========================================================================
 # CSV loader.
@@ -243,16 +250,23 @@ class CsvMotionData:
 
         Extracts 10 frames at 5-step spacing (100 ms/step, 0.9 s total).
 
+        The C++ GatherMotionJointPositionsMultiFrame copies JointPositions directly
+        for the all-29-joint (g1) case.  JointPositions is in SONIC-IsaacLab order
+        (confirmed by the upper-body replacement block which indexes it by
+        upper_body_joint_isaaclab_order_in_isaaclab_index, a SONIC-index array).
+        GatherMotionJointVelocitiesMultiFrame does the same for JointVelocities.
+        Both must therefore be provided in SONIC-IsaacLab order, not MuJoCo order.
+
         Returns:
-            pos:   (10, 29) float32 — all joints in MuJoCo order
-            vel:   (10, 29) float32 — forward-difference velocities in MuJoCo order
+            pos:   (10, 29) float32 — all joints in SONIC-IsaacLab order (matches C++ JointPositions)
+            vel:   (10, 29) float32 — recorded velocities in SONIC-IsaacLab order (matches C++ JointVelocities)
             quats: (10,  4) float32 — root orientation wxyz
         """
         n = self.n_frames
         indices = [min(step + k * _ENC_STEP_50HZ, n - 1) for k in range(_ENC_FRAMES)]
-        pos   = self.joint_pos_mj[indices, :].astype(np.float32)  # (10, 29)
-        vel   = self.joint_vel_mj[indices, :].astype(np.float32)  # (10, 29)
-        quats = self.body_quat[indices, :].astype(np.float32)     # (10,  4) wxyz
+        pos   = self.joint_pos_sonic[indices, :].astype(np.float32)  # (10, 29) SONIC order
+        vel   = self.joint_vel_sonic[indices, :].astype(np.float32)  # (10, 29) SONIC order, from CSV
+        quats = self.body_quat[indices, :].astype(np.float32)        # (10,  4) wxyz
         return pos, vel, quats
 
 
@@ -608,15 +622,11 @@ def main() -> int:
 
             fb_pos, fb_vel, fb_quats = csv.full_body_future(csv_step)  # (10,29),(10,29),(10,4)
 
-            # Diagnostic: zero arm joints (MuJoCo indices 15-28) so the encoder
-            # sees only lower-body + waist trajectory, matching the information
-            # density of the old teleop+lower-body encoder mode. This isolates
-            # whether arm trajectories in the reference CSV are causing instability.
             if args.zero_upper_body_enc:
                 fb_pos = fb_pos.copy()
                 fb_vel = fb_vel.copy()
-                fb_pos[:, 15:] = 0.0
-                fb_vel[:, 15:] = 0.0
+                fb_pos[:, _ARM_SONIC_IDX] = 0.0
+                fb_vel[:, _ARM_SONIC_IDX] = 0.0
 
             # Anchor orientation history: reference heading relative to robot's current
             # orientation, expressed as rot6d (row-major first two columns of R_rel).
@@ -663,7 +673,7 @@ def main() -> int:
                 print(f"\n[step {step}] csv_step={csv_step}")
                 print(f"  csv_ref_pos          = {_csv_ref_pos.round(4).tolist()}")
                 print(f"  anchor_rot6d_hist[0] = {anchor_rot6d_history[0].round(4).tolist()}")
-                print(f"  fb_pos[0,:12]        = {fb_pos[0, :12].round(4).tolist()}")
+                print(f"  fb_pos[0,:12] (sonic)= {fb_pos[0, :12].round(4).tolist()}")
                 print(f"  token[:8]            = {token[:8].round(3).tolist()}")
                 print(f"  utm_body_29[:12]     = {utm_body_29[:12].round(3).tolist()}")
                 print(f"  body_27[:12]         = {body_27[:12].round(3).tolist()}")
