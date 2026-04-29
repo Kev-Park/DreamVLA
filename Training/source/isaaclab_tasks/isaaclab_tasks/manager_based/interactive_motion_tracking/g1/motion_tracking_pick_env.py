@@ -112,12 +112,14 @@ def _build_sonic_matched_actuators() -> dict:
             effort_limit_sim=50.0,
             velocity_limit_sim=37.0,
             joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            # C++ policy_parameters.hpp uses 2.0×STIFFNESS_5020 for ankles (lines 148-151).
-            # Action scale keeps the standard 5020 denominator, so effective force is 2×
-            # that of other 5020 joints. Without this, ankles are too soft and the robot
-            # loses ground contact control immediately.
-            stiffness=2.0 * _SONIC_STIFFNESS_5020,
-            damping=2.0 * _SONIC_DAMPING_5020,
+            # C++ policy_parameters.hpp uses 2.0×STIFFNESS_5020 for ankle kp/kd.
+            # However, PhysX implicit joint drives (applied every 5 ms substep)
+            # accumulate effective force differently than MuJoCo's explicit 2 ms
+            # integration, and doubling stiffness here caused severe oscillation in
+            # practice. Using 1× here matches the SONIC training env (gear_sonic)
+            # PhysX actuator config and produces stable contact.
+            stiffness=_SONIC_STIFFNESS_5020,
+            damping=_SONIC_DAMPING_5020,
             armature=_SONIC_ARMATURE_5020,
         ),
         "waist_yaw": ImplicitActuatorCfg(

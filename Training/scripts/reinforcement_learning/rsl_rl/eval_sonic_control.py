@@ -75,6 +75,23 @@ def _parse_cli() -> argparse.ArgumentParser:
                         help="Output path prefix. Saves _third_person.mp4 and _ego.mp4.")
     parser.add_argument("--video-fps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--zero-upper-body-enc", action="store_true", default=False,
+        help="Zero arm joints (MuJoCo indices 15-28) in the g1 encoder input. "
+             "Diagnostic: isolates whether full-body arm trajectories cause "
+             "instability vs lower-body-only driving.",
+    )
+    parser.add_argument(
+        "--physics-hz", type=int, default=200,
+        help="Physics substep frequency in Hz (default 200 = 5ms). "
+             "Set to 500 to match MuJoCo's 2ms substep rate (10 substeps per control step). "
+             "Higher values improve contact accuracy but increase simulation cost.",
+    )
+    parser.add_argument(
+        "--solver-pos-iter", type=int, default=8,
+        help="PhysX articulation solver position iteration count (default 8, sim default 4). "
+             "More iterations improve contact stability for humanoid foot contacts.",
+    )
     return parser
 
 
@@ -413,9 +430,36 @@ def main() -> int:
     except (AttributeError, KeyError):
         print("[physics] events.physics_material not found — skipping body friction override")
 
+    # --- 2b. Physics substep rate -------------------------------------------
+    # MuJoCo uses 500 Hz (dt=2ms, 10 substeps per 20ms control step).
+    # IsaacSim default is 200 Hz (dt=5ms, 4 substeps). Higher rate improves
+    # contact resolution accuracy but increases simulation cost.
+    if args.physics_hz != 200:
+        _phys_dt = 1.0 / args.physics_hz
+        _decimation = round(args.physics_hz / _CTRL_HZ)
+        env_cfg.sim.dt = _phys_dt
+        env_cfg.sim.decimation = _decimation
+        print(f"[physics] substep rate overridden to {args.physics_hz} Hz "
+              f"(dt={_phys_dt*1000:.2f} ms, decimation={_decimation})")
+    else:
+        print("[physics] substep rate: 200 Hz (dt=5 ms, decimation=4)")
+
+    # --- 2c. Articulation solver iterations ---------------------------------
+    # G1_CFG default is pos=4, vel=4. Increasing position iterations improves
+    # stability for humanoid foot contacts with frequent state changes.
+    try:
+        env_cfg.scene.robot.spawn.articulation_props.solver_position_iteration_count = args.solver_pos_iter
+        print(f"[physics] articulation solver pos_iter overridden to {args.solver_pos_iter}")
+    except AttributeError:
+        print("[physics] could not override articulation solver pos_iter")
+
     _inject_cameras(env_cfg)
     env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array")
     print(f"[env] {args.task}  action_space={env.action_space}")
+
+    if args.zero_upper_body_enc:
+        print("[enc] zero-upper-body-enc ENABLED: arm joints (MuJoCo idx 15-28) "
+              "will be zeroed in encoder input — diagnostic mode only")
 
     # --- 3. Build UTM (encoder + decoder) -----------------------------
     print(f"[utm] encoder={args.encoder_onnx}")
@@ -563,6 +607,16 @@ def main() -> int:
             _R_robot = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
 
             fb_pos, fb_vel, fb_quats = csv.full_body_future(csv_step)  # (10,29),(10,29),(10,4)
+
+            # Diagnostic: zero arm joints (MuJoCo indices 15-28) so the encoder
+            # sees only lower-body + waist trajectory, matching the information
+            # density of the old teleop+lower-body encoder mode. This isolates
+            # whether arm trajectories in the reference CSV are causing instability.
+            if args.zero_upper_body_enc:
+                fb_pos = fb_pos.copy()
+                fb_vel = fb_vel.copy()
+                fb_pos[:, 15:] = 0.0
+                fb_vel[:, 15:] = 0.0
 
             # Anchor orientation history: reference heading relative to robot's current
             # orientation, expressed as rot6d (row-major first two columns of R_rel).
