@@ -112,8 +112,12 @@ def _build_sonic_matched_actuators() -> dict:
             effort_limit_sim=50.0,
             velocity_limit_sim=37.0,
             joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            stiffness=_SONIC_STIFFNESS_5020,
-            damping=_SONIC_DAMPING_5020,
+            # C++ policy_parameters.hpp uses 2.0×STIFFNESS_5020 for ankles (lines 148-151).
+            # Action scale keeps the standard 5020 denominator, so effective force is 2×
+            # that of other 5020 joints. Without this, ankles are too soft and the robot
+            # loses ground contact control immediately.
+            stiffness=2.0 * _SONIC_STIFFNESS_5020,
+            damping=2.0 * _SONIC_DAMPING_5020,
             armature=_SONIC_ARMATURE_5020,
         ),
         "waist_yaw": ImplicitActuatorCfg(
