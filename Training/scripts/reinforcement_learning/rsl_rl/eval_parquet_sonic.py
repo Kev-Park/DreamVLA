@@ -56,8 +56,6 @@ def _parse_cli() -> argparse.ArgumentParser:
     parser.add_argument("--num-episodes", type=int, default=1)
     parser.add_argument("--max-steps-per-episode", type=int, default=500,
                         help="Capped automatically to parquet length if shorter.")
-    parser.add_argument("--chunk-size", type=int, default=8,
-                        help="How many parquet frames to read per replan (mirrors VLA chunk size).")
     parser.add_argument("--parquet", required=True, type=Path,
                         help="Path to a single LeRobot episode_*.parquet file.")
     parser.add_argument("--encoder-onnx",
@@ -852,21 +850,14 @@ def main() -> int:
             print(f"[video] writing {vla_vis_writer.path}")
         prev_utm_body_29 = np.zeros(29, dtype=np.float32)
 
-        parquet_chunk: dict | None = None
-        chunk_step = 0
-
         for step in range(max_steps):
-            # 7b. Refresh action chunk from parquet every chunk_size steps.
-            if parquet_chunk is None or chunk_step >= args.chunk_size:
-                parquet_chunk = streamer.get_chunk(step, args.chunk_size)
-                chunk_step = 0
-                if step == 0:
-                    print("\n[parquet @ step 0] chunk keys and shapes:")
-                    for k, v in sorted(parquet_chunk.items()):
-                        print(f"  {k}: {np.asarray(v).shape}  "
-                              f"t=0 → {np.asarray(v)[0, 0].round(4).tolist()}")
-
-            t_idx = chunk_step
+            # Read current parquet frame for VR and finger data (planner drives locomotion;
+            # one parquet frame per control step, no VLA chunk buffering needed).
+            parquet_frame = streamer.get_lerp_frame(float(step))
+            if step == 0:
+                print("\n[parquet @ step 0] initial frame values:")
+                for k, v in sorted(parquet_frame.items()):
+                    print(f"  {k}: {np.asarray(v)[0, 0].round(4).tolist()}")
 
             # 7b. Push current env state into history.
             q_isaac      = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
@@ -966,7 +957,7 @@ def main() -> int:
             # The parquet stores raw VR positions and orientations in world frame.
             # The encoder expects them expressed in the planner's anchor frame
             # (i.e., relative to the predicted pelvis position/orientation).
-            vr_pos_world, vr_rot6d_world = extract_vr_3pt(parquet_chunk, t_index=t_idx)
+            vr_pos_world, vr_rot6d_world = extract_vr_3pt(parquet_frame, t_index=0)
 
             _R_anchor_inv = _R_anchor.inv()
             # Positions: subtract anchor origin, rotate into anchor frame.
@@ -1022,8 +1013,8 @@ def main() -> int:
             # 7g. Assemble env action (body from UTM, fingers from parquet).
             env_action_np = utm_plus_vla_to_env_action(
                 utm_body_29_sonic=utm_body_29,
-                vla_action=parquet_chunk,
-                t_index=t_idx,
+                vla_action=parquet_frame,
+                t_index=0,
             )
             if step < 3:
                 print(f"[step {step}] utm_body_29[:15]       = {utm_body_29[:15].round(3).tolist()}")
@@ -1064,7 +1055,6 @@ def main() -> int:
 
             prev_utm_body_29 = utm_body_29
             planner_step = (planner_step + 1) % _REPLAN_STEPS
-            chunk_step += 1
 
             if bool(term[0] if term.ndim > 0 else term):
                 print(f"[step {step}] terminated  rew={float(rew[0]):.4f}")
