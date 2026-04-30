@@ -82,12 +82,6 @@ def _parse_cli() -> argparse.ArgumentParser:
              "instability vs lower-body-only driving.",
     )
     parser.add_argument(
-        "--physics-hz", type=int, default=200,
-        help="Physics substep frequency in Hz (default 200 = 5ms). "
-             "Set to 500 to match MuJoCo's 2ms substep rate (10 substeps per control step). "
-             "Higher values improve contact accuracy but increase simulation cost.",
-    )
-    parser.add_argument(
         "--solver-pos-iter", type=int, default=8,
         help="PhysX articulation solver position iteration count (default 8, sim default 4). "
              "More iterations improve contact stability for humanoid foot contacts.",
@@ -445,18 +439,11 @@ def main() -> int:
         print("[physics] events.physics_material not found — skipping body friction override")
 
     # --- 2b. Physics substep rate -------------------------------------------
-    # MuJoCo uses 500 Hz (dt=2ms, 10 substeps per 20ms control step).
-    # IsaacSim default is 200 Hz (dt=5ms, 4 substeps). Higher rate improves
-    # contact resolution accuracy but increases simulation cost.
-    if args.physics_hz != 200:
-        _phys_dt = 1.0 / args.physics_hz
-        _decimation = round(args.physics_hz / _CTRL_HZ)
-        env_cfg.sim.dt = _phys_dt
-        env_cfg.sim.decimation = _decimation
-        print(f"[physics] substep rate overridden to {args.physics_hz} Hz "
-              f"(dt={_phys_dt*1000:.2f} ms, decimation={_decimation})")
-    else:
-        print("[physics] substep rate: 200 Hz (dt=5 ms, decimation=4)")
+    # 500 Hz (dt=2ms, 10 substeps per 20ms control step) matches MuJoCo's
+    # integration rate and is required for stable contact dynamics.
+    env_cfg.sim.dt = 1.0 / 500.0
+    env_cfg.sim.decimation = 10
+    print("[physics] substep rate: 500 Hz (dt=2 ms, decimation=10)")
 
     # --- 2c. Articulation solver iterations ---------------------------------
     # G1_CFG default is pos=4, vel=4. Increasing position iterations improves

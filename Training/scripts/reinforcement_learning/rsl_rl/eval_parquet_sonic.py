@@ -111,23 +111,18 @@ from vla_sonic import (  # noqa: E402
     build_planner_inputs,
     utm_plus_vla_to_env_action,
 )
-from vla_sonic.action_assembler import MUJOCO_TO_ISAACLAB  # noqa: E402
+from scipy.spatial.transform import Rotation as R  # noqa: E402
+from vla_sonic.action_assembler import (  # noqa: E402
+    G1_ACTION_SCALE_SONIC,
+    G1_DEFAULT_ANGLES_SONIC,
+    MUJOCO_TO_ISAACLAB,
+)
 from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
 
 
 # =========================================================================
 # Planner bootstrap constants (mirrors eval_parquet_kinematic.py).
 # =========================================================================
-
-# G1 neutral standing pose in MuJoCo order (from policy_parameters.hpp::default_angles).
-_MUJOCO_DEFAULT_ANGLES_29 = np.array([
-    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,   # left  leg: hp, hr, hy, knee, ap, ar
-    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,   # right leg: hp, hr, hy, knee, ap, ar
-     0.0,   0.0, 0.0,                        # waist: yaw, roll, pitch
-     0.2,   0.2, 0.0, 0.6, 0.0, 0.0, 0.0,  # left  arm: sp, sr, sy, elbow, wr, wp, wy
-     0.2,  -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,  # right arm: sp, sr, sy, elbow, wr, wp, wy
-], dtype=np.float32)
-_MUJOCO_STANDING_Z = 0.78874
 
 _PLANNER_HZ           = 30.0
 _PARQUET_HZ           = 50.0   # parquet recording rate — same as control rate
@@ -165,15 +160,6 @@ def _make_robot_planner_context(
     frame[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # identity quaternion
     frame[7:36] = q_mujoco.astype(np.float32)
     return np.tile(frame[np.newaxis, np.newaxis, :], (1, 4, 1))
-
-
-def _make_standing_planner_context() -> np.ndarray:
-    """4 identical standing frames → (1, 4, 36) context for the planner bootstrap."""
-    ctx = np.zeros((1, 4, 36), dtype=np.float32)
-    ctx[0, :, 2]    = _MUJOCO_STANDING_Z
-    ctx[0, :, 3]    = 1.0
-    ctx[0, :, 7:36] = _MUJOCO_DEFAULT_ANGLES_29
-    return ctx
 
 
 def _quat_slerp_wxyz(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
@@ -299,34 +285,6 @@ PLANNER_JOINTS_SLICE    = slice(7, 36)
 LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER = np.array(
     [7 + i for i in range(12)], dtype=np.int64,
 )
-# C++ uses step_size=5 in the 50 Hz resampled planner sequence → 100 ms/step, 0.9 s lookahead.
-# At the planner's native 30 Hz, 100 ms = 3 frames.  range(0,28,3) = [0,3,6,...,27] = 10 frames.
-# Old value range(0,50,5) gave 167 ms/step (1.5 s lookahead); most frames were padded
-# with the last planner frame because the planner rarely outputs 46+ frames at 30 Hz.
-ENCODER_FUTURE_FRAME_INDICES = list(range(0, 28, 3))
-PLANNER_OUTPUT_FPS = 30.0
-
-
-def extract_anchor_pose(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    frame0 = mujoco_qpos[0, 0]
-    return (
-        np.asarray(frame0[PLANNER_ROOT_POS_SLICE],  dtype=np.float32).copy(),
-        np.asarray(frame0[PLANNER_ROOT_QUAT_SLICE], dtype=np.float32).copy(),
-    )
-
-
-def extract_lower_body_future(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    qpos = np.asarray(mujoco_qpos[0], dtype=np.float32)
-    need = max(ENCODER_FUTURE_FRAME_INDICES) + 1
-    if qpos.shape[0] < need:
-        pad = np.repeat(qpos[-1:], need - qpos.shape[0], axis=0)
-        qpos = np.concatenate([qpos, pad], axis=0)
-    lb_all  = qpos[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER]
-    vel_all = np.gradient(lb_all, 1.0 / PLANNER_OUTPUT_FPS, axis=0).astype(np.float32)
-    return (
-        lb_all[ENCODER_FUTURE_FRAME_INDICES].astype(np.float32),
-        vel_all[ENCODER_FUTURE_FRAME_INDICES].astype(np.float32),
-    )
 
 
 def extract_vr_3pt(
@@ -351,6 +309,12 @@ _PARQUET_COL_MAP: dict[str, tuple[str, type]] = {
     "teleop.vr_3pt_orientation": ("vr_3pt_orientation", np.float32),  # (18,)
     "teleop.left_hand_joints":   ("left_hand_joints",   np.float32),  # (7,)
     "teleop.right_hand_joints":  ("right_hand_joints",  np.float32),  # (7,)
+}
+
+# Optional columns — loaded when present, ignored when absent.
+_PARQUET_OPT_MAP: dict[str, tuple[str, type]] = {
+    "teleop.planner_mode": ("planner_mode", np.int64),    # explicit mode int
+    "teleop.run":          ("run",          np.float32),  # boolean RUN override
 }
 
 
@@ -380,6 +344,11 @@ class ParquetActionStreamer:
         for col, (key, dtype) in _PARQUET_COL_MAP.items():
             rows = [_cell(df[col].iloc[i], dtype) for i in range(self.n_frames)]
             self._arrays[key] = np.stack(rows)  # (N, D)
+
+        for col, (key, dtype) in _PARQUET_OPT_MAP.items():
+            if col in df.columns:
+                rows = [_cell(df[col].iloc[i], dtype) for i in range(self.n_frames)]
+                self._arrays[key] = np.stack(rows)
 
         task = str(df["task"].iloc[0]) if "task" in df.columns else ""
         print(f"[parquet] {self.n_frames} frames  task='{task}'  path={path.name}")
@@ -420,6 +389,25 @@ class ParquetActionStreamer:
                 slice_ = np.concatenate([valid, pad], axis=0)
             chunk[key] = slice_[np.newaxis]   # (1, chunk_size, D)
         return chunk
+
+
+def _get_planner_mode(streamer: ParquetActionStreamer, frame: int) -> int:
+    """Derive planner mode for a given parquet frame index.
+
+    Mirrors eval_parquet_kinematic.py _get_mode priority chain:
+      1. teleop.planner_mode column (explicit int) if present
+      2. teleop.run flag → mode 3 (RUN) when True
+      3. speed_to_mode(planner_speed) as fallback
+    """
+    from vla_sonic.frame_transforms import speed_to_mode
+    arrays = streamer._arrays
+    f = min(frame, streamer.n_frames - 1)
+    if "planner_mode" in arrays:
+        return int(arrays["planner_mode"][f].flat[0])
+    if "run" in arrays and float(arrays["run"][f].flat[0]) > 0.5:
+        return 3  # RUN
+    speed = max(0.0, float(arrays["planner_speed"][f].flat[0]))
+    return speed_to_mode(speed)
 
 
 # =========================================================================
@@ -718,6 +706,37 @@ def main() -> int:
     env_cfg = parse_env_cfg(
         args.task, device="cuda:0", num_envs=args.num_envs, enable_cameras=True,
     )
+
+    # --- 2a. Physics overrides to match MuJoCo training environment --------
+    env_cfg.sim.gravity = (0.0, 0.0, -7.5)
+    print(f"[physics] gravity overridden to {env_cfg.sim.gravity}")
+    try:
+        env_cfg.scene.terrain.physics_material.static_friction = 0.5
+        env_cfg.scene.terrain.physics_material.dynamic_friction = 0.5
+        print("[physics] terrain friction overridden to static=0.5 dynamic=0.5")
+    except AttributeError:
+        print("[physics] terrain.physics_material not found — skipping friction override")
+    try:
+        env_cfg.events.physics_material.params["static_friction_range"] = (0.5, 0.5)
+        env_cfg.events.physics_material.params["dynamic_friction_range"] = (0.5, 0.5)
+        print("[physics] robot body friction overridden to 0.5")
+    except (AttributeError, KeyError):
+        print("[physics] events.physics_material not found — skipping body friction override")
+
+    # --- 2b. Physics substep rate -------------------------------------------
+    # 500 Hz (dt=2ms, 10 substeps per 20ms control step) matches MuJoCo's
+    # integration rate and is required for stable contact dynamics.
+    env_cfg.sim.dt = 1.0 / 500.0
+    env_cfg.sim.decimation = 10
+    print("[physics] substep rate: 500 Hz (dt=2 ms, decimation=10)")
+
+    # --- 2c. Articulation solver iterations ---------------------------------
+    try:
+        env_cfg.scene.robot.spawn.articulation_props.solver_position_iteration_count = 8
+        print("[physics] articulation solver pos_iter overridden to 8")
+    except AttributeError:
+        print("[physics] could not override articulation solver pos_iter")
+
     _inject_cameras(env_cfg)
     env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array")
     print(f"[env] {args.task}  action_space={env.action_space}")
@@ -751,11 +770,10 @@ def main() -> int:
     # which _APP.update() is called implicitly by torch / the Kit framework.
     # Without a VLA we must do it explicitly, otherwise env.reset() blocks
     # waiting for compilation that never progresses.
-    import time as _time
     print("[sim] pumping Omniverse event loop to let physics initialise...")
     for _i in range(60):
         _APP.update()
-        _time.sleep(0.5)
+        time.sleep(0.5)
     print("[sim] ready")
 
     action_space_dim = env.action_space.shape[-1]
@@ -787,6 +805,31 @@ def main() -> int:
         _rp_b = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
         _rq_b = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)
         planner_context = _make_robot_planner_context(_rp_b, _rq_b, _qm_b)
+
+        # Pre-fill decoder history with 10 frames of initial robot state.
+        # Without pre-seeding, the decoder's zero history has no gait phase signal,
+        # causing symmetric bilateral motion (both feet lifting simultaneously).
+        _scale_inv_h = 1.0 / G1_ACTION_SCALE_SONIC
+        _qd0 = _gather_with_mask(
+            robot.data.joint_vel[0].detach().cpu().numpy().astype(np.float32),
+            isaac_to_utm_perm,
+        )
+        _av0 = robot.data.root_ang_vel_b[0].detach().cpu().numpy().astype(np.float32)
+        _grav0 = R.from_quat(quat_wxyz_to_xyzw(_rq_b)).inv().apply(
+            np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        ).astype(np.float32)
+        _mq0 = np.concatenate([_rp_b, _rq_b, _qm_b]).astype(np.float32)
+        _q0_delta = _qs_b - G1_DEFAULT_ANGLES_SONIC
+        for _ in range(10):
+            history.push(
+                joint_pos=_q0_delta,
+                joint_vel=_qd0,
+                last_action=_q0_delta * _scale_inv_h,
+                base_ang_vel=_av0,
+                gravity_dir=_grav0,
+                mujoco_qpos=_mq0,
+            )
+        print(f"[episode {ep}] decoder history pre-filled from initial robot state (10 frames)")
 
         # Open video writers on first episode after Isaac Lab is fully up.
         if ep == 0 and prefix is not None and not writers:
@@ -834,14 +877,13 @@ def main() -> int:
             root_pos_w   = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
             root_quat_w  = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)
             root_ang_vel_b = robot.data.root_ang_vel_b[0].detach().cpu().numpy().astype(np.float32)
-            from scipy.spatial.transform import Rotation as R
             gravity_body = R.from_quat(quat_wxyz_to_xyzw(root_quat_w)).inv().apply(
                 np.array([0.0, 0.0, -1.0], dtype=np.float32)
             ).astype(np.float32)
             mujoco_qpos = np.concatenate([root_pos_w, root_quat_w, q_mujoco]).astype(np.float32)
 
             history.push(
-                joint_pos=q_sonic,
+                joint_pos=q_sonic - G1_DEFAULT_ANGLES_SONIC,
                 joint_vel=qd_sonic,
                 last_action=prev_utm_body_29,
                 base_ang_vel=root_ang_vel_b,
@@ -871,11 +913,12 @@ def main() -> int:
                     t_index=0,
                     clip_negative_speed=False,
                 )
-                # Hardcode SLOW_WALK at 0.2 m/s — all collected parquet episodes use this
-                # gait.  Matches kinematic.py's explicit mode override rather than inferring
-                # mode from speed thresholds.
-                planner_inputs.mode       = np.array([1],   dtype=np.int64)   # SLOW_WALK
-                planner_inputs.target_vel = np.array([0.2], dtype=np.float32)
+                # Derive mode using the same priority chain as eval_parquet_kinematic.py:
+                # explicit planner_mode column → run flag → speed_to_mode(planner_speed).
+                # target_vel is NOT overridden; build_planner_inputs reads planner_speed
+                # from the parquet chunk and sets it correctly.
+                _p0 = min(int(_pidx_f), streamer.n_frames - 1)
+                planner_inputs.mode = np.array([_get_planner_mode(streamer, _p0)], dtype=np.int64)
                 cached_planner_out    = planner.run(**planner_inputs.as_kwargs())
                 cached_planner_inputs = planner_inputs
                 cached_out_50hz       = _resample_planner_to_50hz(cached_planner_out.mujoco_qpos)
@@ -919,14 +962,38 @@ def main() -> int:
             _lb_vel_dense[-1]  = _lb_vel_dense[-2]
             lb_vel = _lb_vel_dense[_lb_idx]                                                          # (10, 12)
 
-            # 7e. VR 3-point from parquet chunk.
-            vr_pos_world, vr_rot6d = extract_vr_3pt(parquet_chunk, t_index=t_idx)
+            # 7e. VR 3-point from parquet chunk — transform world → anchor-local.
+            # The parquet stores raw VR positions and orientations in world frame.
+            # The encoder expects them expressed in the planner's anchor frame
+            # (i.e., relative to the predicted pelvis position/orientation).
+            vr_pos_world, vr_rot6d_world = extract_vr_3pt(parquet_chunk, t_index=t_idx)
 
-            # 7e-vis. Skeleton video frame.
+            _R_anchor_inv = _R_anchor.inv()
+            # Positions: subtract anchor origin, rotate into anchor frame.
+            vr_pts_world = vr_pos_world.reshape(3, 3)                          # (3, xyz)
+            vr_pos_anchor_local = (
+                _R_anchor_inv.apply(vr_pts_world - anchor_pos_w)
+                .reshape(-1).astype(np.float32)                                # (9,)
+            )
+            # Orientations: R_local = R_anchor^{-1} * R_world, re-encoded as rot6d.
+            _R_anchor_inv_mat = _R_anchor_inv.as_matrix().astype(np.float64)
+            _vr_rot6d_local = np.empty((3, 6), dtype=np.float32)
+            for _i in range(3):
+                _r = vr_rot6d_world[_i * 6 : _i * 6 + 6].astype(np.float64)
+                _c0 = _r[:3] / (np.linalg.norm(_r[:3]) + 1e-10)
+                _c1_raw = _r[3:]
+                _c1 = _c1_raw - np.dot(_c1_raw, _c0) * _c0
+                _c1 /= (np.linalg.norm(_c1) + 1e-10)
+                _R_world_i = np.stack([_c0, _c1, np.cross(_c0, _c1)], axis=1)
+                _R_local_i = _R_anchor_inv_mat @ _R_world_i
+                _vr_rot6d_local[_i] = _R_local_i[:, :2].flatten("F")
+            vr_rot6d_anchor_local = _vr_rot6d_local.reshape(-1)                # (18,)
+
+            # 7e-vis. Skeleton video frame (uses world-frame positions for display).
             if vla_vis_writer is not None:
                 vla_vis_writer.write(
                     vr_pos=vr_pos_world,
-                    vr_rot6d=vr_rot6d,
+                    vr_rot6d=vr_rot6d_world,
                     root_pos=root_pos_w,
                     planner_mode=int(np.atleast_1d(cached_planner_inputs.mode).flat[0]),
                     planner_speed=float(np.atleast_1d(cached_planner_inputs.target_vel).flat[0]),
@@ -943,8 +1010,8 @@ def main() -> int:
                 anchor_rot6d=anchor_rot6d,
                 lower_body_positions_future=lb_pos,
                 lower_body_velocities_future=lb_vel,
-                vr_3pt_position_anchor_local=vr_pos_world,
-                vr_3pt_rot6d=vr_rot6d,
+                vr_3pt_position_anchor_local=vr_pos_anchor_local,
+                vr_3pt_rot6d=vr_rot6d_anchor_local,
             )
             token = utm.run_encoder({"obs_dict": enc_obs}).reshape(-1)
 
