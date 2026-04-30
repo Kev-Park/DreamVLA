@@ -128,10 +128,6 @@ _CTRL_HZ              = 50.0
 _REPLAN_HZ            = 10.0
 _REPLAN_STEPS         = int(_CTRL_HZ / _REPLAN_HZ)      # 5 env steps per replan
 _REPLAN_STEPS_30HZ    = round(_PLANNER_HZ / _REPLAN_HZ) # 3 — one replan cycle at native 30 Hz
-# Encoder lookahead: step_size=5 at 50 Hz (matches C++ GatherMotionJointPositionsMultiFrame),
-# giving 100 ms/step, 10 frames, 0.9 s total lookahead.
-_ENC_STEP_50HZ        = 5
-_ENC_FRAMES           = 10
 
 
 def _make_robot_planner_context(
@@ -153,57 +149,6 @@ def _make_robot_planner_context(
     frame[7:36] = q_mujoco.astype(np.float32)
     return np.tile(frame[np.newaxis, np.newaxis, :], (1, 4, 1))
 
-
-def _quat_slerp_wxyz(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
-    """Slerp between two wxyz quaternions. Matches C++ quat_slerp_d."""
-    q0 = q0.astype(np.float64)
-    q1 = q1.astype(np.float64)
-    dot = float(np.dot(q0, q1))
-    if dot < 0.0:
-        q1, dot = -q1, -dot
-    dot = min(dot, 1.0)
-    if dot > 0.9995:
-        return (q0 + t * (q1 - q0)).astype(np.float32)
-    theta0 = float(np.arccos(dot))
-    theta  = theta0 * t
-    sin0   = float(np.sin(theta0))
-    return ((np.sin(theta0 - theta) / sin0) * q0 + (np.sin(theta) / sin0) * q1).astype(np.float32)
-
-
-def _interp_planner_frame(frames: np.ndarray, t_float: float) -> np.ndarray:
-    """Lerp/slerp one frame from a (T, 36) array at fractional index t_float.
-
-    Position (0:3) and joints (7:36) use lerp; quaternion wxyz (3:7) uses slerp.
-    Out-of-range t_float clamps to [0, T-1].
-    """
-    n = frames.shape[0]
-    i0 = int(t_float)
-    frac = t_float - i0
-    i0 = min(max(i0, 0), n - 1)
-    i1 = min(i0 + 1, n - 1)
-    if i0 == i1:
-        frac = 0.0
-    f0, f1 = frames[i0], frames[i1]
-    out = np.empty(36, dtype=np.float32)
-    out[0:3]  = f0[0:3]  + frac * (f1[0:3]  - f0[0:3])
-    out[3:7]  = _quat_slerp_wxyz(f0[3:7], f1[3:7], frac)
-    out[7:36] = f0[7:36] + frac * (f1[7:36] - f0[7:36])
-    return out
-
-
-def _resample_planner_to_50hz(qpos_30hz: np.ndarray) -> np.ndarray:
-    """Resample (1, T_30, 36) planner output → (1, T_50, 36) at 50 Hz.
-
-    Matches the C++ deploy stack: lerp for position/joints, slerp for
-    quaternion. T_50 = floor(T_30 / 30 * 50) — same as C++ std::floor.
-    """
-    frames_30 = qpos_30hz[0]
-    t30 = frames_30.shape[0]
-    t50 = max(1, int(t30 * _CTRL_HZ / _PLANNER_HZ))
-    out = np.stack(
-        [_interp_planner_frame(frames_30, i * _PLANNER_HZ / _CTRL_HZ) for i in range(t50)]
-    )  # (T_50, 36)
-    return out[np.newaxis]  # (1, T_50, 36)
 
 
 # =========================================================================
@@ -757,7 +702,6 @@ def main() -> int:
     planner_context: np.ndarray | None = None
     cached_planner_out = None
     cached_planner_inputs = None
-    cached_out_50hz: np.ndarray | None = None
 
     for ep in range(args.num_episodes):
         print(f"\n[episode {ep}]")
@@ -769,7 +713,6 @@ def main() -> int:
         planner_step       = 0
         cached_planner_out = None
         cached_planner_inputs = None
-        cached_out_50hz    = None
         # Bootstrap context from actual robot state — matches C++ InitializeContext.
         _q_b  = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
         _qs_b = _gather_with_mask(_q_b, isaac_to_utm_perm)
@@ -889,7 +832,6 @@ def main() -> int:
                 planner_inputs.mode = np.array([_get_planner_mode(streamer, _p0)], dtype=np.int64)
                 cached_planner_out    = planner.run(**planner_inputs.as_kwargs())
                 cached_planner_inputs = planner_inputs
-                cached_out_50hz       = _resample_planner_to_50hz(cached_planner_out.mujoco_qpos)
 
                 if step == 0:
                     out_first = cached_planner_out.mujoco_qpos[0, 0]
@@ -904,31 +846,32 @@ def main() -> int:
                     print(f"  out[0] root_quat = {out_first[3:7].round(4).tolist()}")
                     print(f"  out[0] legs[:12] = {out_first[7:19].round(4).tolist()}")
 
-            # 7d. Extract anchor + lower-body trajectory from 50 Hz buffer.
-            # planner_step is the current 50 Hz frame within the replan cycle (0–4).
-            _t50       = cached_out_50hz.shape[1]
-            _frames_50 = cached_out_50hz[0]
-            _cur       = min(planner_step, _t50 - 1)
-            anchor_pos_w     = _frames_50[_cur, PLANNER_ROOT_POS_SLICE].copy()
-            anchor_quat_wxyz = _frames_50[_cur, PLANNER_ROOT_QUAT_SLICE].copy()
+            # 7d. Extract anchor + lower-body trajectory from native 30Hz planner output.
+            # Matches eval_vla_sonic.py::extract_anchor_pose + extract_lower_body_future exactly:
+            #   - anchor = planner frame 0 (constant per replan cycle, not shifted by planner_step)
+            #   - lb frames: indices [0, 5, 10, ..., 45] from native 30Hz → 167ms/step, 1.5s lookahead
+            #   - lb velocities: central differences at 30Hz via np.gradient
+            _qpos_30hz   = cached_planner_out.mujoco_qpos[0]             # (N, 36) native 30Hz
+            anchor_pos_w     = _qpos_30hz[0, PLANNER_ROOT_POS_SLICE].copy()
+            anchor_quat_wxyz = _qpos_30hz[0, PLANNER_ROOT_QUAT_SLICE].copy()
             _R_robot  = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
             _R_anchor = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
             _R_rel_mat = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
-            # SONIC rot6d convention: rot6d[0:3]=R[:,0], rot6d[3:6]=R[:,1] (columns, not rows).
-            # flatten("F") = column-major = col0 then col1. flatten("C") would be wrong.
-            anchor_rot6d = _R_rel_mat[:, :2].flatten("F").astype(np.float32)
-            # Encoder lookahead: 10 frames spaced _ENC_STEP_50HZ=5 apart (= 100 ms/step).
-            # Matches C++ GatherMotionJointPositionsMultiFrame with step_size=5.
-            _lb_idx    = [min(planner_step + k * _ENC_STEP_50HZ, _t50 - 1) for k in range(_ENC_FRAMES)]
-            _lb_frames = _frames_50[_lb_idx]                                               # (10, 36)
-            lb_pos = _lb_frames[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER].astype(np.float32)  # (10, 12)
-            # Velocities: forward differences on dense 50 Hz buffer, then select sparse frames.
-            # Matches C++: vel[f] = (pos[f+1] - pos[f]) * 50;  last frame copies second-to-last.
-            _lb_dense     = _frames_50[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER].astype(np.float32)  # (T_50, 12)
-            _lb_vel_dense = np.empty_like(_lb_dense)
-            _lb_vel_dense[:-1] = (_lb_dense[1:] - _lb_dense[:-1]) * _CTRL_HZ
-            _lb_vel_dense[-1]  = _lb_vel_dense[-2]
-            lb_vel = _lb_vel_dense[_lb_idx]                                                          # (10, 12)
+            # C++ row-wise rot6d for motion_anchor_orientation: flatten('C'), identity → [1,0,0,1,0,0].
+            # flatten('F') (col-major, SONIC VR convention) is WRONG here — see eval_vla_sonic.py:803.
+            anchor_rot6d = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
+            # Lower-body trajectory: 10 frames at 5-frame step from native 30Hz output.
+            _enc_lb_idx = list(range(0, 50, 5))   # [0, 5, 10, ..., 45]
+            _n30  = _qpos_30hz.shape[0]
+            _need = _enc_lb_idx[-1] + 1            # 46
+            if _n30 < _need:
+                _qpos_30hz = np.concatenate(
+                    [_qpos_30hz, np.tile(_qpos_30hz[-1:], (_need - _n30, 1))], axis=0
+                )
+            _lb_all  = _qpos_30hz[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER].astype(np.float32)
+            _vel_all = np.gradient(_lb_all, 1.0 / _PLANNER_HZ, axis=0).astype(np.float32)
+            lb_pos = _lb_all[_enc_lb_idx]   # (10, 12)
+            lb_vel = _vel_all[_enc_lb_idx]  # (10, 12)
 
             # 7e. VR 3-point from parquet (already in pelvis-local / anchor-local frame).
             # collect_pick_cam.py applies subtract_frame_transforms() before HDF5 storage;
