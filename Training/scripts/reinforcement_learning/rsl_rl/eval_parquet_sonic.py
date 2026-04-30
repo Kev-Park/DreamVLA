@@ -127,17 +127,11 @@ _PARQUET_HZ           = 50.0   # parquet recording rate — same as control rate
 _CTRL_HZ              = 50.0
 _REPLAN_HZ            = 10.0
 _REPLAN_STEPS         = int(_CTRL_HZ / _REPLAN_HZ)      # 5 env steps per replan
-# C++ resamples the planner 30 Hz output to a 50 Hz MotionSequence buffer, then
-# UpdateContextFromMotion samples at gen_frame_ = replan_steps(5) + look_ahead(2) = 7,
-# spacing 50/30 ≈ 1.667 frames between the 4 context frames (= 1/30 s at 50 Hz rate).
-_LOOK_AHEAD_50HZ      = 2                               # C++ motion_look_ahead_steps
-_CTX_START_50HZ       = _REPLAN_STEPS + _LOOK_AHEAD_50HZ  # 7 — 50 Hz start frame for context
-_CTX_SPACING_50HZ     = _CTRL_HZ / _PLANNER_HZ          # ≈ 1.667 50 Hz frames between 30 Hz slots
+_REPLAN_STEPS_30HZ    = round(_PLANNER_HZ / _REPLAN_HZ) # 3 — one replan cycle at native 30 Hz
 # Encoder lookahead: step_size=5 at 50 Hz (matches C++ GatherMotionJointPositionsMultiFrame),
 # giving 100 ms/step, 10 frames, 0.9 s total lookahead.
 _ENC_STEP_50HZ        = 5
 _ENC_FRAMES           = 10
-_ENC_GRAD_DT          = _ENC_STEP_50HZ / _CTRL_HZ       # 0.1 s between selected frames
 
 
 def _make_robot_planner_context(
@@ -367,26 +361,6 @@ class ParquetActionStreamer:
             chunk[key] = ((1.0 - alpha) * a + alpha * b)[np.newaxis, np.newaxis]
         return chunk
 
-    def get_chunk(self, frame_start: int, chunk_size: int) -> dict[str, np.ndarray]:
-        """Return a fake vla_chunk shaped (1, chunk_size, D) for each key.
-
-        Frames past the end of the trajectory are filled by repeating the last
-        frame, so the pipeline never errors on short episodes.
-        """
-        end = frame_start + chunk_size
-        chunk: dict[str, np.ndarray] = {}
-        for key, arr in self._arrays.items():
-            n = self.n_frames
-            if frame_start >= n:
-                slice_ = np.tile(arr[-1:], (chunk_size, 1))
-            elif end <= n:
-                slice_ = arr[frame_start:end]
-            else:
-                valid = arr[frame_start:]
-                pad   = np.tile(arr[-1:], (end - n, 1))
-                slice_ = np.concatenate([valid, pad], axis=0)
-            chunk[key] = slice_[np.newaxis]   # (1, chunk_size, D)
-        return chunk
 
 
 def _get_planner_mode(streamer: ParquetActionStreamer, frame: int) -> int:
@@ -883,16 +857,18 @@ def main() -> int:
             )
 
             # 7c. Run kinematic planner at 10 Hz (every _REPLAN_STEPS env steps).
-            # At replan time, extract new context from the previous 50 Hz buffer at
-            # frames [_CTX_START_50HZ + n*_CTX_SPACING_50HZ for n=0..3], matching
-            # C++ UpdateContextFromMotion with gen_frame_=7 and spacing=50/30.
+            # Context rolling uses native 30 Hz planner output frames [3:7], matching
+            # kinematic.py: one replan cycle = _REPLAN_STEPS_30HZ=3 frames at 30 Hz.
             if planner_step == 0:
-                if cached_out_50hz is not None:
-                    ctx_frames = []
-                    for n in range(4):
-                        t_f = _CTX_START_50HZ + n * _CTX_SPACING_50HZ
-                        ctx_frames.append(_interp_planner_frame(cached_out_50hz[0], t_f))
-                    planner_context = np.stack(ctx_frames)[np.newaxis]  # (1, 4, 36)
+                if cached_planner_out is not None:
+                    n_pred = cached_planner_out.mujoco_qpos.shape[1]
+                    cs = min(_REPLAN_STEPS_30HZ, n_pred - 1)
+                    ctx_raw = cached_planner_out.mujoco_qpos[0, cs : cs + 4]
+                    if ctx_raw.shape[0] < 4:
+                        ctx_raw = np.concatenate(
+                            [ctx_raw, np.tile(ctx_raw[-1:], (4 - ctx_raw.shape[0], 1))], axis=0
+                        )
+                    planner_context = ctx_raw[np.newaxis]  # (1, 4, 36)
                 # kinematic.py formula: pidx_f = step * (parquet_hz / ctrl_hz).
                 # _PARQUET_HZ == _CTRL_HZ == 50 Hz so pidx_f = step (integer, alpha=0),
                 # but the lerp structure is kept explicit to match kinematic.py exactly.
@@ -953,38 +929,17 @@ def main() -> int:
             _lb_vel_dense[-1]  = _lb_vel_dense[-2]
             lb_vel = _lb_vel_dense[_lb_idx]                                                          # (10, 12)
 
-            # 7e. VR 3-point from parquet chunk — transform world → anchor-local.
-            # The parquet stores raw VR positions and orientations in world frame.
-            # The encoder expects them expressed in the planner's anchor frame
-            # (i.e., relative to the predicted pelvis position/orientation).
-            vr_pos_world, vr_rot6d_world = extract_vr_3pt(parquet_frame, t_index=0)
+            # 7e. VR 3-point from parquet (already in pelvis-local / anchor-local frame).
+            # collect_pick_cam.py applies subtract_frame_transforms() before HDF5 storage;
+            # scripts_convert_isaac_hdf5_to_lerobot.py passes positions through unchanged.
+            # Applying a world→anchor transform here is a double-transform → instant ragdoll.
+            vr_pos_anchor_local, vr_rot6d_anchor_local = extract_vr_3pt(parquet_frame, t_index=0)
 
-            _R_anchor_inv = _R_anchor.inv()
-            # Positions: subtract anchor origin, rotate into anchor frame.
-            vr_pts_world = vr_pos_world.reshape(3, 3)                          # (3, xyz)
-            vr_pos_anchor_local = (
-                _R_anchor_inv.apply(vr_pts_world - anchor_pos_w)
-                .reshape(-1).astype(np.float32)                                # (9,)
-            )
-            # Orientations: R_local = R_anchor^{-1} * R_world, re-encoded as rot6d.
-            _R_anchor_inv_mat = _R_anchor_inv.as_matrix().astype(np.float64)
-            _vr_rot6d_local = np.empty((3, 6), dtype=np.float32)
-            for _i in range(3):
-                _r = vr_rot6d_world[_i * 6 : _i * 6 + 6].astype(np.float64)
-                _c0 = _r[:3] / (np.linalg.norm(_r[:3]) + 1e-10)
-                _c1_raw = _r[3:]
-                _c1 = _c1_raw - np.dot(_c1_raw, _c0) * _c0
-                _c1 /= (np.linalg.norm(_c1) + 1e-10)
-                _R_world_i = np.stack([_c0, _c1, np.cross(_c0, _c1)], axis=1)
-                _R_local_i = _R_anchor_inv_mat @ _R_world_i
-                _vr_rot6d_local[_i] = _R_local_i[:, :2].flatten("F")
-            vr_rot6d_anchor_local = _vr_rot6d_local.reshape(-1)                # (18,)
-
-            # 7e-vis. Skeleton video frame (uses world-frame positions for display).
+            # 7e-vis. Skeleton video frame.
             if vla_vis_writer is not None:
                 vla_vis_writer.write(
-                    vr_pos=vr_pos_world,
-                    vr_rot6d=vr_rot6d_world,
+                    vr_pos=vr_pos_anchor_local,
+                    vr_rot6d=vr_rot6d_anchor_local,
                     root_pos=root_pos_w,
                     planner_mode=int(np.atleast_1d(cached_planner_inputs.mode).flat[0]),
                     planner_speed=float(np.atleast_1d(cached_planner_inputs.target_vel).flat[0]),
