@@ -68,6 +68,8 @@ def _parse_cli() -> argparse.ArgumentParser:
                         help="Output prefix. Saves _third_person.mp4, _ego.mp4, _vla_skeleton.mp4.")
     parser.add_argument("--video-fps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--gravity", type=float, default=-7.5,
+                        help="Z-component of gravity (m/s²). Default -7.5 matches MuJoCo training env.")
     return parser
 
 
@@ -625,7 +627,7 @@ def main() -> int:
     )
 
     # --- 2a. Physics overrides to match MuJoCo training environment --------
-    env_cfg.sim.gravity = (0.0, 0.0, -7.5)
+    env_cfg.sim.gravity = (0.0, 0.0, args.gravity)
     print(f"[physics] gravity overridden to {env_cfg.sim.gravity}")
     try:
         env_cfg.scene.terrain.physics_material.static_friction = 0.5
