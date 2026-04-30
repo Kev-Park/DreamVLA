@@ -862,13 +862,14 @@ def main() -> int:
             if planner_step == 0:
                 if cached_planner_out is not None:
                     n_pred = cached_planner_out.mujoco_qpos.shape[1]
-                    cs = min(_REPLAN_STEPS_30HZ, n_pred - 1)
-                    ctx_raw = cached_planner_out.mujoco_qpos[0, cs : cs + 4]
-                    if ctx_raw.shape[0] < 4:
-                        ctx_raw = np.concatenate(
-                            [ctx_raw, np.tile(ctx_raw[-1:], (4 - ctx_raw.shape[0], 1))], axis=0
-                        )
-                    planner_context = ctx_raw[np.newaxis]  # (1, 4, 36)
+                    if n_pred > 0:
+                        cs = min(_REPLAN_STEPS_30HZ, n_pred - 1)
+                        ctx_raw = cached_planner_out.mujoco_qpos[0, cs : cs + 4]
+                        if ctx_raw.shape[0] < 4:
+                            ctx_raw = np.concatenate(
+                                [ctx_raw, np.tile(ctx_raw[-1:], (4 - ctx_raw.shape[0], 1))], axis=0
+                            )
+                        planner_context = ctx_raw[np.newaxis]  # (1, 4, 36)
                 # kinematic.py formula: pidx_f = step * (parquet_hz / ctrl_hz).
                 # _PARQUET_HZ == _CTRL_HZ == 50 Hz so pidx_f = step (integer, alpha=0),
                 # but the lerp structure is kept explicit to match kinematic.py exactly.
@@ -960,6 +961,21 @@ def main() -> int:
                 vr_3pt_rot6d=vr_rot6d_anchor_local,
             )
             token = utm.run_encoder({"obs_dict": enc_obs}).reshape(-1)
+
+            if step == 0:
+                print("\n[ENC @ step 0] encoder inputs:")
+                print(f"  anchor_rot6d            = {anchor_rot6d.round(4).tolist()}")
+                print(f"  lb_pos[0] (now)         = {lb_pos[0].round(4).tolist()}")
+                print(f"  lb_pos[9] (far)         = {lb_pos[9].round(4).tolist()}")
+                print(f"  lb_vel[0]               = {lb_vel[0].round(4).tolist()}")
+                print(f"  vr_pos_anchor_local      = {vr_pos_anchor_local.round(4).tolist()}")
+                print(f"  vr_rot6d_anchor_local[0] = {vr_rot6d_anchor_local[0].round(4).tolist()}")
+                print(f"  vr_rot6d_anchor_local[1] = {vr_rot6d_anchor_local[1].round(4).tolist()}")
+                print(f"  vr_rot6d_anchor_local[2] = {vr_rot6d_anchor_local[2].round(4).tolist()}")
+                print("[ENC @ step 0] encoder output:")
+                print(f"  token_norm              = {np.linalg.norm(token):.4f}")
+                print(f"  token[:8]               = {token[:8].round(4).tolist()}")
+                print(f"  token[56:64]            = {token[56:64].round(4).tolist()}")
 
             dec_hist = history.decoder_history()
             dec_obs  = build_decoder_obs(token_state=token, **dec_hist.as_kwargs())
