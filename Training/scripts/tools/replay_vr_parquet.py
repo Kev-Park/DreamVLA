@@ -2,7 +2,7 @@
 """Parquet VR data playback visualizer for SONIC VLA converted datasets.
 
 Reads a LeRobot v2.1 parquet episode produced by convert_isaac_hdf5_to_lerobot.py
-and replays all VR-derived fields live in a viser scene on port 8081.
+and replays all VR-derived fields live in a viser scene on port 8082.
 
 Visualized
 ----------
@@ -17,7 +17,7 @@ Visualized
 
 Usage
 -----
-    python replay_vr_parquet.py path/to/episode_000000.parquet [--fps 50] [--trail 60] [--port 8081]
+    python replay_vr_parquet.py path/to/episode_000000.parquet [--fps 50] [--trail 60] [--port 8082]
 """
 
 from __future__ import annotations
@@ -340,8 +340,8 @@ def main() -> None:
                         help="Nominal playback FPS (default: 50)")
     parser.add_argument("--trail", type=int,   default=60,
                         help="Trajectory trail length in frames (default: 60)")
-    parser.add_argument("--port",  type=int,   default=8081,
-                        help="Viser server port (default: 8081)")
+    parser.add_argument("--port",  type=int,   default=8082,
+                        help="Viser server port (default: 8082)")
     args = parser.parse_args()
 
     print(f"[load] {args.parquet}")
