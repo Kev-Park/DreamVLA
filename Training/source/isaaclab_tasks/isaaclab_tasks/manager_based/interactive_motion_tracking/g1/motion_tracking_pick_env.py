@@ -548,7 +548,7 @@ class ObservationsCfg:
         object_mass = ObsTerm(func=rigid_body_mass, params={"asset_cfg": SceneEntityCfg("object")})
         
         def __post_init__(self):
-            self.enable_corruption = True
+            self.enable_corruption = False # improves real world robustness
             self.concatenate_terms = True
 
     # observation groups

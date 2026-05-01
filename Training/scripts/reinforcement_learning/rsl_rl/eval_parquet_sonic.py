@@ -661,7 +661,7 @@ def main() -> int:
         print("[physics] could not override articulation solver pos_iter")
 
     _inject_cameras(env_cfg)
-    env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array")
+    env = gym.make(args.task, cfg=env_cfg)
     print(f"[env] {args.task}  action_space={env.action_space}")
     print(f"[render] has_rtx_sensors={env.unwrapped.sim.has_rtx_sensors()}")
 
