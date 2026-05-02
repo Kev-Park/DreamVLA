@@ -68,6 +68,11 @@ def _parse_cli() -> argparse.ArgumentParser:
                         help="Output prefix. Saves _third_person.mp4, _ego.mp4, _vla_skeleton.mp4.")
     parser.add_argument("--video-fps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--speed-scale", type=float, default=1.0,
+                        help="Multiply planner target_vel by this factor. The planner takes larger "
+                             "steps than the RL policy at the same speed command, causing excess body "
+                             "swing. Scaling to 0.5-0.7 reduces step amplitude. Waypoints compensate "
+                             "for the lower commanded speed to preserve final reach distance.")
     parser.add_argument("--gravity", type=float, default=-9.81,
                         help="Z-component of gravity (m/s²). Default -9.81 matches both UTM training "
                              "(gear_sonic/Isaac Lab, no override) and MuJoCo deployment (scene_29dof.xml, "
@@ -860,6 +865,11 @@ def main() -> int:
                 # from the parquet chunk and sets it correctly.
                 _p0 = min(int(_pidx_f), streamer.n_frames - 1)
                 planner_inputs.mode = np.array([_get_planner_mode(streamer, _p0)], dtype=np.int64)
+                # Scale target_vel to reduce planner step amplitude. The planner's gait at
+                # a given speed command produces larger steps than the RL policy used during
+                # collection, causing excess body swing. Waypoints compensate for reach distance.
+                if args.speed_scale != 1.0:
+                    planner_inputs.target_vel = (planner_inputs.target_vel * args.speed_scale).astype(np.float32)
                 # Build specific-target waypoints when root_pos_w is available.
                 # 4 waypoints spaced one replan period apart; positions are the expected
                 # robot XY in the planner frame (robot starts at (0,0,z) in planner space).
