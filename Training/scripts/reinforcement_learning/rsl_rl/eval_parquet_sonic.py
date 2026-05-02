@@ -68,12 +68,16 @@ def _parse_cli() -> argparse.ArgumentParser:
                         help="Output prefix. Saves _third_person.mp4, _ego.mp4, _vla_skeleton.mp4.")
     parser.add_argument("--video-fps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--gravity", type=float, default=-7.5,
-                        help="Z-component of gravity (m/s²). Default -7.5 matches MuJoCo training env.")
-    parser.add_argument("--static-friction", type=float, default=0.5,
-                        help="Terrain + robot body static friction coefficient. Default 0.5.")
-    parser.add_argument("--dynamic-friction", type=float, default=0.5,
-                        help="Terrain + robot body dynamic friction coefficient. Default 0.5.")
+    parser.add_argument("--gravity", type=float, default=-9.81,
+                        help="Z-component of gravity (m/s²). Default -9.81 matches both UTM training "
+                             "(gear_sonic/Isaac Lab, no override) and MuJoCo deployment (scene_29dof.xml, "
+                             "no <option gravity> tag). The -7.5 assumption in eval_sonic_control.py was wrong.")
+    parser.add_argument("--static-friction", type=float, default=1.0,
+                        help="Terrain + robot body static friction coefficient. Default 1.0 matches UTM "
+                             "training (gear_sonic). Use 0.5 to match MuJoCo deployment scene friction.")
+    parser.add_argument("--dynamic-friction", type=float, default=1.0,
+                        help="Terrain + robot body dynamic friction coefficient. Default 1.0 matches UTM "
+                             "training (gear_sonic). Use 0.5 to match MuJoCo deployment scene friction.")
     return parser
 
 
