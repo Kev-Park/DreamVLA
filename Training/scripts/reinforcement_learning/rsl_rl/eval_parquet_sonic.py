@@ -267,10 +267,6 @@ _PARQUET_COL_MAP: dict[str, tuple[str, type]] = {
 _PARQUET_OPT_MAP: dict[str, tuple[str, type]] = {
     "teleop.planner_mode": ("planner_mode", np.int64),    # explicit mode int
     "teleop.run":          ("run",          np.float32),  # boolean RUN override
-    # Absolute robot position in collection world frame; written by the updated converter.
-    # Used for has_specific_target waypoints — parquet-only feature, NOT available to the
-    # VLA at inference time, so any VLA eval script must NOT use this for waypoint guidance.
-    "teleop.root_pos_w":    ("root_pos_w",    np.float32),
     # Object (mustard bottle) world pose at each frame.  Used after env.reset() to place
     # the object at the exact collection position rather than relying on random motion_ids.
     "teleop.object_pos_w":  ("object_pos_w",  np.float32),
@@ -776,22 +772,6 @@ def main() -> int:
         _rq_b = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)
         planner_context = _make_robot_planner_context(_rp_b, _rq_b, _qm_b)
 
-        # Waypoint anchors for has_specific_target mode.  The parquet stores absolute
-        # robot positions from the collection run; the planner frame starts at (0,0,z)
-        # with identity yaw.  We record both origins so each replan can compute
-        #   target_in_planner_frame = eval_origin + (parquet_pos[step] - parquet_origin)
-        # NOTE: eval_parquet_sonic.py only — VLA implementations must not use has_specific_target
-        # because future robot positions are not available at VLA inference time.
-        _parquet_has_waypoints = "root_pos_w" in streamer._arrays
-        if _parquet_has_waypoints:
-            parquet_origin_xy = streamer._arrays["root_pos_w"][0, :2].copy()
-            eval_origin_xy    = _rp_b[:2].copy()
-            print(f"[waypoints] enabled  parquet_origin_xy={parquet_origin_xy.round(4).tolist()}"
-                  f"  eval_origin_xy={eval_origin_xy.round(4).tolist()}")
-        else:
-            parquet_origin_xy = eval_origin_xy = None
-            print("[waypoints] teleop.root_pos_w absent in parquet — using direction mode (no waypoints)")
-
         # Pre-fill decoder history with 10 frames of initial robot state.
         # Without pre-seeding, the decoder's zero history has no gait phase signal,
         # causing symmetric bilateral motion (both feet lifting simultaneously).
@@ -901,38 +881,9 @@ def main() -> int:
                 # from the parquet chunk and sets it correctly.
                 _p0 = min(int(_pidx_f), streamer.n_frames - 1)
                 planner_inputs.mode = np.array([_get_planner_mode(streamer, _p0)], dtype=np.int64)
-                # Scale target_vel to reduce planner step amplitude. The planner's gait at
-                # a given speed command produces larger steps than the RL policy used during
-                # collection, causing excess body swing. Waypoints compensate for reach distance.
                 if args.speed_scale != 1.0:
                     planner_inputs.target_vel = (planner_inputs.target_vel * args.speed_scale).astype(np.float32)
-                # Build specific-target waypoints when root_pos_w is available.
-                # 4 waypoints spaced one replan period apart; positions are the expected
-                # robot XY in the planner frame (robot starts at (0,0,z) in planner space).
-                if _parquet_has_waypoints and parquet_origin_xy is not None:
-                    _wpt_pos = np.zeros((1, 4, 3), dtype=np.float32)
-                    _wpt_hdg = np.zeros((1, 4), dtype=np.float32)
-                    for _wi, _ws in enumerate([
-                        step,
-                        step + _REPLAN_STEPS,
-                        step + 2 * _REPLAN_STEPS,
-                        step + 3 * _REPLAN_STEPS,
-                    ]):
-                        _wf = min(_ws, streamer.n_frames - 1)
-                        _dxy = streamer._arrays["root_pos_w"][_wf, :2] - parquet_origin_xy
-                        _wpt_pos[0, _wi, 0] = float(eval_origin_xy[0] + _dxy[0])
-                        _wpt_pos[0, _wi, 1] = float(eval_origin_xy[1] + _dxy[1])
-                        _wpt_pos[0, _wi, 2] = float(root_pos_w[2])
-                        _fc = streamer._arrays["planner_facing"][_wf]
-                        _wpt_hdg[0, _wi] = float(np.arctan2(_fc[1], _fc[0]))
-                    cached_planner_out = planner.run(
-                        **planner_inputs.as_kwargs(),
-                        has_specific_target=1,
-                        specific_target_positions=_wpt_pos,
-                        specific_target_headings=_wpt_hdg,
-                    )
-                else:
-                    cached_planner_out = planner.run(**planner_inputs.as_kwargs())
+                cached_planner_out = planner.run(**planner_inputs.as_kwargs())
                 cached_planner_inputs = planner_inputs
 
                 if step == 0:
