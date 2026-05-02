@@ -270,7 +270,11 @@ _PARQUET_OPT_MAP: dict[str, tuple[str, type]] = {
     # Absolute robot position in collection world frame; written by the updated converter.
     # Used for has_specific_target waypoints — parquet-only feature, NOT available to the
     # VLA at inference time, so any VLA eval script must NOT use this for waypoint guidance.
-    "teleop.root_pos_w":   ("root_pos_w",  np.float32),
+    "teleop.root_pos_w":    ("root_pos_w",    np.float32),
+    # Object (mustard bottle) world pose at each frame.  Used after env.reset() to place
+    # the object at the exact collection position rather than relying on random motion_ids.
+    "teleop.object_pos_w":  ("object_pos_w",  np.float32),
+    "teleop.object_quat_w": ("object_quat_w", np.float32),
 }
 
 
@@ -722,10 +726,42 @@ def main() -> int:
     cached_planner_out = None
     cached_planner_inputs = None
 
+    # Check once whether parquet has object pose data.
+    _parquet_has_object_pose = (
+        "object_pos_w" in streamer._arrays and "object_quat_w" in streamer._arrays
+    )
+    if _parquet_has_object_pose:
+        _obj_pos0  = streamer._arrays["object_pos_w"][0].astype(np.float32)   # (3,)
+        _obj_quat0 = streamer._arrays["object_quat_w"][0].astype(np.float32)  # (4,) wxyz
+        print(f"[object] parquet has pose data — will override after each reset: "
+              f"pos={_obj_pos0.round(4).tolist()}  quat={_obj_quat0.round(4).tolist()}")
+    else:
+        _obj_pos0 = _obj_quat0 = None
+        print("[object] no object_pos_w in parquet — bottle position uses env motion_ids (random)")
+
     for ep in range(args.num_episodes):
         print(f"\n[episode {ep}]")
         obs, info = env.reset()
-        env.step(zero_action)   # warm-up camera buffer
+
+        # Override bottle position from parquet frame 0 so the robot always
+        # faces the same object regardless of which motion_id the env drew.
+        # Must happen before warm-up env.step() so the position is propagated.
+        if _parquet_has_object_pose:
+            _obj_asset = env.unwrapped.scene["object"]
+            _obj_pose_t = torch.tensor(
+                np.concatenate([_obj_pos0, _obj_quat0])[None, :],
+                device="cuda:0", dtype=torch.float32,
+            )
+            _obj_asset.write_root_pose_to_sim(
+                _obj_pose_t, env_ids=torch.tensor([0], device="cuda:0")
+            )
+            _obj_asset.write_root_velocity_to_sim(
+                torch.zeros((1, 6), device="cuda:0"),
+                env_ids=torch.tensor([0], device="cuda:0"),
+            )
+            print(f"[object] position set to {_obj_pos0.round(4).tolist()}")
+
+        env.step(zero_action)   # warm-up camera buffer + propagates object pose override
         _APP.update()           # flush warm-up render to annotators
         _APP.update()
         history.reset()
