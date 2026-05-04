@@ -636,6 +636,9 @@ def _inject_cameras(env_cfg) -> None:
 # Position diagnostic overlay.
 # =========================================================================
 
+_overlay_printed = False
+
+
 def _draw_pos_diff_overlay(
     frame: np.ndarray,
     pos_diff: np.ndarray,
@@ -647,42 +650,52 @@ def _draw_pos_diff_overlay(
 
     ``pos_diff = actual - expected`` where expected is the parquet position
     translated into the eval frame via the episode-start origin offset.
-    Color-codes the horizontal error: green < 10 cm, yellow < 30 cm, red ≥ 30 cm.
+    Color-codes the horizontal error (BGR): green < 10 cm, yellow < 30 cm, red ≥ 30 cm.
+    Frame is assumed RGB (Isaac Lab convention); cv2 treats it as BGR so channel
+    order matters for hue — green is symmetric and unaffected.
     """
-    out = frame.copy()
-    w = out.shape[1]
+    global _overlay_printed
+    if not _overlay_printed:
+        print(f"[overlay] _draw_pos_diff_overlay called at step {step} — frame shape {frame.shape} dtype {frame.dtype}")
+        _overlay_printed = True
+
+    out = np.ascontiguousarray(frame.copy())
+    h, w = out.shape[:2]
     dx, dy, dz = float(pos_diff[0]), float(pos_diff[1]), float(pos_diff[2])
     dist_xy = float(np.sqrt(dx * dx + dy * dy))
 
+    # BGR colors (frame is RGB from Isaac Lab, so R↔B are swapped vs what you'd expect)
     if dist_xy < 0.10:
-        err_color = (80, 220, 80)    # BGR green
+        err_color = (80, 220, 80)    # green (symmetric — looks right either way)
     elif dist_xy < 0.30:
-        err_color = (50, 200, 255)   # BGR yellow
+        err_color = (50, 200, 255)   # BGR yellow (R=255,G=200,B=50 in RGB = yellowish)
     else:
-        err_color = (80, 80, 255)    # BGR red
+        err_color = (80, 80, 255)    # BGR red (R=255,G=80,B=80 in RGB)
 
-    scale = max(0.40, min(0.60, w / 1280.0 * 0.55))
-    thick = max(1, round(w / 1280))
+    scale = max(0.6, min(1.2, w / 1280.0 * 1.0))
+    thick = max(1, round(w / 800))
     font  = cv2.FONT_HERSHEY_SIMPLEX
-    pad   = 10
-    line_h = int(26 * scale / 0.50)
+    pad   = 14
+    line_h = int(36 * scale / 0.60)
 
     lines: list[tuple[str, tuple[int, int, int]]] = [
         (f"Step {step:4d}   |dXY| = {dist_xy:.3f} m", err_color),
-        (f"dX={dx:+.3f}  dY={dy:+.3f}  dZ={dz:+.3f}", (200, 200, 200)),
-        (f"exp [{expected[0]:+.3f}, {expected[1]:+.3f}, {expected[2]:+.3f}]", (255, 150, 150)),  # BGR light blue
-        (f"act [{actual[0]:+.3f}, {actual[1]:+.3f}, {actual[2]:+.3f}]",       (150, 255, 150)),  # BGR light green
+        (f"dX={dx:+.3f}  dY={dy:+.3f}  dZ={dz:+.3f}", (220, 220, 220)),
+        (f"exp [{expected[0]:+.3f}, {expected[1]:+.3f}, {expected[2]:+.3f}]", (255, 160, 100)),
+        (f"act [{actual[0]:+.3f}, {actual[1]:+.3f}, {actual[2]:+.3f}]",       (100, 255, 140)),
     ]
 
-    box_w = int(max(len(t) for t, _ in lines) * scale * 12) + pad * 2
+    box_w = int(max(len(t) for t, _ in lines) * scale * 13) + pad * 2
     box_h = len(lines) * line_h + pad * 2
-    overlay = out.copy()
-    cv2.rectangle(overlay, (pad, pad), (pad + box_w, pad + box_h), (0, 0, 0), -1)
-    out = cv2.addWeighted(overlay, 0.55, out, 0.45, 0)
+
+    # Solid opaque black background — guaranteed contrast regardless of scene brightness.
+    cv2.rectangle(out, (pad, pad), (pad + box_w, pad + box_h), (0, 0, 0), -1)
 
     y = pad + line_h
     for text, color in lines:
-        cv2.putText(out, text, (pad + 6, y), font, scale, color, thick, cv2.LINE_AA)
+        # Draw black outline first for contrast on any background
+        cv2.putText(out, text, (pad + 6, y), font, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
+        cv2.putText(out, text, (pad + 6, y), font, scale, color,     thick,     cv2.LINE_AA)
         y += line_h
 
     return out
@@ -1108,12 +1121,19 @@ def main() -> int:
             # Compute expected root position (parquet trajectory translated to eval frame)
             # for the diagnostic overlay.  root_pos_w is the actual pos read just above.
             _diag_overlay_args: tuple | None = None
-            if args.overlay and _diag_has_root_pos and _diag_parquet_origin is not None and _diag_eval_origin is not None:
-                _pf = min(step, streamer.n_frames - 1)
-                _expected_pos = _diag_eval_origin + (
-                    streamer._arrays["root_pos_w"][_pf] - _diag_parquet_origin
-                )
-                _diag_overlay_args = (root_pos_w - _expected_pos, _expected_pos, root_pos_w)
+            if args.overlay:
+                if not _diag_has_root_pos:
+                    if step == 0:
+                        print("[overlay] SKIPPED — parquet has no root_pos_w column")
+                elif _diag_parquet_origin is None or _diag_eval_origin is None:
+                    if step == 0:
+                        print(f"[overlay] SKIPPED — origins not set  parquet_origin={_diag_parquet_origin}  eval_origin={_diag_eval_origin}")
+                else:
+                    _pf = min(step, streamer.n_frames - 1)
+                    _expected_pos = _diag_eval_origin + (
+                        streamer._arrays["root_pos_w"][_pf] - _diag_parquet_origin
+                    )
+                    _diag_overlay_args = (root_pos_w - _expected_pos, _expected_pos, root_pos_w)
 
             if writers:
                 _prev_frame = getattr(main, "_prev_cam_frame", {})
