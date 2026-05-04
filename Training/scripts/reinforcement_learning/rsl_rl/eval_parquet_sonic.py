@@ -653,11 +653,11 @@ def _draw_pos_diff_overlay(
     dist_xy = float(np.sqrt(dx * dx + dy * dy))
 
     if dist_xy < 0.10:
-        err_color = (80, 220, 80)
+        err_color = (80, 220, 80)    # BGR green
     elif dist_xy < 0.30:
-        err_color = (255, 200, 50)
+        err_color = (50, 200, 255)   # BGR yellow
     else:
-        err_color = (255, 80, 80)
+        err_color = (80, 80, 255)    # BGR red
 
     scale = max(0.40, min(0.60, w / 1280.0 * 0.55))
     thick = max(1, round(w / 1280))
@@ -668,15 +668,15 @@ def _draw_pos_diff_overlay(
     lines: list[tuple[str, tuple[int, int, int]]] = [
         (f"Step {step:4d}   |dXY| = {dist_xy:.3f} m", err_color),
         (f"dX={dx:+.3f}  dY={dy:+.3f}  dZ={dz:+.3f}", (200, 200, 200)),
-        (f"exp [{expected[0]:+.3f}, {expected[1]:+.3f}, {expected[2]:+.3f}]", (150, 150, 255)),
-        (f"act [{actual[0]:+.3f}, {actual[1]:+.3f}, {actual[2]:+.3f}]",       (150, 255, 150)),
+        (f"exp [{expected[0]:+.3f}, {expected[1]:+.3f}, {expected[2]:+.3f}]", (255, 150, 150)),  # BGR light blue
+        (f"act [{actual[0]:+.3f}, {actual[1]:+.3f}, {actual[2]:+.3f}]",       (150, 255, 150)),  # BGR light green
     ]
 
     box_w = int(max(len(t) for t, _ in lines) * scale * 12) + pad * 2
     box_h = len(lines) * line_h + pad * 2
     overlay = out.copy()
     cv2.rectangle(overlay, (pad, pad), (pad + box_w, pad + box_h), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.55, out, 0.45, 0, out)
+    out = cv2.addWeighted(overlay, 0.55, out, 0.45, 0)
 
     y = pad + line_h
     for text, color in lines:
