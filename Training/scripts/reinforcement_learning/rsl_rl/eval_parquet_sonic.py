@@ -66,6 +66,8 @@ def _parse_cli() -> argparse.ArgumentParser:
                         default="../../GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx")
     parser.add_argument("--record-video", default=None,
                         help="Output prefix. Saves _third_person.mp4, _ego.mp4, _vla_skeleton.mp4.")
+    parser.add_argument("--overlay", action="store_true",
+                        help="Burn expected-vs-actual root position diff overlay into recorded video frames.")
     parser.add_argument("--video-fps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--speed-scale", type=float, default=1.0,
@@ -1106,7 +1108,7 @@ def main() -> int:
             # Compute expected root position (parquet trajectory translated to eval frame)
             # for the diagnostic overlay.  root_pos_w is the actual pos read just above.
             _diag_overlay_args: tuple | None = None
-            if _diag_has_root_pos and _diag_parquet_origin is not None and _diag_eval_origin is not None:
+            if args.overlay and _diag_has_root_pos and _diag_parquet_origin is not None and _diag_eval_origin is not None:
                 _pf = min(step, streamer.n_frames - 1)
                 _expected_pos = _diag_eval_origin + (
                     streamer._arrays["root_pos_w"][_pf] - _diag_parquet_origin
