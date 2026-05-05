@@ -866,7 +866,31 @@ def main() -> int:
             )
             print(f"[object] position set to {_eval_bottle_pos.round(4).tolist()}")
 
-        env.step(zero_action)   # warm-up camera buffer + propagates object pose override
+        # Override the robot's spawn heading to match the collection run's initial heading.
+        # The env assigns a random motion_id at reset, which may produce a different yaw
+        # than the collection robot had.  Because the planner uses world-frame absolute
+        # facing/movement commands (from the parquet), a heading mismatch does not simply
+        # cause a self-correcting locomotion deviation — it also rotates the anchor frame
+        # used by the UTM encoder to interpret VR 3-point arm targets.  The arm targets
+        # are stored relative to the collection anchor orientation, so a mismatched anchor
+        # causes the arms to reach in the wrong world direction throughout the episode.
+        # Fix: keep the eval spawn XY position, replace only the yaw with the collection yaw.
+        _facing0 = streamer._arrays["planner_facing"][0]   # world-frame [x, y, 0] at frame 0
+        _yaw_collection = float(np.arctan2(float(_facing0[1]), float(_facing0[0])))
+        _qc_xyzw = R.from_euler("z", _yaw_collection).as_quat()  # (x,y,z,w)
+        _qc_wxyz = np.array([_qc_xyzw[3], _qc_xyzw[0], _qc_xyzw[1], _qc_xyzw[2]], dtype=np.float32)
+        _spawn_pos_w = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
+        robot.write_root_pose_to_sim(
+            torch.tensor(np.concatenate([_spawn_pos_w, _qc_wxyz])[None, :],
+                         device="cuda:0", dtype=torch.float32),
+            env_ids=torch.tensor([0], device="cuda:0"),
+        )
+        robot.write_root_velocity_to_sim(
+            torch.zeros((1, 6), device="cuda:0"), env_ids=torch.tensor([0], device="cuda:0")
+        )
+        print(f"[heading] collection yaw={np.degrees(_yaw_collection):.1f}° — robot heading overridden")
+
+        env.step(zero_action)   # warm-up camera buffer + propagates object pose and heading overrides
         _APP.update()           # flush warm-up render to annotators
         _APP.update()
         history.reset()
