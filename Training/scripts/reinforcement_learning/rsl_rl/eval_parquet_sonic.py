@@ -957,12 +957,19 @@ def main() -> int:
             _qpos_30hz   = cached_planner_out.mujoco_qpos[0]             # (N, 36) native 30Hz
             anchor_pos_w     = _qpos_30hz[0, PLANNER_ROOT_POS_SLICE].copy()
             anchor_quat_wxyz = _qpos_30hz[0, PLANNER_ROOT_QUAT_SLICE].copy()
-            _R_robot  = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
-            _R_anchor = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
-            _R_rel_mat = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
-            # C++ row-wise rot6d for motion_anchor_orientation: flatten('C'), identity → [1,0,0,1,0,0].
-            # flatten('F') (col-major, SONIC VR convention) is WRONG here — see eval_vla_sonic.py:803.
-            anchor_rot6d = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
+            # anchor_rot6d is always identity: we define anchor = actual robot frame.
+            #
+            # Why: the planner context is updated from the planner's own previous output
+            # (open-loop, lines 907-916), so the planner's predicted heading slowly drifts
+            # away from the robot's actual heading.  Using (_R_robot.inv() * _R_anchor) would
+            # encode this drift as a non-identity rotation, which the UTM encoder interprets
+            # as "the body needs to rotate to align with the anchor" — causing the decoder to
+            # emit oscillating waist_yaw commands at the replan frequency.  During SONIC
+            # training the planner was always closed-loop (tracked actual robot state), so
+            # anchor_rot6d was always ≈ identity; forcing identity here restores that
+            # invariant.  The VR 3-pt targets are unaffected (already in pelvis-local frame).
+            # C++ row-wise rot6d convention: identity → [1,0,0,1,0,0].
+            anchor_rot6d = np.array([1., 0., 0., 1., 0., 0.], dtype=np.float32)
             # Lower-body trajectory: 10 frames at 5-frame step from native 30Hz output.
             _enc_lb_idx = list(range(0, 50, 5))   # [0, 5, 10, ..., 45]
             _n30  = _qpos_30hz.shape[0]
