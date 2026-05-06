@@ -936,6 +936,14 @@ def main() -> int:
                 # from the parquet chunk and sets it correctly.
                 _p0 = min(int(_pidx_f), streamer.n_frames - 1)
                 planner_inputs.mode = np.array([_get_planner_mode(streamer, _p0)], dtype=np.int64)
+                # build_planner_inputs zeroes movement_direction when speed_to_mode returns 0
+                # (IDLE). If the mode override makes the mode non-zero (e.g., explicit
+                # planner_mode column has SLOW_WALK at low speed), movement_direction would
+                # remain zero and the planner falls back to facing_direction → robot walks
+                # straight. Fix: for any non-idle mode, equate movement_direction with
+                # facing_direction so the robot moves where it faces.
+                if int(planner_inputs.mode.flat[0]) != 0:
+                    planner_inputs.movement_direction = planner_inputs.facing_direction.copy()
                 if args.speed_scale != 1.0:
                     planner_inputs.target_vel = (planner_inputs.target_vel * args.speed_scale).astype(np.float32)
                 cached_planner_out = planner.run(**planner_inputs.as_kwargs())
