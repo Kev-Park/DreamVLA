@@ -940,10 +940,17 @@ def main() -> int:
                 # (IDLE). If the mode override makes the mode non-zero (e.g., explicit
                 # planner_mode column has SLOW_WALK at low speed), movement_direction would
                 # remain zero and the planner falls back to facing_direction → robot walks
-                # straight. Fix: for any non-idle mode, equate movement_direction with
-                # facing_direction so the robot moves where it faces.
+                # straight. Fix: restore the actual parquet movement vector (horizontal,
+                # unit-normalised) so the planner receives the true lateral offset.
                 if int(planner_inputs.mode.flat[0]) != 0:
-                    planner_inputs.movement_direction = planner_inputs.facing_direction.copy()
+                    _raw_mvmt = np.asarray(_replan_chunk["planner_movement"], dtype=np.float32)[0, 0]  # (3,)
+                    _mvmt_xy = np.array([_raw_mvmt[0], _raw_mvmt[1], 0.0], dtype=np.float32)
+                    _mvmt_norm = float(np.linalg.norm(_mvmt_xy[:2]))
+                    if _mvmt_norm > 1e-6:
+                        _mvmt_xy[:2] /= _mvmt_norm
+                        planner_inputs.movement_direction = _mvmt_xy.reshape(1, 3)
+                    else:
+                        planner_inputs.movement_direction = planner_inputs.facing_direction.copy()
                 if args.speed_scale != 1.0:
                     planner_inputs.target_vel = (planner_inputs.target_vel * args.speed_scale).astype(np.float32)
                 cached_planner_out = planner.run(**planner_inputs.as_kwargs())
