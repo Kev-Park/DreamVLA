@@ -733,47 +733,41 @@ def main() -> int:
     )
     if _parquet_has_object_pose:
         _obj_quat0 = streamer._arrays["object_quat_w"][0].astype(np.float32)  # (4,) wxyz
-        print(f"[object] parquet has pose data  quat={_obj_quat0.round(4).tolist()}")
+        _obj_pos0  = streamer._arrays["object_pos_w"][0].astype(np.float32)   # (3,) world XYZ
+        print(f"[object] parquet has pose data  pos={_obj_pos0.round(4).tolist()}  "
+              f"quat={_obj_quat0.round(4).tolist()}")
     else:
         _obj_quat0 = None
+        _obj_pos0  = None
         print("[object] no object_pos_w in parquet — bottle position uses env motion_ids (random)")
 
-    # Pre-compute the bottle's offset from the collection-run robot start.
-    # The env spawns the robot at the motion-library reference for a randomly drawn
-    # motion_id, which is different from the collection's motion_id.  Using the
-    # parquet's absolute object_pos_w directly would misplace the bottle relative to
-    # the robot.  Instead we preserve the robot-to-bottle spatial relationship:
-    #   eval_bottle_pos = eval_robot_spawn + (collection_bottle - collection_robot_start)
-    _bottle_offset_from_robot: np.ndarray | None = None
-    if _parquet_has_object_pose and _has_root_pos_w:
-        _bottle_offset_from_robot = (
-            streamer._arrays["object_pos_w"][0].astype(np.float32)
-            - streamer._arrays["root_pos_w"][0].astype(np.float32)
-        )
-        print(f"[object] robot-relative offset from collection: "
-              f"{_bottle_offset_from_robot.round(4).tolist()}")
-        print("[object] bottle placed relative to eval robot spawn each episode")
-    elif _parquet_has_object_pose:
-        print("[object] no root_pos_w — bottle placed at absolute parquet position (may be misaligned)")
+    # The bottle and kitchen are fixed-world-frame assets: the kitchen is always at
+    # (2.04, 1.0, 0.0) and the bottle rests on its counter.  The correct eval bottle
+    # position is therefore the collection's ABSOLUTE world position (object_pos_w[0]),
+    # not a robot-relative offset.  A robot-relative offset would drift whenever the
+    # eval robot spawns at a different XY than the collection robot, causing the bottle
+    # to float in mid-air rather than rest on the counter.
+    #
+    # For the same reason the robot itself is restored to the collection's exact spawn
+    # position (root_pos_w[0] + collection heading): this ensures the kitchen, the
+    # bottle, and the VR arm targets all land in the correct world geometry.
+    if _has_root_pos_w:
+        _collection_robot_pos0 = streamer._arrays["root_pos_w"][0].astype(np.float32)
+        print(f"[spawn] collection robot spawn: {_collection_robot_pos0.round(4).tolist()}")
+    else:
+        _collection_robot_pos0 = None
+        print("[spawn] no root_pos_w in parquet — robot spawn XY uses env motion_id")
 
     for ep in range(args.num_episodes):
         print(f"\n[episode {ep}]")
         obs, info = env.reset()
 
-        # Place bottle at the correct position relative to the eval robot spawn.
+        # Place bottle at the collection's absolute world position.
         # Must happen before warm-up env.step() so the position is propagated.
         if _parquet_has_object_pose:
             _obj_asset = env.unwrapped.scene["object"]
-            if _bottle_offset_from_robot is not None:
-                # Anchor the parquet robot-to-bottle offset to this episode's actual
-                # robot spawn position so the geometry matches the collection run.
-                _rp_reset = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
-                _eval_bottle_pos = (_rp_reset + _bottle_offset_from_robot).astype(np.float32)
-            else:
-                # Fallback: absolute parquet position (misaligned if spawn differs).
-                _eval_bottle_pos = streamer._arrays["object_pos_w"][0].astype(np.float32)
             _obj_pose_t = torch.tensor(
-                np.concatenate([_eval_bottle_pos, _obj_quat0])[None, :],
+                np.concatenate([_obj_pos0, _obj_quat0])[None, :],
                 device="cuda:0", dtype=torch.float32,
             )
             _obj_asset.write_root_pose_to_sim(
@@ -783,22 +777,25 @@ def main() -> int:
                 torch.zeros((1, 6), device="cuda:0"),
                 env_ids=torch.tensor([0], device="cuda:0"),
             )
-            print(f"[object] position set to {_eval_bottle_pos.round(4).tolist()}")
+            print(f"[object] position set to {_obj_pos0.round(4).tolist()}")
 
-        # Override the robot's spawn heading to match the collection run's initial heading.
-        # The env assigns a random motion_id at reset, which may produce a different yaw
-        # than the collection robot had.  Because the planner uses world-frame absolute
-        # facing/movement commands (from the parquet), a heading mismatch does not simply
-        # cause a self-correcting locomotion deviation — it also rotates the anchor frame
-        # used by the UTM encoder to interpret VR 3-point arm targets.  The arm targets
-        # are stored relative to the collection anchor orientation, so a mismatched anchor
-        # causes the arms to reach in the wrong world direction throughout the episode.
-        # Fix: keep the eval spawn XY position, replace only the yaw with the collection yaw.
-        _facing0 = streamer._arrays["planner_facing"][0]   # world-frame [x, y, 0] at frame 0
+        # Restore the robot's exact collection spawn: absolute XY position + collection heading.
+        # The env assigns a random motion_id at reset, which may place the robot at a different
+        # world XY than the collection.  This matters for two reasons:
+        #   1. The kitchen and bottle are world-fixed assets; a mismatched robot XY puts the
+        #      kitchen counter at the wrong relative position, making the bottle float or clip.
+        #   2. The VR 3-point anchor frame is robot-relative; an XY offset that also shifts the
+        #      heading would make arm targets land in the wrong world direction.
+        # Fix: restore both the collection's world XY/Z (from root_pos_w[0]) and heading (from
+        # planner_facing[0]).  If root_pos_w is absent, fall back to heading-only override.
+        _facing0 = streamer._arrays["planner_facing"][0]   # world-frame [x, y, ~0] at frame 0
         _yaw_collection = float(np.arctan2(float(_facing0[1]), float(_facing0[0])))
-        _qc_xyzw = R.from_euler("z", _yaw_collection).as_quat()  # (x,y,z,w)
+        _qc_xyzw = R.from_euler("z", _yaw_collection).as_quat()  # (x,y,z,w) scipy convention
         _qc_wxyz = np.array([_qc_xyzw[3], _qc_xyzw[0], _qc_xyzw[1], _qc_xyzw[2]], dtype=np.float32)
-        _spawn_pos_w = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
+        if _collection_robot_pos0 is not None:
+            _spawn_pos_w = _collection_robot_pos0          # exact collection XY + Z
+        else:
+            _spawn_pos_w = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
         robot.write_root_pose_to_sim(
             torch.tensor(np.concatenate([_spawn_pos_w, _qc_wxyz])[None, :],
                          device="cuda:0", dtype=torch.float32),
@@ -807,7 +804,8 @@ def main() -> int:
         robot.write_root_velocity_to_sim(
             torch.zeros((1, 6), device="cuda:0"), env_ids=torch.tensor([0], device="cuda:0")
         )
-        print(f"[heading] collection yaw={np.degrees(_yaw_collection):.1f}° — robot heading overridden")
+        print(f"[spawn] robot restored to collection pos={_spawn_pos_w.round(4).tolist()} "
+              f"yaw={np.degrees(_yaw_collection):.1f}°")
 
         env.step(zero_action)   # warm-up camera buffer + propagates object pose and heading overrides
         _APP.update()           # flush warm-up render to annotators
