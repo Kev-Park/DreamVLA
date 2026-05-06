@@ -821,14 +821,11 @@ def main() -> int:
         _rp_b = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
         _rq_b = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)
         planner_context = _make_robot_planner_context(_rp_b, _rq_b, _qm_b)
-        # apply_delta_heading: aligns the planner's identity-normalized local frame
-        # into the robot's actual world frame, matching C++ ComputeApplyDeltaHeading:
-        #   apply_delta_heading = R(robot_init_yaw) × inv(R(ref_init_yaw=identity))
-        #                       = R(robot_init_yaw)
-        # Stored once per episode; used every step to bring anchor_quat from
-        # planner-local into world frame before computing motion_anchor_orientation.
-        _init_yaw = R.from_quat(quat_wxyz_to_xyzw(_rq_b)).as_euler("zyx")[0]
-        _R_apply_delta_heading = R.from_euler("z", _init_yaw)
+        # The planner is seeded with identity quaternion (see _make_robot_planner_context),
+        # so its output quaternions are in a local frame where the robot starts facing +X.
+        # To bring planner anchor_quat into world frame before computing motion_anchor_orientation,
+        # we rotate by the robot's full initial world orientation (not yaw-only).
+        _R_robot_init = R.from_quat(quat_wxyz_to_xyzw(_rq_b))
 
         # Pre-fill decoder history with 10 frames of initial robot state.
         # Without pre-seeding, the decoder's zero history has no gait phase signal,
@@ -965,21 +962,13 @@ def main() -> int:
             _qpos_30hz   = cached_planner_out.mujoco_qpos[0]             # (N, 36) native 30Hz
             anchor_pos_w     = _qpos_30hz[0, PLANNER_ROOT_POS_SLICE].copy()
             anchor_quat_wxyz = _qpos_30hz[0, PLANNER_ROOT_QUAT_SLICE].copy()
-            # motion_anchor_orientation: matches C++ GatherMotionAnchorOrientationMutiFrame.
-            # Step 1 — bring planner anchor from local frame to world frame (C++ new_ref_root_rot):
-            #   _anchor_world = apply_delta_heading × anchor_local
-            #                 = R(robot_init_yaw) × anchor_local
-            # Step 2 — compute relative rotation using heading-only robot orientation
-            # (C++ orientation_mode=1, calc_heading_quat strips pitch/roll from base_quat):
-            #   motion_anchor_orientation = inv(R_robot_yaw_live) × _anchor_world
-            # Without step 1 the code mixed world-frame _R_robot with local-frame _R_anchor,
-            # encoding the full initial heading offset R(-θ) as a permanent "error" that
-            # the encoder tried to correct every step → oscillating waist_yaw.
-            _anchor_world  = _R_apply_delta_heading * R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
-            _robot_yaw     = R.from_euler("z", R.from_quat(quat_wxyz_to_xyzw(root_quat_w)).as_euler("zyx")[0])
-            _R_rel_mat     = (_robot_yaw.inv() * _anchor_world).as_matrix().astype(np.float32)
-            # C++ row-wise rot6d: first 2 columns of R, flattened row-major → identity = [1,0,0,1,0,0].
-            anchor_rot6d = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
+            # motion_anchor_orientation: planner outputs in its local frame (seeded with identity).
+            # Bring to world frame via _R_robot_init, then compute relative to current robot.
+            # Mirrors eval_sonic_control.py: (_R_robot.inv() * _R_ref) with both in world frame.
+            _R_robot      = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
+            _anchor_world = _R_robot_init * R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
+            _R_rel_mat    = (_R_robot.inv() * _anchor_world).as_matrix().astype(np.float32)
+            anchor_rot6d  = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
             # Lower-body trajectory: 10 frames at 5-frame step from native 30Hz output.
             _enc_lb_idx = list(range(0, 50, 5))   # [0, 5, 10, ..., 45]
             _n30  = _qpos_30hz.shape[0]
