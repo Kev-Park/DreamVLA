@@ -122,6 +122,7 @@ from vla_sonic import (  # noqa: E402
     build_decoder_obs,
     build_encoder_obs,
     build_planner_inputs,
+    rot6d_to_quat_wxyz,
     utm_plus_vla_to_env_action,
 )
 from scipy.spatial.transform import Rotation as R  # noqa: E402
@@ -130,7 +131,11 @@ from vla_sonic.action_assembler import (  # noqa: E402
     G1_DEFAULT_ANGLES_SONIC,
     MUJOCO_TO_ISAACLAB,
 )
-from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
+from vla_sonic.frame_transforms import (  # noqa: E402
+    quat_wxyz_to_xyzw,
+    world_to_anchor_local_position,
+    world_to_anchor_local_orientation,
+)
 
 
 # =========================================================================
@@ -253,23 +258,24 @@ def extract_vr_3pt(
 
 # Parquet column → vla_chunk key.  All values are (B=1, T=chunk_size, D).
 _PARQUET_COL_MAP: dict[str, tuple[str, type]] = {
-    "teleop.planner_movement":   ("planner_movement",   np.float32),  # (3,)
-    "teleop.planner_facing":     ("planner_facing",     np.float32),  # (3,)
-    "teleop.planner_speed":      ("planner_speed",      np.float32),  # (1,)
-    "teleop.planner_height":     ("planner_height",     np.float32),  # (1,)
-    "teleop.vr_3pt_position":    ("vr_3pt_position",    np.float32),  # (9,)
-    "teleop.vr_3pt_orientation": ("vr_3pt_orientation", np.float32),  # (18,)
-    "teleop.left_hand_joints":   ("left_hand_joints",   np.float32),  # (7,)
-    "teleop.right_hand_joints":  ("right_hand_joints",  np.float32),  # (7,)
+    "teleop.planner_movement":      ("planner_movement",   np.float32),  # (3,)
+    "teleop.planner_facing":        ("planner_facing",     np.float32),  # (3,)
+    "teleop.planner_speed":         ("planner_speed",      np.float32),  # (1,)
+    "teleop.planner_height":        ("planner_height",     np.float32),  # (1,)
+    "teleop.planner_mode":          ("planner_mode",       np.int32),    # (1,) derived in converter
+    "teleop.vr_3pt_position":       ("vr_3pt_position",    np.float32),  # (9,) world-frame in new schema
+    "teleop.vr_3pt_orientation":    ("vr_3pt_orientation", np.float32),  # (18,) world-frame rot6d
+    "teleop.left_hand_joints":      ("left_hand_joints",   np.float32),  # (7,)
+    "teleop.right_hand_joints":     ("right_hand_joints",  np.float32),  # (7,)
+    # Canonical root orientation (wxyz float64) — used for spawn heading extraction.
+    "observation.root_orientation": ("root_orientation",   np.float64),  # (4,)
+    # Absolute robot position in the collection world frame.
+    "teleop.root_pos_w":            ("root_pos_w",         np.float32),  # (3,)
 }
 
 # Optional columns — loaded when present, ignored when absent.
 _PARQUET_OPT_MAP: dict[str, tuple[str, type]] = {
-    "teleop.planner_mode": ("planner_mode", np.int64),    # explicit mode int
-    "teleop.run":          ("run",          np.float32),  # boolean RUN override
-    # Absolute robot position in the collection world frame.  Used to compute the
-    # robot-relative bottle offset so the object spawns in the correct relative position.
-    "teleop.root_pos_w":    ("root_pos_w",    np.float32),
+    "teleop.run":           ("run",           np.float32),  # legacy compat
     # Object (mustard bottle) world pose at each frame.  Used after env.reset() to place
     # the object at the exact collection position rather than relying on random motion_ids.
     "teleop.object_pos_w":  ("object_pos_w",  np.float32),
@@ -786,10 +792,10 @@ def main() -> int:
         #      kitchen counter at the wrong relative position, making the bottle float or clip.
         #   2. The VR 3-point anchor frame is robot-relative; an XY offset that also shifts the
         #      heading would make arm targets land in the wrong world direction.
-        # Fix: restore both the collection's world XY/Z (from root_pos_w[0]) and heading (from
-        # planner_facing[0]).  If root_pos_w is absent, fall back to heading-only override.
-        _facing0 = streamer._arrays["planner_facing"][0]   # world-frame [x, y, ~0] at frame 0
-        _yaw_collection = float(np.arctan2(float(_facing0[1]), float(_facing0[0])))
+        # Fix: restore both the collection's world XY/Z (from root_pos_w[0]) and heading yaw
+        # (from observation.root_orientation[0]).
+        _root_quat0 = streamer._arrays["root_orientation"][0].astype(np.float32)  # wxyz at frame 0
+        _yaw_collection = float(R.from_quat(quat_wxyz_to_xyzw(_root_quat0)).as_euler("zyx")[0])
         _qc_xyzw = R.from_euler("z", _yaw_collection).as_quat()  # (x,y,z,w) scipy convention
         _qc_wxyz = np.array([_qc_xyzw[3], _qc_xyzw[0], _qc_xyzw[1], _qc_xyzw[2]], dtype=np.float32)
         if _collection_robot_pos0 is not None:
@@ -997,11 +1003,25 @@ def main() -> int:
             lb_pos = _lb_all[_enc_lb_idx]   # (10, 12)
             lb_vel = _vel_all[_enc_lb_idx]  # (10, 12)
 
-            # 7e. VR 3-point from parquet (already in pelvis-local / anchor-local frame).
-            # collect_pick_cam.py applies subtract_frame_transforms() before HDF5 storage;
-            # scripts_convert_isaac_hdf5_to_lerobot.py passes positions through unchanged.
-            # Applying a world→anchor transform here is a double-transform → instant ragdoll.
-            vr_pos_anchor_local, vr_rot6d_anchor_local = extract_vr_3pt(parquet_frame, t_index=0)
+            # 7e. VR 3-point: new SONIC schema stores world-frame positions/orientations
+            # (convert_isaac_hdf5_to_lerobot.py applies SE3 local offsets in world frame).
+            # Convert to pelvis-local frame using the live robot root pose, matching the
+            # convention used during training (VR stored relative to actual pelvis at each step).
+            _vr_pos_world, _vr_rot6d_world = extract_vr_3pt(parquet_frame, t_index=0)
+            _vr_pts_w = _vr_pos_world.reshape(3, 3)  # 3 tracked points, each (x,y,z)
+            vr_pos_anchor_local = np.concatenate([
+                world_to_anchor_local_position(_vr_pts_w[0], root_pos_w, root_quat_w),
+                world_to_anchor_local_position(_vr_pts_w[1], root_pos_w, root_quat_w),
+                world_to_anchor_local_position(_vr_pts_w[2], root_pos_w, root_quat_w),
+            ]).astype(np.float32)
+            _vr_orn_w = _vr_rot6d_world.reshape(3, 6)  # 3 × rot6d (column convention)
+            _vr_orn_local_parts: list[np.ndarray] = []
+            for _r6d_w in _vr_orn_w:
+                _q_wxyz_w = rot6d_to_quat_wxyz(_r6d_w)
+                _q_wxyz_l = world_to_anchor_local_orientation(_q_wxyz_w, root_quat_w)
+                _R_l = R.from_quat(quat_wxyz_to_xyzw(_q_wxyz_l)).as_matrix().astype(np.float32)
+                _vr_orn_local_parts.append(np.concatenate([_R_l[:, 0], _R_l[:, 1]]))
+            vr_rot6d_anchor_local = np.concatenate(_vr_orn_local_parts).astype(np.float32)
 
             # 7e-vis. Skeleton video frame.
             if vla_vis_writer is not None:
