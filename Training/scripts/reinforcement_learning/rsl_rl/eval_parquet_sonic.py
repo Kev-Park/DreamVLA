@@ -122,7 +122,6 @@ from vla_sonic import (  # noqa: E402
     build_decoder_obs,
     build_encoder_obs,
     build_planner_inputs,
-    rot6d_to_quat_wxyz,
     utm_plus_vla_to_env_action,
 )
 from scipy.spatial.transform import Rotation as R  # noqa: E402
@@ -131,11 +130,7 @@ from vla_sonic.action_assembler import (  # noqa: E402
     G1_DEFAULT_ANGLES_SONIC,
     MUJOCO_TO_ISAACLAB,
 )
-from vla_sonic.frame_transforms import (  # noqa: E402
-    quat_wxyz_to_xyzw,
-    world_to_anchor_local_position,
-    world_to_anchor_local_orientation,
-)
+from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
 
 
 # =========================================================================
@@ -1003,25 +998,13 @@ def main() -> int:
             lb_pos = _lb_all[_enc_lb_idx]   # (10, 12)
             lb_vel = _vel_all[_enc_lb_idx]  # (10, 12)
 
-            # 7e. VR 3-point: new SONIC schema stores world-frame positions/orientations
-            # (convert_isaac_hdf5_to_lerobot.py applies SE3 local offsets in world frame).
-            # Convert to pelvis-local frame using the live robot root pose, matching the
-            # convention used during training (VR stored relative to actual pelvis at each step).
-            _vr_pos_world, _vr_rot6d_world = extract_vr_3pt(parquet_frame, t_index=0)
-            _vr_pts_w = _vr_pos_world.reshape(3, 3)  # 3 tracked points, each (x,y,z)
-            vr_pos_anchor_local = np.concatenate([
-                world_to_anchor_local_position(_vr_pts_w[0], root_pos_w, root_quat_w),
-                world_to_anchor_local_position(_vr_pts_w[1], root_pos_w, root_quat_w),
-                world_to_anchor_local_position(_vr_pts_w[2], root_pos_w, root_quat_w),
-            ]).astype(np.float32)
-            _vr_orn_w = _vr_rot6d_world.reshape(3, 6)  # 3 × rot6d (column convention)
-            _vr_orn_local_parts: list[np.ndarray] = []
-            for _r6d_w in _vr_orn_w:
-                _q_wxyz_w = rot6d_to_quat_wxyz(_r6d_w)
-                _q_wxyz_l = world_to_anchor_local_orientation(_q_wxyz_w, root_quat_w)
-                _R_l = R.from_quat(quat_wxyz_to_xyzw(_q_wxyz_l)).as_matrix().astype(np.float32)
-                _vr_orn_local_parts.append(np.concatenate([_R_l[:, 0], _R_l[:, 1]]))
-            vr_rot6d_anchor_local = np.concatenate(_vr_orn_local_parts).astype(np.float32)
+            # 7e. VR 3-point: parquet stores pelvis-local positions/orientations.
+            # collect_pick_cam.py:284-292 applies subtract_frame_transforms() before HDF5
+            # storage, and convert_isaac_hdf5_to_lerobot.py:_apply_local_offset() passes
+            # through (it adds local-frame offsets to the already-pelvis-relative SE3).
+            # build_encoder_obs (planner_to_utm.py:158-163) expects pelvis-local — a
+            # world→anchor transform here is a double-transform → instant ragdoll.
+            vr_pos_anchor_local, vr_rot6d_anchor_local = extract_vr_3pt(parquet_frame, t_index=0)
 
             # 7e-vis. Skeleton video frame.
             if vla_vis_writer is not None:
