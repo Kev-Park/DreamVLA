@@ -1020,10 +1020,15 @@ def main() -> int:
             body_vel_future = None
             anchor_rot6d_future = None
             if _use_ref_bypass:
-                _PARQUET_LB_LOOKAHEAD_IDX_50HZ = np.array(
-                    [0, 8, 17, 25, 33, 42, 50, 58, 67, 75], dtype=np.int64
-                )
-                _PARQUET_LB_STEP_DT = 5.0 / 30.0  # 167 ms — matches planner-path stride
+                # Per SONIC paper Table 3 (line 692): δ_r = δ_b = 0.1s = 100ms for the
+                # robot motion encoder (g1 mode) and hybrid encoder (teleop mode).
+                # N = 10 future frames. So at 50Hz parquet, stride-5 = exactly 100ms.
+                # Earlier 167ms attempt was empirically motivated by the planner-path
+                # but contradicts the encoder's actual training-time hyperparameter,
+                # producing splayed-leg decoder commands consistent with the encoder
+                # reading "joints moving 50% faster than expected".
+                _PARQUET_LB_LOOKAHEAD_IDX_50HZ = np.arange(0, 50, 5, dtype=np.int64)
+                _PARQUET_LB_STEP_DT = 5.0 / 50.0  # 100 ms — matches paper δ_r = 0.1s
                 _N_ref = _ref_qpos_arr.shape[0]
                 _enc_idx_pq = np.clip(step + _PARQUET_LB_LOOKAHEAD_IDX_50HZ, 0, _N_ref - 1)
                 _ref_window = _ref_qpos_arr[_enc_idx_pq]                 # (10, 7+num_joints)
