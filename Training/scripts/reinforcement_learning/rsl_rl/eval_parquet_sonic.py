@@ -1010,10 +1010,14 @@ def main() -> int:
             )
             if _use_ref_bypass:
                 # (B) Reference-motion bypass — same final shape as the planner path.
+                # Column layout: [root_pos(3), root_quat_wxyz(4), joints_gs(num_joints)].
+                # num_joints is robot_model.joint_names length (body + fingers, typically
+                # 29 + 14 = 43). Body joints are the first 29 entries in gear_sonic order,
+                # so slicing [7:7+29] extracts body joints regardless of finger count.
                 _N_ref = _ref_qpos_arr.shape[0]
                 _enc_idx_50hz = np.clip(step + np.arange(0, 50, 5), 0, _N_ref - 1)
-                _ref_window = _ref_qpos_arr[_enc_idx_50hz]               # (10, 36)
-                _joints_gs = _ref_window[:, 7:36]                        # (10, 29) gear_sonic order
+                _ref_window = _ref_qpos_arr[_enc_idx_50hz]               # (10, 7+num_joints)
+                _joints_gs = _ref_window[:, 7:7 + 29]                    # (10, 29) gear_sonic body
                 lb_pos = _joints_gs[:, LOWER_BODY_OBS_STATE_INDICES].astype(np.float32)  # MJ order
                 lb_vel = np.gradient(lb_pos, 5.0 / 50.0, axis=0).astype(np.float32)
                 # Anchor: current frame's reference pose, already in world frame.
