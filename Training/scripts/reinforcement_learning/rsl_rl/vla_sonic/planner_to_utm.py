@@ -112,7 +112,10 @@ for _d in DECODER_LAYOUT:
 # Number of lower-body joints (kept consistent with
 # lower_body_joint_mujoco_order_in_isaaclab_index in the cpp registry).
 N_LOWER_BODY_JOINTS = 12
+N_BODY_JOINTS = 29  # full body (excludes fingers) — used by G1 encoder mode
+ENCODER_MODE_G1 = 0      # mode_id for g1 — full-body lookahead, no VR / SMPL / planner
 ENCODER_MODE_TELEOP = 1  # mode_id for teleop (see observation_config.yaml)
+ENCODER_MODE_SMPL = 2    # mode_id for SMPL whole-body pose
 
 
 def rot6d_to_quat_wxyz(rot6d: np.ndarray) -> np.ndarray:
@@ -199,6 +202,58 @@ def build_encoder_obs(
     rot6d = np.asarray(vr_3pt_rot6d, dtype=np.float32).reshape(3, 6)
     quats_local_wxyz = rot6d_to_quat_wxyz(rot6d).astype(np.float32)  # (3, 4)
     buf[ENCODER_SLICES["vr_3point_local_orn_target"]] = quats_local_wxyz.reshape(-1)
+
+    return buf[None, :]  # (1, 1762)
+
+
+def build_g1_encoder_obs(
+    *,
+    body_positions_future: np.ndarray,   # (10, 29) full body joints, gear_sonic order
+    body_velocities_future: np.ndarray,  # (10, 29) full body joint velocities
+    anchor_rot6d_future: np.ndarray,     # (10, 6) rot6d per lookahead frame (relative
+                                         #         to current robot, same row-major flatten
+                                         #         convention as motion_anchor_orientation)
+) -> np.ndarray:
+    """Assemble the (1, 1762) float32 encoder input for G1 mode (mode_id=0).
+
+    G1 mode is the canonical encoder mode for playing back recorded full-body
+    motions (per gear_sonic_deploy/g1_deploy_onnx_ref.cpp:2384 — all loaded
+    motion files default to encode_mode=0). It bypasses the kinematic planner
+    and SMPL pipelines entirely: the encoder reads the full 29-joint future
+    trajectory directly. Required slots per observation_config.yaml:57-66:
+        - encoder_mode_4 = [0, 0, 0, 0]
+        - motion_joint_positions_10frame_step5     (290 = 10 × 29)
+        - motion_joint_velocities_10frame_step5    (290)
+        - motion_anchor_orientation_10frame_step5  (60  = 10 × 6 rot6d)
+    All other slots zero-filled — the G1-mode branch of the encoder ignores them.
+
+    Use this when WBCBenchmark has a known reference trajectory (from motion_lib
+    or similar). Joint values in body_positions_future must be in MUJOCO-grouped
+    order (the gear_sonic.joint_names body slice — left leg, right leg, waist,
+    left arm, right arm), matching what observation.state stores.
+    """
+    buf = np.zeros((ENCODER_TOTAL_DIM,), dtype=np.float32)
+
+    # encoder_mode_4: [mode_id, 0, 0, 0].
+    buf[ENCODER_SLICES["encoder_mode_4"]] = np.array(
+        [ENCODER_MODE_G1, 0.0, 0.0, 0.0], dtype=np.float32
+    )
+
+    body_pos = np.asarray(body_positions_future, dtype=np.float32).reshape(-1)
+    body_vel = np.asarray(body_velocities_future, dtype=np.float32).reshape(-1)
+    assert body_pos.shape[0] == 290 and body_vel.shape[0] == 290, (
+        f"body tensors must flatten to 290 dims (10 × {N_BODY_JOINTS}); "
+        f"got {body_pos.shape}, {body_vel.shape}"
+    )
+    buf[ENCODER_SLICES["motion_joint_positions_10frame_step5"]] = body_pos
+    buf[ENCODER_SLICES["motion_joint_velocities_10frame_step5"]] = body_vel
+
+    anchor_rot6d = np.asarray(anchor_rot6d_future, dtype=np.float32).reshape(-1)
+    assert anchor_rot6d.shape[0] == 60, (
+        f"anchor_rot6d_future must flatten to 60 dims (10 × 6); "
+        f"got {anchor_rot6d.shape}"
+    )
+    buf[ENCODER_SLICES["motion_anchor_orientation_10frame_step5"]] = anchor_rot6d
 
     return buf[None, :]  # (1, 1762)
 

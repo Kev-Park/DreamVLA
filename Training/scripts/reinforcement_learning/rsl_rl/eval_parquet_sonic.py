@@ -121,6 +121,7 @@ from vla_sonic import (  # noqa: E402
     UtmWrapper,
     build_decoder_obs,
     build_encoder_obs,
+    build_g1_encoder_obs,
     build_planner_inputs,
     utm_plus_vla_to_env_action,
 )
@@ -987,64 +988,71 @@ def main() -> int:
                     print(f"  out[0] root_quat = {out_first[3:7].round(4).tolist()}")
                     print(f"  out[0] legs[:12] = {out_first[7:19].round(4).tolist()}")
 
-            # 7d. Extract anchor + lower-body trajectory.
+            # 7d. Extract anchor + body trajectory for the encoder.
             #
-            # Two sources are supported:
+            # Two paths are supported, switching on whether the parquet carries the
+            # auxiliary motion.reference_qpos column:
             #
-            # (A) PLANNER PATH (default fallback):
-            #   The encoder's motion_*_lowerbody_10frame_step5 slots expect the PLANNER's
-            #   predicted future trajectory — verified against gear_sonic_deploy/g1_deploy_onnx_ref.cpp:
-            #   GatherMotionJointPositionsMultiFrame reads from current_motion_->JointPositions(),
-            #   and in teleop mode current_motion_ points to planner_motion_ (populated by
-            #   planner_sonic.onnx output each control cycle).
-            #   - 10 frames at indices [0, 5, ..., 45] from 30Hz planner output (167ms/step)
+            # (A) PLANNER PATH (TELEOP mode, default fallback):
+            #   Encoder mode 1 (teleop). lb_pos/lb_vel are taken from planner_sonic.onnx
+            #   output, anchor is planner frame 0 (in planner-local frame → world via
+            #   _R_robot_init). 30 Hz stride-5 = 167 ms per encoder frame, 1.5 s lookahead.
+            #   See gear_sonic_deploy/g1_deploy_onnx_ref.cpp:GatherMotionJointPositionsMultiFrame
+            #   for the upstream behavior this mirrors.
             #
-            # (B) REFERENCE-MOTION BYPASS (when motion.reference_qpos is present in parquet):
-            #   Read the kinematic intent the WBC was tracking directly from parquet at
-            #   indices [0, 5, ..., 45] at 50Hz (100ms/step, matching upstream C++). Skips
-            #   the np.gradient + speed_to_mode reconstruction → planner_sonic.onnx step,
-            #   feeding the encoder a less-lossy version of the same trajectory shape.
+            # (B) REFERENCE-MOTION BYPASS (G1 mode):
+            #   Encoder mode 0 (g1). Full-body 29-joint future trajectory + per-frame
+            #   anchor rot6d are read directly from motion.reference_qpos. No planner,
+            #   no VR slots, no lossy command reconstruction. This is the canonical
+            #   encoder mode for playing back recorded full-body motions per
+            #   gear_sonic_deploy/g1_deploy_onnx_ref.cpp:2384 (loaded motions default
+            #   to encode_mode=0). Stride matches the planner path (167 ms) for
+            #   empirical consistency — sampled at parquet indices
+            #   [0, 8, 17, 25, 33, 42, 50, 58, 67, 75] (rounded t·(50/30)).
             _ref_qpos_arr = streamer._arrays.get("reference_qpos")
             _use_ref_bypass = (
                 _ref_qpos_arr is not None
                 and float(np.abs(_ref_qpos_arr[0]).sum()) > 1e-6
             )
+            # body_pos_future / body_vel_future / anchor_rot6d_future are only filled
+            # in the bypass branch — used by build_g1_encoder_obs below.
+            body_pos_future = None
+            body_vel_future = None
+            anchor_rot6d_future = None
             if _use_ref_bypass:
-                # (B) Reference-motion bypass — same final shape as the planner path.
-                # Column layout: [root_pos(3), root_quat_wxyz(4), joints_gs(num_joints)].
-                # num_joints is robot_model.joint_names length (body + fingers, typically
-                # 29 + 14 = 43). Body joints are the first 29 entries in gear_sonic order,
-                # so slicing [7:7+29] extracts body joints regardless of finger count.
-                #
-                # Temporal stride: 30Hz stride-5 = 167ms per encoder frame, 1.5s total
-                # lookahead — matches the planner-path (cached_planner_out.mujoco_qpos is
-                # native 30Hz), which has been empirically verified to produce correct
-                # gait cadence. The parquet is at 50Hz so the indices are rounded from
-                # t·(50/30): [0, 8, 17, 25, 33, 42, 50, 58, 67, 75]. Max per-frame timing
-                # error ≈ 13ms — well below the 167ms stride. (Earlier attempt at 50Hz
-                # stride-5 = 100ms produced walking but with wrong footstep count.)
                 _PARQUET_LB_LOOKAHEAD_IDX_50HZ = np.array(
                     [0, 8, 17, 25, 33, 42, 50, 58, 67, 75], dtype=np.int64
                 )
-                _PARQUET_LB_STEP_DT = 5.0 / 30.0  # 167ms — matches planner-path stride
+                _PARQUET_LB_STEP_DT = 5.0 / 30.0  # 167 ms — matches planner-path stride
                 _N_ref = _ref_qpos_arr.shape[0]
                 _enc_idx_pq = np.clip(step + _PARQUET_LB_LOOKAHEAD_IDX_50HZ, 0, _N_ref - 1)
                 _ref_window = _ref_qpos_arr[_enc_idx_pq]                 # (10, 7+num_joints)
-                _joints_gs = _ref_window[:, 7:7 + 29]                    # (10, 29) gear_sonic body
-                lb_pos = _joints_gs[:, LOWER_BODY_OBS_STATE_INDICES].astype(np.float32)  # MJ order
-                lb_vel = np.gradient(lb_pos, _PARQUET_LB_STEP_DT, axis=0).astype(np.float32)
-                # Anchor: current frame's reference pose, already in world frame.
+                # Full-body 29-joint future for G1 mode's motion_joint_positions_10frame_step5 slot.
+                body_pos_future = _ref_window[:, 7:7 + 29].astype(np.float32)               # (10, 29) MJ-grouped
+                body_vel_future = np.gradient(body_pos_future, _PARQUET_LB_STEP_DT, axis=0).astype(np.float32)
+                # Per-frame anchor rot6d (relative to current robot's world orientation).
+                _R_robot = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
+                anchor_rot6d_future = np.zeros((10, 6), dtype=np.float32)
+                for _k in range(10):
+                    _R_anchor_k = R.from_quat(quat_wxyz_to_xyzw(
+                        _ref_window[_k, 3:7].astype(np.float32)))
+                    _R_rel_k = (_R_robot.inv() * _R_anchor_k).as_matrix().astype(np.float32)
+                    anchor_rot6d_future[_k] = _R_rel_k[:, :2].flatten("C")
+                # Single-frame mirrors of the above — kept for debug prints and so the
+                # visualization writer / VR-passthrough block doesn't need a separate path.
+                lb_pos = body_pos_future[:, LOWER_BODY_OBS_STATE_INDICES]                   # (10, 12) for prints
+                lb_vel = body_vel_future[:, LOWER_BODY_OBS_STATE_INDICES]
                 _anchor_idx = int(np.clip(step, 0, _N_ref - 1))
                 anchor_pos_w     = _ref_qpos_arr[_anchor_idx, 0:3].astype(np.float32)
                 anchor_quat_wxyz = _ref_qpos_arr[_anchor_idx, 3:7].astype(np.float32)
-                _R_robot   = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
-                _R_anchor  = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
-                _R_rel_mat = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
-                anchor_rot6d = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
+                anchor_rot6d     = anchor_rot6d_future[0]
                 if step == 0:
-                    print("[REF-BYPASS @ step 0] using motion.reference_qpos (no planner ONNX for encoder)")
-                    print(f"  anchor_pos_w  = {anchor_pos_w.round(4).tolist()}")
-                    print(f"  anchor_quat   = {anchor_quat_wxyz.round(4).tolist()}")
+                    print("[REF-BYPASS @ step 0] G1 mode: motion.reference_qpos → encoder (no planner, no VR)")
+                    print(f"  anchor_pos_w        = {anchor_pos_w.round(4).tolist()}")
+                    print(f"  anchor_quat         = {anchor_quat_wxyz.round(4).tolist()}")
+                    print(f"  anchor_rot6d[0]     = {anchor_rot6d_future[0].round(4).tolist()}")
+                    print(f"  anchor_rot6d[9]     = {anchor_rot6d_future[9].round(4).tolist()}")
+                    print(f"  body_pos_future[0]  = {body_pos_future[0].round(4).tolist()}")
             else:
                 # (A) Planner path — preserved as fallback for parquets without the auxiliary column.
                 _qpos_30hz   = cached_planner_out.mujoco_qpos[0]             # (N, 36) native 30Hz
@@ -1089,15 +1097,24 @@ def main() -> int:
                 )
 
             # 7f. Encoder → token → decoder → body_29.
-            enc_obs = build_encoder_obs(
-                anchor_pos_world=anchor_pos_w,
-                anchor_quat_wxyz=anchor_quat_wxyz,
-                anchor_rot6d=anchor_rot6d,
-                lower_body_positions_future=lb_pos,
-                lower_body_velocities_future=lb_vel,
-                vr_3pt_position_anchor_local=vr_pos_anchor_local,
-                vr_3pt_rot6d=vr_rot6d_anchor_local,
-            )
+            # Bypass path uses G1 encoder mode (full-body lookahead, no VR/planner slots);
+            # fallback uses TELEOP encoder mode (lower-body + VR + single-frame anchor).
+            if _use_ref_bypass:
+                enc_obs = build_g1_encoder_obs(
+                    body_positions_future=body_pos_future,
+                    body_velocities_future=body_vel_future,
+                    anchor_rot6d_future=anchor_rot6d_future,
+                )
+            else:
+                enc_obs = build_encoder_obs(
+                    anchor_pos_world=anchor_pos_w,
+                    anchor_quat_wxyz=anchor_quat_wxyz,
+                    anchor_rot6d=anchor_rot6d,
+                    lower_body_positions_future=lb_pos,
+                    lower_body_velocities_future=lb_vel,
+                    vr_3pt_position_anchor_local=vr_pos_anchor_local,
+                    vr_3pt_rot6d=vr_rot6d_anchor_local,
+                )
             token = utm.run_encoder({"obs_dict": enc_obs}).reshape(-1)
 
             if step == 0:

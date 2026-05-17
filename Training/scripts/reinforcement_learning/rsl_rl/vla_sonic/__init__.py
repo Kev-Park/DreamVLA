@@ -39,6 +39,7 @@ from .planner_wrapper import PlannerWrapper
 from .utm_wrapper import UtmWrapper
 from .planner_to_utm import (
     build_encoder_obs,
+    build_g1_encoder_obs,
     build_decoder_obs,
     rot6d_to_quat_wxyz,
     ENCODER_LAYOUT,
@@ -73,6 +74,7 @@ __all__ = [
     "PlannerWrapper",
     "UtmWrapper",
     "build_encoder_obs",
+    "build_g1_encoder_obs",
     "build_decoder_obs",
     "rot6d_to_quat_wxyz",
     "ENCODER_LAYOUT",
