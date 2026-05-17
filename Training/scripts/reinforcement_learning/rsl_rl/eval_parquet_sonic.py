@@ -280,6 +280,9 @@ _PARQUET_COL_MAP: dict[str, tuple[str, type]] = {
     "observation.root_orientation": ("root_orientation",   np.float64),  # (4,)
     # Absolute robot position in the collection world frame.
     "teleop.root_pos_w":            ("root_pos_w",         np.float32),  # (3,)
+    # Full 29-dim joint state in SONIC/UTM order — used to construct the encoder's
+    # lower-body lookahead trajectory directly from the recorded parquet (Q1 fix).
+    "observation.state":            ("obs_state",          np.float32),  # (29,)
 }
 
 # Optional columns — loaded when present, ignored when absent.
@@ -987,7 +990,7 @@ def main() -> int:
             # GatherMotionJointPositionsMultiFrame reads current_motion_->JointPositions
             # at current_frame + [0,5,…,45], never invoking the planner ONNX for these slots).
             # Parquet sample rate is 50Hz; lookahead indices approximate 30Hz stride-5 (167ms/step).
-            _obs_state_arr  = streamer._arrays["observation.state"]        # (N, 29) SONIC order
+            _obs_state_arr  = streamer._arrays["obs_state"]                # (N, 29) SONIC order
             _root_orn_arr   = streamer._arrays["root_orientation"]         # (N, 4) wxyz
             _root_pos_arr   = streamer._arrays["root_pos_w"]               # (N, 3) world
             _N_pq           = _obs_state_arr.shape[0]
