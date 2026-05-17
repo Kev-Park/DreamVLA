@@ -171,6 +171,30 @@ class RolloutRecorder:
                         compression="gzip",
                     )
 
+            # Reference motion (kinematic intent from motion_lib) — present only when the
+            # env is a motion-tracking task. Consumed by the HDF5→LeRobot converter to
+            # populate motion.reference_qpos (planner-ONNX bypass for the encoder).
+            if raw_state is not None and isinstance(raw_state.get("ref_motion"), dict):
+                ref = raw_state["ref_motion"]
+                if "root_pos_w" in ref:
+                    obs_grp.create_dataset(
+                        "ref_root_pos_w",
+                        data=np.asarray(_to_numpy(ref["root_pos_w"]), dtype=np.float64),
+                        compression="gzip",
+                    )
+                if "root_quat_w" in ref:
+                    obs_grp.create_dataset(
+                        "ref_root_quat_w",
+                        data=np.asarray(_to_numpy(ref["root_quat_w"]), dtype=np.float64),
+                        compression="gzip",
+                    )
+                if "dof_pos" in ref:
+                    obs_grp.create_dataset(
+                        "ref_dof_pos",
+                        data=np.asarray(_to_numpy(ref["dof_pos"]), dtype=np.float64),
+                        compression="gzip",
+                    )
+
             if raw_state is not None and "action" in raw_state:
                 demo_grp.create_dataset(
                     "actions",

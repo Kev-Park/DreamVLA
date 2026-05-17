@@ -286,6 +286,11 @@ _PARQUET_OPT_MAP: dict[str, tuple[str, type]] = {
     # the object at the exact collection position rather than relying on random motion_ids.
     "teleop.object_pos_w":  ("object_pos_w",  np.float32),
     "teleop.object_quat_w": ("object_quat_w", np.float32),
+    # Auxiliary planner-bypass column written by the upstream converter when source HDF5
+    # contains motion-library reference data. Layout: [root_pos(3), root_quat_wxyz(4),
+    # joints_in_gear_sonic_order(29)] = 36 floats. When present and non-trivial, the eval
+    # loop reads encoder lookahead from this instead of running planner_sonic.onnx.
+    "motion.reference_qpos": ("reference_qpos", np.float32),
 }
 
 
@@ -981,38 +986,68 @@ def main() -> int:
                     print(f"  out[0] root_quat = {out_first[3:7].round(4).tolist()}")
                     print(f"  out[0] legs[:12] = {out_first[7:19].round(4).tolist()}")
 
-            # 7d. Extract anchor + lower-body trajectory from native 30Hz planner output.
-            # The encoder's motion_*_lowerbody_10frame_step5 slots expect the PLANNER's
-            # predicted future trajectory — verified against gear_sonic_deploy/g1_deploy_onnx_ref.cpp:
-            # GatherMotionJointPositionsMultiFrame reads from current_motion_->JointPositions(),
-            # and in teleop mode current_motion_ points to planner_motion_ (populated by
-            # planner_sonic.onnx output each control cycle). Feeding recorded observation.state
-            # here would mismatch the encoder's training distribution → robot fails to walk.
-            #   - anchor = planner frame 0 (constant per replan cycle, not shifted by planner_step)
-            #   - lb frames: indices [0, 5, 10, ..., 45] from native 30Hz → 167ms/step, 1.5s lookahead
-            #   - lb velocities: central differences at 30Hz via np.gradient
-            _qpos_30hz   = cached_planner_out.mujoco_qpos[0]             # (N, 36) native 30Hz
-            anchor_pos_w     = _qpos_30hz[0, PLANNER_ROOT_POS_SLICE].copy()
-            anchor_quat_wxyz = _qpos_30hz[0, PLANNER_ROOT_QUAT_SLICE].copy()
-            # motion_anchor_orientation: planner outputs in its local frame (seeded with identity).
-            # Bring to world frame via _R_robot_init, then compute relative to current robot.
-            # Mirrors eval_sonic_control.py: (_R_robot.inv() * _R_ref) with both in world frame.
-            _R_robot      = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
-            _anchor_world = _R_robot_init * R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
-            _R_rel_mat    = (_R_robot.inv() * _anchor_world).as_matrix().astype(np.float32)
-            anchor_rot6d  = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
-            # Lower-body trajectory: 10 frames at 5-frame step from native 30Hz output.
-            _enc_lb_idx = list(range(0, 50, 5))   # [0, 5, 10, ..., 45]
-            _n30  = _qpos_30hz.shape[0]
-            _need = _enc_lb_idx[-1] + 1            # 46
-            if _n30 < _need:
-                _qpos_30hz = np.concatenate(
-                    [_qpos_30hz, np.tile(_qpos_30hz[-1:], (_need - _n30, 1))], axis=0
-                )
-            _lb_all  = _qpos_30hz[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER].astype(np.float32)
-            _vel_all = np.gradient(_lb_all, 1.0 / _PLANNER_HZ, axis=0).astype(np.float32)
-            lb_pos = _lb_all[_enc_lb_idx]   # (10, 12)
-            lb_vel = _vel_all[_enc_lb_idx]  # (10, 12)
+            # 7d. Extract anchor + lower-body trajectory.
+            #
+            # Two sources are supported:
+            #
+            # (A) PLANNER PATH (default fallback):
+            #   The encoder's motion_*_lowerbody_10frame_step5 slots expect the PLANNER's
+            #   predicted future trajectory — verified against gear_sonic_deploy/g1_deploy_onnx_ref.cpp:
+            #   GatherMotionJointPositionsMultiFrame reads from current_motion_->JointPositions(),
+            #   and in teleop mode current_motion_ points to planner_motion_ (populated by
+            #   planner_sonic.onnx output each control cycle).
+            #   - 10 frames at indices [0, 5, ..., 45] from 30Hz planner output (167ms/step)
+            #
+            # (B) REFERENCE-MOTION BYPASS (when motion.reference_qpos is present in parquet):
+            #   Read the kinematic intent the WBC was tracking directly from parquet at
+            #   indices [0, 5, ..., 45] at 50Hz (100ms/step, matching upstream C++). Skips
+            #   the np.gradient + speed_to_mode reconstruction → planner_sonic.onnx step,
+            #   feeding the encoder a less-lossy version of the same trajectory shape.
+            _ref_qpos_arr = streamer._arrays.get("reference_qpos")
+            _use_ref_bypass = (
+                _ref_qpos_arr is not None
+                and float(np.abs(_ref_qpos_arr[0]).sum()) > 1e-6
+            )
+            if _use_ref_bypass:
+                # (B) Reference-motion bypass — same final shape as the planner path.
+                _N_ref = _ref_qpos_arr.shape[0]
+                _enc_idx_50hz = np.clip(step + np.arange(0, 50, 5), 0, _N_ref - 1)
+                _ref_window = _ref_qpos_arr[_enc_idx_50hz]               # (10, 36)
+                _joints_gs = _ref_window[:, 7:36]                        # (10, 29) gear_sonic order
+                lb_pos = _joints_gs[:, LOWER_BODY_OBS_STATE_INDICES].astype(np.float32)  # MJ order
+                lb_vel = np.gradient(lb_pos, 5.0 / 50.0, axis=0).astype(np.float32)
+                # Anchor: current frame's reference pose, already in world frame.
+                _anchor_idx = int(np.clip(step, 0, _N_ref - 1))
+                anchor_pos_w     = _ref_qpos_arr[_anchor_idx, 0:3].astype(np.float32)
+                anchor_quat_wxyz = _ref_qpos_arr[_anchor_idx, 3:7].astype(np.float32)
+                _R_robot   = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
+                _R_anchor  = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
+                _R_rel_mat = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
+                anchor_rot6d = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
+                if step == 0:
+                    print("[REF-BYPASS @ step 0] using motion.reference_qpos (no planner ONNX for encoder)")
+                    print(f"  anchor_pos_w  = {anchor_pos_w.round(4).tolist()}")
+                    print(f"  anchor_quat   = {anchor_quat_wxyz.round(4).tolist()}")
+            else:
+                # (A) Planner path — preserved as fallback for parquets without the auxiliary column.
+                _qpos_30hz   = cached_planner_out.mujoco_qpos[0]             # (N, 36) native 30Hz
+                anchor_pos_w     = _qpos_30hz[0, PLANNER_ROOT_POS_SLICE].copy()
+                anchor_quat_wxyz = _qpos_30hz[0, PLANNER_ROOT_QUAT_SLICE].copy()
+                _R_robot      = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
+                _anchor_world = _R_robot_init * R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
+                _R_rel_mat    = (_R_robot.inv() * _anchor_world).as_matrix().astype(np.float32)
+                anchor_rot6d  = _R_rel_mat[:, :2].flatten("C").astype(np.float32)
+                _enc_lb_idx = list(range(0, 50, 5))
+                _n30  = _qpos_30hz.shape[0]
+                _need = _enc_lb_idx[-1] + 1
+                if _n30 < _need:
+                    _qpos_30hz = np.concatenate(
+                        [_qpos_30hz, np.tile(_qpos_30hz[-1:], (_need - _n30, 1))], axis=0
+                    )
+                _lb_all  = _qpos_30hz[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER].astype(np.float32)
+                _vel_all = np.gradient(_lb_all, 1.0 / _PLANNER_HZ, axis=0).astype(np.float32)
+                lb_pos = _lb_all[_enc_lb_idx]
+                lb_vel = _vel_all[_enc_lb_idx]
 
             # 7e. VR 3-point: parquet stores pelvis-local positions/orientations.
             # collect_pick_cam.py:284-292 applies subtract_frame_transforms() before HDF5

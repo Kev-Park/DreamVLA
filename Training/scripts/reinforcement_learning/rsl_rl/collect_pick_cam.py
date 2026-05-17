@@ -216,6 +216,13 @@ def _build_env_args(env, *, task_name: str | None) -> dict[str, Any]:
     except Exception:
         usd_path = ""
 
+    # Reference-motion joint name order (motion_lib_robot's URDF, typically 27-DOF G1).
+    # Stored so the converter can build a name-based permutation from reference DoFs to
+    # gear_sonic's 29-DOF SONIC order (missing slots zero-fill). Empty if no motion lib.
+    ref_joint_names: list[str] = []
+    if hasattr(env.unwrapped, "motion_lib") and hasattr(env.unwrapped.motion_lib, "joint_names"):
+        ref_joint_names = list(env.unwrapped.motion_lib.joint_names)
+
     env_args = {
         "robot_name": "unitree_g1_27dof_dex3",
         "robot_usd": Path(usd_path).name if usd_path else "",
@@ -229,6 +236,7 @@ def _build_env_args(env, *, task_name: str | None) -> dict[str, Any]:
         "body_names": body_names,
         "left_finger_joint_names": list(left_finger_names),
         "right_finger_joint_names": list(right_finger_names),
+        "ref_joint_names": ref_joint_names,
         "producer": "collect_pick_cam.py",
         "producer_version": 2,
     }
@@ -311,6 +319,32 @@ def _capture_teleop_frame(env) -> dict[str, torch.Tensor]:
     }
 
 
+def _capture_reference_motion(env) -> dict[str, torch.Tensor] | None:
+    """Sample the motion-library reference at the current sim time.
+
+    Returns the kinematic intent (root pose + joint angles in motion_lib's joint order)
+    the WBC is tracking *right now*. Downstream conversion writes this to a
+    `motion.reference_qpos` parquet column that eval_parquet_sonic.py and the offline
+    motion-token populator use as a planner-ONNX bypass — the encoder needs intent-like
+    trajectories, and this is the cleanest source available in the env.
+
+    Returns None when the env has no motion library (e.g. non-motion-tracking task).
+    """
+    u = env.unwrapped
+    if not hasattr(u, "motion_lib") or not hasattr(u, "motion_ids"):
+        return None
+    motion_times = (
+        u.episode_length_buf.float() * float(u.step_dt)
+        + u.start_motion_times.to(u.device, dtype=torch.float32)
+    )
+    motion_res = u.motion_lib.get_motion_state(u.motion_ids, motion_times)
+    return {
+        "root_pos_w": motion_res["root_pos"][0].detach().cpu(),       # (3,)
+        "root_quat_w": motion_res["root_rot"][0].detach().cpu(),      # (4,) wxyz
+        "dof_pos": motion_res["dof_pos"][0].detach().cpu(),           # (N_ref_dof,) Isaac Lab order
+    }
+
+
 def _capture_rollout_state(env, action: torch.Tensor | None = None) -> dict[str, Any]:
     robot = env.unwrapped.scene["robot"]
     object_asset = env.unwrapped.scene["object"]
@@ -337,6 +371,10 @@ def _capture_rollout_state(env, action: torch.Tensor | None = None) -> dict[str,
 
     if hasattr(env.unwrapped.scene, "env_origins"):
         state["robot"]["env_origin"] = env.unwrapped.scene.env_origins[0].detach().cpu()
+
+    ref_motion = _capture_reference_motion(env)
+    if ref_motion is not None:
+        state["ref_motion"] = ref_motion
 
     if action is not None:
         state["action"] = action[0].detach().cpu()
