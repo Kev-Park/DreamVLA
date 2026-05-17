@@ -1015,12 +1015,24 @@ def main() -> int:
                 # num_joints is robot_model.joint_names length (body + fingers, typically
                 # 29 + 14 = 43). Body joints are the first 29 entries in gear_sonic order,
                 # so slicing [7:7+29] extracts body joints regardless of finger count.
+                #
+                # Temporal stride: 30Hz stride-5 = 167ms per encoder frame, 1.5s total
+                # lookahead — matches the planner-path (cached_planner_out.mujoco_qpos is
+                # native 30Hz), which has been empirically verified to produce correct
+                # gait cadence. The parquet is at 50Hz so the indices are rounded from
+                # t·(50/30): [0, 8, 17, 25, 33, 42, 50, 58, 67, 75]. Max per-frame timing
+                # error ≈ 13ms — well below the 167ms stride. (Earlier attempt at 50Hz
+                # stride-5 = 100ms produced walking but with wrong footstep count.)
+                _PARQUET_LB_LOOKAHEAD_IDX_50HZ = np.array(
+                    [0, 8, 17, 25, 33, 42, 50, 58, 67, 75], dtype=np.int64
+                )
+                _PARQUET_LB_STEP_DT = 5.0 / 30.0  # 167ms — matches planner-path stride
                 _N_ref = _ref_qpos_arr.shape[0]
-                _enc_idx_50hz = np.clip(step + np.arange(0, 50, 5), 0, _N_ref - 1)
-                _ref_window = _ref_qpos_arr[_enc_idx_50hz]               # (10, 7+num_joints)
+                _enc_idx_pq = np.clip(step + _PARQUET_LB_LOOKAHEAD_IDX_50HZ, 0, _N_ref - 1)
+                _ref_window = _ref_qpos_arr[_enc_idx_pq]                 # (10, 7+num_joints)
                 _joints_gs = _ref_window[:, 7:7 + 29]                    # (10, 29) gear_sonic body
                 lb_pos = _joints_gs[:, LOWER_BODY_OBS_STATE_INDICES].astype(np.float32)  # MJ order
-                lb_vel = np.gradient(lb_pos, 5.0 / 50.0, axis=0).astype(np.float32)
+                lb_vel = np.gradient(lb_pos, _PARQUET_LB_STEP_DT, axis=0).astype(np.float32)
                 # Anchor: current frame's reference pose, already in world frame.
                 _anchor_idx = int(np.clip(step, 0, _N_ref - 1))
                 anchor_pos_w     = _ref_qpos_arr[_anchor_idx, 0:3].astype(np.float32)
