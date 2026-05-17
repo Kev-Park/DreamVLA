@@ -238,13 +238,14 @@ LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER = np.array(
     [7 + i for i in range(12)], dtype=np.int64,
 )
 
-# Indices into observation.state (29-dim SONIC/UTM order) that select the 12
-# lower-body joints in MuJoCo order — first 12 entries of MUJOCO_TO_ISAACLAB
-# (which maps mj_idx → sonic_idx). Kept here because the upcoming parquet-populate
-# tokenization script will need it to assemble encoder obs from recorded state.
-# NOT used by eval_parquet_sonic.py itself: the encoder requires planner output for
-# the lower-body lookahead (verified against gear_sonic_deploy/g1_deploy_onnx_ref.cpp).
-LOWER_BODY_OBS_STATE_INDICES = MUJOCO_TO_ISAACLAB[:12].astype(np.int64)
+# Indices into observation.state (and motion.reference_qpos joint slice) that select
+# the 12 lower-body joints in the order the encoder expects (MUJOCO grouped: left leg
+# first, then right leg). gear_sonic's robot_model.joint_names is MUJOCO-grouped — see
+# features_sonic_vla.py::_get_joint_group_slices which assumes each joint group occupies
+# a CONTIGUOUS range. So left_leg = [0..5], right_leg = [6..11], lower body = [0..11].
+# No permutation needed — the SONIC-interleaved order (MUJOCO_TO_ISAACLAB) only applies
+# to the UTM decoder's output, not to the encoder's input.
+LOWER_BODY_OBS_STATE_INDICES = np.arange(12, dtype=np.int64)
 
 
 def extract_vr_3pt(
