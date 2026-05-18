@@ -83,6 +83,14 @@ def _parse_cli() -> argparse.ArgumentParser:
     parser.add_argument("--dynamic-friction", type=float, default=1.0,
                         help="Terrain + robot body dynamic friction coefficient. Default 1.0 matches UTM "
                              "training (gear_sonic). Use 0.5 to match MuJoCo deployment scene friction.")
+    parser.add_argument("--bypass-stride-hz", type=int, default=50, choices=[30, 50],
+                        help="Reference-motion bypass: encoder lookahead temporal stride. "
+                             "50 (default) = 50Hz stride-5 = 100ms per encoder frame, 0.9s lookahead — "
+                             "matches paper Table 3 (δ_b = 0.1s) and upstream C++ ResampleGeneratedSequence50Hz. "
+                             "30 = 30Hz stride-5 = 167ms per encoder frame, 1.5s lookahead — matches the "
+                             "planner-path's native rate (cached_planner_out.mujoco_qpos at 30Hz). Use 30 if "
+                             "100ms produces wrong cadence and 167ms (the planner-path's effective rate) "
+                             "tracks the recorded trajectory better.")
     return parser
 
 
@@ -1037,15 +1045,20 @@ def main() -> int:
             body_vel_future = None
             anchor_rot6d_future = None
             if _use_ref_bypass:
-                # Per SONIC paper Table 3 (line 692): δ_r = δ_b = 0.1s = 100ms for the
-                # robot motion encoder (g1 mode) and hybrid encoder (teleop mode).
-                # N = 10 future frames. So at 50Hz parquet, stride-5 = exactly 100ms.
-                # Earlier 167ms attempt was empirically motivated by the planner-path
-                # but contradicts the encoder's actual training-time hyperparameter,
-                # producing splayed-leg decoder commands consistent with the encoder
-                # reading "joints moving 50% faster than expected".
-                _PARQUET_LB_LOOKAHEAD_IDX_50HZ = np.arange(0, 50, 5, dtype=np.int64)
-                _PARQUET_LB_STEP_DT = 5.0 / 50.0  # 100 ms — matches paper δ_r = 0.1s
+                # Bypass-stride options (CLI --bypass-stride-hz, default 50):
+                #   50Hz stride-5 → 100ms per encoder frame, 0.9s lookahead, indices [0,5,...,45].
+                #       Matches paper Table 3 (δ_b = 0.1s) and upstream C++ resampling.
+                #   30Hz-equivalent stride-5 → 167ms per encoder frame, 1.5s lookahead,
+                #       rounded 50Hz indices [0,8,17,25,33,42,50,58,67,75]. Matches the
+                #       planner-path's native rate (cached_planner_out is 30Hz).
+                if _ARGS.bypass_stride_hz == 50:
+                    _PARQUET_LB_LOOKAHEAD_IDX_50HZ = np.arange(0, 50, 5, dtype=np.int64)
+                    _PARQUET_LB_STEP_DT = 5.0 / 50.0  # 100 ms
+                else:  # 30Hz
+                    _PARQUET_LB_LOOKAHEAD_IDX_50HZ = np.array(
+                        [0, 8, 17, 25, 33, 42, 50, 58, 67, 75], dtype=np.int64
+                    )
+                    _PARQUET_LB_STEP_DT = 5.0 / 30.0  # 167 ms
                 _N_ref = _ref_qpos_arr.shape[0]
                 _enc_idx_pq = np.clip(step + _PARQUET_LB_LOOKAHEAD_IDX_50HZ, 0, _N_ref - 1)
                 _ref_window = _ref_qpos_arr[_enc_idx_pq]                 # (10, 7+num_joints)
@@ -1079,7 +1092,12 @@ def main() -> int:
                 anchor_quat_wxyz = _ref_qpos_arr[_anchor_idx, 3:7].astype(np.float32)
                 anchor_rot6d     = anchor_rot6d_future[0]
                 if step == 0:
-                    print("[REF-BYPASS @ step 0] G1 mode: motion.reference_qpos → encoder (no planner, no VR)")
+                    _stride_ms = int(round(_PARQUET_LB_STEP_DT * 1000))
+                    _lookahead_ms = int(round(_PARQUET_LB_STEP_DT * 9 * 1000))
+                    print("[REF-BYPASS @ step 0] TELEOP mode + reference-derived lb_pos/lb_vel/anchor")
+                    print(f"  stride              = {_stride_ms}ms (--bypass-stride-hz {_ARGS.bypass_stride_hz}), "
+                          f"{_lookahead_ms}ms total lookahead")
+                    print(f"  lookahead indices   = {_PARQUET_LB_LOOKAHEAD_IDX_50HZ.tolist()}")
                     print(f"  anchor_pos_w        = {anchor_pos_w.round(4).tolist()}")
                     print(f"  anchor_quat         = {anchor_quat_wxyz.round(4).tolist()}")
                     print(f"  anchor_rot6d[0]     = {anchor_rot6d_future[0].round(4).tolist()}")
