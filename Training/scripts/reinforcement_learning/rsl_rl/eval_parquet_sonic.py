@@ -1055,21 +1055,20 @@ def main() -> int:
                 body_pos_future = _ref_window[:, 7 + BODY_INDICES_IN_GEAR_SONIC].astype(np.float32)  # (10, 29)
                 body_vel_future = np.gradient(body_pos_future, _PARQUET_LB_STEP_DT, axis=0).astype(np.float32)
                 # Per-frame anchor rot6d (relative to current robot's world orientation).
-                # COLUMN-major Zhou format = [col0_x, col0_y, col0_z, col1_x, col1_y, col1_z]
-                # — matches gear_sonic.quat_to_rot6d (transforms.py:29) which the encoder
-                # was trained on. Identity ⇒ [1, 0, 0, 0, 1, 0]. NOT .flatten("C") on [:, :2]
-                # (that would give row-major [1,0,0,1,0,0] — swapped positions 3↔4 and
-                # interpreted as degenerate col0≈col1≈X-axis rotation, garbling all 60 dims
-                # of the 10-frame anchor slot).
+                # ROW-major flatten — same convention TELEOP mode's single-frame anchor uses.
+                # Identity ⇒ [1, 0, 0, 1, 0, 0]. The paper cites Zhou et al. 2019 (which is
+                # column-major), but empirically the encoder was trained on what
+                # _R_rel_mat[:, :2].flatten("C") produces (row-major) — switching to
+                # column-major Zhou for the 10-frame anchor collapsed the robot within
+                # 50 steps (all 60 anchor dims read as degenerate near-X rotations by the
+                # encoder). Stick with the format the TELEOP-mode encoder slot validated.
                 _R_robot = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
                 anchor_rot6d_future = np.zeros((10, 6), dtype=np.float32)
                 for _k in range(10):
                     _R_anchor_k = R.from_quat(quat_wxyz_to_xyzw(
                         _ref_window[_k, 3:7].astype(np.float32)))
                     _R_rel_k = (_R_robot.inv() * _R_anchor_k).as_matrix().astype(np.float32)
-                    # Column 0 then column 1 of the rotation matrix.
-                    anchor_rot6d_future[_k, 0:3] = _R_rel_k[:, 0]
-                    anchor_rot6d_future[_k, 3:6] = _R_rel_k[:, 1]
+                    anchor_rot6d_future[_k] = _R_rel_k[:, :2].flatten("C")
                 # Single-frame mirrors of the above — kept for debug prints and so the
                 # visualization writer / VR-passthrough block doesn't need a separate path.
                 lb_pos = body_pos_future[:, LOWER_BODY_OBS_STATE_INDICES]                   # (10, 12) for prints
