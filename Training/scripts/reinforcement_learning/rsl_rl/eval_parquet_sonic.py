@@ -248,6 +248,22 @@ LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER = np.array(
 # to the UTM decoder's output, not to the encoder's input.
 LOWER_BODY_OBS_STATE_INDICES = np.arange(12, dtype=np.int64)
 
+# Indices that select the 29 BODY joints (excluding fingers) from gear_sonic's 43-joint
+# observation.state vector. gear_sonic's joint layout per features_sonic_vla.py's
+# _JOINT_GROUPS_FOR_STATE list order is INTERLEAVED with hands between arms:
+#   [left_leg(0-5), right_leg(6-11), waist(12-14), left_arm(15-21),
+#    LEFT_HAND(22-28), right_arm(29-35), RIGHT_HAND(36-42)] = 43 total
+# So body joints (legs+waist+arms = 29) live at indices [0..21] + [29..35] — NOT
+# contiguous. Naive slicing [7:7+29] of motion.reference_qpos would pick up left_hand
+# fingers as fake "right arm" joints and miss the real right_arm entirely; using these
+# explicit indices instead delivers the 29-joint MUJOCO-grouped body vector that the
+# G1-mode encoder's motion_joint_positions_10frame_step5 slot was trained on.
+BODY_INDICES_IN_GEAR_SONIC = np.concatenate([
+    np.arange(0, 22),   # legs (6+6) + waist (3) + left_arm (7) = 22
+    np.arange(29, 36),  # right_arm (7)
+]).astype(np.int64)
+assert BODY_INDICES_IN_GEAR_SONIC.shape[0] == 29, "Body joint count mismatch"
+
 
 def extract_vr_3pt(
     vla_action: dict, *, t_index: int = 0, batch_index: int = 0
@@ -1033,7 +1049,10 @@ def main() -> int:
                 _enc_idx_pq = np.clip(step + _PARQUET_LB_LOOKAHEAD_IDX_50HZ, 0, _N_ref - 1)
                 _ref_window = _ref_qpos_arr[_enc_idx_pq]                 # (10, 7+num_joints)
                 # Full-body 29-joint future for G1 mode's motion_joint_positions_10frame_step5 slot.
-                body_pos_future = _ref_window[:, 7:7 + 29].astype(np.float32)               # (10, 29) MJ-grouped
+                # Must use BODY_INDICES_IN_GEAR_SONIC (non-contiguous: skips left_hand fingers
+                # at gear_sonic indices 22-28) — naive [:, 7:7+29] would silently scramble
+                # right_arm into finger zeros and produce garbage encoder tokens.
+                body_pos_future = _ref_window[:, 7 + BODY_INDICES_IN_GEAR_SONIC].astype(np.float32)  # (10, 29)
                 body_vel_future = np.gradient(body_pos_future, _PARQUET_LB_STEP_DT, axis=0).astype(np.float32)
                 # Per-frame anchor rot6d (relative to current robot's world orientation).
                 _R_robot = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
