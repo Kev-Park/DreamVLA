@@ -121,10 +121,11 @@ from vla_sonic import (  # noqa: E402
     UtmWrapper,
     build_decoder_obs,
     build_encoder_obs,
-    build_g1_encoder_obs,
     build_planner_inputs,
     utm_plus_vla_to_env_action,
 )
+# build_g1_encoder_obs is also available from vla_sonic for the parquet_populate
+# tokenization script; not imported here because eval uses TELEOP mode only.
 from scipy.spatial.transform import Rotation as R  # noqa: E402
 from vla_sonic.action_assembler import (  # noqa: E402
     G1_ACTION_SCALE_SONIC,
@@ -1128,24 +1129,26 @@ def main() -> int:
                 )
 
             # 7f. Encoder → token → decoder → body_29.
-            # Bypass path uses G1 encoder mode (full-body lookahead, no VR/planner slots);
-            # fallback uses TELEOP encoder mode (lower-body + VR + single-frame anchor).
-            if _use_ref_bypass:
-                enc_obs = build_g1_encoder_obs(
-                    body_positions_future=body_pos_future,
-                    body_velocities_future=body_vel_future,
-                    anchor_rot6d_future=anchor_rot6d_future,
-                )
-            else:
-                enc_obs = build_encoder_obs(
-                    anchor_pos_world=anchor_pos_w,
-                    anchor_quat_wxyz=anchor_quat_wxyz,
-                    anchor_rot6d=anchor_rot6d,
-                    lower_body_positions_future=lb_pos,
-                    lower_body_velocities_future=lb_vel,
-                    vr_3pt_position_anchor_local=vr_pos_anchor_local,
-                    vr_3pt_rot6d=vr_rot6d_anchor_local,
-                )
+            #
+            # Always use TELEOP-mode encoder. The bypass branch above pre-populates
+            # lb_pos/lb_vel/anchor_rot6d from motion.reference_qpos when available,
+            # falling back to planner output otherwise. Either way the encoder reads
+            # the TELEOP slots (lower-body lookahead + single-frame anchor + VR 3-point)
+            # — verified empirically to produce walking. G1-mode invocation lives in
+            # build_g1_encoder_obs for future use once UTM weights are retrained with
+            # motion-library trajectory distribution; the released weights produce bad
+            # decoder commands in G1 mode regardless of input correctness (validated
+            # 2026-05-17 with verified-correct body_pos_future / anchor_rot6d_future
+            # inputs — all 29 joints, both arms, row-major rot6d per upstream C++).
+            enc_obs = build_encoder_obs(
+                anchor_pos_world=anchor_pos_w,
+                anchor_quat_wxyz=anchor_quat_wxyz,
+                anchor_rot6d=anchor_rot6d,
+                lower_body_positions_future=lb_pos,
+                lower_body_velocities_future=lb_vel,
+                vr_3pt_position_anchor_local=vr_pos_anchor_local,
+                vr_3pt_rot6d=vr_rot6d_anchor_local,
+            )
             token = utm.run_encoder({"obs_dict": enc_obs}).reshape(-1)
 
             if step == 0:
