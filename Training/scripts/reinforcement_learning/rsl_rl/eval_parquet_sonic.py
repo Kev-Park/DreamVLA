@@ -1103,6 +1103,44 @@ def main() -> int:
                     print(f"  anchor_rot6d[0]     = {anchor_rot6d_future[0].round(4).tolist()}")
                     print(f"  anchor_rot6d[9]     = {anchor_rot6d_future[9].round(4).tolist()}")
                     print(f"  body_pos_future[0]  = {body_pos_future[0].round(4).tolist()}")
+                # Per-25-steps comparison: reference-derived lb_pos vs what the planner
+                # would output at this step. Helps diagnose translation-lag / cadence-shift
+                # issues caused by gait-pattern distribution mismatch between motion library
+                # and planner_sonic.onnx (which is what the encoder was trained on).
+                if step % 25 == 0:
+                    _ref_lb_now = lb_pos[0]
+                    _ref_lb_far = lb_pos[9]
+                    _ref_vel_mag = float(np.linalg.norm(lb_vel, axis=1).mean())
+                    _ref_pos_delta = float(np.linalg.norm(lb_pos[9] - lb_pos[0]))
+                    _ref_span_s = _PARQUET_LB_STEP_DT * 9  # 0->9 frames = 9 strides
+                    # Per-second joint travel (rate of joint angle change) — comparable
+                    # across stride choices and against the planner's 1.5s lookahead.
+                    _ref_pos_delta_per_s = _ref_pos_delta / _ref_span_s if _ref_span_s > 0 else 0.0
+                    print(f"[LB-CMP @ step {step}] REF (motion.reference_qpos, {_ref_span_s*1000:.0f}ms span):")
+                    print(f"  lb_pos[0]              = {_ref_lb_now.round(3).tolist()}")
+                    print(f"  lb_pos[9]              = {_ref_lb_far.round(3).tolist()}")
+                    print(f"  ||lb_pos[9]-[0]||      = {_ref_pos_delta:.3f}  "
+                          f"({_ref_pos_delta_per_s:.3f} per sec)")
+                    print(f"  mean ||lb_vel||        = {_ref_vel_mag:.3f} rad/s")
+                    if cached_planner_out is not None:
+                        _pp = cached_planner_out.mujoco_qpos[0]
+                        _pp_n = _pp.shape[0]
+                        _pp_now = _pp[0, 7:19]
+                        _pp_far_idx = min(45, _pp_n - 1)
+                        _pp_far = _pp[_pp_far_idx, 7:19]
+                        _pp_pos_delta = float(np.linalg.norm(_pp_far - _pp_now))
+                        _pp_span_s = _pp_far_idx / _PLANNER_HZ  # planner is native 30Hz
+                        _pp_pos_delta_per_s = _pp_pos_delta / _pp_span_s if _pp_span_s > 0 else 0.0
+                        print(f"[LB-CMP @ step {step}] PLANNER (cached_planner_out.mujoco_qpos, "
+                              f"{_pp_span_s*1000:.0f}ms span):")
+                        print(f"  lb_pos[0]              = {_pp_now.round(3).tolist()}")
+                        print(f"  lb_pos[far={_pp_far_idx}]         = {_pp_far.round(3).tolist()}")
+                        print(f"  ||lb_pos[far]-[0]||    = {_pp_pos_delta:.3f}  "
+                              f"({_pp_pos_delta_per_s:.3f} per sec)")
+                        _ratio = ((_ref_pos_delta_per_s / _pp_pos_delta_per_s)
+                                  if _pp_pos_delta_per_s > 1e-6 else float('inf'))
+                        print(f"  ref/planner rate ratio = {_ratio:.3f}  "
+                              f"(<1 ⇒ ref slower than planner gait → encoder under-commands speed)")
             else:
                 # (A) Planner path — preserved as fallback for parquets without the auxiliary column.
                 _qpos_30hz   = cached_planner_out.mujoco_qpos[0]             # (N, 36) native 30Hz
