@@ -129,15 +129,15 @@ from vla_sonic import (  # noqa: E402
     UtmWrapper,
     build_decoder_obs,
     build_encoder_obs,
+    build_g1_encoder_obs,
     build_planner_inputs,
     utm_plus_vla_to_env_action,
 )
-# build_g1_encoder_obs is also available from vla_sonic for the parquet_populate
-# tokenization script; not imported here because eval uses TELEOP mode only.
 from scipy.spatial.transform import Rotation as R  # noqa: E402
 from vla_sonic.action_assembler import (  # noqa: E402
     G1_ACTION_SCALE_SONIC,
     G1_DEFAULT_ANGLES_SONIC,
+    ISAACLAB_TO_MUJOCO,
     MUJOCO_TO_ISAACLAB,
 )
 from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
@@ -1066,8 +1066,21 @@ def main() -> int:
                 # Must use BODY_INDICES_IN_GEAR_SONIC (non-contiguous: skips left_hand fingers
                 # at gear_sonic indices 22-28) — naive [:, 7:7+29] would silently scramble
                 # right_arm into finger zeros and produce garbage encoder tokens.
-                body_pos_future = _ref_window[:, 7 + BODY_INDICES_IN_GEAR_SONIC].astype(np.float32)  # (10, 29)
-                body_vel_future = np.gradient(body_pos_future, _PARQUET_LB_STEP_DT, axis=0).astype(np.float32)
+                # Result is in MUJOCO-grouped order (gear_sonic.joint_names body slice).
+                body_pos_future_mj = _ref_window[:, 7 + BODY_INDICES_IN_GEAR_SONIC].astype(np.float32)  # (10, 29)
+                body_vel_future_mj = np.gradient(body_pos_future_mj, _PARQUET_LB_STEP_DT, axis=0).astype(np.float32)
+                # G1 encoder slot motion_joint_positions_10frame_step5 expects 29 joints in
+                # SONIC-IsaacLab interleaved order (LHP, RHP, WY, LHR, RHR, WR, LHY, RHY, WP,
+                # LK, RK, LSP, RSP, LAP, RAP, LSR, RSR, LAR, RAR, LSY, RSY, LE, RE, LWR, RWR,
+                # LWP, RWP, LWY, RWY) — verified against
+                # gear_sonic_deploy/.../policy_parameters.hpp:92 (the variable name
+                # `lower_body_joint_mujoco_order_in_isaaclab_index = [0,3,6,9,13,17,1,4,7,10,14,18]`
+                # explicitly states that motion-file storage is IsaacLab-interleaved and the
+                # MUJOCO lower-body slice is a permutation thereof). Our MUJOCO-grouped body
+                # vector permutes to IsaacLab via q_isaac = q_mujoco[ISAACLAB_TO_MUJOCO].
+                # ISAACLAB_TO_MUJOCO[i] = MJ index of the i-th IsaacLab joint.
+                body_pos_future = body_pos_future_mj[:, ISAACLAB_TO_MUJOCO].astype(np.float32)  # (10, 29) IsaacLab order
+                body_vel_future = body_vel_future_mj[:, ISAACLAB_TO_MUJOCO].astype(np.float32)
                 # Per-frame anchor rot6d (relative to current robot's world orientation).
                 # ROW-major flatten — same convention TELEOP mode's single-frame anchor uses.
                 # Identity ⇒ [1, 0, 0, 1, 0, 0]. The paper cites Zhou et al. 2019 (which is
@@ -1085,8 +1098,12 @@ def main() -> int:
                     anchor_rot6d_future[_k] = _R_rel_k[:, :2].flatten("C")
                 # Single-frame mirrors of the above — kept for debug prints and so the
                 # visualization writer / VR-passthrough block doesn't need a separate path.
-                lb_pos = body_pos_future[:, LOWER_BODY_OBS_STATE_INDICES]                   # (10, 12) for prints
-                lb_vel = body_vel_future[:, LOWER_BODY_OBS_STATE_INDICES]
+                # Use the MUJOCO-ordered version (body_pos_future_mj) for lb_pos since
+                # LOWER_BODY_OBS_STATE_INDICES = arange(12) selects the first-12 MUJOCO body
+                # joints (left leg + right leg). Slicing the IsaacLab-permuted body_pos_future
+                # would give a scrambled "lower body" since IsaacLab interleaves L/R per joint.
+                lb_pos = body_pos_future_mj[:, LOWER_BODY_OBS_STATE_INDICES]                # (10, 12) MJ order
+                lb_vel = body_vel_future_mj[:, LOWER_BODY_OBS_STATE_INDICES]
                 _anchor_idx = int(np.clip(step, 0, _N_ref - 1))
                 anchor_pos_w     = _ref_qpos_arr[_anchor_idx, 0:3].astype(np.float32)
                 anchor_quat_wxyz = _ref_qpos_arr[_anchor_idx, 3:7].astype(np.float32)
@@ -1094,7 +1111,8 @@ def main() -> int:
                 if step == 0:
                     _stride_ms = int(round(_PARQUET_LB_STEP_DT * 1000))
                     _lookahead_ms = int(round(_PARQUET_LB_STEP_DT * 9 * 1000))
-                    print("[REF-BYPASS @ step 0] TELEOP mode + reference-derived lb_pos/lb_vel/anchor")
+                    print("[REF-BYPASS @ step 0] G1 mode + reference-derived "
+                          "body_pos_future/body_vel_future/anchor_rot6d_future")
                     print(f"  stride              = {_stride_ms}ms (--bypass-stride-hz {_ARGS.bypass_stride_hz}), "
                           f"{_lookahead_ms}ms total lookahead")
                     print(f"  lookahead indices   = {_PARQUET_LB_LOOKAHEAD_IDX_50HZ.tolist()}")
@@ -1102,7 +1120,8 @@ def main() -> int:
                     print(f"  anchor_quat         = {anchor_quat_wxyz.round(4).tolist()}")
                     print(f"  anchor_rot6d[0]     = {anchor_rot6d_future[0].round(4).tolist()}")
                     print(f"  anchor_rot6d[9]     = {anchor_rot6d_future[9].round(4).tolist()}")
-                    print(f"  body_pos_future[0]  = {body_pos_future[0].round(4).tolist()}")
+                    print(f"  body_pos_future[0]  (MUJOCO) = {body_pos_future_mj[0].round(4).tolist()}")
+                    print(f"  body_pos_future[0]  (ISAAC)  = {body_pos_future[0].round(4).tolist()}")
                 # Per-25-steps comparison: reference-derived lb_pos vs what the planner
                 # would output at this step. Helps diagnose translation-lag / cadence-shift
                 # issues caused by gait-pattern distribution mismatch between motion library
@@ -1186,25 +1205,26 @@ def main() -> int:
 
             # 7f. Encoder → token → decoder → body_29.
             #
-            # Always use TELEOP-mode encoder. The bypass branch above pre-populates
-            # lb_pos/lb_vel/anchor_rot6d from motion.reference_qpos when available,
-            # falling back to planner output otherwise. Either way the encoder reads
-            # the TELEOP slots (lower-body lookahead + single-frame anchor + VR 3-point)
-            # — verified empirically to produce walking. G1-mode invocation lives in
-            # build_g1_encoder_obs for future use once UTM weights are retrained with
-            # motion-library trajectory distribution; the released weights produce bad
-            # decoder commands in G1 mode regardless of input correctness (validated
-            # 2026-05-17 with verified-correct body_pos_future / anchor_rot6d_future
-            # inputs — all 29 joints, both arms, row-major rot6d per upstream C++).
-            enc_obs = build_encoder_obs(
-                anchor_pos_world=anchor_pos_w,
-                anchor_quat_wxyz=anchor_quat_wxyz,
-                anchor_rot6d=anchor_rot6d,
-                lower_body_positions_future=lb_pos,
-                lower_body_velocities_future=lb_vel,
-                vr_3pt_position_anchor_local=vr_pos_anchor_local,
-                vr_3pt_rot6d=vr_rot6d_anchor_local,
-            )
+            # Bypass active: G1 mode (robot motion encoder φ_r per SONIC paper). The encoder
+            # consumes 29-joint full-body future trajectory in IsaacLab-interleaved order.
+            # body_pos_future / body_vel_future were permuted from MUJOCO-grouped above.
+            # No bypass: TELEOP mode (hybrid encoder φ_b) using planner-derived lb_pos/lb_vel.
+            if _use_ref_bypass:
+                enc_obs = build_g1_encoder_obs(
+                    body_positions_future=body_pos_future,
+                    body_velocities_future=body_vel_future,
+                    anchor_rot6d_future=anchor_rot6d_future,
+                )
+            else:
+                enc_obs = build_encoder_obs(
+                    anchor_pos_world=anchor_pos_w,
+                    anchor_quat_wxyz=anchor_quat_wxyz,
+                    anchor_rot6d=anchor_rot6d,
+                    lower_body_positions_future=lb_pos,
+                    lower_body_velocities_future=lb_vel,
+                    vr_3pt_position_anchor_local=vr_pos_anchor_local,
+                    vr_3pt_rot6d=vr_rot6d_anchor_local,
+                )
             token = utm.run_encoder({"obs_dict": enc_obs}).reshape(-1)
 
             if step == 0:
