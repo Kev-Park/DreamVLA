@@ -91,6 +91,15 @@ def _parse_cli() -> argparse.ArgumentParser:
                              "planner-path's native rate (cached_planner_out.mujoco_qpos at 30Hz). Use 30 if "
                              "100ms produces wrong cadence and 167ms (the planner-path's effective rate) "
                              "tracks the recorded trajectory better.")
+    parser.add_argument("--bypass-source", type=str, default="executed",
+                        choices=["reference", "executed"],
+                        help="Source for G1-mode body lookahead. "
+                             "'executed' (default) reads observation.state and observation.root_orientation "
+                             "— the robot's ACTUAL recorded state at each frame, internally consistent with "
+                             "the teleop.vr_3pt_* data (which is also derived from executed wrist FK in "
+                             "collect_pick_cam.py). 'reference' reads motion.reference_qpos — the IDEAL "
+                             "kinematic trajectory the WBC was trying to track. Reference is smoother but "
+                             "may diverge from the executed trajectory under WBC tracking error.")
     return parser
 
 
@@ -1059,41 +1068,46 @@ def main() -> int:
                         [0, 8, 17, 25, 33, 42, 50, 58, 67, 75], dtype=np.int64
                     )
                     _PARQUET_LB_STEP_DT = 5.0 / 30.0  # 167 ms
-                _N_ref = _ref_qpos_arr.shape[0]
-                _enc_idx_pq = np.clip(step + _PARQUET_LB_LOOKAHEAD_IDX_50HZ, 0, _N_ref - 1)
-                _ref_window = _ref_qpos_arr[_enc_idx_pq]                 # (10, 7+num_joints)
+                # Pick the data source — both are in gear_sonic 43-joint order. EXECUTED
+                # mode reads observation.state (the recorded robot state, post-WBC) and
+                # observation.root_orientation; REFERENCE mode reads motion.reference_qpos
+                # (the kinematic intent, pre-WBC). Executed gives a fully-internally-consistent
+                # view of "what actually happened in the recording" at the cost of some
+                # WBC-tracking noise; reference gives smoother kinematic intent but diverges
+                # from the actual robot state under tracking error.
+                _obs_state_arr_local = streamer._arrays["obs_state"]            # (N, 43) gear_sonic order
+                _root_orn_arr_local  = streamer._arrays["root_orientation"]     # (N, 4) wxyz
+                _N_src = _ref_qpos_arr.shape[0]
+                _enc_idx_pq = np.clip(step + _PARQUET_LB_LOOKAHEAD_IDX_50HZ, 0, _N_src - 1)
+                if _ARGS.bypass_source == "reference":
+                    _ref_window = _ref_qpos_arr[_enc_idx_pq]                    # (10, 7+num_joints)
+                    _joints_window = _ref_window[:, 7:]                         # (10, 43) joints only
+                    _root_quat_window = _ref_window[:, 3:7]                     # (10, 4) wxyz
+                else:  # executed
+                    _joints_window    = _obs_state_arr_local[_enc_idx_pq]       # (10, 43) gear_sonic order
+                    _root_quat_window = _root_orn_arr_local[_enc_idx_pq]        # (10, 4) wxyz
                 # Full-body 29-joint future for G1 mode's motion_joint_positions_10frame_step5 slot.
-                # Must use BODY_INDICES_IN_GEAR_SONIC (non-contiguous: skips left_hand fingers
-                # at gear_sonic indices 22-28) — naive [:, 7:7+29] would silently scramble
-                # right_arm into finger zeros and produce garbage encoder tokens.
-                # Result is in MUJOCO-grouped order (gear_sonic.joint_names body slice).
-                body_pos_future_mj = _ref_window[:, 7 + BODY_INDICES_IN_GEAR_SONIC].astype(np.float32)  # (10, 29)
+                # BODY_INDICES_IN_GEAR_SONIC (non-contiguous: skips left_hand fingers at gear_sonic
+                # indices 22-28). Naive [:, 0:29] would silently include left_hand fingers and
+                # exclude right_arm. Result is in MUJOCO-grouped order (gear_sonic.joint_names body slice).
+                body_pos_future_mj = _joints_window[:, BODY_INDICES_IN_GEAR_SONIC].astype(np.float32)  # (10, 29)
                 body_vel_future_mj = np.gradient(body_pos_future_mj, _PARQUET_LB_STEP_DT, axis=0).astype(np.float32)
                 # G1 encoder slot motion_joint_positions_10frame_step5 expects 29 joints in
                 # SONIC-IsaacLab interleaved order (LHP, RHP, WY, LHR, RHR, WR, LHY, RHY, WP,
                 # LK, RK, LSP, RSP, LAP, RAP, LSR, RSR, LAR, RAR, LSY, RSY, LE, RE, LWR, RWR,
                 # LWP, RWP, LWY, RWY) — verified against
-                # gear_sonic_deploy/.../policy_parameters.hpp:92 (the variable name
-                # `lower_body_joint_mujoco_order_in_isaaclab_index = [0,3,6,9,13,17,1,4,7,10,14,18]`
-                # explicitly states that motion-file storage is IsaacLab-interleaved and the
-                # MUJOCO lower-body slice is a permutation thereof). Our MUJOCO-grouped body
-                # vector permutes to IsaacLab via q_isaac = q_mujoco[ISAACLAB_TO_MUJOCO].
+                # gear_sonic_deploy/.../policy_parameters.hpp:92.
                 # ISAACLAB_TO_MUJOCO[i] = MJ index of the i-th IsaacLab joint.
                 body_pos_future = body_pos_future_mj[:, ISAACLAB_TO_MUJOCO].astype(np.float32)  # (10, 29) IsaacLab order
                 body_vel_future = body_vel_future_mj[:, ISAACLAB_TO_MUJOCO].astype(np.float32)
                 # Per-frame anchor rot6d (relative to current robot's world orientation).
-                # ROW-major flatten — same convention TELEOP mode's single-frame anchor uses.
-                # Identity ⇒ [1, 0, 0, 1, 0, 0]. The paper cites Zhou et al. 2019 (which is
-                # column-major), but empirically the encoder was trained on what
-                # _R_rel_mat[:, :2].flatten("C") produces (row-major) — switching to
-                # column-major Zhou for the 10-frame anchor collapsed the robot within
-                # 50 steps (all 60 anchor dims read as degenerate near-X rotations by the
-                # encoder). Stick with the format the TELEOP-mode encoder slot validated.
+                # ROW-major flatten — matches what TELEOP mode's single-frame anchor uses
+                # and is the format the encoder was empirically trained on.
                 _R_robot = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
                 anchor_rot6d_future = np.zeros((10, 6), dtype=np.float32)
                 for _k in range(10):
                     _R_anchor_k = R.from_quat(quat_wxyz_to_xyzw(
-                        _ref_window[_k, 3:7].astype(np.float32)))
+                        _root_quat_window[_k].astype(np.float32)))
                     _R_rel_k = (_R_robot.inv() * _R_anchor_k).as_matrix().astype(np.float32)
                     anchor_rot6d_future[_k] = _R_rel_k[:, :2].flatten("C")
                 # Single-frame mirrors of the above — kept for debug prints and so the
@@ -1104,15 +1118,24 @@ def main() -> int:
                 # would give a scrambled "lower body" since IsaacLab interleaves L/R per joint.
                 lb_pos = body_pos_future_mj[:, LOWER_BODY_OBS_STATE_INDICES]                # (10, 12) MJ order
                 lb_vel = body_vel_future_mj[:, LOWER_BODY_OBS_STATE_INDICES]
-                _anchor_idx = int(np.clip(step, 0, _N_ref - 1))
-                anchor_pos_w     = _ref_qpos_arr[_anchor_idx, 0:3].astype(np.float32)
-                anchor_quat_wxyz = _ref_qpos_arr[_anchor_idx, 3:7].astype(np.float32)
+                _anchor_idx = int(np.clip(step, 0, _N_src - 1))
+                # Single-frame anchor for vis/debug — matches the selected source.
+                # anchor_pos_w is not actually fed to the encoder (only used for visualization);
+                # both sources have a valid root position to draw from.
+                if _ARGS.bypass_source == "reference":
+                    anchor_pos_w     = _ref_qpos_arr[_anchor_idx, 0:3].astype(np.float32)
+                    anchor_quat_wxyz = _ref_qpos_arr[_anchor_idx, 3:7].astype(np.float32)
+                else:  # executed
+                    anchor_pos_w     = streamer._arrays["root_pos_w"][_anchor_idx].astype(np.float32)
+                    anchor_quat_wxyz = _root_orn_arr_local[_anchor_idx].astype(np.float32)
                 anchor_rot6d     = anchor_rot6d_future[0]
                 if step == 0:
                     _stride_ms = int(round(_PARQUET_LB_STEP_DT * 1000))
                     _lookahead_ms = int(round(_PARQUET_LB_STEP_DT * 9 * 1000))
-                    print("[REF-BYPASS @ step 0] G1 mode + reference-derived "
+                    print(f"[REF-BYPASS @ step 0] G1 mode + {_ARGS.bypass_source.upper()}-derived "
                           "body_pos_future/body_vel_future/anchor_rot6d_future")
+                    print(f"  source              = {_ARGS.bypass_source} "
+                          f"({'observation.state + observation.root_orientation (post-WBC, internally consistent)' if _ARGS.bypass_source == 'executed' else 'motion.reference_qpos (pre-WBC kinematic intent)'})")
                     print(f"  stride              = {_stride_ms}ms (--bypass-stride-hz {_ARGS.bypass_stride_hz}), "
                           f"{_lookahead_ms}ms total lookahead")
                     print(f"  lookahead indices   = {_PARQUET_LB_LOOKAHEAD_IDX_50HZ.tolist()}")
@@ -1122,44 +1145,6 @@ def main() -> int:
                     print(f"  anchor_rot6d[9]     = {anchor_rot6d_future[9].round(4).tolist()}")
                     print(f"  body_pos_future[0]  (MUJOCO) = {body_pos_future_mj[0].round(4).tolist()}")
                     print(f"  body_pos_future[0]  (ISAAC)  = {body_pos_future[0].round(4).tolist()}")
-                # Per-25-steps comparison: reference-derived lb_pos vs what the planner
-                # would output at this step. Helps diagnose translation-lag / cadence-shift
-                # issues caused by gait-pattern distribution mismatch between motion library
-                # and planner_sonic.onnx (which is what the encoder was trained on).
-                if step % 25 == 0:
-                    _ref_lb_now = lb_pos[0]
-                    _ref_lb_far = lb_pos[9]
-                    _ref_vel_mag = float(np.linalg.norm(lb_vel, axis=1).mean())
-                    _ref_pos_delta = float(np.linalg.norm(lb_pos[9] - lb_pos[0]))
-                    _ref_span_s = _PARQUET_LB_STEP_DT * 9  # 0->9 frames = 9 strides
-                    # Per-second joint travel (rate of joint angle change) — comparable
-                    # across stride choices and against the planner's 1.5s lookahead.
-                    _ref_pos_delta_per_s = _ref_pos_delta / _ref_span_s if _ref_span_s > 0 else 0.0
-                    print(f"[LB-CMP @ step {step}] REF (motion.reference_qpos, {_ref_span_s*1000:.0f}ms span):")
-                    print(f"  lb_pos[0]              = {_ref_lb_now.round(3).tolist()}")
-                    print(f"  lb_pos[9]              = {_ref_lb_far.round(3).tolist()}")
-                    print(f"  ||lb_pos[9]-[0]||      = {_ref_pos_delta:.3f}  "
-                          f"({_ref_pos_delta_per_s:.3f} per sec)")
-                    print(f"  mean ||lb_vel||        = {_ref_vel_mag:.3f} rad/s")
-                    if cached_planner_out is not None:
-                        _pp = cached_planner_out.mujoco_qpos[0]
-                        _pp_n = _pp.shape[0]
-                        _pp_now = _pp[0, 7:19]
-                        _pp_far_idx = min(45, _pp_n - 1)
-                        _pp_far = _pp[_pp_far_idx, 7:19]
-                        _pp_pos_delta = float(np.linalg.norm(_pp_far - _pp_now))
-                        _pp_span_s = _pp_far_idx / _PLANNER_HZ  # planner is native 30Hz
-                        _pp_pos_delta_per_s = _pp_pos_delta / _pp_span_s if _pp_span_s > 0 else 0.0
-                        print(f"[LB-CMP @ step {step}] PLANNER (cached_planner_out.mujoco_qpos, "
-                              f"{_pp_span_s*1000:.0f}ms span):")
-                        print(f"  lb_pos[0]              = {_pp_now.round(3).tolist()}")
-                        print(f"  lb_pos[far={_pp_far_idx}]         = {_pp_far.round(3).tolist()}")
-                        print(f"  ||lb_pos[far]-[0]||    = {_pp_pos_delta:.3f}  "
-                              f"({_pp_pos_delta_per_s:.3f} per sec)")
-                        _ratio = ((_ref_pos_delta_per_s / _pp_pos_delta_per_s)
-                                  if _pp_pos_delta_per_s > 1e-6 else float('inf'))
-                        print(f"  ref/planner rate ratio = {_ratio:.3f}  "
-                              f"(<1 ⇒ ref slower than planner gait → encoder under-commands speed)")
             else:
                 # (A) Planner path — preserved as fallback for parquets without the auxiliary column.
                 _qpos_30hz   = cached_planner_out.mujoco_qpos[0]             # (N, 36) native 30Hz
