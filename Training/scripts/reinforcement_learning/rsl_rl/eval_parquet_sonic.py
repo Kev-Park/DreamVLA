@@ -92,14 +92,17 @@ def _parse_cli() -> argparse.ArgumentParser:
                              "100ms produces wrong cadence and 167ms (the planner-path's effective rate) "
                              "tracks the recorded trajectory better.")
     parser.add_argument("--bypass-source", type=str, default="executed",
-                        choices=["reference", "executed"],
+                        choices=["reference", "executed", "mixed"],
                         help="Source for G1-mode body lookahead. "
                              "'executed' (default) reads observation.state and observation.root_orientation "
                              "— the robot's ACTUAL recorded state at each frame, internally consistent with "
                              "the teleop.vr_3pt_* data (which is also derived from executed wrist FK in "
                              "collect_pick_cam.py). 'reference' reads motion.reference_qpos — the IDEAL "
                              "kinematic trajectory the WBC was trying to track. Reference is smoother but "
-                             "may diverge from the executed trajectory under WBC tracking error.")
+                             "may diverge from the executed trajectory under WBC tracking error. "
+                             "'mixed' splices: lower body (legs, MJ indices 0-11) from REFERENCE for clean "
+                             "locomotion intent, upper body (waist + both arms) from EXECUTED for accurate "
+                             "recorded reach trajectory, anchor from REFERENCE (heading is leg-driven).")
     parser.add_argument("--velocity-source", type=str, default="parquet_50hz",
                         choices=["lookahead_gradient", "parquet_50hz"],
                         help="How to compute body_vel_future. "
@@ -1162,13 +1165,30 @@ def main() -> int:
                 _root_orn_arr_local  = streamer._arrays["root_orientation"]     # (N, 4) wxyz
                 _N_src = _ref_qpos_arr.shape[0]
                 _enc_idx_pq = np.clip(step + _PARQUET_LB_LOOKAHEAD_IDX_50HZ, 0, _N_src - 1)
-                # Pick source position array (full 43-joint gear_sonic).
-                if _ARGS.bypass_source == "reference":
-                    _src_pos_full = _ref_qpos_arr[:, 7:]                        # (N, 43) joints only
-                    _root_quat_full = _ref_qpos_arr[:, 3:7]                     # (N, 4) wxyz
-                else:  # executed
-                    _src_pos_full = _obs_state_arr_local                        # (N, 43)
+                # Pick / cache source position array (full 43-joint gear_sonic).
+                # Cache via streamer attribute so the mixed-mode .copy() + override only
+                # happens once per episode (not once per env step).
+                _src_pos_attr = f"_cached_src_pos_{_ARGS.bypass_source}"
+                if not hasattr(streamer, _src_pos_attr):
+                    if _ARGS.bypass_source == "reference":
+                        _val = _ref_qpos_arr[:, 7:].astype(np.float32)
+                    elif _ARGS.bypass_source == "executed":
+                        _val = _obs_state_arr_local.astype(np.float32)
+                    else:  # mixed: legs from reference, upper body from executed
+                        _val = _obs_state_arr_local.astype(np.float32).copy()
+                        # gear_sonic joint layout: indices 0-11 are legs (left then right,
+                        # MUJOCO order). Replace only those with reference's leg joints.
+                        # Indices 12-42 (waist, arms, hands) come from executed.
+                        _val[:, 0:12] = _ref_qpos_arr[:, 7:7+12].astype(np.float32)
+                    setattr(streamer, _src_pos_attr, _val)
+                _src_pos_full = getattr(streamer, _src_pos_attr)
+                # Root quat source — for anchor orientation.
+                # executed → executed root; reference & mixed → reference root (since
+                # heading is locomotion-driven and locomotion comes from reference in mixed).
+                if _ARGS.bypass_source == "executed":
                     _root_quat_full = _root_orn_arr_local                       # (N, 4)
+                else:  # reference or mixed
+                    _root_quat_full = _ref_qpos_arr[:, 3:7]                     # (N, 4) wxyz
                 # Pre-compute velocities at the parquet's native 50Hz (dt=20ms central diff)
                 # once per source — sharper than np.gradient on the sparse 100ms-stride
                 # lookahead. Cached on the streamer keyed by the source name.
@@ -1240,10 +1260,14 @@ def main() -> int:
                 if step == 0:
                     _stride_ms = int(round(_PARQUET_LB_STEP_DT * 1000))
                     _lookahead_ms = int(round(_PARQUET_LB_STEP_DT * 9 * 1000))
+                    _source_desc = {
+                        "executed":  "observation.state + observation.root_orientation (post-WBC, internally consistent)",
+                        "reference": "motion.reference_qpos (pre-WBC kinematic intent)",
+                        "mixed":     "lower body from reference, upper body from observation.state, anchor from reference",
+                    }[_ARGS.bypass_source]
                     print(f"[REF-BYPASS @ step 0] G1 mode + {_ARGS.bypass_source.upper()}-derived "
                           "body_pos_future/body_vel_future/anchor_rot6d_future")
-                    print(f"  source              = {_ARGS.bypass_source} "
-                          f"({'observation.state + observation.root_orientation (post-WBC, internally consistent)' if _ARGS.bypass_source == 'executed' else 'motion.reference_qpos (pre-WBC kinematic intent)'})")
+                    print(f"  source              = {_ARGS.bypass_source} ({_source_desc})")
                     print(f"  stride              = {_stride_ms}ms (--bypass-stride-hz {_ARGS.bypass_stride_hz}), "
                           f"{_lookahead_ms}ms total lookahead")
                     print(f"  lookahead indices   = {_PARQUET_LB_LOOKAHEAD_IDX_50HZ.tolist()}")
