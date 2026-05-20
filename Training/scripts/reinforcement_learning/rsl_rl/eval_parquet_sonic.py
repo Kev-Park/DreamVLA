@@ -908,6 +908,36 @@ def main() -> int:
         print(f"[spawn] robot restored to collection pos={_spawn_pos_w.round(4).tolist()} "
               f"yaw={np.degrees(_yaw_collection):.1f}°{_offset_msg}")
 
+        # Diagnostic: compare REFERENCE frame-0 robot pose vs EXECUTED frame-0.
+        # The robot spawn uses EXECUTED (teleop.root_pos_w + observation.root_orientation),
+        # but the G1-mode encoder reads the REFERENCE trajectory (motion.reference_qpos).
+        # If reference[0] ≠ executed[0], the robot starts at one location but the encoder's
+        # trajectory is anchored to another — meaning the final root position (and therefore
+        # arm reach to the bottle) will be offset by (executed[0] − reference[0]).
+        if "reference_qpos" in streamer._arrays:
+            _ref_qp_arr = streamer._arrays["reference_qpos"]
+            _ref_pos0  = _ref_qp_arr[0, 0:3].astype(np.float32)
+            _ref_quat0 = _ref_qp_arr[0, 3:7].astype(np.float32)
+            _exec_pos0  = streamer._arrays["root_pos_w"][0].astype(np.float32)
+            _exec_quat0 = streamer._arrays["root_orientation"][0].astype(np.float32)
+            _pos_gap  = _exec_pos0 - _ref_pos0
+            _pos_gap_mag = float(np.linalg.norm(_pos_gap))
+            _ref_yaw  = float(R.from_quat(quat_wxyz_to_xyzw(_ref_quat0)).as_euler("zyx")[0])
+            _exec_yaw = float(R.from_quat(quat_wxyz_to_xyzw(_exec_quat0)).as_euler("zyx")[0])
+            _yaw_gap_deg = float(np.degrees(_exec_yaw - _ref_yaw))
+            print("[spawn-cmp] frame 0 reference vs executed pose:")
+            print(f"  reference root_pos = {_ref_pos0.round(4).tolist()}  yaw = {np.degrees(_ref_yaw):.2f}°")
+            print(f"  executed  root_pos = {_exec_pos0.round(4).tolist()}  yaw = {np.degrees(_exec_yaw):.2f}°")
+            print(f"  executed - reference = {_pos_gap.round(4).tolist()}  |Δ|={_pos_gap_mag:.4f}m"
+                  f"  Δyaw={_yaw_gap_deg:+.2f}°")
+            if _pos_gap_mag < 0.005 and abs(_yaw_gap_deg) < 0.5:
+                print("  → frame-0 spawn matches reference (≤5mm, ≤0.5°). Bypass=reference is safe.")
+            else:
+                print(f"  → NONZERO gap. If using --bypass-source reference, robot will end up offset "
+                      f"by ~{_pos_gap.round(4).tolist()}m from where the reference would have grabbed. "
+                      f"Object spawn is also from executed, so object→robot relative geometry stays "
+                      f"consistent with the recording. Use --bypass-source executed for full consistency.")
+
         # Per-episode grasp-event tracking. Fires once when right-hand mean finger angle
         # first crosses --grasp-closure-threshold (default 0.5 rad) — prints bottle vs
         # right-wrist coordinate offset so you can manually tune --robot-spawn-offset-*.
