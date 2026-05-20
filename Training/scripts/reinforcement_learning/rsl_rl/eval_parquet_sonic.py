@@ -100,6 +100,27 @@ def _parse_cli() -> argparse.ArgumentParser:
                              "collect_pick_cam.py). 'reference' reads motion.reference_qpos — the IDEAL "
                              "kinematic trajectory the WBC was trying to track. Reference is smoother but "
                              "may diverge from the executed trajectory under WBC tracking error.")
+    parser.add_argument("--velocity-source", type=str, default="parquet_50hz",
+                        choices=["lookahead_gradient", "parquet_50hz"],
+                        help="How to compute body_vel_future. "
+                             "'parquet_50hz' (default) pre-computes velocities once per episode via "
+                             "np.gradient at the parquet's native 50Hz (dt=20ms), then samples at the "
+                             "encoder's lookahead indices — sharper, lower-noise velocities since the "
+                             "finite-difference window is 40ms central instead of 200ms. "
+                             "'lookahead_gradient' uses np.gradient on the sparse 100ms-stride lookahead "
+                             "samples (original behavior, 200ms central diff windows).")
+    parser.add_argument("--robot-spawn-offset-x", type=float, default=0.0,
+                        help="Manual additive offset (meters) to robot spawn X position. Use the GRASP "
+                             "printout's bottle-vs-hand offset to tune.")
+    parser.add_argument("--robot-spawn-offset-y", type=float, default=0.0,
+                        help="Manual additive offset (meters) to robot spawn Y position.")
+    parser.add_argument("--robot-spawn-offset-z", type=float, default=0.0,
+                        help="Manual additive offset (meters) to robot spawn Z position. Use with caution "
+                             "(physics may reject extreme values).")
+    parser.add_argument("--grasp-closure-threshold", type=float, default=0.5,
+                        help="Mean right-hand finger joint angle (rad) above which a grasp is considered "
+                             "executed. Default 0.5. Prints bottle↔hand offset at the first crossing of "
+                             "this threshold each episode.")
     return parser
 
 
@@ -744,6 +765,24 @@ def main() -> int:
     robot = env.unwrapped.scene["robot"]
     isaac_to_utm_perm = build_isaac_to_utm_perm(list(robot.data.joint_names))
 
+    # --- 4b. Lookups for grasp detection -------------------------------
+    # Right wrist body for hand-vs-bottle offset; right-hand finger joints for closure check.
+    _right_wrist_ids, _ = robot.find_bodies(["right_wrist_yaw_link"])
+    if len(_right_wrist_ids) != 1:
+        raise RuntimeError(
+            f"Expected exactly one 'right_wrist_yaw_link' body match, got {_right_wrist_ids}"
+        )
+    _right_wrist_idx = int(_right_wrist_ids[0])
+    _right_hand_joint_names = [
+        "right_hand_thumb_0_joint", "right_hand_thumb_1_joint", "right_hand_thumb_2_joint",
+        "right_hand_index_0_joint", "right_hand_index_1_joint",
+        "right_hand_middle_0_joint", "right_hand_middle_1_joint",
+    ]
+    _name_to_idx = {n: i for i, n in enumerate(robot.data.joint_names)}
+    _right_hand_joint_ids = [_name_to_idx[n] for n in _right_hand_joint_names if n in _name_to_idx]
+    if not _right_hand_joint_ids:
+        print("[grasp] WARNING: no right-hand finger joints found by name — grasp detection disabled.")
+
     # --- 5. History buffer --------------------------------------------
     history = HistoryBuffer()
 
@@ -846,9 +885,15 @@ def main() -> int:
         _qc_xyzw = R.from_euler("z", _yaw_collection).as_quat()  # (x,y,z,w) scipy convention
         _qc_wxyz = np.array([_qc_xyzw[3], _qc_xyzw[0], _qc_xyzw[1], _qc_xyzw[2]], dtype=np.float32)
         if _collection_robot_pos0 is not None:
-            _spawn_pos_w = _collection_robot_pos0          # exact collection XY + Z
+            _spawn_pos_w = _collection_robot_pos0.copy()   # exact collection XY + Z
         else:
             _spawn_pos_w = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
+        # Apply CLI offsets for manual tuning of robot starting location.
+        _spawn_offset = np.array(
+            [_ARGS.robot_spawn_offset_x, _ARGS.robot_spawn_offset_y, _ARGS.robot_spawn_offset_z],
+            dtype=np.float32,
+        )
+        _spawn_pos_w = _spawn_pos_w + _spawn_offset
         robot.write_root_pose_to_sim(
             torch.tensor(np.concatenate([_spawn_pos_w, _qc_wxyz])[None, :],
                          device="cuda:0", dtype=torch.float32),
@@ -857,8 +902,16 @@ def main() -> int:
         robot.write_root_velocity_to_sim(
             torch.zeros((1, 6), device="cuda:0"), env_ids=torch.tensor([0], device="cuda:0")
         )
+        _offset_msg = ""
+        if float(np.abs(_spawn_offset).sum()) > 1e-9:
+            _offset_msg = f" (+ CLI offset {_spawn_offset.round(4).tolist()})"
         print(f"[spawn] robot restored to collection pos={_spawn_pos_w.round(4).tolist()} "
-              f"yaw={np.degrees(_yaw_collection):.1f}°")
+              f"yaw={np.degrees(_yaw_collection):.1f}°{_offset_msg}")
+
+        # Per-episode grasp-event tracking. Fires once when right-hand mean finger angle
+        # first crosses --grasp-closure-threshold (default 0.5 rad) — prints bottle vs
+        # right-wrist coordinate offset so you can manually tune --robot-spawn-offset-*.
+        _grasp_detected_this_episode = False
 
         env.step(zero_action)   # warm-up camera buffer + propagates object pose and heading overrides
         _APP.update()           # flush warm-up render to annotators
@@ -1079,19 +1132,44 @@ def main() -> int:
                 _root_orn_arr_local  = streamer._arrays["root_orientation"]     # (N, 4) wxyz
                 _N_src = _ref_qpos_arr.shape[0]
                 _enc_idx_pq = np.clip(step + _PARQUET_LB_LOOKAHEAD_IDX_50HZ, 0, _N_src - 1)
+                # Pick source position array (full 43-joint gear_sonic).
                 if _ARGS.bypass_source == "reference":
-                    _ref_window = _ref_qpos_arr[_enc_idx_pq]                    # (10, 7+num_joints)
-                    _joints_window = _ref_window[:, 7:]                         # (10, 43) joints only
-                    _root_quat_window = _ref_window[:, 3:7]                     # (10, 4) wxyz
+                    _src_pos_full = _ref_qpos_arr[:, 7:]                        # (N, 43) joints only
+                    _root_quat_full = _ref_qpos_arr[:, 3:7]                     # (N, 4) wxyz
                 else:  # executed
-                    _joints_window    = _obs_state_arr_local[_enc_idx_pq]       # (10, 43) gear_sonic order
-                    _root_quat_window = _root_orn_arr_local[_enc_idx_pq]        # (10, 4) wxyz
+                    _src_pos_full = _obs_state_arr_local                        # (N, 43)
+                    _root_quat_full = _root_orn_arr_local                       # (N, 4)
+                # Pre-compute velocities at the parquet's native 50Hz (dt=20ms central diff)
+                # once per source — sharper than np.gradient on the sparse 100ms-stride
+                # lookahead. Cached on the streamer keyed by the source name.
+                # When velocity-source == "lookahead_gradient" we skip the precompute and
+                # use the original sparse-lookahead np.gradient downstream.
+                if _ARGS.velocity_source == "parquet_50hz":
+                    _vel_cache_attr = f"_cached_vel_{_ARGS.bypass_source}"
+                    if not hasattr(streamer, _vel_cache_attr):
+                        setattr(
+                            streamer, _vel_cache_attr,
+                            np.gradient(_src_pos_full, 1.0 / 50.0, axis=0).astype(np.float32),
+                        )
+                    _src_vel_full = getattr(streamer, _vel_cache_attr)
+                # Window the source at the lookahead indices.
+                _joints_window     = _src_pos_full[_enc_idx_pq]                 # (10, 43)
+                _root_quat_window  = _root_quat_full[_enc_idx_pq]               # (10, 4)
                 # Full-body 29-joint future for G1 mode's motion_joint_positions_10frame_step5 slot.
                 # BODY_INDICES_IN_GEAR_SONIC (non-contiguous: skips left_hand fingers at gear_sonic
                 # indices 22-28). Naive [:, 0:29] would silently include left_hand fingers and
                 # exclude right_arm. Result is in MUJOCO-grouped order (gear_sonic.joint_names body slice).
                 body_pos_future_mj = _joints_window[:, BODY_INDICES_IN_GEAR_SONIC].astype(np.float32)  # (10, 29)
-                body_vel_future_mj = np.gradient(body_pos_future_mj, _PARQUET_LB_STEP_DT, axis=0).astype(np.float32)
+                if _ARGS.velocity_source == "parquet_50hz":
+                    # Sample the precomputed 50Hz velocities at the same lookahead indices.
+                    body_vel_future_mj = (
+                        _src_vel_full[_enc_idx_pq][:, BODY_INDICES_IN_GEAR_SONIC].astype(np.float32)
+                    )
+                else:
+                    # Fallback: noisy 200ms-window finite differences on the sparse lookahead.
+                    body_vel_future_mj = np.gradient(
+                        body_pos_future_mj, _PARQUET_LB_STEP_DT, axis=0
+                    ).astype(np.float32)
                 # G1 encoder slot motion_joint_positions_10frame_step5 expects 29 joints in
                 # SONIC-IsaacLab interleaved order (LHP, RHP, WY, LHR, RHR, WR, LHY, RHY, WP,
                 # LK, RK, LSP, RSP, LAP, RAP, LSR, RSR, LAR, RAR, LSY, RSY, LE, RE, LWR, RWR,
@@ -1254,6 +1332,33 @@ def main() -> int:
                 delta = np.abs(q_post - q_pre)
                 print(f"[step {step}] joint_pos max_delta={delta.max():.6f}  "
                       f"mean_delta={delta.mean():.6f}  rew={float(rew[0]):.4f}")
+
+            # 7h-grasp. Detect first right-hand closure and print bottle↔hand offset.
+            # Triggers once per episode on the rising edge of mean right-finger angle
+            # crossing --grasp-closure-threshold. Use the printed XYZ offset to manually
+            # tune --robot-spawn-offset-{x,y,z} so the next run's robot reaches the
+            # bottle in time.
+            if not _grasp_detected_this_episode and _right_hand_joint_ids:
+                _rh_angles = robot.data.joint_pos[0, _right_hand_joint_ids].detach().cpu().numpy()
+                _rh_mean = float(_rh_angles.mean())
+                if _rh_mean > _ARGS.grasp_closure_threshold:
+                    _grasp_detected_this_episode = True
+                    _bottle_pos = (env.unwrapped.scene["object"].data.root_pos_w[0]
+                                   .detach().cpu().numpy().astype(np.float32))
+                    _wrist_pos = (robot.data.body_pos_w[0, _right_wrist_idx]
+                                  .detach().cpu().numpy().astype(np.float32))
+                    _offset_bw = _bottle_pos - _wrist_pos
+                    _dist = float(np.linalg.norm(_offset_bw))
+                    print(f"\n[GRASP @ step {step}] right hand closed "
+                          f"(mean finger angle = {_rh_mean:.3f} rad, "
+                          f"threshold = {_ARGS.grasp_closure_threshold:.3f})")
+                    print(f"  bottle pos       = {_bottle_pos.round(4).tolist()}  (world XYZ, m)")
+                    print(f"  right wrist pos  = {_wrist_pos.round(4).tolist()}  (world XYZ, m)")
+                    print(f"  bottle - wrist   = {_offset_bw.round(4).tolist()}  "
+                          f"(world XYZ offset; +X is forward, +Y is left, +Z is up)")
+                    print(f"  euclidean dist   = {_dist:.4f} m")
+                    print(f"  → to close gap, try --robot-spawn-offset-x {_offset_bw[0]:+.3f} "
+                          f"--robot-spawn-offset-y {_offset_bw[1]:+.3f}\n")
 
             # 7i. Flush RTX render pipeline before reading cameras.
             # eval_vla_sonic.py gets this flush for free from VLA inference time;
