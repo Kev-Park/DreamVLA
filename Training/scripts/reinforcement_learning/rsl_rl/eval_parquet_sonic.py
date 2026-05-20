@@ -124,6 +124,22 @@ def _parse_cli() -> argparse.ArgumentParser:
                         help="Mean right-hand finger joint angle (rad) above which a grasp is considered "
                              "executed. Default 0.5. Prints bottle↔hand offset at the first crossing of "
                              "this threshold each episode.")
+    parser.add_argument("--right-hand-closure-scale", type=float, default=1.0,
+                        help="Multiplicative scale applied to right-hand finger commands before they "
+                             "reach the WBC. The recorded teleop.right_hand_joints column is the EXECUTED "
+                             "finger state from the collection — if physical contact with the bottle "
+                             "limited closure to e.g. 0.5 rad, re-commanding 0.5 rad in eval reproduces "
+                             "the same loose grip. Values >1.0 amplify finger commands proportionally; "
+                             "try 1.3–2.0 to compensate for under-gripping. Affects ALL frames, not just "
+                             "grip moments — too high may make fingers twitch during walking.")
+    parser.add_argument("--left-hand-closure-scale", type=float, default=1.0,
+                        help="Same as --right-hand-closure-scale but for left hand.")
+    parser.add_argument("--hand-closure-latch", action="store_true",
+                        help="Once mean right-hand finger angle crosses --grasp-closure-threshold for the "
+                             "first time, latch the right-hand fingers to a fully-closed pose (1.3 rad) for "
+                             "the remainder of the episode. Targets the 'grip-then-bottle-slips' failure: "
+                             "compensates for the executed parquet finger angles having been constrained "
+                             "by contact at collection time. Independent of --right-hand-closure-scale.")
     return parser
 
 
@@ -1369,6 +1385,24 @@ def main() -> int:
                 vla_action=parquet_frame,
                 t_index=0,
             )
+
+            # 7g-grip. Finger command post-processing for grip-strength tuning.
+            # teleop.{left,right}_hand_joints in the parquet are EXECUTED finger angles
+            # from the recording (joint_pos at collect-time), not commanded angles —
+            # if collection-time contact with the bottle limited closure, replaying those
+            # values reproduces the same loose grip. Two independent knobs to compensate:
+            #   --right-hand-closure-scale  multiplicative gain on all right-hand finger
+            #                               commands (also affects left-hand variant).
+            #   --hand-closure-latch        once the right hand crosses the grasp
+            #                               threshold, lock fingers fully closed for the
+            #                               remainder of the episode.
+            if _ARGS.left_hand_closure_scale != 1.0:
+                env_action_np[27:34] *= _ARGS.left_hand_closure_scale
+            if _ARGS.right_hand_closure_scale != 1.0:
+                env_action_np[34:41] *= _ARGS.right_hand_closure_scale
+            if _ARGS.hand_closure_latch and _grasp_detected_this_episode:
+                env_action_np[34:41] = 1.3  # fully-closed pose for all 7 right-hand joints
+
             if step < 3:
                 print(f"[step {step}] utm_body_29[:15]       = {utm_body_29[:15].round(3).tolist()}")
                 print(f"[step {step}]   env body[:12] (legs) = {env_action_np[:12].round(3).tolist()}")
@@ -1406,13 +1440,20 @@ def main() -> int:
                     print(f"\n[GRASP @ step {step}] right hand closed "
                           f"(mean finger angle = {_rh_mean:.3f} rad, "
                           f"threshold = {_ARGS.grasp_closure_threshold:.3f})")
+                    print(f"  right fingers    = {_rh_angles.round(3).tolist()}  "
+                          f"(thumb_0/1/2, index_0/1, middle_0/1)")
                     print(f"  bottle pos       = {_bottle_pos.round(4).tolist()}  (world XYZ, m)")
                     print(f"  right wrist pos  = {_wrist_pos.round(4).tolist()}  (world XYZ, m)")
                     print(f"  bottle - wrist   = {_offset_bw.round(4).tolist()}  "
                           f"(world XYZ offset; +X is forward, +Y is left, +Z is up)")
                     print(f"  euclidean dist   = {_dist:.4f} m")
                     print(f"  → to close gap, try --robot-spawn-offset-x {_offset_bw[0]:+.3f} "
-                          f"--robot-spawn-offset-y {_offset_bw[1]:+.3f}\n")
+                          f"--robot-spawn-offset-y {_offset_bw[1]:+.3f}")
+                    if _rh_mean < 1.0:
+                        print(f"  → if grip is loose, try --right-hand-closure-scale "
+                              f"{max(1.0, 1.2/_rh_mean):.2f} or --hand-closure-latch\n")
+                    else:
+                        print("")
 
             # 7i. Flush RTX render pipeline before reading cameras.
             # eval_vla_sonic.py gets this flush for free from VLA inference time;
