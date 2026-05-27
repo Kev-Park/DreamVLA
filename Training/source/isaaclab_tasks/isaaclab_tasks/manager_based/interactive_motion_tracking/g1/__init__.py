@@ -58,6 +58,19 @@ gym.register(
     },
 )
 
+# No-camera pick env with continuous fingers + SONIC-matched actuators.
+# Used by train_sonic.py to RL-train a custom encoder against the frozen SONIC decoder.
+gym.register(
+    id="Isaac-Motion-Tracking-Pick-ContFingers-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_env:G1PickContinuousFingersEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
+
 gym.register(
     id="Isaac-Motion-Tracking-Pick-Top-UB-Real-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

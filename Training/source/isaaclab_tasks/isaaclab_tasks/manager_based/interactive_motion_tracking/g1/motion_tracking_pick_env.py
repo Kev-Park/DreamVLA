@@ -844,3 +844,29 @@ class G1PickCamContinuousFingersEnvCfg(G1PickCamEnvCfg):
         print(f"[SONIC-gains] arms.stiffness = {arms.stiffness}")
         feet = self.scene.robot.actuators["feet"]
         print(f"[SONIC-gains] feet.stiffness = {feet.stiffness} damping = {feet.damping}")
+
+
+@configclass
+class G1PickContinuousFingersEnvCfg(G1PickEnvCfg):
+    """No-camera pick env with continuous fingers + SONIC-matched actuators.
+
+    Same scene / rewards / observations / motion as ``G1PickEnvCfg`` (no camera
+    unless ``enable_cameras`` is set), but swaps in ``ContinuousFingersActionsCfg``
+    so the body action is pass-through (absolute joint targets) — matching the
+    SONIC decoder convention used by ``train_sonic.py`` and ``eval_parquet_sonic.py``.
+    Used for RL-training a custom encoder against the frozen SONIC decoder.
+    """
+    actions: ContinuousFingersActionsCfg = ContinuousFingersActionsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # SONIC-training-matched PD gains so ``q = default + utm * scale`` produces
+        # the motion the UTM was trained against (Isaac's default gains overshoot).
+        self.scene.robot.actuators = _build_sonic_matched_actuators()
+        legs = self.scene.robot.actuators["legs"]
+        print(f"[SONIC-gains] legs.stiffness = {legs.stiffness}")
+        print(f"[SONIC-gains] legs.damping   = {legs.damping}")
+        arms = self.scene.robot.actuators["arms"]
+        print(f"[SONIC-gains] arms.stiffness = {arms.stiffness}")
+        feet = self.scene.robot.actuators["feet"]
+        print(f"[SONIC-gains] feet.stiffness = {feet.stiffness} damping = {feet.damping}")

@@ -128,18 +128,13 @@ def _parse_cli() -> argparse.ArgumentParser:
                         help="Multiplicative scale applied to right-hand finger commands before they "
                              "reach the WBC. The recorded teleop.right_hand_joints column is the EXECUTED "
                              "finger state from the collection — if physical contact with the bottle "
-                             "limited closure to e.g. 0.5 rad, re-commanding 0.5 rad in eval reproduces "
-                             "the same loose grip. Values >1.0 amplify finger commands proportionally; "
-                             "try 1.3–2.0 to compensate for under-gripping. Affects ALL frames, not just "
-                             "grip moments — too high may make fingers twitch during walking.")
+                             "limited closure to e.g. 0.5 rad of magnitude, re-commanding that value in "
+                             "eval reproduces the same loose grip. Values >1.0 amplify finger commands "
+                             "proportionally (sign-preserving, since thumb closes positive but "
+                             "index/middle close negative on G1). Try 1.3–2.0 to compensate for "
+                             "under-gripping. No clamping is applied — WBC handles out-of-range commands.")
     parser.add_argument("--left-hand-closure-scale", type=float, default=1.0,
                         help="Same as --right-hand-closure-scale but for left hand.")
-    parser.add_argument("--hand-closure-latch", action="store_true",
-                        help="Once mean right-hand finger angle crosses --grasp-closure-threshold for the "
-                             "first time, latch the right-hand fingers to a fully-closed pose (1.3 rad) for "
-                             "the remainder of the episode. Targets the 'grip-then-bottle-slips' failure: "
-                             "compensates for the executed parquet finger angles having been constrained "
-                             "by contact at collection time. Independent of --right-hand-closure-scale.")
     return parser
 
 
@@ -342,17 +337,18 @@ _PARQUET_COL_MAP: dict[str, tuple[str, type]] = {
     "teleop.planner_speed":         ("planner_speed",      np.float32),  # (1,)
     "teleop.planner_height":        ("planner_height",     np.float32),  # (1,)
     "teleop.planner_mode":          ("planner_mode",       np.int32),    # (1,) derived in converter
-    "teleop.vr_3pt_position":       ("vr_3pt_position",    np.float32),  # (9,) world-frame in new schema
-    "teleop.vr_3pt_orientation":    ("vr_3pt_orientation", np.float32),  # (18,) world-frame rot6d
+    "teleop.vr_3pt_position":       ("vr_3pt_position",    np.float32),  # (9,) pelvis-local — _apply_local_offset in converter preserves local frame
+    "teleop.vr_3pt_orientation":    ("vr_3pt_orientation", np.float32),  # (18,) pelvis-local rot6d
     "teleop.left_hand_joints":      ("left_hand_joints",   np.float32),  # (7,)
     "teleop.right_hand_joints":     ("right_hand_joints",  np.float32),  # (7,)
     # Canonical root orientation (wxyz float64) — used for spawn heading extraction.
     "observation.root_orientation": ("root_orientation",   np.float64),  # (4,)
     # Absolute robot position in the collection world frame.
     "teleop.root_pos_w":            ("root_pos_w",         np.float32),  # (3,)
-    # Full 29-dim joint state in SONIC/UTM order — used to construct the encoder's
-    # lower-body lookahead trajectory directly from the recorded parquet (Q1 fix).
-    "observation.state":            ("obs_state",          np.float32),  # (29,)
+    # Full 43-dim gear_sonic joint state (body 29 + left_hand 7 + right_hand 7) — used by
+    # the G1-mode bypass to feed the encoder's full-body lookahead (BODY_INDICES_IN_GEAR_SONIC
+    # extracts the 29 body joints; naive [:29] silently includes left_hand and misses right_arm).
+    "observation.state":            ("obs_state",          np.float32),  # (43,) gear_sonic order
 }
 
 # Optional columns — loaded when present, ignored when absent.
@@ -1390,18 +1386,16 @@ def main() -> int:
             # teleop.{left,right}_hand_joints in the parquet are EXECUTED finger angles
             # from the recording (joint_pos at collect-time), not commanded angles —
             # if collection-time contact with the bottle limited closure, replaying those
-            # values reproduces the same loose grip. Two independent knobs to compensate:
-            #   --right-hand-closure-scale  multiplicative gain on all right-hand finger
-            #                               commands (also affects left-hand variant).
-            #   --hand-closure-latch        once the right hand crosses the grasp
-            #                               threshold, lock fingers fully closed for the
-            #                               remainder of the episode.
+            # values reproduces the same loose grip. The --{left,right}-hand-closure-scale
+            # flags multiply the finger commands; multiplication is sign-preserving so it
+            # closes both the positive-direction-closing thumb joints and the
+            # negative-direction-closing index/middle joints proportionally. No clamping
+            # is applied — the WBC's internal joint-limit handling takes over for any
+            # commands beyond physical range.
             if _ARGS.left_hand_closure_scale != 1.0:
                 env_action_np[27:34] *= _ARGS.left_hand_closure_scale
             if _ARGS.right_hand_closure_scale != 1.0:
                 env_action_np[34:41] *= _ARGS.right_hand_closure_scale
-            if _ARGS.hand_closure_latch and _grasp_detected_this_episode:
-                env_action_np[34:41] = 1.3  # fully-closed pose for all 7 right-hand joints
 
             if step < 3:
                 print(f"[step {step}] utm_body_29[:15]       = {utm_body_29[:15].round(3).tolist()}")
