@@ -1,32 +1,31 @@
-"""RL-train a custom encoder against the FROZEN SONIC decoder.
+"""RL-train a custom encoder against the FROZEN SONIC decoder (ONNX-backed).
 
-The SONIC ``UniversalTokenModule`` is an encoder → FSQ quantizer → decoder stack.
-Here we *freeze the decoder + quantizer* and let an RL (PPO) policy play the role
-of the encoder: the rsl_rl actor consumes the env's native observation and emits a
-``token_total_dim``-D continuous latent. This wrapper then
+The SONIC release ships the decoder as ``model_decoder.onnx`` (the exact decoder
+``eval_parquet_sonic.py`` already drives: a single ``obs_dict`` input of 994 dims →
+``action`` of 29 dims). Here we freeze that decoder and let an RL (PPO) policy play the
+role of the SONIC *encoder*: the rsl_rl actor maps the env observation to a 64-D token,
+which this wrapper feeds (with batched proprioception history) to the frozen decoder to
+get a 29-D body command, then maps that to the env action and steps the sim.
 
-  1. reshapes the latent to (B, max_num_tokens, token_dim) and runs the frozen FSQ
-     quantizer → flat token (``token_flattened``),
-  2. runs the frozen ``g1_dyn`` decoder (token + batched proprioception history) →
-     29-D body command (SONIC-IsaacLab joint order),
-  3. maps the 29-D command to the env's action space (drop waist roll/pitch, permute
-     to JointNamesOrder, append constant default finger targets),
-  4. steps the underlying Isaac Lab env and updates the decoder's rolling history.
+Why ONNX (not the PyTorch ``last.pt``): instantiating the PyTorch ``UniversalTokenModule``
+requires observation dims that only exist after building a live SONIC env (the heavy-dep
+stack kept in a separate repo). The ONNX decoder carries identical frozen weights and runs
+standalone. We convert it to a batched GPU torch module via ``onnx2torch`` (forward
+inference only — PPO is model-free, so no gradient flows through the decoder).
 
-PPO is model-free: the frozen decoder + sim are just the "augmented environment", so
-gradients never flow through the decoder/quantizer. We therefore run them under
-``torch.no_grad()`` and only need batched forward inference.
+Token convention (v1): the decoder was trained on FSQ-quantized tokens, which live in a
+normalized ~[-1, 1] grid. We don't have ``sonic_release/config.yaml`` (the FSQ level list),
+so instead of reproducing FSQ we squash the policy's continuous latent with ``tanh`` to
+[-1, 1] and feed it directly. This drops the quantization bottleneck (no discrete tokens)
+but keeps decoder inputs in-distribution and is simpler for PPO. To restore exact FSQ,
+download ``sonic_release/config.yaml`` for the level list and quantize before the tanh.
 
-Contract notes (verified against gear_sonic):
-- ``decode("g1_dyn", {...})`` concatenates the decoder's declared ``input_features``
-  (``token_flattened`` + ``proprioception``) along the last dim, so both must carry a
-  sequence dim: ``token_flattened`` (B,1,64), ``proprioception`` (B,1,930). Output
-  ``["action"]`` is (B,1,29). See ``inference_helpers.export_universal_token_decoder_as_onnx``.
-- proprioception order matches ``vla_sonic.planner_to_utm.build_decoder_obs`` (minus the
-  token slot): his_base_angular_velocity(30), his_body_joint_positions(290),
-  his_body_joint_velocities(290), his_last_actions(290), his_gravity_dir(30) = 930.
-- The 29-D body command → env action transform mirrors
-  ``vla_sonic.action_assembler.utm_body_29_to_env_27`` exactly (batched here).
+Decoder obs layout (994 = 64 + 930), matching ``vla_sonic.planner_to_utm.build_decoder_obs``:
+    token_state(64),
+    his_base_angular_velocity(30), his_body_joint_positions(290),
+    his_body_joint_velocities(290), his_last_actions(290), his_gravity_dir(30).
+The 29-D body command → env action transform mirrors
+``vla_sonic.action_assembler.utm_body_29_to_env_27`` (batched here).
 """
 
 from __future__ import annotations
@@ -44,8 +43,7 @@ from .action_assembler import (
     WAIST_ROLL_SONIC_IDX,
 )
 
-# Left/right hand action-term joint order — must match the cfg term order in
-# ContinuousFingersActionsCfg (left_hand_action then right_hand_action).
+# Left/right hand action-term joint order — must match ContinuousFingersActionsCfg.
 _LEFT_FINGER_JOINTS = [
     "left_hand_thumb_0_joint", "left_hand_thumb_1_joint", "left_hand_thumb_2_joint",
     "left_hand_index_0_joint", "left_hand_index_1_joint",
@@ -57,9 +55,7 @@ _RIGHT_FINGER_JOINTS = [
     "right_hand_middle_0_joint", "right_hand_middle_1_joint",
 ]
 
-# SONIC-IsaacLab 29-joint order (no fingers). Used to gather the env's measured
-# joint state into the order the decoder history was trained on. Mirrors
-# eval_parquet_sonic.UTM_29_JOINT_NAMES.
+# SONIC-IsaacLab 29-joint order (no fingers). Mirrors eval_parquet_sonic.UTM_29_JOINT_NAMES.
 UTM_29_JOINT_NAMES = [
     "left_hip_pitch_joint", "right_hip_pitch_joint", "waist_yaw_joint",
     "left_hip_roll_joint", "right_hip_roll_joint", "waist_roll_joint",
@@ -79,97 +75,33 @@ assert len(UTM_29_JOINT_NAMES) == 29
 
 N_HISTORY_FRAMES = 10
 N_BODY_JOINTS = 29
+TOKEN_TOTAL_DIM = 64          # 2 tokens x 32 FSQ channels
+PROPRIO_DIM = 930            # 10 frames x (3 + 29 + 29 + 29 + 3)
+DECODER_OBS_DIM = TOKEN_TOTAL_DIM + PROPRIO_DIM  # 994
 
 
 # =========================================================================
-# Frozen UTM loader
+# Frozen decoder loader (ONNX → batched torch module)
 # =========================================================================
 
-def load_frozen_utm(config_path: str, ckpt_path: str, device, *, decoder_name: str = "g1_dyn"):
-    """Build the SONIC ``UniversalTokenModule`` from a released checkpoint and freeze it.
+def load_frozen_decoder(onnx_path: str, device):
+    """Convert ``model_decoder.onnx`` to a frozen, batched GPU torch module.
 
-    The released config (``model_config.yaml`` produced by ``eval_agent_trl.py``'s export
-    branch) carries the resolved ``env_config`` and ``algo_config``. The actor module is
-    instantiated exactly as eval_agent_trl.py does:
-        ``custom_instantiate(algo_config.actor, env_config=..., algo_config=..., module_dim_dict=...)``
-    and the UTM is ``policy.actor_module`` (the actor is a thin policy wrapper around it).
-
-    Returns the frozen UTM in eval mode. Decoder + quantizer + encoders are all frozen
-    (we only ever call ``utm.quantizer`` and ``utm.decode`` for forward inference).
+    The ONNX has a single input ``obs_dict`` of shape (B, 994) = [token(64) | proprio(930)]
+    and a single output ``action`` of shape (B, 29). ``onnx2torch`` produces an fx
+    GraphModule whose forward takes one positional tensor and returns one tensor; the
+    internal graph ops (last-dim slices, unsqueeze on a fixed axis, Linear/MLP, squeeze)
+    are all batch-polymorphic, so it runs for any batch size despite the batch=1 export.
     """
-    from omegaconf import OmegaConf
+    from onnx2torch import convert
 
-    from gear_sonic.trl.utils import common as trl_common
-
-    cfg = OmegaConf.load(config_path)
-
-    # The export dumps {env_config, algo_config}. Be tolerant of either that shape or a
-    # config that already *is* the algo config.
-    if "env_config" in cfg and "algo_config" in cfg:
-        env_config = cfg.env_config
-        algo_config = cfg.algo_config
-    elif "algo" in cfg:  # raw training config fallback
-        env_config = cfg.get("env", None)
-        algo_config = cfg.algo.config
-    else:
-        raise KeyError(
-            f"Unrecognized SONIC config layout in {config_path}; "
-            f"top-level keys = {list(cfg.keys())}. Expected 'env_config'+'algo_config'."
-        )
-
-    actor_cfg = algo_config["actor"]
-    module_dim_dict = algo_config.get("module_dim", {})
-
-    print(f"[load_frozen_utm] actor _target_ = {actor_cfg.get('_target_', '<none>')}")
-    policy = trl_common.custom_instantiate(
-        actor_cfg,
-        env_config=env_config,
-        algo_config=algo_config,
-        module_dim_dict=module_dim_dict,
-        backbone_kwargs={},
-        _resolve=False,
-    ).to(device)
-
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    if isinstance(ckpt, dict) and "actor_model_state_dict" in ckpt:
-        state_dict = ckpt["actor_model_state_dict"]
-    elif isinstance(ckpt, dict) and "policy_state_dict" in ckpt:
-        state_dict = ckpt["policy_state_dict"]
-    elif isinstance(ckpt, dict) and "model" in ckpt:
-        state_dict = ckpt["model"]
-    else:
-        state_dict = ckpt  # assume raw state_dict
-
-    # std/log_std backward-compat (mirrors eval_agent_trl.py).
-    model_keys = set(policy.state_dict().keys())
-    if "std" in model_keys and "log_std" in state_dict and "std" not in state_dict:
-        state_dict["std"] = torch.exp(state_dict.pop("log_std"))
-    elif "log_std" in model_keys and "std" in state_dict and "log_std" not in state_dict:
-        state_dict["log_std"] = torch.log(state_dict.pop("std"))
-
-    missing, unexpected = policy.load_state_dict(state_dict, strict=False)
-    if missing:
-        print(f"[load_frozen_utm] WARNING missing state_dict keys ({len(missing)}): {missing[:8]}...")
-    if unexpected:
-        print(f"[load_frozen_utm] WARNING unexpected state_dict keys ({len(unexpected)}): {unexpected[:8]}...")
-
-    utm = getattr(policy, "actor_module", policy)
-    assert hasattr(utm, "decode") and hasattr(utm, "decoders"), \
-        "Loaded module has no .decode/.decoders — not a UniversalTokenModule?"
-    assert decoder_name in utm.decoders, \
-        f"decoder '{decoder_name}' not in {list(utm.decoders.keys())}"
-
-    for p in utm.parameters():
+    module = convert(onnx_path)
+    module = module.to(device).eval()
+    for p in module.parameters():
         p.requires_grad = False
-    utm.eval()
-
-    print(f"[load_frozen_utm] token_total_dim={utm.token_total_dim} "
-          f"(max_num_tokens={utm.max_num_tokens}, token_dim={utm.token_dim})")
-    print(f"[load_frozen_utm] decoders={list(utm.decoders.keys())}  "
-          f"quantizer={'present' if utm.quantizer is not None else 'NONE'}")
-    print(f"[load_frozen_utm] decoder_input_features[{decoder_name}]="
-          f"{utm.decoder_input_features.get(decoder_name)}")
-    return utm
+    n_params = sum(p.numel() for p in module.parameters())
+    print(f"[load_frozen_decoder] converted {onnx_path} → torch module ({n_params} params), frozen+eval")
+    return module
 
 
 # =========================================================================
@@ -179,29 +111,26 @@ def load_frozen_utm(config_path: str, ckpt_path: str, device, *, decoder_name: s
 class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
     """rsl_rl vec-env wrapper that makes the policy a SONIC *encoder*.
 
-    The rsl_rl actor outputs a ``token_total_dim``-D continuous latent per env. This
-    wrapper quantizes it, runs the frozen ``g1_dyn`` decoder, and feeds the resulting
-    body command to the underlying Isaac Lab env. ``num_actions`` is overridden to the
-    token dim so rsl_rl sizes the actor's output head correctly (the base
-    RslRlVecEnvWrapper would otherwise read the env's 41-D action_manager dim).
+    The rsl_rl actor outputs a 64-D continuous latent per env. This wrapper squashes it to
+    a token (tanh → [-1, 1]), runs the frozen ONNX decoder with batched proprioception
+    history, and feeds the resulting body command to the env. ``num_actions`` is overridden
+    to the token dim (64) so rsl_rl sizes the actor's output head correctly — the base
+    wrapper would otherwise read the env's 41-D ``action_manager.total_action_dim``.
     """
 
-    def __init__(self, env, utm, device, *, decoder_name: str = "g1_dyn", clip_actions=None):
+    def __init__(self, env, decoder, device, *, token_squash: str = "tanh", clip_actions=None):
         # Base init: sets num_envs/device, num_actions(=env 41-D), modifies action space,
         # and calls env.reset() once. We override num_actions afterwards.
         super().__init__(env, clip_actions=clip_actions)
 
-        self.utm = utm
-        self.decoder_name = decoder_name
+        self.decoder = decoder
+        self.token_squash = token_squash
         self._dev = self.device
 
-        # ---- token dims drive the rsl_rl actor output size ----
-        self.token_total_dim = int(utm.token_total_dim)
-        self.token_dim = int(utm.token_dim)
-        self.max_num_tokens = int(utm.max_num_tokens)
+        self.token_total_dim = TOKEN_TOTAL_DIM
         self.num_actions = self.token_total_dim  # OVERRIDE: actor emits the latent
 
-        # rebuild the (cosmetic) action space to the token dim so any clipping uses it
+        # rebuild the (cosmetic) action space to the token dim
         import gymnasium as gym
         self.unwrapped.single_action_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.token_total_dim,)
@@ -227,7 +156,6 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         self._default_sonic = torch.as_tensor(G1_DEFAULT_ANGLES_SONIC, device=self._dev, dtype=torch.float32)
         self._scale_sonic = torch.as_tensor(G1_ACTION_SCALE_SONIC, device=self._dev, dtype=torch.float32)
         self._scale_inv = 1.0 / self._scale_sonic
-        # 27 kept joints (drop waist roll/pitch) then permute to env JointNamesOrder.
         keep = [i for i in range(N_BODY_JOINTS) if i not in (WAIST_ROLL_SONIC_IDX, WAIST_PITCH_SONIC_IDX)]
         self._keep_idx = torch.as_tensor(keep, device=self._dev, dtype=torch.long)
         self._perm27 = torch.as_tensor(PERM_SONIC27_TO_ENV27, device=self._dev, dtype=torch.long)
@@ -238,9 +166,9 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         right_ids = [name_to_idx[n] for n in _RIGHT_FINGER_JOINTS if n in name_to_idx]
         if len(left_ids) != 7 or len(right_ids) != 7:
             print(f"[token-wrapper] WARNING finger joints found L={len(left_ids)} R={len(right_ids)} (expected 7/7)")
-        default_q = robot.data.default_joint_pos[0]  # (n_joints,)
-        self._left_finger_default = default_q[left_ids].clone().to(self._dev)   # (7,)
-        self._right_finger_default = default_q[right_ids].clone().to(self._dev)  # (7,)
+        default_q = robot.data.default_joint_pos[0]
+        self._left_finger_default = default_q[left_ids].clone().to(self._dev)
+        self._right_finger_default = default_q[right_ids].clone().to(self._dev)
         self._env_action_dim = self.unwrapped.action_manager.total_action_dim
         expected = self._n_body_env + len(left_ids) + len(right_ids)
         assert self._env_action_dim == expected, (
@@ -258,23 +186,23 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         self._prev_body_29 = torch.zeros(N, N_BODY_JOINTS, device=self._dev)
 
         self._seed_history(torch.ones(N, dtype=torch.bool, device=self._dev))
-        print(f"[token-wrapper] ready: num_actions={self.num_actions} (token latent), "
+        print(f"[token-wrapper] ready: num_actions={self.num_actions} (token latent, squash={token_squash}), "
               f"env_action_dim={self._env_action_dim}, num_envs={N}")
 
     # ---------- helpers ----------
 
     def _gather_sonic(self, q_env: torch.Tensor) -> torch.Tensor:
         """(N, n_joints) env order → (N, 29) SONIC-IsaacLab order (zero-fill missing)."""
-        out = q_env.index_select(1, self._gather_idx)  # (N,29)
-        out = out * self._gather_valid.to(out.dtype)  # zero invalid slots
+        out = q_env.index_select(1, self._gather_idx)
+        out = out * self._gather_valid.to(out.dtype)
         return out
 
     def _read_state(self):
         robot = self.unwrapped.scene["robot"]
         q_sonic = self._gather_sonic(robot.data.joint_pos)
         qd_sonic = self._gather_sonic(robot.data.joint_vel)
-        av = robot.data.root_ang_vel_b  # (N,3)
-        gv = robot.data.projected_gravity_b  # (N,3) gravity dir in base frame
+        av = robot.data.root_ang_vel_b
+        gv = robot.data.projected_gravity_b
         return q_sonic, qd_sonic, av, gv
 
     def _seed_history(self, mask: torch.Tensor):
@@ -282,8 +210,8 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         if not bool(mask.any()):
             return
         q_sonic, qd_sonic, av, gv = self._read_state()
-        jp = q_sonic - self._default_sonic          # delta from default (SONIC order)
-        la = jp * self._scale_inv                    # approx "action that holds this pose"
+        jp = q_sonic - self._default_sonic
+        la = jp * self._scale_inv
         m = mask
         self._h_jp[m] = jp[m].unsqueeze(1).expand(-1, N_HISTORY_FRAMES, -1)
         self._h_jv[m] = qd_sonic[m].unsqueeze(1).expand(-1, N_HISTORY_FRAMES, -1)
@@ -299,49 +227,39 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         buf[:, -1] = frame
         return buf
 
-    def _build_proprioception(self) -> torch.Tensor:
-        """(N, 930) in build_decoder_obs order (frames flattened oldest→newest)."""
+    def _build_obs_dict(self, token: torch.Tensor) -> torch.Tensor:
+        """(N, 994) decoder input = [token(64) | proprioception(930)] in build_decoder_obs order."""
         N = self.num_envs
         return torch.cat(
             [
-                self._h_av.reshape(N, -1),  # 30
-                self._h_jp.reshape(N, -1),  # 290
-                self._h_jv.reshape(N, -1),  # 290
-                self._h_la.reshape(N, -1),  # 290
-                self._h_gv.reshape(N, -1),  # 30
+                token,                       # 64
+                self._h_av.reshape(N, -1),   # 30
+                self._h_jp.reshape(N, -1),   # 290
+                self._h_jv.reshape(N, -1),   # 290
+                self._h_la.reshape(N, -1),   # 290
+                self._h_gv.reshape(N, -1),   # 30
             ],
             dim=-1,
         )
 
     def _decode_body_29(self, latent: torch.Tensor) -> torch.Tensor:
-        """(N, token_total_dim) policy latent → (N, 29) SONIC-order body command."""
-        N = self.num_envs
-        # FSQ quantize: (N,64) → (N, max_num_tokens, token_dim) → codes → flat (N,64)
-        if self.utm.quantizer is not None:
-            z = latent.reshape(N, self.max_num_tokens, self.token_dim)
-            codes, _ = self.utm.quantizer(z)
-            token_flat = codes.reshape(N, self.token_total_dim)
+        """(N, 64) policy latent → (N, 29) SONIC-order body command via the frozen decoder."""
+        if self.token_squash == "tanh":
+            token = torch.tanh(latent)
         else:
-            token_flat = latent
-        decode_input = {
-            "token_flattened": token_flat.unsqueeze(1),          # (N,1,64)
-            "proprioception": self._build_proprioception().unsqueeze(1),  # (N,1,930)
-        }
-        out = self.utm.decode(self.decoder_name, decode_input)
-        if "action" in out:
-            body = out["action"]
-        elif "body_action" in out:
-            body = out["body_action"]
-        else:
-            body = next(iter(out.values()))
-        return body.reshape(N, -1)[:, :N_BODY_JOINTS]
+            token = latent
+        obs = self._build_obs_dict(token).to(torch.float32)
+        out = self.decoder(obs)
+        if isinstance(out, (tuple, list)):
+            out = out[0]
+        return out.reshape(self.num_envs, -1)[:, :N_BODY_JOINTS]
 
     def _body29_to_env_action(self, body_29: torch.Tensor) -> torch.Tensor:
         """(N,29) SONIC body command → (N, env_action_dim) full env action."""
         N = self.num_envs
-        q_target = self._default_sonic + body_29 * self._scale_sonic        # (N,29)
-        sonic27 = q_target.index_select(1, self._keep_idx)                  # (N,27)
-        env_body = sonic27.index_select(1, self._perm27)                    # (N,27) JointNamesOrder
+        q_target = self._default_sonic + body_29 * self._scale_sonic
+        sonic27 = q_target.index_select(1, self._keep_idx)
+        env_body = sonic27.index_select(1, self._perm27)
         act = torch.empty(N, self._env_action_dim, device=self._dev, dtype=env_body.dtype)
         act[:, : self._n_body_env] = env_body
         act[:, self._n_body_env : self._n_body_env + 7] = self._left_finger_default
@@ -371,7 +289,7 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
             self._h_av = self._push(self._h_av, av)
             self._h_gv = self._push(self._h_gv, gv)
 
-            # 2. quantize + decode → body command, 3. assemble full env action
+            # 2. decode token → body command, 3. assemble full env action
             body_29 = self._decode_body_29(latent)
             env_action = self._body29_to_env_action(body_29)
 
@@ -382,7 +300,6 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         dones = (terminated | truncated).to(dtype=torch.long)
         if not self.unwrapped.cfg.is_finite_horizon:
             extras["time_outs"] = truncated
-        # re-seed history for envs that just reset (obs already post-reset)
         reset_mask = (terminated | truncated)
         if bool(reset_mask.any()):
             self._seed_history(reset_mask)

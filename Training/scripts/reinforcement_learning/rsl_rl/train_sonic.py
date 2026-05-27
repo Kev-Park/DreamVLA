@@ -6,13 +6,13 @@
 """RL-train a custom SONIC encoder against the FROZEN SONIC decoder (RSL-RL / PPO).
 
 The rsl_rl actor plays the role of the SONIC encoder: it maps the env observation to a
-``token_total_dim``-D continuous latent. ``TokenActionDecoderVecEnvWrapper`` quantizes
-that latent (frozen FSQ), runs the frozen ``g1_dyn`` decoder to a 29-D body command, maps
+64-D token. ``TokenActionDecoderVecEnvWrapper`` runs the frozen SONIC decoder
+(``model_decoder.onnx``, converted to a batched torch module) to a 29-D body command, maps
 it to the env action space, and steps the env. PPO is model-free, so no gradient flows
 through the decoder — it is forward-inference only.
 
 Mirrors ``train.py`` (two-phase AppLauncher → gym.make → vec-env wrapper → OnPolicyRunner).
-Only differences: the SONIC ckpt/config CLI args and the token-action wrapper in place of
+Only differences: the ``--sonic-decoder-onnx`` arg and the token-action wrapper in place of
 the bare RslRlVecEnvWrapper. Default task is the no-camera continuous-fingers pick env.
 """
 
@@ -42,18 +42,11 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
-# SONIC frozen-decoder checkpoint
+# Frozen SONIC decoder (ONNX). Same default path as eval_parquet_sonic.py.
 parser.add_argument(
-    "--sonic-ckpt", type=str, default="models/sonic_release/last.pt",
-    help="Path to the frozen SONIC UTM checkpoint (last.pt).",
-)
-parser.add_argument(
-    "--sonic-config", type=str, default="models/sonic_release/config.yaml",
-    help="Path to the SONIC model_config.yaml (env_config + algo_config).",
-)
-parser.add_argument(
-    "--sonic-decoder", type=str, default="g1_dyn",
-    help="Name of the frozen decoder to drive (default g1_dyn → 29-D body command).",
+    "--sonic-decoder-onnx", type=str,
+    default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
+    help="Path to the frozen SONIC decoder ONNX (model_decoder.onnx).",
 )
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -120,8 +113,8 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-# SONIC token-action wrapper (imported after app launch; depends on gear_sonic + isaaclab_rl)
-from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_utm
+# SONIC token-action wrapper (imported after app launch; depends on onnx2torch + isaaclab_rl)
+from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
@@ -206,11 +199,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # ---- load the FROZEN SONIC decoder and wrap the env so the policy is the encoder ----
     device = agent_cfg.device
-    print(f"[train_sonic] loading frozen SONIC UTM: ckpt={args_cli.sonic_ckpt} config={args_cli.sonic_config}")
-    utm = load_frozen_utm(args_cli.sonic_config, args_cli.sonic_ckpt, device, decoder_name=args_cli.sonic_decoder)
-    env = TokenActionDecoderVecEnvWrapper(
-        env, utm, device, decoder_name=args_cli.sonic_decoder, clip_actions=agent_cfg.clip_actions
-    )
+    print(f"[train_sonic] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
+    decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
+    env = TokenActionDecoderVecEnvWrapper(env, decoder, device, clip_actions=agent_cfg.clip_actions)
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
