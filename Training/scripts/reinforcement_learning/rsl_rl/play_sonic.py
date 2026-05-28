@@ -5,15 +5,22 @@
 
 """Play a SONIC-encoder checkpoint (trained by train_sonic.py) and record a single video.
 
-The trained policy is the SONIC *encoder*: it outputs 64-D tokens, NOT env joint actions.
-So this MUST route through the same ``TokenActionDecoderVecEnvWrapper`` + frozen ONNX decoder
-as training — the stock play.py/play_pick_cam.py would feed the 64-D token straight into the
-41-D action manager and produce garbage.
+The trained policy is the SONIC *encoder*: it emits 64-D tokens, NOT env joint actions.
+So this MUST route through the same ``TokenActionDecoderVecEnvWrapper`` + frozen ONNX
+decoder as training — the stock play.py / play_pick_cam.py would feed the 64-D token
+straight into the 41-D action manager and produce garbage.
 
-Records ONE third-person video (the body view — best for judging stand-vs-track behavior).
-Actions are DETERMINISTIC (actor mean via ``get_inference_policy``), which matters a lot here:
-training samples a ~N(mean, std) Gaussian for exploration, and with a large learned std the
-sampled actions are mostly tanh-saturation noise — only the mean reflects the policy's intent.
+Camera, video, and per-step RTX-flush patterns mirror ``eval_parquet_sonic.py`` (the same
+script that frames the kitchen scene correctly and produces fresh per-step frames):
+  - ``_inject_cameras`` unconditionally writes the third-person + robot-ego camera cfgs
+    with the kitchen-framing pose (so we don't depend on env-cfg ordering).
+  - imageio (libx264) VideoWriter — eval's pattern.
+  - ``_APP.update(); _APP.update()`` AFTER each ``env.step`` to flush the RTX render
+    pipeline into the camera annotators. Without this each frame is the warm-up render.
+
+Actions are DETERMINISTIC (actor mean via ``get_inference_policy``) — training samples a
+~N(mean, std) Gaussian for exploration; sampled actions at large std are mostly
+tanh-saturation noise. Only the mean reflects the policy's intent.
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -21,9 +28,9 @@ sampled actions are mostly tanh-saturation noise — only the mean reflects the 
 import argparse
 import builtins
 from functools import partial
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
-import cv2
 import cli_args  # isort: skip
 
 print = partial(builtins.print, flush=True)
@@ -38,7 +45,6 @@ parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-Pick-Cont
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--name", type=str, default="sonic_play.mp4", help="Output video file name.")
 parser.add_argument("--path", type=str, default=None, help="Explicit checkpoint path (overrides auto-discovery).")
-parser.add_argument("--object_name", type=str, default=None, help="Override the object USD.")
 parser.add_argument(
     "--sonic-decoder-onnx", type=str,
     default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
@@ -56,6 +62,7 @@ args_cli.enable_cameras = True
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
+_APP = simulation_app  # alias to match eval_parquet_sonic.py naming
 
 """Rest everything follows."""
 
@@ -82,20 +89,95 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder
 
 
-def _raw_to_bgr(raw_tensor):
-    frame = raw_tensor.cpu().numpy()
-    if frame.ndim == 3 and frame.shape[2] == 4:
-        frame = frame[:, :, :3]
-    frame = np.nan_to_num(frame, nan=0.0, posinf=1.0, neginf=0.0)
-    if frame.dtype != np.uint8:
-        frame = frame.astype(np.float32)
-        if np.max(frame) > 1.5:
-            frame = frame / 255.0
-        frame = np.clip(frame, 0.0, 1.0)
-        frame = np.power(frame, 1.0 / 2.2)  # linear → sRGB
-        frame = (frame * 255.0).clip(0, 255).astype(np.uint8)
-    return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+# =========================================================================
+# Camera + video helpers — copied 1:1 from eval_parquet_sonic.py so the scene
+# framing and per-step flush behavior are identical to the eval script you've
+# already validated frames the kitchen correctly.
+# =========================================================================
 
+def _inject_cameras(env_cfg) -> None:
+    """Unconditionally set the third-person + robot-ego camera cfgs with the kitchen pose."""
+    rot = np.array([0.7538, 0.61221, -0.1505, -0.1853])
+    rot_mat = np.array(math_utils.matrix_from_quat(torch.tensor(rot)))
+    theta = -np.pi * 0.75
+    rot_z = np.array([
+        [np.cos(theta), -np.sin(theta), 0.0],
+        [np.sin(theta),  np.cos(theta), 0.0],
+        [0.0, 0.0, 1.0],
+    ])
+    rot_mat = rot_z @ rot_mat
+    rot_quat = tuple(math_utils.quat_from_matrix(torch.tensor(rot_mat)).tolist())
+    env_cfg.scene.camera = CameraCfg(
+        prim_path="{ENV_REGEX_NS}/Camera_new",
+        spawn=PinholeCameraCfg(
+            focal_length=18.1476, focus_distance=400.0,
+            horizontal_aperture=20.955, clipping_range=(0.1, 10000.0),
+        ),
+        data_types=["rgb"], height=1920, width=2560,
+        offset=CameraCfg.OffsetCfg(
+            pos=(-1.03 + 2.1 - 0.034, 4.05 - 0.9, 1.31),
+            rot=rot_quat, convention="opengl",
+        ),
+    )
+    env_cfg.scene.camera_robot = CameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
+        spawn=PinholeCameraCfg(
+            focal_length=7.6, focus_distance=400.0,
+            horizontal_aperture=20.0, clipping_range=(0.01, 100.0),
+        ),
+        data_types=["rgb"], height=480, width=640,
+        offset=CameraCfg.OffsetCfg(
+            pos=(0.05, 0.0, 0.36),
+            rot=(0.568, 0.421, -0.421, -0.568), convention="opengl",
+        ),
+    )
+
+
+def _read_camera_rgb(env, key: str):
+    try:
+        cam = env.unwrapped.scene[key]
+    except KeyError:
+        return None
+    try:
+        output = cam.data.output
+    except Exception:
+        return None
+    if "rgb" not in output:
+        return None
+    rgb = output["rgb"][0, ..., :3]
+    if rgb.dtype != torch.uint8:
+        rgb = rgb.clamp(0.0, 255.0).to(torch.uint8)
+    return rgb.cpu().numpy()
+
+
+class VideoWriter:
+    def __init__(self, path: Path, fps: int):
+        import imageio
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._writer = imageio.get_writer(str(path), fps=fps, codec="libx264", quality=7)
+        self.path = path
+        self.frame_count = 0
+
+    def write(self, frame_rgb):
+        self._writer.append_data(frame_rgb)
+        self.frame_count += 1
+
+    def close(self):
+        print(f"[video] {self.path.name}: {self.frame_count} frames written")
+        self._writer.close()
+
+
+def _overlay(frame_rgb, label: str):
+    """Draw a label in the top-left. cv2.putText works on RGB arrays unchanged."""
+    import cv2
+    for color, thick in (((0, 0, 0), 4), ((255, 255, 255), 2)):
+        cv2.putText(frame_rgb, label, (24, 56), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, thick, cv2.LINE_AA)
+    return frame_rgb
+
+
+# =========================================================================
+# Main.
+# =========================================================================
 
 def main():
     env_cfg = parse_env_cfg(
@@ -118,48 +200,21 @@ def main():
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
     log_dir = os.path.dirname(resume_path)
 
-    # ---- camera framing ----
+    # eval-style camera + viewer setup
     env_cfg.viewer.eye = (1.0, -2.0, 2.0)
     env_cfg.viewer.lookat = (2.0, 0.0, 0.0)
-    if args_cli.object_name is not None and args_cli.object_name != "none":
-        env_cfg.scene.object.spawn.usd_path = "assets/" + args_cli.object_name + ".usd"
-
-    # Ensure a third-person camera exists (the ContFingers env only adds it when enable_cameras).
-    if not isinstance(getattr(env_cfg.scene, "camera", None), CameraCfg):
-        _rot = np.array([0.7538, 0.61221, -0.1505, -0.1853])
-        _rot_mat = np.array(math_utils.matrix_from_quat(torch.tensor(_rot)))
-        _theta = -np.pi * 0.75
-        _rot_z = np.array([
-            [np.cos(_theta), -np.sin(_theta), 0.0],
-            [np.sin(_theta),  np.cos(_theta), 0.0],
-            [0.0,             0.0,             1.0],
-        ])
-        _rot_quat = tuple(math_utils.quat_from_matrix(torch.tensor(_rot_z @ _rot_mat)).tolist())
-        env_cfg.scene.camera = CameraCfg(
-            prim_path="{ENV_REGEX_NS}/Camera_new",
-            spawn=PinholeCameraCfg(
-                focal_length=18.1476, focus_distance=400.0, horizontal_aperture=20.955,
-                clipping_range=(0.01, 100.0),
-            ),
-            data_types=["rgb"], height=1920, width=2560,
-            offset=CameraCfg.OffsetCfg(
-                pos=(-1.03 + 2.1 - 0.034, 4.05 - 0.9, 1.31), rot=_rot_quat, convention="opengl",
-            ),
-        )
+    _inject_cameras(env_cfg)
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
-    print("Observation space:", env.observation_space)
-    print("Action space (env, pre-wrapper):", env.action_space)
+    print(f"[env] action_space (pre-wrapper) = {env.action_space}")
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
-    # Pump the Omniverse event loop BEFORE any reset so Isaac's PhysX/USD/RTX shader
-    # compile (triggered by the first env.reset() inside the wrapper's super().__init__)
-    # can actually progress. With enable_cameras=True this otherwise hangs the script
-    # at the first reset, GPU util at 0%. Same trick eval_parquet_sonic.py uses.
+    # Pump the Omniverse event loop BEFORE the wrapper's super().__init__ does env.reset()
+    # — needed under enable_cameras so RTX/PhysX/USD shader compile can finish.
     print("[play_sonic] pumping Omniverse event loop to let render/physics initialise...")
     for _ in range(60):
-        simulation_app.update()
+        _APP.update()
 
     # ---- wrap so the 64-D token policy drives the frozen decoder (same as training) ----
     device = agent_cfg.device
@@ -171,70 +226,67 @@ def main():
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=device)
     ppo_runner.load(resume_path)
 
-    # DETERMINISTIC inference policy (actor mean, no Gaussian sampling) — see module docstring.
+    # DETERMINISTIC inference policy (actor mean, no Gaussian sampling).
     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
-    scene_keys = list(env.unwrapped.scene.keys())
-    if "camera" not in scene_keys:
-        raise RuntimeError(f"Third-person camera missing from scene. Found: {scene_keys}")
-    cam_tp = env.unwrapped.scene["camera"]
-
-    video_folder = os.path.join(log_dir, "videos", "play")
-    os.makedirs(video_folder, exist_ok=True)
-    video_path = os.path.join(video_folder, args_cli.name)
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    video_fps = max(1, int(round(1.0 / env.unwrapped.step_dt)))
-    writer = None
-    print(f"[INFO] Writing video to: {video_path} @ {video_fps} FPS")
-
-    # Warm-up env.step with a zero token so the camera buffer fills before the first
-    # read inside the loop. Without this, cam_tp.data.output["rgb"][0] returns an
-    # empty / not-yet-populated tensor and the script stalls. Same trick eval_parquet_sonic
-    # and eval_sonic_control use (warm-up step + two _APP.update() flushes).
-    print("[play_sonic] warm-up env.step to populate camera buffers...")
+    # Warm-up env.step with a zero token so the camera annotators populate
+    # before the first read. eval_parquet_sonic / eval_sonic_control do the same.
+    print("[play_sonic] warm-up env.step + flush to populate camera buffers...")
     zero_token = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
     env.step(zero_token)
-    simulation_app.update()
-    simulation_app.update()
+    _APP.update()
+    _APP.update()
+
+    # Open the writer AFTER the warm-up so we know the camera is ready.
+    video_folder = Path(log_dir) / "videos" / "play"
+    video_path = video_folder / args_cli.name
+    video_fps = max(1, int(round(1.0 / env.unwrapped.step_dt)))
+    writer = VideoWriter(video_path, fps=video_fps)
+    print(f"[INFO] Writing video to: {video_path} @ {video_fps} FPS")
 
     obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
     dt = env.unwrapped.step_dt
     timestep = 0
+    _prev_frame = None
 
-    while simulation_app.is_running():
+    while simulation_app.is_running() and timestep < args_cli.video_length:
         start_time = time.time()
 
-        frame_bgr = _raw_to_bgr(cam_tp.data.output["rgb"][0])
-        if writer is None:
-            h, w = frame_bgr.shape[:2]
-            writer = cv2.VideoWriter(video_path, fourcc, video_fps, (w, h))
-            print(f"[INFO] Initialized video writer at {w}x{h}")
-        # annotate object height so "did it lift?" is visible
-        try:
-            object_z = float(env.unwrapped.scene["object"].data.root_pos_w[0, 2].item())
-            label = f"step {timestep}  object z: {object_z:.3f} m"
-        except Exception:
-            label = f"step {timestep}"
-        for color, thick in ((( 0, 0, 0), 4), ((255, 255, 255), 2)):
-            cv2.putText(frame_bgr, label, (24, 48), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, thick, cv2.LINE_AA)
-        writer.write(frame_bgr)
-
+        # 1. policy → token → frozen-decoder → env.step (deterministic)
         with torch.inference_mode():
             actions = policy(obs).clone()
             obs, _, dones, _ = env.step(actions)
 
+        # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
+        _APP.update()
+        _APP.update()
+
+        # 3. read + write the frame
+        frame = _read_camera_rgb(env, "camera")
+        if frame is None:
+            print(f"[WARN] step {timestep}: third-person camera 'camera' returned no frame")
+        else:
+            # quick diagnostic: confirm frames are actually changing (no static-frame regression)
+            if timestep < 5 and _prev_frame is not None:
+                diff = int(np.abs(frame.astype(np.int32) - _prev_frame.astype(np.int32)).max())
+                print(f"[step {timestep}] camera max_pixel_diff_from_prev={diff}")
+            _prev_frame = frame.copy()
+
+            try:
+                object_z = float(env.unwrapped.scene["object"].data.root_pos_w[0, 2].item())
+                label = f"step {timestep}  object z: {object_z:.3f} m"
+            except Exception:
+                label = f"step {timestep}"
+            writer.write(_overlay(frame, label))
+
         timestep += 1
-        if timestep >= args_cli.video_length:
-            break
 
         sleep_time = dt - (time.time() - start_time)
         if args_cli.real_time and sleep_time > 0:
             time.sleep(sleep_time)
 
-    if writer is not None:
-        print(f"[INFO] Releasing video writer ({timestep} frames)")
-        writer.release()
+    writer.close()
     env.close()
 
 
