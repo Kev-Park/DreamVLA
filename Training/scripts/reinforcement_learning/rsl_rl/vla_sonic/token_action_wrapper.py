@@ -100,7 +100,14 @@ def load_frozen_decoder(onnx_path: str, device):
     for p in module.parameters():
         p.requires_grad = False
     n_params = sum(p.numel() for p in module.parameters())
-    print(f"[load_frozen_decoder] converted {onnx_path} → torch module ({n_params} params), frozen+eval")
+    n_buffers = sum(b.numel() for b in module.buffers())
+    n_state = len(module.state_dict())
+    # onnx2torch often attaches ONNX Initializer tensors as buffers, not nn.Parameter,
+    # so `params=0` is normal — what matters is that buffers/state_dict are populated.
+    print(f"[load_frozen_decoder] converted {onnx_path} → torch module "
+          f"(params={n_params}, buffer values={n_buffers}, state_dict keys={n_state}), frozen+eval")
+    if n_state == 0 and n_buffers == 0:
+        raise RuntimeError("Converted decoder has NO weights (state_dict + buffers both empty) — conversion failed.")
     return module
 
 

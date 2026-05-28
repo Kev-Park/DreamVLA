@@ -153,6 +153,14 @@ def main():
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    # Pump the Omniverse event loop BEFORE any reset so Isaac's PhysX/USD/RTX shader
+    # compile (triggered by the first env.reset() inside the wrapper's super().__init__)
+    # can actually progress. With enable_cameras=True this otherwise hangs the script
+    # at the first reset, GPU util at 0%. Same trick eval_parquet_sonic.py uses.
+    print("[play_sonic] pumping Omniverse event loop to let render/physics initialise...")
+    for _ in range(60):
+        simulation_app.update()
+
     # ---- wrap so the 64-D token policy drives the frozen decoder (same as training) ----
     device = agent_cfg.device
     print(f"[play_sonic] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
@@ -178,6 +186,16 @@ def main():
     video_fps = max(1, int(round(1.0 / env.unwrapped.step_dt)))
     writer = None
     print(f"[INFO] Writing video to: {video_path} @ {video_fps} FPS")
+
+    # Warm-up env.step with a zero token so the camera buffer fills before the first
+    # read inside the loop. Without this, cam_tp.data.output["rgb"][0] returns an
+    # empty / not-yet-populated tensor and the script stalls. Same trick eval_parquet_sonic
+    # and eval_sonic_control use (warm-up step + two _APP.update() flushes).
+    print("[play_sonic] warm-up env.step to populate camera buffers...")
+    zero_token = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
+    env.step(zero_token)
+    simulation_app.update()
+    simulation_app.update()
 
     obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
