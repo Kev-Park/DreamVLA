@@ -151,20 +151,36 @@ def _read_camera_rgb(env, key: str):
 
 
 class VideoWriter:
+    """cv2-backed mp4 writer (mp4v codec — self-contained, no ffmpeg dependency).
+
+    eval_parquet_sonic.py uses imageio+libx264, but that path requires imageio-ffmpeg to
+    be installed and matched. cv2's bundled libavcodec writes a universally-playable
+    mp4 with no extra deps. Takes RGB in, converts to BGR for cv2 internally.
+    """
+
     def __init__(self, path: Path, fps: int):
-        import imageio
+        import cv2
+        self._cv2 = cv2
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._writer = imageio.get_writer(str(path), fps=fps, codec="libx264", quality=7)
         self.path = path
+        self._fps = max(1, int(fps))
+        self._fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        self._writer = None  # lazy-init on first write so we know the frame size
         self.frame_count = 0
 
     def write(self, frame_rgb):
-        self._writer.append_data(frame_rgb)
+        frame_bgr = self._cv2.cvtColor(frame_rgb, self._cv2.COLOR_RGB2BGR)
+        if self._writer is None:
+            h, w = frame_bgr.shape[:2]
+            self._writer = self._cv2.VideoWriter(str(self.path), self._fourcc, self._fps, (w, h))
+            print(f"[video] writer opened {w}x{h} @ {self._fps} fps → {self.path}")
+        self._writer.write(frame_bgr)
         self.frame_count += 1
 
     def close(self):
+        if self._writer is not None:
+            self._writer.release()
         print(f"[video] {self.path.name}: {self.frame_count} frames written")
-        self._writer.close()
 
 
 def _overlay(frame_rgb, label: str):
