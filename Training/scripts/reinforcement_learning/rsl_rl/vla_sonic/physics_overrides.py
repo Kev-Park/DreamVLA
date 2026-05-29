@@ -27,10 +27,27 @@ def apply_sonic_physics_overrides(env_cfg, *, static_friction: float = 1.0, dyna
     every env variant exposes the same paths (e.g. event-term keys vary).
     """
     # 1. Substep rate: 500 Hz physics, 50 Hz control. Required for stable contacts.
+    # `decimation` is on the env_cfg TOP LEVEL, not on env_cfg.sim — the env sets
+    # `self.decimation = 4` in its __post_init__. (eval_parquet_sonic.py writes
+    # `env_cfg.sim.decimation = 10` which silently no-ops; we fix that here so the
+    # override actually lands.)
     env_cfg.sim.dt = 1.0 / 500.0
-    env_cfg.sim.decimation = 10
-    print(f"[sonic-physics] sim.dt={env_cfg.sim.dt}s, decimation={env_cfg.sim.decimation} "
-          f"(control step = {env_cfg.sim.dt * env_cfg.sim.decimation * 1000:.1f} ms = 50 Hz)")
+    env_cfg.decimation = 10
+    # Also set the sim-side attribute defensively in case future IsaacLab versions
+    # add a SimulationCfg.decimation field — harmless if it stays unrecognized.
+    try:
+        env_cfg.sim.decimation = 10
+    except Exception:
+        pass
+    actual_step_ms = env_cfg.sim.dt * env_cfg.decimation * 1000.0
+    actual_hz = 1.0 / (env_cfg.sim.dt * env_cfg.decimation)
+    print(f"[sonic-physics] sim.dt={env_cfg.sim.dt}s, env_cfg.decimation={env_cfg.decimation} "
+          f"→ control step = {actual_step_ms:.1f} ms ({actual_hz:.1f} Hz)")
+    if abs(actual_hz - 50.0) > 0.5:
+        raise RuntimeError(
+            f"[sonic-physics] computed control rate {actual_hz:.1f} Hz != 50 Hz target — "
+            f"check env_cfg.decimation path"
+        )
 
     # 2. Fixed terrain friction (no randomization → distribution match).
     try:
