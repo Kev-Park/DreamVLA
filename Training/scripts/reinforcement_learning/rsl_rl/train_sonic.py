@@ -115,6 +115,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # SONIC token-action wrapper (imported after app launch; depends on onnx2torch + isaaclab_rl)
 from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder
+from vla_sonic.physics_overrides import apply_sonic_physics_overrides
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
@@ -173,6 +174,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.enable_cameras = bool(args_cli.enable_cameras)
     if hasattr(env_cfg, "enable_cameras_for_collection"):
         env_cfg.enable_cameras_for_collection = bool(args_cli.enable_cameras)
+
+    # Match the SONIC decoder's training-time physics (500 Hz substep, fixed friction,
+    # solver iters). Without this, contact dynamics drift out of the decoder's distribution.
+    apply_sonic_physics_overrides(env_cfg)
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

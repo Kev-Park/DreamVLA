@@ -87,6 +87,7 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 
 # SONIC token-action wrapper (same wiring as train_sonic.py)
 from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder
+from vla_sonic.physics_overrides import apply_sonic_physics_overrides
 
 
 # =========================================================================
@@ -215,6 +216,9 @@ def main():
     else:
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
     log_dir = os.path.dirname(resume_path)
+
+    # Match the SONIC decoder's training-time physics — same as train_sonic.py.
+    apply_sonic_physics_overrides(env_cfg)
 
     # eval-style camera + viewer setup
     env_cfg.viewer.eye = (1.0, -2.0, 2.0)
