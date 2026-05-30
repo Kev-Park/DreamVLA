@@ -135,6 +135,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
 
+    # Match SONIC training's std_clamp_max=0.5 (sonic_release.yaml:82).
+    # rsl_rl doesn't expose hard std clamping, but starting at SONIC's clamp_max
+    # keeps the policy's Gaussian noise in the same regime — combined with FSQ
+    # (which bounds the *action* on the discrete grid), this matches SONIC's
+    # action-bounding strategy without needing clip_actions (no SONIC precedent).
+    agent_cfg.policy.init_noise_std = 0.5
+    print(f"[train_sonic] policy.init_noise_std = {agent_cfg.policy.init_noise_std} (SONIC std_clamp_max precedent)")
+
     # set the environment seed
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device

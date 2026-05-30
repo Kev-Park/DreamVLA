@@ -3,9 +3,10 @@
 The SONIC release ships the decoder as ``model_decoder.onnx`` (the exact decoder
 ``eval_parquet_sonic.py`` already drives: a single ``obs_dict`` input of 994 dims →
 ``action`` of 29 dims). Here we freeze that decoder and let an RL (PPO) policy play the
-role of the SONIC *encoder*: the rsl_rl actor maps the env observation to a 64-D token,
-which this wrapper feeds (with batched proprioception history) to the frozen decoder to
-get a 29-D body command, then maps that to the env action and steps the sim.
+role of the SONIC *encoder*: the rsl_rl actor maps the env observation to a 78-D latent —
+64 dims for the SONIC body token, 14 dims for direct finger control — and this wrapper
+feeds the body token (FSQ-quantized) and batched proprioception history to the frozen
+decoder, then assembles the full 41-D env action.
 
 Why ONNX (not the PyTorch ``last.pt``): instantiating the PyTorch ``UniversalTokenModule``
 requires observation dims that only exist after building a live SONIC env (the heavy-dep
@@ -13,12 +14,18 @@ stack kept in a separate repo). The ONNX decoder carries identical frozen weight
 standalone. We convert it to a batched GPU torch module via ``onnx2torch`` (forward
 inference only — PPO is model-free, so no gradient flows through the decoder).
 
-Token convention (v1): the decoder was trained on FSQ-quantized tokens, which live in a
-normalized ~[-1, 1] grid. We don't have ``sonic_release/config.yaml`` (the FSQ level list),
-so instead of reproducing FSQ we squash the policy's continuous latent with ``tanh`` to
-[-1, 1] and feed it directly. This drops the quantization bottleneck (no discrete tokens)
-but keeps decoder inputs in-distribution and is simpler for PPO. To restore exact FSQ,
-download ``sonic_release/config.yaml`` for the level list and quantize before the tanh.
+Token quantization (FSQ): the decoder was trained against FSQ-quantized tokens. From
+``gear_sonic/config/actor_critic/universal_token/all_mlp_v1.yaml``:
+    num_fsq_levels: 32, fsq_level_list: 32, max_num_tokens: 2 → levels = [32]*32
+We reimplement FSQ exactly (≈ vector_quantize_pytorch.FSQ) so the policy's continuous
+latent is mapped onto the same discrete grid the decoder was trained on. No
+vector_quantize_pytorch dependency needed.
+
+Fingers: SONIC has NO finger decoder in the release (only g1_kin + g1_dyn body decoders).
+In deploy, fingers come from outside SONIC (VLA/teleop). For RL we expose them as the
+policy's last 14 latent dims, mapped via tanh × joint-range-half + joint-default to the
+env's finger action slots. Existing rewards (right_hand_state_target, object_above_the_ground)
+provide the training signal.
 
 Decoder obs layout (994 = 64 + 930), matching ``vla_sonic.planner_to_utm.build_decoder_obs``:
     token_state(64),
@@ -32,6 +39,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 
@@ -78,6 +86,47 @@ N_BODY_JOINTS = 29
 TOKEN_TOTAL_DIM = 64          # 2 tokens x 32 FSQ channels
 PROPRIO_DIM = 930            # 10 frames x (3 + 29 + 29 + 29 + 3)
 DECODER_OBS_DIM = TOKEN_TOTAL_DIM + PROPRIO_DIM  # 994
+# FSQ config from gear_sonic/config/actor_critic/universal_token/all_mlp_v1.yaml.
+FSQ_NUM_LEVELS = 32           # channels per token
+FSQ_LEVEL_LIST = [32] * 32    # 32 quantization levels per channel
+FSQ_MAX_NUM_TOKENS = 2        # 2 tokens × 32 channels = 64-D
+# Finger control (NOT decoded by SONIC — direct policy passthrough).
+N_FINGERS_PER_HAND = 7
+TOTAL_FINGER_DIM = 2 * N_FINGERS_PER_HAND  # 14
+# Policy outputs body-token-latent + finger-latent.
+POLICY_ACTION_DIM = TOKEN_TOTAL_DIM + TOTAL_FINGER_DIM  # 78
+
+
+class FSQ(nn.Module):
+    """Finite Scalar Quantization (Mentzer et al. 2023), matching vector_quantize_pytorch.FSQ.
+
+    For each of ``len(levels)`` channels, bound the input via a tanh and round to one of
+    ``levels[i]`` integer values, then normalize by ``levels[i]//2`` so the output lives
+    on a discrete grid in roughly ``[-1, 1]``. The straight-through estimator is used so
+    PPO's gradient flows through the bound only (the round is a constant in the backward
+    pass). For SONIC: ``levels = [32]*32`` → 32 channels per token, each on a 32-point grid.
+
+    Input shape: (..., len(levels)). Output shape: same. Returns ``(quantized, None)`` to
+    mimic the vector_quantize_pytorch interface ``(out, indices)``.
+    """
+
+    def __init__(self, levels):
+        super().__init__()
+        lvl = torch.tensor(levels, dtype=torch.float32)
+        self.register_buffer("levels", lvl)
+        # Precompute constants — these never change after init.
+        eps = 1e-3
+        self.register_buffer("_half_l", (lvl - 1.0) * (1.0 - eps) / 2.0)
+        is_even = (lvl.long() % 2 == 0).to(torch.float32)
+        self.register_buffer("_offset", torch.where(is_even.bool(), 0.5 * torch.ones_like(lvl), torch.zeros_like(lvl)))
+        self.register_buffer("_shift", (self._offset / self._half_l).atanh())
+        self.register_buffer("_half_width", (lvl // 2).to(torch.float32))
+
+    def forward(self, z: torch.Tensor):
+        bounded = (z + self._shift).tanh() * self._half_l - self._offset
+        # Straight-through round: forward is round(bounded); backward is identity on bounded.
+        quantized = bounded + (bounded.round() - bounded).detach()
+        return quantized / self._half_width, None
 
 
 # =========================================================================
@@ -125,22 +174,27 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
     wrapper would otherwise read the env's 41-D ``action_manager.total_action_dim``.
     """
 
-    def __init__(self, env, decoder, device, *, token_squash: str = "tanh", clip_actions=None):
+    def __init__(self, env, decoder, device, *, clip_actions=None):
         # Base init: sets num_envs/device, num_actions(=env 41-D), modifies action space,
         # and calls env.reset() once. We override num_actions afterwards.
         super().__init__(env, clip_actions=clip_actions)
 
         self.decoder = decoder
-        self.token_squash = token_squash
         self._dev = self.device
 
         self.token_total_dim = TOKEN_TOTAL_DIM
-        self.num_actions = self.token_total_dim  # OVERRIDE: actor emits the latent
+        self.policy_action_dim = POLICY_ACTION_DIM   # 64 (body token) + 14 (fingers)
+        self.num_actions = self.policy_action_dim    # OVERRIDE: actor emits 78-D latent
 
-        # rebuild the (cosmetic) action space to the token dim
+        # FSQ quantizer for the body-token portion of the latent (frozen — no params).
+        self.fsq = FSQ(FSQ_LEVEL_LIST).to(self._dev)
+        for p in self.fsq.parameters():
+            p.requires_grad = False
+
+        # rebuild the (cosmetic) action space to the policy latent dim
         import gymnasium as gym
         self.unwrapped.single_action_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.token_total_dim,)
+            low=-np.inf, high=np.inf, shape=(self.policy_action_dim,)
         )
         self.unwrapped.action_space = gym.vector.utils.batch_space(
             self.unwrapped.single_action_space, self.num_envs
@@ -168,14 +222,27 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         self._perm27 = torch.as_tensor(PERM_SONIC27_TO_ENV27, device=self._dev, dtype=torch.long)
         self._n_body_env = len(keep)  # 27
 
-        # ---- finger action slots: constant default (open) targets ----
+        # ---- finger action slots: policy-controlled via tanh × joint-range ----
+        # SONIC has NO finger decoder, so fingers are direct policy passthrough. Scale the
+        # tanh-bounded finger latent into each finger joint's [min, max] range so the policy
+        # action space is anchored to the robot's physical limits regardless of init.
         left_ids = [name_to_idx[n] for n in _LEFT_FINGER_JOINTS if n in name_to_idx]
         right_ids = [name_to_idx[n] for n in _RIGHT_FINGER_JOINTS if n in name_to_idx]
         if len(left_ids) != 7 or len(right_ids) != 7:
             print(f"[token-wrapper] WARNING finger joints found L={len(left_ids)} R={len(right_ids)} (expected 7/7)")
-        default_q = robot.data.default_joint_pos[0]
-        self._left_finger_default = default_q[left_ids].clone().to(self._dev)
-        self._right_finger_default = default_q[right_ids].clone().to(self._dev)
+        finger_ids = left_ids + right_ids                          # 14 indices, action-term order
+        joint_limits = robot.data.soft_joint_pos_limits[0]          # (n_joints, 2)
+        lo = joint_limits[finger_ids, 0].clone().to(self._dev)     # (14,)
+        hi = joint_limits[finger_ids, 1].clone().to(self._dev)     # (14,)
+        self._finger_mid = 0.5 * (lo + hi)                          # (14,) joint center
+        self._finger_half_range = 0.5 * (hi - lo)                   # (14,) half-range
+        # Sanity: if a joint has zero range (limits not set), fall back to default + ±0.5 rad.
+        zero = (self._finger_half_range.abs() < 1e-6)
+        if zero.any():
+            default_q = robot.data.default_joint_pos[0]
+            default_fingers = default_q[finger_ids].clone().to(self._dev)
+            self._finger_mid = torch.where(zero, default_fingers, self._finger_mid)
+            self._finger_half_range = torch.where(zero, torch.full_like(self._finger_half_range, 0.5), self._finger_half_range)
         self._env_action_dim = self.unwrapped.action_manager.total_action_dim
         expected = self._n_body_env + len(left_ids) + len(right_ids)
         assert self._env_action_dim == expected, (
@@ -193,7 +260,8 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         self._prev_body_29 = torch.zeros(N, N_BODY_JOINTS, device=self._dev)
 
         self._seed_history(torch.ones(N, dtype=torch.bool, device=self._dev))
-        print(f"[token-wrapper] ready: num_actions={self.num_actions} (token latent, squash={token_squash}), "
+        print(f"[token-wrapper] ready: num_actions={self.num_actions} (= {TOKEN_TOTAL_DIM} body token + "
+              f"{TOTAL_FINGER_DIM} fingers; FSQ levels=[{FSQ_LEVEL_LIST[0]}]*{len(FSQ_LEVEL_LIST)}), "
               f"env_action_dim={self._env_action_dim}, num_envs={N}")
 
     # ---------- helpers ----------
@@ -249,28 +317,42 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
             dim=-1,
         )
 
-    def _decode_body_29(self, latent: torch.Tensor) -> torch.Tensor:
-        """(N, 64) policy latent → (N, 29) SONIC-order body command via the frozen decoder."""
-        if self.token_squash == "tanh":
-            token = torch.tanh(latent)
-        else:
-            token = latent
+    def _decode_body_29(self, body_latent: torch.Tensor) -> torch.Tensor:
+        """(N, 64) body-token latent → (N, 29) SONIC-order body command via the frozen decoder.
+
+        The latent is reshaped to (N, max_num_tokens, num_fsq_levels) = (N, 2, 32), passed
+        through FSQ to land on the discrete grid the decoder was trained against, flattened
+        back to (N, 64), and concatenated with proprioception history to form the (N, 994)
+        decoder input. The decoder is run under no_grad — PPO is model-free.
+        """
+        N = self.num_envs
+        # FSQ: (N, 64) → (N, 2, 32) → quantize → (N, 2, 32) → flatten → (N, 64)
+        z = body_latent.reshape(N, FSQ_MAX_NUM_TOKENS, FSQ_NUM_LEVELS)
+        token, _ = self.fsq(z)
+        token = token.reshape(N, TOKEN_TOTAL_DIM)
         obs = self._build_obs_dict(token).to(torch.float32)
         out = self.decoder(obs)
         if isinstance(out, (tuple, list)):
             out = out[0]
         return out.reshape(self.num_envs, -1)[:, :N_BODY_JOINTS]
 
-    def _body29_to_env_action(self, body_29: torch.Tensor) -> torch.Tensor:
-        """(N,29) SONIC body command → (N, env_action_dim) full env action."""
+    def _fingers_from_latent(self, finger_latent: torch.Tensor) -> torch.Tensor:
+        """(N, 14) raw finger latent → (N, 14) joint-pos targets bounded to each joint's range.
+
+        Maps via ``tanh(latent) × half_range + midpoint`` so the policy's unbounded latent
+        lands inside each finger joint's soft limits. Action-term order: 7 left then 7 right.
+        """
+        return torch.tanh(finger_latent) * self._finger_half_range + self._finger_mid
+
+    def _body29_to_env_action(self, body_29: torch.Tensor, finger_cmds: torch.Tensor) -> torch.Tensor:
+        """(N,29) SONIC body + (N,14) finger cmds → (N, env_action_dim) full env action."""
         N = self.num_envs
         q_target = self._default_sonic + body_29 * self._scale_sonic
         sonic27 = q_target.index_select(1, self._keep_idx)
         env_body = sonic27.index_select(1, self._perm27)
         act = torch.empty(N, self._env_action_dim, device=self._dev, dtype=env_body.dtype)
         act[:, : self._n_body_env] = env_body
-        act[:, self._n_body_env : self._n_body_env + 7] = self._left_finger_default
-        act[:, self._n_body_env + 7 : self._n_body_env + 14] = self._right_finger_default
+        act[:, self._n_body_env : self._n_body_env + TOTAL_FINGER_DIM] = finger_cmds
         return act
 
     # ---------- vec-env API ----------
@@ -296,9 +378,13 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
             self._h_av = self._push(self._h_av, av)
             self._h_gv = self._push(self._h_gv, gv)
 
-            # 2. decode token → body command, 3. assemble full env action
-            body_29 = self._decode_body_29(latent)
-            env_action = self._body29_to_env_action(body_29)
+            # 2. split latent into body-token + finger latents, decode each side
+            body_latent = latent[:, :TOKEN_TOTAL_DIM]
+            finger_latent = latent[:, TOKEN_TOTAL_DIM:]
+            body_29 = self._decode_body_29(body_latent)
+            finger_cmds = self._fingers_from_latent(finger_latent)
+            # 3. assemble full env action
+            env_action = self._body29_to_env_action(body_29, finger_cmds)
 
         # 4. step the underlying env
         obs_dict, rew, terminated, truncated, extras = self.env.step(env_action)
