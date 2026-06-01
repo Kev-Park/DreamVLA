@@ -223,6 +223,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
+
+    # SONIC-style hard std clamp (sonic_release.yaml:80–82 → use_clampped_std + std_clamp_max=0.5).
+    # rsl_rl exposes only `init_noise_std` (starting value), so we monkey-patch the algorithm's
+    # update to clamp the policy's std parameter back into [0.001, 0.5] after every PPO update.
+    # This is what SONIC's training does and is what was missing from the last run — without it,
+    # std drifted from 0.5 to 8.69 over 15k iters, saturating the latent and locking finger commands.
+    if agent_cfg.class_name == "OnPolicyRunner":
+        import math
+        _STD_MIN, _STD_MAX = 0.001, 0.5
+        _LOG_STD_MIN, _LOG_STD_MAX = math.log(_STD_MIN), math.log(_STD_MAX)
+        _orig_update = runner.alg.update
+
+        def _update_with_std_clamp(*args, **kwargs):
+            info = _orig_update(*args, **kwargs)
+            with torch.no_grad():
+                policy = getattr(runner.alg, "policy", None) or getattr(runner.alg, "actor_critic", None)
+                if policy is not None:
+                    if hasattr(policy, "std") and isinstance(policy.std, torch.nn.Parameter):
+                        policy.std.data.clamp_(min=_STD_MIN, max=_STD_MAX)
+                    elif hasattr(policy, "log_std") and isinstance(policy.log_std, torch.nn.Parameter):
+                        policy.log_std.data.clamp_(min=_LOG_STD_MIN, max=_LOG_STD_MAX)
+            return info
+
+        runner.alg.update = _update_with_std_clamp
+        print(f"[train_sonic] installed SONIC std clamp: [{_STD_MIN}, {_STD_MAX}] (post-update)")
+
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint

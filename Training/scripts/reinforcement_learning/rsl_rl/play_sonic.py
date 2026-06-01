@@ -41,7 +41,12 @@ parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate (1 for a clean video).")
-parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-Pick-ContFingers-v0", help="Name of the task.")
+# Default to the HQ-kitchen + mustard-bottle Cam variant (same task eval_sonic_control and
+# eval_vla_sonic use). The policy was trained on Isaac-Motion-Tracking-Pick-ContFingers-v0
+# (green-box proxy scene); same env structure, same obs/action layout, only the visual + USD
+# object geometry differ. Kitchen pos shifts ~(2.55,0)→(2.04,1.0), so grasp targeting may
+# look slightly off relative to training — fine for visualization, not for benchmarking.
+parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-Pick-Cam-ContFingers-v0", help="Name of the task.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--name", type=str, default="sonic_play.mp4", help="Output video file name.")
 parser.add_argument("--path", type=str, default=None, help="Explicit checkpoint path (overrides auto-discovery).")
