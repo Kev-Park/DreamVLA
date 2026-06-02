@@ -328,17 +328,79 @@ def target_orientation_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg =
     return torch.abs(angle) * time_mask + torch.abs(angle_post) * (1. - time_mask)
 
 
+# Canonical per-joint open/closed pose for the right hand. Values come from the original
+# BinaryJointPositionActionCfg in motion_tracking_pick_env.py:575-583 — the source of truth
+# for "what 'open hand' and 'closed hand' mean on this G1 model." Joints are listed in the
+# same order as ContinuousFingersActionsCfg.right_hand_action so the indices line up.
+_RIGHT_FINGER_NAMES = (
+    "right_hand_thumb_0_joint",
+    "right_hand_thumb_1_joint",
+    "right_hand_thumb_2_joint",
+    "right_hand_index_0_joint",
+    "right_hand_index_1_joint",
+    "right_hand_middle_0_joint",
+    "right_hand_middle_1_joint",
+)
+_RIGHT_FINGER_OPEN_POSE = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+_RIGHT_FINGER_CLOSED_POSE = (
+    0.0,                       # thumb_0
+    -float(np.pi) / 3.0,       # thumb_1  (close direction: negative)
+    -float(np.pi) / 2.0,       # thumb_2  (close direction: negative)
+    float(np.pi) / 2.0,        # index_0  (close direction: positive)
+    float(np.pi) / 2.0,        # index_1
+    float(np.pi) / 2.0,        # middle_0
+    float(np.pi) / 2.0,        # middle_1
+)
+_RIGHT_HAND_REWARD_SCALE = 2.0  # rad; exp(-L1_sum / scale) → 1 perfect, ~0.37 at 2 rad total dev
+
+
 def right_hand_state_target_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """The right hand state target of the robot in the environment.
+    """Reward right-hand finger joints matching the per-step target pose (open/closed).
 
+    Replaces the legacy reward that read ``env.action_manager.action[:, -1]`` — that was
+    designed for BinaryJointPositionActionCfg where the last action element is the right-
+    hand open/close scalar. With ContinuousFingersActionsCfg, ``action[:, -1]`` is just one
+    finger joint command (right_hand_middle_1), so the legacy reward devolves to "make this
+    one joint's sign match is_closed" — easily satisfied without actually closing the hand
+    on the bottle.
+
+    The new reward reads the **actual finger joint positions** and computes deviation from
+    a synthesized target pose:
+        is_closed = 0  →  open pose (all zeros)
+        is_closed = 1  →  closed pose (per-joint angles from the binary action cfg)
+    Return is exp(-L1_sum / SCALE) so the value stays in [0, 1] like the legacy reward,
+    keeping the +0.3 cfg weight roughly magnitude-compatible.
     """
-    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
-    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    asset = env.scene["robot"]
 
-    action_right_hand = env.action_manager.action[:,-1].clone()
-    reward = (action_right_hand<0.)*motion_res["is_closed"].float() + (action_right_hand>0.)*(1. - motion_res["is_closed"].float()).float()
-    
-    return reward
+    # Cache joint indices + pose tensors on first call.
+    if not hasattr(env, "_right_finger_joint_ids"):
+        name_to_idx = {n: i for i, n in enumerate(asset.data.joint_names)}
+        env._right_finger_joint_ids = torch.tensor(
+            [name_to_idx[n] for n in _RIGHT_FINGER_NAMES],
+            device=env.device, dtype=torch.long,
+        )
+        env._right_finger_open_pose = torch.tensor(
+            _RIGHT_FINGER_OPEN_POSE, device=env.device, dtype=torch.float32,
+        )
+        env._right_finger_closed_pose = torch.tensor(
+            _RIGHT_FINGER_CLOSED_POSE, device=env.device, dtype=torch.float32,
+        )
+
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32
+    )
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    is_closed = motion_res["is_closed"].float().unsqueeze(1)  # (N, 1)
+
+    target = (
+        is_closed * env._right_finger_closed_pose.unsqueeze(0)
+        + (1.0 - is_closed) * env._right_finger_open_pose.unsqueeze(0)
+    )                                                          # (N, 7)
+    actual = asset.data.joint_pos[:, env._right_finger_joint_ids]  # (N, 7)
+
+    l1_dev = torch.sum(torch.abs(actual - target), dim=1)        # (N,) in rad
+    return torch.exp(-l1_dev / _RIGHT_HAND_REWARD_SCALE)         # (N,) in [0, 1]
 
 def left_hand_state_target_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     """The left hand state target of the robot in the environment.
