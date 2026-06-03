@@ -441,10 +441,12 @@ def right_hand_state_target_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     )
 
     # Smooth open→closed interpolation alpha. motion_lib.switch_idxs is in *frame* units
-    # (= grab_idx + idx_shift, set at motion-file load time); converting motion_times to
-    # frames via motion_lib._motion_fps gives the current frame index.
+    # (= grab_idx + idx_shift, set at motion-file load time); each motion has its own per-
+    # motion timestep ``_motion_dt[motion_id]`` (different source recordings can have
+    # different frame rates), so converting motion_times to frames is per-motion.
     motion_lib = env.motion_lib
-    current_frame = motion_times * motion_lib._motion_fps                          # (N,) float
+    motion_dt = motion_lib._motion_dt[env.motion_ids]                              # (N,) float, s/frame
+    current_frame = motion_times / motion_dt                                        # (N,) float
     switch_frame = motion_lib.switch_idxs[env.motion_ids]                          # (N,) float
     alpha = torch.clamp(
         (current_frame - (switch_frame - _RIGHT_HAND_TRANSITION_FRAMES))
