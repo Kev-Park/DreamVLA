@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_object_proximity_reward, target_ref, root_below_threshold, root_angle_below_threshold, current_time_enc
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, target_ref, root_below_threshold, root_angle_below_threshold, current_time_enc
 import numpy as np
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -386,12 +386,7 @@ class G1Rewards(G1RewardsBase):
         
         keypts_deviation_ref = RewTerm(
             func=keypts_deviation_ref_l2,
-            # Bumped from -0.05 to -0.3 (2026-06-03): the original weight made hand-position
-            # tracking marginal compared to the 27-joint deviation sum, so the policy under-
-            # invested in arm precision (hand ended up far from the bottle at grasp moment).
-            # Closer to joint_deviation_ref's weight (-0.2) so keypoint position deviation
-            # gets a comparable share of the loss as joint-angle deviation.
-            weight=-0.3,
+            weight=-0.05,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True), "keypts_mask": KEYPTS_MASK})
     
 

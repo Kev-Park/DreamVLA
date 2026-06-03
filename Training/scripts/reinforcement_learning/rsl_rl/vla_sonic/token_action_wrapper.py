@@ -3,10 +3,10 @@
 The SONIC release ships the decoder as ``model_decoder.onnx`` (the exact decoder
 ``eval_parquet_sonic.py`` already drives: a single ``obs_dict`` input of 994 dims →
 ``action`` of 29 dims). Here we freeze that decoder and let an RL (PPO) policy play the
-role of the SONIC *encoder*: the rsl_rl actor maps the env observation to a 78-D latent —
-64 dims for the SONIC body token, 14 dims for direct finger control — and this wrapper
-feeds the body token (FSQ-quantized) and batched proprioception history to the frozen
-decoder, then assembles the full 41-D env action.
+role of the SONIC *encoder*: the rsl_rl actor maps the env observation to a 65-D latent —
+64 dims for the SONIC body token, 1 dim for the right-hand open/close scalar — and this
+wrapper feeds the body token (FSQ-quantized) and batched proprioception history to the
+frozen decoder, then assembles the full 41-D env action.
 
 Why ONNX (not the PyTorch ``last.pt``): instantiating the PyTorch ``UniversalTokenModule``
 requires observation dims that only exist after building a live SONIC env (the heavy-dep
@@ -22,10 +22,12 @@ latent is mapped onto the same discrete grid the decoder was trained on. No
 vector_quantize_pytorch dependency needed.
 
 Fingers: SONIC has NO finger decoder in the release (only g1_kin + g1_dyn body decoders).
-In deploy, fingers come from outside SONIC (VLA/teleop). For RL we expose them as the
-policy's last 14 latent dims, mapped via tanh × joint-range-half + joint-default to the
-env's finger action slots. Existing rewards (right_hand_state_target, object_above_the_ground)
-provide the training signal.
+In deploy, fingers come from outside SONIC (VLA/teleop). For RL we mirror train.py's
+BinaryJointPositionActionCfg: a single right-hand open/close scalar from the policy,
+mapped via ``0.5*(1+tanh(scalar))`` to a blend factor that interpolates between fixed
+canonical open and closed right-hand poses (values copied from the original binary cfg).
+Left hand stays at its env-default pose (not used for the pick task). Existing rewards
+(right_hand_state_target with interpolated target, object_above_the_ground) train it.
 
 Decoder obs layout (994 = 64 + 930), matching ``vla_sonic.planner_to_utm.build_decoder_obs``:
     token_state(64),
@@ -91,10 +93,27 @@ FSQ_NUM_LEVELS = 32           # channels per token
 FSQ_LEVEL_LIST = [32] * 32    # 32 quantization levels per channel
 FSQ_MAX_NUM_TOKENS = 2        # 2 tokens × 32 channels = 64-D
 # Finger control (NOT decoded by SONIC — direct policy passthrough).
+# Mirrors train.py's BinaryJointPositionActionCfg: the policy emits a single right-hand
+# open/close scalar; the wrapper synthesizes a 14-D env action by blending between fixed
+# canonical poses (left hand stays at its default open pose; right hand interpolates
+# between open and closed pose by the scalar).
 N_FINGERS_PER_HAND = 7
-TOTAL_FINGER_DIM = 2 * N_FINGERS_PER_HAND  # 14
-# Policy outputs body-token-latent + finger-latent.
-POLICY_ACTION_DIM = TOKEN_TOTAL_DIM + TOTAL_FINGER_DIM  # 78
+ENV_FINGER_SLOTS = 2 * N_FINGERS_PER_HAND     # 14 env-action slots (7 left + 7 right)
+TOTAL_FINGER_DIM = 1                          # policy-side: a single right-hand scalar
+POLICY_ACTION_DIM = TOKEN_TOTAL_DIM + TOTAL_FINGER_DIM  # 65 (was 78)
+
+# Right-hand canonical poses, in action-term order — values from
+# motion_tracking_pick_env.py's BinaryJointPositionActionCfg.right_hand_action.
+_RIGHT_FINGER_OPEN_POSE  = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+_RIGHT_FINGER_CLOSED_POSE = (
+    0.0,                # thumb_0
+    -np.pi / 3.0,       # thumb_1
+    -np.pi / 2.0,       # thumb_2
+    np.pi / 2.0,        # index_0
+    np.pi / 2.0,        # index_1
+    np.pi / 2.0,        # middle_0
+    np.pi / 2.0,        # middle_1
+)
 
 
 class FSQ(nn.Module):
@@ -222,27 +241,22 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         self._perm27 = torch.as_tensor(PERM_SONIC27_TO_ENV27, device=self._dev, dtype=torch.long)
         self._n_body_env = len(keep)  # 27
 
-        # ---- finger action slots: policy-controlled via tanh × joint-range ----
-        # SONIC has NO finger decoder, so fingers are direct policy passthrough. Scale the
-        # tanh-bounded finger latent into each finger joint's [min, max] range so the policy
-        # action space is anchored to the robot's physical limits regardless of init.
+        # ---- finger action slots: train.py-style single open/close scalar ----
+        # The policy emits ONE right-hand scalar; we blend between canonical open and
+        # canonical closed pose by 0.5*(1+tanh(scalar)). Left hand is held at its default
+        # open pose (it's not relevant for the pick task). This mirrors what
+        # BinaryJointPositionActionCfg did in train.py, with a smooth blend instead of a
+        # discrete step (the smoothness is needed for PPO's gradient through the policy).
         left_ids = [name_to_idx[n] for n in _LEFT_FINGER_JOINTS if n in name_to_idx]
         right_ids = [name_to_idx[n] for n in _RIGHT_FINGER_JOINTS if n in name_to_idx]
         if len(left_ids) != 7 or len(right_ids) != 7:
             print(f"[token-wrapper] WARNING finger joints found L={len(left_ids)} R={len(right_ids)} (expected 7/7)")
-        finger_ids = left_ids + right_ids                          # 14 indices, action-term order
-        joint_limits = robot.data.soft_joint_pos_limits[0]          # (n_joints, 2)
-        lo = joint_limits[finger_ids, 0].clone().to(self._dev)     # (14,)
-        hi = joint_limits[finger_ids, 1].clone().to(self._dev)     # (14,)
-        self._finger_mid = 0.5 * (lo + hi)                          # (14,) joint center
-        self._finger_half_range = 0.5 * (hi - lo)                   # (14,) half-range
-        # Sanity: if a joint has zero range (limits not set), fall back to default + ±0.5 rad.
-        zero = (self._finger_half_range.abs() < 1e-6)
-        if zero.any():
-            default_q = robot.data.default_joint_pos[0]
-            default_fingers = default_q[finger_ids].clone().to(self._dev)
-            self._finger_mid = torch.where(zero, default_fingers, self._finger_mid)
-            self._finger_half_range = torch.where(zero, torch.full_like(self._finger_half_range, 0.5), self._finger_half_range)
+        # Right-hand canonical poses, as (7,) tensors on device.
+        self._right_open_pose = torch.tensor(_RIGHT_FINGER_OPEN_POSE, device=self._dev, dtype=torch.float32)
+        self._right_closed_pose = torch.tensor(_RIGHT_FINGER_CLOSED_POSE, device=self._dev, dtype=torch.float32)
+        # Left hand held at robot's default open pose for its 7 finger joints.
+        default_q = robot.data.default_joint_pos[0]
+        self._left_default_pose = default_q[left_ids].clone().to(self._dev)  # (7,)
         self._env_action_dim = self.unwrapped.action_manager.total_action_dim
         expected = self._n_body_env + len(left_ids) + len(right_ids)
         assert self._env_action_dim == expected, (
@@ -261,7 +275,7 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
 
         self._seed_history(torch.ones(N, dtype=torch.bool, device=self._dev))
         print(f"[token-wrapper] ready: num_actions={self.num_actions} (= {TOKEN_TOTAL_DIM} body token + "
-              f"{TOTAL_FINGER_DIM} fingers; FSQ levels=[{FSQ_LEVEL_LIST[0]}]*{len(FSQ_LEVEL_LIST)}), "
+              f"{TOTAL_FINGER_DIM} right-hand open/close scalar; FSQ levels=[{FSQ_LEVEL_LIST[0]}]*{len(FSQ_LEVEL_LIST)}), "
               f"env_action_dim={self._env_action_dim}, num_envs={N}")
 
     # ---------- helpers ----------
@@ -337,12 +351,23 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         return out.reshape(self.num_envs, -1)[:, :N_BODY_JOINTS]
 
     def _fingers_from_latent(self, finger_latent: torch.Tensor) -> torch.Tensor:
-        """(N, 14) raw finger latent → (N, 14) joint-pos targets bounded to each joint's range.
+        """(N, 1) right-hand open/close scalar → (N, 14) env-finger-action vector.
 
-        Maps via ``tanh(latent) × half_range + midpoint`` so the policy's unbounded latent
-        lands inside each finger joint's soft limits. Action-term order: 7 left then 7 right.
+        ``blend = 0.5 * (1 + tanh(scalar))`` maps the unbounded policy scalar to ``[0, 1]``:
+            blend = 0 → fully open canonical pose
+            blend = 1 → fully closed canonical pose
+        Right hand interpolates linearly between open/closed. Left hand stays at its env-
+        default pose (open by default; not used for the pick task). Output layout follows
+        ContinuousFingersActionsCfg: ``[7 left | 7 right]`` after the 27 body slots.
         """
-        return torch.tanh(finger_latent) * self._finger_half_range + self._finger_mid
+        N = finger_latent.shape[0]
+        blend = 0.5 * (1.0 + torch.tanh(finger_latent[:, :1]))               # (N, 1) in [0,1]
+        right_fingers = (
+            blend * self._right_closed_pose.unsqueeze(0)
+            + (1.0 - blend) * self._right_open_pose.unsqueeze(0)
+        )                                                                     # (N, 7)
+        left_fingers = self._left_default_pose.unsqueeze(0).expand(N, -1)    # (N, 7) constant
+        return torch.cat([left_fingers, right_fingers], dim=1)               # (N, 14)
 
     def _body29_to_env_action(self, body_29: torch.Tensor, finger_cmds: torch.Tensor) -> torch.Tensor:
         """(N,29) SONIC body + (N,14) finger cmds → (N, env_action_dim) full env action."""
@@ -352,7 +377,7 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         env_body = sonic27.index_select(1, self._perm27)
         act = torch.empty(N, self._env_action_dim, device=self._dev, dtype=env_body.dtype)
         act[:, : self._n_body_env] = env_body
-        act[:, self._n_body_env : self._n_body_env + TOTAL_FINGER_DIM] = finger_cmds
+        act[:, self._n_body_env : self._n_body_env + ENV_FINGER_SLOTS] = finger_cmds
         return act
 
     # ---------- vec-env API ----------
