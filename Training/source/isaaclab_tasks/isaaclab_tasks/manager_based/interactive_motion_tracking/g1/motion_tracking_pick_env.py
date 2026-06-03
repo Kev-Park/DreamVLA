@@ -386,7 +386,12 @@ class G1Rewards(G1RewardsBase):
         
         keypts_deviation_ref = RewTerm(
             func=keypts_deviation_ref_l2,
-            weight=-0.05,
+            # Bumped from -0.05 to -0.3 (2026-06-03): the original weight made hand-position
+            # tracking marginal compared to the 27-joint deviation sum, so the policy under-
+            # invested in arm precision (hand ended up far from the bottle at grasp moment).
+            # Closer to joint_deviation_ref's weight (-0.2) so keypoint position deviation
+            # gets a comparable share of the loss as joint-angle deviation.
+            weight=-0.3,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True), "keypts_mask": KEYPTS_MASK})
     
 
@@ -406,14 +411,11 @@ class G1Rewards(G1RewardsBase):
             func=right_hand_state_target_reward,
             weight=0.3)
 
-        # Pull the right wrist toward the bottle during the OPEN phase of the reference
-        # motion. Without this, body tracking is too coarse to land the hand at the grasp
-        # pose, and closure rewards get earned in mid-air → no actual grasp. Time-masked
-        # to is_closed=0 inside the reward fn so post-grasp lifting isn't penalized.
-        right_hand_object_proximity = RewTerm(
-            func=right_hand_object_proximity_reward,
-            params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"]), "std": 0.15},
-            weight=2.0)
+        # NOTE: right_hand_object_proximity reward was removed after a failed experiment —
+        # gaussian std=0.15 had dead gradient at typical wrist-bottle distances (~40 cm),
+        # disturbing body tracking without producing a learning signal for the reach. The
+        # function is kept in motion_tracking_env.py for later reuse (would need a wider
+        # std or a delta-distance formulation to actually work).
 
         target_orientation_error = RewTerm(func=target_orientation_error,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])},
