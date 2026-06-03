@@ -354,6 +354,41 @@ _RIGHT_FINGER_CLOSED_POSE = (
 _RIGHT_HAND_REWARD_SCALE = 2.0  # rad; exp(-L1_sum / scale) → 1 perfect, ~0.37 at 2 rad total dev
 
 
+def right_hand_object_proximity_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"]),
+    std: float = 0.15,
+) -> torch.Tensor:
+    """Reward right-wrist proximity to the bottle during the OPEN phase of the reference motion.
+
+    Provides an explicit gradient toward the bottle during reach — body-tracking rewards
+    alone are too coarse (one sum over 27 joints) to land the right hand precisely at the
+    grasp pose. Time-masked to the open phase (``is_closed = 0``) so post-grasp lifting
+    isn't penalized for moving the wrist away from the bottle's resting spot.
+
+    Returns ``exp(-(dist/std)^2) * (1 - is_closed)`` — gaussian-ish proximity in [0, 1]
+    that drops off sharply outside ``std`` meters of the bottle (default 15 cm). With a
+    moderate weight in the cfg, the max contribution sits comparable to the alive reward
+    so it provides clear gradient without overwhelming body tracking.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    wrist_pos = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3] - env.scene.env_origins  # (N, 3)
+
+    bottle: RigidObject = env.scene["object"]
+    bottle_pos = bottle.data.root_pos_w - env.scene.env_origins  # (N, 3)
+
+    dist = torch.norm(wrist_pos - bottle_pos, dim=1)  # (N,)
+    proximity = torch.exp(-(dist / std) ** 2)         # (N,) in [0, 1]
+
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32
+    )
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    is_open = 1.0 - motion_res["is_closed"].float()   # (N,)
+
+    return proximity * is_open
+
+
 def right_hand_state_target_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Reward right-hand finger joints matching the per-step target pose (open/closed).
 

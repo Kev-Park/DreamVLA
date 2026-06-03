@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, target_ref, root_below_threshold, root_angle_below_threshold, current_time_enc
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_object_proximity_reward, target_ref, root_below_threshold, root_angle_below_threshold, current_time_enc
 import numpy as np
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -405,7 +405,16 @@ class G1Rewards(G1RewardsBase):
         right_hand_state_target_reward_val = RewTerm(
             func=right_hand_state_target_reward,
             weight=0.3)
-        
+
+        # Pull the right wrist toward the bottle during the OPEN phase of the reference
+        # motion. Without this, body tracking is too coarse to land the hand at the grasp
+        # pose, and closure rewards get earned in mid-air → no actual grasp. Time-masked
+        # to is_closed=0 inside the reward fn so post-grasp lifting isn't penalized.
+        right_hand_object_proximity = RewTerm(
+            func=right_hand_object_proximity_reward,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"]), "std": 0.15},
+            weight=2.0)
+
         target_orientation_error = RewTerm(func=target_orientation_error,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])},
             weight=-1.0)
