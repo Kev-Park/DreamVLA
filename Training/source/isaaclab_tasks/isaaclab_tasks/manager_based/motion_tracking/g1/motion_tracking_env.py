@@ -352,6 +352,12 @@ _RIGHT_FINGER_CLOSED_POSE = (
     float(np.pi) / 2.0,        # middle_1
 )
 _RIGHT_HAND_REWARD_SCALE = 2.0  # rad; exp(-L1_sum / scale) → 1 perfect, ~0.37 at 2 rad total dev
+# Number of motion frames over which the finger target linearly interpolates from the open
+# pose to the closed pose, ending at the grab_idx frame. At the env's 50 Hz control rate,
+# 10 frames = 200 ms — matches the timescale of a human hand closing on an object. Before
+# the window: target = open pose (avoids pre-closing on empty air during reach). After
+# grab_idx: target = closed pose (drives the actual grasp).
+_RIGHT_HAND_TRANSITION_FRAMES = 10.0
 
 
 def right_hand_object_proximity_reward(
@@ -390,21 +396,29 @@ def right_hand_object_proximity_reward(
 
 
 def right_hand_state_target_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Reward right-hand finger joints matching the per-step target pose (open/closed).
+    """Reward right-hand finger joints matching the smoothly-interpolated target pose.
 
-    Replaces the legacy reward that read ``env.action_manager.action[:, -1]`` — that was
-    designed for BinaryJointPositionActionCfg where the last action element is the right-
-    hand open/close scalar. With ContinuousFingersActionsCfg, ``action[:, -1]`` is just one
-    finger joint command (right_hand_middle_1), so the legacy reward devolves to "make this
-    one joint's sign match is_closed" — easily satisfied without actually closing the hand
-    on the bottle.
+    Replaces the legacy reward that read ``env.action_manager.action[:, -1]`` (binary-action
+    artifact; broken for ContinuousFingersActionsCfg).
 
-    The new reward reads the **actual finger joint positions** and computes deviation from
-    a synthesized target pose:
-        is_closed = 0  →  open pose (all zeros)
-        is_closed = 1  →  closed pose (per-joint angles from the binary action cfg)
-    Return is exp(-L1_sum / SCALE) so the value stays in [0, 1] like the legacy reward,
-    keeping the +0.3 cfg weight roughly magnitude-compatible.
+    Target pose interpolates linearly between open and closed around the reference grab_idx
+    so the policy isn't asked to *jump* finger pose in a single frame at the transition:
+
+        current_frame < grab_idx - W   →  target = open pose
+        current_frame ∈ [grab_idx-W, grab_idx]
+                                       →  target = lerp(open, closed, alpha)
+        current_frame ≥ grab_idx       →  target = closed pose
+
+    where ``W = _RIGHT_HAND_TRANSITION_FRAMES`` (10 frames ≈ 200 ms at 50 Hz) and
+    ``alpha = clamp((current_frame - (grab_idx - W)) / W, 0, 1)``.
+
+    The grab_idx comes from ``env.motion_lib.switch_idxs[env.motion_ids]`` — the per-motion
+    manually-annotated grasp frame from the SMPL retargeting pipeline. Smoothly closing
+    around it (rather than at it) lets the bottle stay graspable: a fully-closed fist at
+    the *start* of the reach blocks the bottle from entering the hand envelope when the
+    wrist arrives. Open → gradual close → closed mirrors actual grasp dynamics.
+
+    Return is exp(-L1_sum / SCALE) so the value stays in [0, 1] — +0.3 cfg weight matches.
     """
     asset = env.scene["robot"]
 
@@ -425,17 +439,27 @@ def right_hand_state_target_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
         device=env.device, dtype=torch.float32
     )
-    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
-    is_closed = motion_res["is_closed"].float().unsqueeze(1)  # (N, 1)
+
+    # Smooth open→closed interpolation alpha. motion_lib.switch_idxs is in *frame* units
+    # (= grab_idx + idx_shift, set at motion-file load time); converting motion_times to
+    # frames via motion_lib._motion_fps gives the current frame index.
+    motion_lib = env.motion_lib
+    current_frame = motion_times * motion_lib._motion_fps                          # (N,) float
+    switch_frame = motion_lib.switch_idxs[env.motion_ids]                          # (N,) float
+    alpha = torch.clamp(
+        (current_frame - (switch_frame - _RIGHT_HAND_TRANSITION_FRAMES))
+        / _RIGHT_HAND_TRANSITION_FRAMES,
+        0.0, 1.0,
+    ).unsqueeze(1)                                                                  # (N, 1)
 
     target = (
-        is_closed * env._right_finger_closed_pose.unsqueeze(0)
-        + (1.0 - is_closed) * env._right_finger_open_pose.unsqueeze(0)
-    )                                                          # (N, 7)
-    actual = asset.data.joint_pos[:, env._right_finger_joint_ids]  # (N, 7)
+        alpha * env._right_finger_closed_pose.unsqueeze(0)
+        + (1.0 - alpha) * env._right_finger_open_pose.unsqueeze(0)
+    )                                                                               # (N, 7)
+    actual = asset.data.joint_pos[:, env._right_finger_joint_ids]                   # (N, 7)
 
-    l1_dev = torch.sum(torch.abs(actual - target), dim=1)        # (N,) in rad
-    return torch.exp(-l1_dev / _RIGHT_HAND_REWARD_SCALE)         # (N,) in [0, 1]
+    l1_dev = torch.sum(torch.abs(actual - target), dim=1)                           # (N,) in rad
+    return torch.exp(-l1_dev / _RIGHT_HAND_REWARD_SCALE)                            # (N,) in [0, 1]
 
 def left_hand_state_target_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     """The left hand state target of the robot in the environment.
