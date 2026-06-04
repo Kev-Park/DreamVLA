@@ -351,7 +351,10 @@ _RIGHT_FINGER_CLOSED_POSE = (
     float(np.pi) / 2.0,        # middle_0
     float(np.pi) / 2.0,        # middle_1
 )
-_RIGHT_HAND_REWARD_SCALE = 2.0  # rad; exp(-L1_sum / scale) → 1 perfect, ~0.37 at 2 rad total dev
+_RIGHT_HAND_REWARD_SCALE = 1.0  # rad; sharpened from 2.0 — "halfway" reward drops to 0.011
+                                # (was 0.107) and "always wrong target" drops to 5e-5 (was 0.011).
+                                # Steeper landscape kills "always closed" and "blend=0.5"
+                                # averaging strategies that exploited the smoother reward.
 # Number of motion frames over which the finger target linearly interpolates from the open
 # pose to the closed pose, ending at the grab_idx frame. At the env's 50 Hz control rate,
 # 10 frames = 200 ms — matches the timescale of a human hand closing on an object. Before
