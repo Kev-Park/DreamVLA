@@ -370,24 +370,25 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
     def _fingers_from_latent(self, finger_latent: torch.Tensor) -> torch.Tensor:
         """(N, 1) right-hand open/close scalar → (N, 14) env-finger-action vector.
 
-        ``blend = 0.5 * (1 + tanh(scalar - 1.5))`` maps the unbounded policy scalar to
-        ``[0, 1]`` with a +1.5 BIAS so the **default at latent=0 is fully open**:
-            blend = 0 → fully open canonical pose
-            blend = 1 → fully closed canonical pose
-            at scalar=0: tanh(-1.5) = -0.905 → blend ≈ 0.048 (effectively open)
-            to close:    scalar ≈ +3.0 → tanh(+1.5) = +0.905 → blend ≈ 0.952 (closed)
-        This breaks the "always closed" local optimum: from an open default, the policy
-        has to *actively learn* to drive the scalar positive when the is_closed obs says
-        the reference is grasping — exploration starts from "wrong only during the grasp
-        phase" instead of "wrong only during the open phase" (which was getting reward
-        ~0.6 from passing through the closed-phase frames undetected). Combined with the
-        sharpened reward scale, the conditional strategy now has a much steeper gradient.
-        Right hand interpolates linearly between open/closed. Left hand stays at its env-
-        default pose (open by default; not used for the pick task). Output layout follows
+        ``blend = 0.5 * (1 + tanh(scalar))`` maps the unbounded policy scalar to ``[0, 1]``
+        with NO bias so the default at scalar=0 is blend=0.5 (half-closed). Symmetric
+        default + the split-head architecture (which decouples body from finger output) +
+        std=0.5 on the finger dim together let exploration reach both extremes during
+        training — sampled scalars in [-1.5, +1.5] cover blend ∈ [0.12, 0.88], so PPO sees
+        both "near open" and "near closed" reward signal even before the mean shifts.
+        The earlier ``- 1.5`` bias (default = always-open) was a defense against an
+        "always-closed" local optimum from the prior single-head architecture, but it
+        created a flat-gradient exploration deadzone that the policy never escaped (the
+        ``exp(-l1/SCALE)`` reward at always-open during the closed phase is ~0 and so is
+        its derivative). With split-head, the always-closed trap is far less attractive
+        because body and finger outputs no longer share a linear readout, so we can drop
+        the bias safely.
+        Right hand interpolates linearly between open/closed. Left hand stays at its
+        canonical pose (not used for the pick task). Output layout follows
         ContinuousFingersActionsCfg: ``[7 left | 7 right]`` after the 27 body slots.
         """
         N = finger_latent.shape[0]
-        blend = 0.5 * (1.0 + torch.tanh(finger_latent[:, :1] - 1.5))         # (N, 1) in [0,1]
+        blend = 0.5 * (1.0 + torch.tanh(finger_latent[:, :1]))               # (N, 1) in [0,1]
         right_fingers = (
             blend * self._right_closed_pose.unsqueeze(0)
             + (1.0 - blend) * self._right_open_pose.unsqueeze(0)
