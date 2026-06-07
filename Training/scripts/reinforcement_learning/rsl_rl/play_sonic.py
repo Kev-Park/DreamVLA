@@ -93,6 +93,20 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 # SONIC token-action wrapper (same wiring as train_sonic.py)
 from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder
 from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+from vla_sonic.split_head_actor_critic import SplitHeadActorCritic
+
+# Register the custom ActorCritic with rsl_rl so its `class_name` lookup finds it when
+# loading the checkpoint. rsl_rl 3.0.1's OnPolicyRunner uses `eval(class_name)` inside
+# _construct_algorithm (on_policy_runner.py:418); eval resolves names in the globals of
+# the module where it's called, so we have to inject the class into
+# rsl_rl.runners.on_policy_runner's namespace. (Also adding to rsl_rl.modules for
+# completeness.) Without this, the checkpoint's split-head actor (actor.trunk.*,
+# actor.body_head.*, actor.finger_head.*) cannot be loaded into a vanilla ActorCritic
+# whose state_dict expects actor.0.weight etc.
+import rsl_rl.modules
+import rsl_rl.runners.on_policy_runner as _rsl_rl_opr
+rsl_rl.modules.SplitHeadActorCritic = SplitHeadActorCritic
+_rsl_rl_opr.SplitHeadActorCritic = SplitHeadActorCritic
 
 
 # =========================================================================
@@ -210,6 +224,12 @@ def main():
         enable_cameras=True,
     )
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
+
+    # Match train_sonic.py: this checkpoint was trained with the split-head actor, so the
+    # runner must instantiate SplitHeadActorCritic (not the default ActorCritic) before
+    # load_state_dict, or the parameter names won't line up.
+    agent_cfg.policy.class_name = "SplitHeadActorCritic"
+    print(f"[play_sonic] policy.class_name = {agent_cfg.policy.class_name}")
 
     # ---- resolve checkpoint (optional weight specification) ----
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
