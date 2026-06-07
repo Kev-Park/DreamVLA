@@ -109,57 +109,63 @@ class SplitHeadActor(nn.Module):
 class SplitHeadActorCritic(ActorCritic):
     """ActorCritic with a SplitHeadActor; critic and PPO machinery untouched.
 
-    Defaults: trunk = [512, 256, 256] (matches G1FlatPPORunnerCfg's actor_hidden_dims);
-    body_head_dims = [128]; finger_head_dims = [32]. Adds ~49k params on top of the base
-    ~340k actor (~15% increase, well within standard humanoid-PPO sizes).
+    Defaults: body_head_dims = [128]; finger_head_dims = [32]. Trunk dims and activation
+    are inherited from whatever rsl_rl uses to build the standard actor (via the policy
+    cfg's ``actor_hidden_dims`` / ``activation``).
 
-    The ``head_dims`` are not currently exposed through ``RslRlPpoActorCriticCfg``, so we
-    take them as constructor kwargs with sensible defaults. Override by passing
-    ``body_head_dims=[...]`` / ``finger_head_dims=[...]`` in the policy cfg if needed.
+    Constructor uses ``*args, **kwargs`` passthrough because rsl_rl's ``ActorCritic``
+    signature varies across versions (e.g. rsl_rl 3.0.1 takes ``obs, obs_groups,
+    num_actions, ...`` as positional/required kwargs; older versions take
+    ``num_actor_obs, num_critic_obs, num_actions, ...``). We let the parent build its
+    standard actor under whatever its signature is, then introspect the result to extract
+    input/output dims, hidden dims, and activation — and replace ``self.actor`` with a
+    SplitHeadActor mirroring those choices.
     """
 
-    def __init__(
-        self,
-        num_actor_obs: int,
-        num_critic_obs: int,
-        num_actions: int,
-        actor_hidden_dims=[512, 256, 256],
-        critic_hidden_dims=[512, 256, 256],
-        activation: str = "elu",
-        body_head_dims=[128],
-        finger_head_dims=[32],
-        init_noise_std: float = 1.0,
-        **kwargs,
-    ):
-        # Build parent's critic, std, distribution machinery, etc. The parent also builds a
-        # standard single-MLP actor at self.actor — we replace it below.
-        super().__init__(
-            num_actor_obs=num_actor_obs,
-            num_critic_obs=num_critic_obs,
-            num_actions=num_actions,
-            actor_hidden_dims=actor_hidden_dims,
-            critic_hidden_dims=critic_hidden_dims,
-            activation=activation,
-            init_noise_std=init_noise_std,
-            **kwargs,
-        )
+    def __init__(self, *args, body_head_dims=None, finger_head_dims=None, **kwargs):
+        # Extract our custom kwargs (defaults inline since list defaults are mutable).
+        body_head_dims = [128] if body_head_dims is None else list(body_head_dims)
+        finger_head_dims = [32] if finger_head_dims is None else list(finger_head_dims)
 
-        # Replace the standard actor with the split-head version, on the same device.
-        device = next(self.actor.parameters()).device
-        activation_class = _resolve_activation(activation)
+        # Let parent handle all its required args under whatever signature it uses.
+        super().__init__(*args, **kwargs)
+
+        # Introspect parent's actor to extract dims for our split-head replacement.
+        old_actor = self.actor
+        linears = [m for m in old_actor.modules() if isinstance(m, nn.Linear)]
+        if not linears:
+            raise RuntimeError(
+                "SplitHeadActorCritic could not find any nn.Linear in parent's actor — "
+                "the rsl_rl ActorCritic structure may have changed. Inspect parent.actor."
+            )
+        num_obs = linears[0].in_features
+        num_actions = linears[-1].out_features
+        trunk_dims = [layer.out_features for layer in linears[:-1]]  # hidden layer sizes
+
+        # Activation class — find first non-Linear module that looks like an activation.
+        _activation_types = (nn.ELU, nn.ReLU, nn.Tanh, nn.LeakyReLU, nn.SELU, nn.CELU)
+        activation_class = nn.ELU  # safe default
+        for module in old_actor.modules():
+            if isinstance(module, _activation_types):
+                activation_class = type(module)
+                break
+
+        # Build and replace, on the same device as parent's actor.
+        device = next(old_actor.parameters()).device
         self.actor = SplitHeadActor(
-            num_obs=num_actor_obs,
+            num_obs=num_obs,
             num_actions=num_actions,
-            trunk_dims=actor_hidden_dims,
+            trunk_dims=trunk_dims,
             body_head_dims=body_head_dims,
             finger_head_dims=finger_head_dims,
             activation_class=activation_class,
         ).to(device)
 
         n_actor = sum(p.numel() for p in self.actor.parameters())
-        n_critic = sum(p.numel() for p in self.critic.parameters())
+        n_critic = sum(p.numel() for p in self.critic.parameters()) if hasattr(self, "critic") else 0
         print(
             f"[SplitHeadActorCritic] actor=split-head "
-            f"(trunk={actor_hidden_dims}, body_head={body_head_dims}, finger_head={finger_head_dims}); "
+            f"(trunk={trunk_dims}, body_head={body_head_dims}, finger_head={finger_head_dims}, "
+            f"activation={activation_class.__name__}); "
             f"params: actor={n_actor:,}  critic={n_critic:,}"
         )
