@@ -118,11 +118,16 @@ from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load
 from vla_sonic.physics_overrides import apply_sonic_physics_overrides
 from vla_sonic.split_head_actor_critic import SplitHeadActorCritic
 
-# Register the custom ActorCritic with rsl_rl so its `class_name` lookup finds it. rsl_rl's
-# OnPolicyRunner resolves the policy class via `getattr(rsl_rl.modules, class_name)`, so
-# adding the class to that namespace at import time is sufficient.
+# Register the custom ActorCritic with rsl_rl so its `class_name` lookup finds it.
+# rsl_rl 3.0.1's OnPolicyRunner uses `eval(class_name)` inside _construct_algorithm
+# (see on_policy_runner.py:418), and eval resolves names in the globals of the module
+# where it's called — so we have to inject the class into rsl_rl.runners.on_policy_runner's
+# namespace, not just rsl_rl.modules. (Also adding to rsl_rl.modules for completeness in
+# case other rsl_rl versions resolve via getattr.)
 import rsl_rl.modules
+import rsl_rl.runners.on_policy_runner as _rsl_rl_opr
 rsl_rl.modules.SplitHeadActorCritic = SplitHeadActorCritic
+_rsl_rl_opr.SplitHeadActorCritic = SplitHeadActorCritic
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
