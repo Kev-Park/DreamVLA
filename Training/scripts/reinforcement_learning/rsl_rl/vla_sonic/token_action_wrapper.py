@@ -115,6 +115,22 @@ _RIGHT_FINGER_CLOSED_POSE = (
     np.pi / 2.0,        # middle_1
 )
 
+# Left-hand canonical pose, in action-term order — values from
+# motion_tracking_pick_env.py's BinaryJointPositionActionCfg.left_hand_action.
+# Note: the original env's open_command_expr and close_command_expr for the LEFT hand
+# are IDENTICAL, so the left hand is always at this pose. The URDF's default joint
+# positions for finger joints (zero) do NOT match this "physically natural" left-hand
+# pose — using default_joint_pos here makes the left hand look kinked at a wrong angle.
+_LEFT_FINGER_DEFAULT_POSE = (
+    0.0,                # thumb_0
+    np.pi / 3.0,        # thumb_1
+    np.pi / 2.0,        # thumb_2
+    -np.pi / 2.0,       # index_0
+    -np.pi / 2.0,       # index_1
+    -np.pi / 2.0,       # middle_0
+    -np.pi / 2.0,       # middle_1
+)
+
 
 class FSQ(nn.Module):
     """Finite Scalar Quantization (Mentzer et al. 2023), matching vector_quantize_pytorch.FSQ.
@@ -254,9 +270,10 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         # Right-hand canonical poses, as (7,) tensors on device.
         self._right_open_pose = torch.tensor(_RIGHT_FINGER_OPEN_POSE, device=self._dev, dtype=torch.float32)
         self._right_closed_pose = torch.tensor(_RIGHT_FINGER_CLOSED_POSE, device=self._dev, dtype=torch.float32)
-        # Left hand held at robot's default open pose for its 7 finger joints.
-        default_q = robot.data.default_joint_pos[0]
-        self._left_default_pose = default_q[left_ids].clone().to(self._dev)  # (7,)
+        # Left hand held at the canonical pose from BinaryJointPositionActionCfg.left_hand_action
+        # (NOT robot.data.default_joint_pos, which is zero for finger joints since the URDF
+        # init_state doesn't set them — that produces a kinked, weird-looking left hand).
+        self._left_default_pose = torch.tensor(_LEFT_FINGER_DEFAULT_POSE, device=self._dev, dtype=torch.float32)
         self._env_action_dim = self.unwrapped.action_manager.total_action_dim
         expected = self._n_body_env + len(left_ids) + len(right_ids)
         assert self._env_action_dim == expected, (

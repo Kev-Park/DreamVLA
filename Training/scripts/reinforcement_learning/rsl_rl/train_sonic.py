@@ -116,6 +116,13 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 # SONIC token-action wrapper (imported after app launch; depends on onnx2torch + isaaclab_rl)
 from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder
 from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+from vla_sonic.split_head_actor_critic import SplitHeadActorCritic
+
+# Register the custom ActorCritic with rsl_rl so its `class_name` lookup finds it. rsl_rl's
+# OnPolicyRunner resolves the policy class via `getattr(rsl_rl.modules, class_name)`, so
+# adding the class to that namespace at import time is sufficient.
+import rsl_rl.modules
+rsl_rl.modules.SplitHeadActorCritic = SplitHeadActorCritic
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
@@ -142,6 +149,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # action-bounding strategy without needing clip_actions (no SONIC precedent).
     agent_cfg.policy.init_noise_std = 0.5
     print(f"[train_sonic] policy.init_noise_std = {agent_cfg.policy.init_noise_std} (SONIC std_clamp_max precedent)")
+
+    # Use the split-head actor: shared trunk + separate body-token and finger-scalar heads.
+    # Addresses the linear-readout coupling that was producing arm-curl-correlated-with-finger-
+    # closure even though no reward incentivized it (see split_head_actor_critic.py).
+    agent_cfg.policy.class_name = "SplitHeadActorCritic"
+    print(f"[train_sonic] policy.class_name = {agent_cfg.policy.class_name}")
 
     # set the environment seed
     env_cfg.seed = agent_cfg.seed
