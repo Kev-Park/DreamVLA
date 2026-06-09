@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, root_below_threshold, root_angle_below_threshold, current_time_enc
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, feet_air_time, target_ref, root_below_threshold, root_angle_below_threshold, current_time_enc
 import numpy as np
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -381,14 +381,17 @@ class G1Rewards(G1RewardsBase):
     if TRACKING:
         joint_deviation_ref = RewTerm(
             func=joint_deviation_ref_l1,
-            weight=-0.2,
+            weight=-0.4,  # bumped from -0.2: stronger reference tracking to suppress
+                          # stance-phase foot oscillation during reach (hips+knees are
+                          # in JOINTS_MASK; tighter hip tracking constrains foot position
+                          # downstream of the kinematic chain).
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True), "joint_mask": JOINTS_MASK})
-        
+
         keypts_deviation_ref = RewTerm(
             func=keypts_deviation_ref_l2,
             weight=-0.05,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True), "keypts_mask": KEYPTS_MASK})
-    
+
 
         position_tracking_error = RewTerm(
             func=position_tracking_error,
@@ -406,6 +409,21 @@ class G1Rewards(G1RewardsBase):
             func=right_hand_state_target_reward,
             weight=0.3)
 
+        # Reward committed steps via foot air time over a 0.4 s threshold. Mirrors
+        # ``locomotion.velocity.mdp.feet_air_time`` but with the velocity-command gate
+        # dropped (the pick env has an empty CommandsCfg). Fires at each first-contact
+        # event; per-foot contribution = (last_air_time − 0.4). Positive weight rewards
+        # committed steps and penalizes rapid foot tapping. Small weight (0.1) so it
+        # shapes gait without dominating reference tracking.
+        feet_air_time_val = RewTerm(
+            func=feet_air_time,
+            weight=0.1,
+            params={
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+                "threshold": 0.4,
+            },
+        )
+
         # NOTE: right_hand_object_proximity reward was removed after a failed experiment —
         # gaussian std=0.15 had dead gradient at typical wrist-bottle distances (~40 cm),
         # disturbing body tracking without producing a learning signal for the reach. The
@@ -414,7 +432,17 @@ class G1Rewards(G1RewardsBase):
 
         target_orientation_error = RewTerm(func=target_orientation_error,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])},
-            weight=-1.0)
+            weight=-3.0)  # bumped from -1.0: keeps wrist-orientation penalty larger than
+                          # the finger reward (~0.26 weighted) so PPO's credit assignment
+                          # around the grab frame doesn't reinforce incidental inward wrist
+                          # rotation. Diagnosis: wrist tracked perfectly early in training
+                          # when finger reward was ~0.003 (33x smaller); drift emerged once
+                          # finger reward grew ~85x and overtook the orientation penalty.
+                          # Note: target_orientation_error's `time_mask` switches from
+                          # `angle` (bottle-pointing) to `angle_post` (just-vertical) at
+                          # is_closed=1, so the closed-phase term is structurally weaker —
+                          # the -3.0 weight compensates for both magnitude crossover AND
+                          # the time-mask attenuation at the grab transition.
 
 
     if TASK_DENSE:

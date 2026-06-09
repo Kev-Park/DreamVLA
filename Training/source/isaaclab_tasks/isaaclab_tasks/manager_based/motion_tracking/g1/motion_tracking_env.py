@@ -22,7 +22,7 @@ from isaaclab.assets import Articulation, RigidObject
 import isaaclab.utils.math as math_utils
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
+from isaaclab.sensors import ContactSensor, ContactSensorCfg, RayCasterCfg, patterns
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
 from isaaclab.utils import configclass
@@ -489,6 +489,32 @@ def right_hand_binary_match_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     is_closed = motion_res["is_closed"].float()
     return ((action_right_hand < 0.0).float() * is_closed
             + (action_right_hand > 0.0).float() * (1.0 - is_closed))
+
+
+def feet_air_time(
+    env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, threshold: float
+) -> torch.Tensor:
+    """Reward long steps taken by the feet using L2-kernel.
+
+    Mirrors ``isaaclab_tasks.manager_based.locomotion.velocity.mdp.rewards.feet_air_time``
+    but drops the velocity-command gate — the motion-tracking pick env has an empty
+    ``CommandsCfg``, so the original ``command_manager.get_command("base_velocity")``
+    lookup would error. Without the gate, the reward fires on every first-contact event;
+    during the standing/reaching phase the feet should rarely lift, so ``first_contact``
+    is mostly 0 and the term contributes only when the policy commits to a step (which
+    is exactly the behavior we want to encourage during walking, and exactly the
+    behavior we want to NOT happen during reaching).
+
+    Reward at each first-contact event = ``last_air_time − threshold``. Below threshold:
+    negative contribution (the air time was too short — rapid stepping). Above threshold:
+    positive contribution (committed step). With a positive weight, this rewards committed
+    steps and penalizes rapid foot tapping.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+    reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
+    return reward
 
 
 def left_hand_state_target_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
