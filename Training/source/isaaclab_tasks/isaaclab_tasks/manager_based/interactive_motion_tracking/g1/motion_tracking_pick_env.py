@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, target_ref, root_below_threshold, root_angle_below_threshold, current_time_enc
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, root_below_threshold, root_angle_below_threshold, current_time_enc
 import numpy as np
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -876,3 +876,62 @@ class G1PickContinuousFingersEnvCfg(G1PickEnvCfg):
         print(f"[SONIC-gains] arms.stiffness = {arms.stiffness}")
         feet = self.scene.robot.actuators["feet"]
         print(f"[SONIC-gains] feet.stiffness = {feet.stiffness} damping = {feet.damping}")
+
+
+@configclass
+class BinaryFingersActionsCfg(ActionsCfg):
+    """Hybrid actions: passthrough body (for SONIC decoder) + binary fingers (for RL).
+
+    Body action mirrors ``ContinuousFingersActionsCfg`` (absolute joint targets) so
+    the SONIC decoder's output maps 1:1 to env command. Finger actions revert to
+    ``BinaryJointPositionActionCfg`` — exactly what the original ``train.py`` used.
+
+    This gives the RL policy a single 1-D scalar per hand (close/open), which the env's
+    action manager internally expands to 7-D joint targets using the open/close
+    command_expr dicts. Trivially dense binary-match reward + no PD lag in the reward
+    signal. The continuous-finger layout is *only* needed at VLA deployment (where the
+    VLA writes 7-D continuous finger targets) — see ``G1PickContinuousFingersEnvCfg``.
+    """
+    joint_pos = mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=JointNamesOrder,
+        preserve_order=True,
+        scale=1.0,
+        use_default_offset=False,
+        offset=0.0,
+    )
+    # Inherits ``left_hand_action`` and ``right_hand_action`` (both
+    # BinaryJointPositionActionCfg) from ``ActionsCfg`` unchanged.
+
+
+@configclass
+class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
+    """No-camera pick env with binary fingers + passthrough body + SONIC-matched gains.
+
+    Used by ``train_sonic.py``. Action layout is [27 body | 1 left binary | 1 right binary]
+    = 29 dims. Trained encoder ONNX-exports to body-tokens-only, so at deployment it slots
+    into ``G1PickContinuousFingersEnvCfg`` (where the VLA writes continuous fingers) with
+    zero layout coupling — the encoder only ever bridges body actions, which are passthrough
+    in both envs.
+
+    Also swaps the right-hand reward function: under binary fingers there's a clean 1-D
+    binary action slot to read, so we use the original train.py-style binary match against
+    ``motion_lib["is_closed"]`` instead of the joint-space ``exp(-L1/SCALE)`` reward
+    (which was designed around the 7-D continuous action layout).
+    """
+    actions: BinaryFingersActionsCfg = BinaryFingersActionsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.robot.actuators = _build_sonic_matched_actuators()
+        # Swap the right-hand reward to the binary-match version (uses action_manager.action
+        # directly; no PD-tracking lag, no sharpness parameter, dense {0,1} signal).
+        self.rewards.right_hand_state_target_reward_val.func = right_hand_binary_match_reward
+        legs = self.scene.robot.actuators["legs"]
+        print(f"[SONIC-gains] legs.stiffness = {legs.stiffness}")
+        print(f"[SONIC-gains] legs.damping   = {legs.damping}")
+        arms = self.scene.robot.actuators["arms"]
+        print(f"[SONIC-gains] arms.stiffness = {arms.stiffness}")
+        feet = self.scene.robot.actuators["feet"]
+        print(f"[SONIC-gains] feet.stiffness = {feet.stiffness} damping = {feet.damping}")
+        print("[BinaryFingers] right_hand reward swapped to binary-match against is_closed")

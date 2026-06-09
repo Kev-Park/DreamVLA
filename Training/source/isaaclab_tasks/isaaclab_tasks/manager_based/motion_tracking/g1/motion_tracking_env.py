@@ -466,6 +466,31 @@ def right_hand_state_target_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     l1_dev = torch.sum(torch.abs(actual - target), dim=1)                           # (N,) in rad
     return torch.exp(-l1_dev / _RIGHT_HAND_REWARD_SCALE)                            # (N,) in [0, 1]
 
+def right_hand_binary_match_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Original train.py-style binary-match reward for the right hand.
+
+    Reads the right-hand binary action slot (last dim of ``action_manager.action`` under
+    BinaryFingersActionsCfg = [27 body | 1 left | 1 right]) and compares its sign to the
+    motion library's ``is_closed`` flag for the current frame. Returns 1 if the commanded
+    direction agrees with the reference, 0 otherwise.
+
+    Convention from BinaryJointPositionActionCfg: action < 0 → closed pose, action >= 0 →
+    open pose. So we want action < 0 when is_closed = 1 and action > 0 when is_closed = 0.
+
+    Replaces the joint-space ``exp(-L1/SCALE)`` reward (which is still used by the
+    ContinuousFingers env). This version has no PD-tracking lag, no sharpness parameter,
+    and a uniformly dense {0, 1} signal — well-suited to a 1-D binary action surface.
+    """
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32
+    )
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    action_right_hand = env.action_manager.action[:, -1].clone()
+    is_closed = motion_res["is_closed"].float()
+    return ((action_right_hand < 0.0).float() * is_closed
+            + (action_right_hand > 0.0).float() * (1.0 - is_closed))
+
+
 def left_hand_state_target_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     """The left hand state target of the robot in the environment.
 

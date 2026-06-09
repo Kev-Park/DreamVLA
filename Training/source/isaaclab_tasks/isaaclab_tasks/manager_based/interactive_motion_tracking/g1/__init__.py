@@ -71,6 +71,21 @@ gym.register(
     },
 )
 
+# No-camera pick env with BINARY fingers + passthrough body + SONIC-matched actuators.
+# Used by train_sonic.py: simpler 1-D-per-hand finger control that mirrors the original
+# train.py, with the original binary-match finger reward against motion_lib's is_closed
+# flag. The action manager internally expands each 1-D binary action to 7-D joint targets.
+gym.register(
+    id="Isaac-Motion-Tracking-Pick-BinaryFingers-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_env:G1PickBinaryFingersEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
+
 gym.register(
     id="Isaac-Motion-Tracking-Pick-Top-UB-Real-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
