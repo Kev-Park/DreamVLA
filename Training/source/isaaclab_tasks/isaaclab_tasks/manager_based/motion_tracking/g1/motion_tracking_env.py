@@ -721,6 +721,40 @@ def target_ref(env: ManagerBasedRLEnv, time_offset: float = 0., visualize_marker
     
     return target_ref_tensor
 
+def target_ref_slim(env: ManagerBasedRLEnv, time_offset: float = 0.) -> torch.Tensor:
+    """Slim future-reference sample: ref joint pos + ref root pose in robot frame (34 dims).
+
+    Far-horizon companion to ``target_ref`` (178 dims). Drops the 117-D keypoint block
+    (FK of joints+root — needed for precision reaching at the near horizon, redundant for
+    gait planning further out) and the 27 always-zero joint-vel padding. Content mirrors
+    the joint/root-level ``command_multi_future`` input of SONIC's G1 encoder, which sees
+    10 future frames at 0.1 s spacing (1.0 s horizon, sonic_release.yaml:48-49) — long
+    enough to cover a full reference stride before the policy must commit to a step.
+    No visualization-marker side effects (unlike ``target_ref``).
+    """
+    if not hasattr(env, 'motion_lib'):
+        out = torch.zeros((env.scene.num_envs, 34), device=env.device)
+        out[:, 30] = 1.0  # identity quaternion w-component (dims 30:34 are root_rot)
+        return out
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32
+    ) + time_offset
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    ref_joint_pos = motion_res["dof_pos"]                                   # (N, 27)
+    root_pos = motion_res["root_pos"]                                       # (N, 3)
+    root_rot = motion_res["root_rot"]                                       # (N, 4)
+
+    asset: RigidObject = env.scene["robot"]
+    root_pos_robot = asset.data.root_pos_w - env.scene.env_origins
+    root_rot_robot = math_utils.quat_unique(asset.data.root_quat_w)
+    root_pos_robot_local = math_utils.quat_apply(
+        math_utils.quat_conjugate(root_rot_robot), root_pos - root_pos_robot)
+    root_rot_robot_local = math_utils.quat_mul(
+        math_utils.quat_conjugate(root_rot_robot), root_rot)
+
+    return torch.cat([ref_joint_pos, root_pos_robot_local, root_rot_robot_local], dim=-1)  # (N, 34)
+
+
 def current_time_enc(env: ManagerBasedRLEnv, n_freqs = 1) -> torch.Tensor:
     """The current time in the environment."""
     if not hasattr(env, 'motion_lib'):

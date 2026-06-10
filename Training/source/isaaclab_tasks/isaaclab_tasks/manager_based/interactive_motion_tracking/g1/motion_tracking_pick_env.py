@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, feet_air_time, target_ref, root_below_threshold, root_angle_below_threshold, current_time_enc
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, feet_air_time, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc
 import numpy as np
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -563,6 +563,18 @@ class ObservationsCfg:
             target_ref_curr = ObsTerm(func=target_ref, params={"visualize_markers": VISUALIZE_MARKERS})
             target_ref_next = ObsTerm(func=target_ref, params={"time_offset": .1})
             target_ref_next_next = ObsTerm(func=target_ref, params={"time_offset": .2})
+            # Far-horizon slim lookahead (t+0.3 … t+0.9 s, 34 dims each: ref joints + root
+            # pose, no keypoints). Extends the reference window to 1.0 s at 0.1 s spacing —
+            # mirroring SONIC's G1 encoder (num_future_frames=10, dt_future_ref_frames=0.1).
+            # A stride is 0.4–0.6 s; with only 0.2 s visibility the policy saw <half a
+            # reference step before having to commit, favoring shuffles over committed steps.
+            target_ref_slim_03 = ObsTerm(func=target_ref_slim, params={"time_offset": .3})
+            target_ref_slim_04 = ObsTerm(func=target_ref_slim, params={"time_offset": .4})
+            target_ref_slim_05 = ObsTerm(func=target_ref_slim, params={"time_offset": .5})
+            target_ref_slim_06 = ObsTerm(func=target_ref_slim, params={"time_offset": .6})
+            target_ref_slim_07 = ObsTerm(func=target_ref_slim, params={"time_offset": .7})
+            target_ref_slim_08 = ObsTerm(func=target_ref_slim, params={"time_offset": .8})
+            target_ref_slim_09 = ObsTerm(func=target_ref_slim, params={"time_offset": .9})
             target_orientation_hand = ObsTerm(
                 func=target_orientation, params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])})
         

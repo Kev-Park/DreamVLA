@@ -242,30 +242,58 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
 
-    # SONIC-style hard std clamp (sonic_release.yaml:80–82 → use_clampped_std + std_clamp_max=0.5).
-    # rsl_rl exposes only `init_noise_std` (starting value), so we monkey-patch the algorithm's
-    # update to clamp the policy's std parameter back into [0.001, 0.5] after every PPO update.
-    # This is what SONIC's training does and is what was missing from the last run — without it,
-    # std drifted from 0.5 to 8.69 over 15k iters, saturating the latent and locking finger commands.
+    # SONIC-style hard std clamp (sonic_release.yaml:80–82 → use_clampped_std + std_clamp_max=0.5),
+    # extended with an ANNEALING SCHEDULE on the ceiling. rsl_rl exposes only `init_noise_std`,
+    # so we monkey-patch the algorithm's update to clamp the policy's std parameter after every
+    # PPO update. Without any clamp, std drifted 0.5 → 8.69 over 15k iters (entropy bonus pushes
+    # std up), saturating the latent. With a FIXED 0.5 ceiling, std sat pinned at 0.5 for the
+    # entire run — the policy optimizes expected reward under permanently large action noise,
+    # which favors noise-robust locomotion strategies: wide stance, small uncommitted shuffly
+    # steps, never trusting precise foot placement. Annealing the ceiling lets late training
+    # exploit precise actions (committed steps, clean grasp approach) once exploration has
+    # found the behaviors.
+    # Schedule: hold 0.5 for the first 20% of iterations (exploration), linearly anneal to
+    # 0.2 by 80%, hold 0.2 to the end.
     if agent_cfg.class_name == "OnPolicyRunner":
         import math
-        _STD_MIN, _STD_MAX = 0.001, 0.5
-        _LOG_STD_MIN, _LOG_STD_MAX = math.log(_STD_MIN), math.log(_STD_MAX)
+        _STD_MIN = 0.001
+        _STD_MAX_START, _STD_MAX_END = 0.5, 0.2
+        _total_iters = max(int(agent_cfg.max_iterations), 1)
+        _anneal_start = int(0.2 * _total_iters)   # hold std_max=0.5 until here
+        _anneal_end = int(0.8 * _total_iters)     # reach std_max=0.2 here
+        _update_counter = {"n": 0}
         _orig_update = runner.alg.update
+
+        def _current_std_max() -> float:
+            n = _update_counter["n"]
+            if n <= _anneal_start:
+                return _STD_MAX_START
+            if n >= _anneal_end:
+                return _STD_MAX_END
+            frac = (n - _anneal_start) / max(_anneal_end - _anneal_start, 1)
+            return _STD_MAX_START + frac * (_STD_MAX_END - _STD_MAX_START)
 
         def _update_with_std_clamp(*args, **kwargs):
             info = _orig_update(*args, **kwargs)
+            _update_counter["n"] += 1
+            std_max = _current_std_max()
             with torch.no_grad():
                 policy = getattr(runner.alg, "policy", None) or getattr(runner.alg, "actor_critic", None)
                 if policy is not None:
                     if hasattr(policy, "std") and isinstance(policy.std, torch.nn.Parameter):
-                        policy.std.data.clamp_(min=_STD_MIN, max=_STD_MAX)
+                        policy.std.data.clamp_(min=_STD_MIN, max=std_max)
                     elif hasattr(policy, "log_std") and isinstance(policy.log_std, torch.nn.Parameter):
-                        policy.log_std.data.clamp_(min=_LOG_STD_MIN, max=_LOG_STD_MAX)
+                        policy.log_std.data.clamp_(min=math.log(_STD_MIN), max=math.log(std_max))
+            # Print at schedule milestones so the anneal is visible in the training log.
+            n = _update_counter["n"]
+            if n in (_anneal_start, (_anneal_start + _anneal_end) // 2, _anneal_end):
+                print(f"[train_sonic] std anneal: iter {n}/{_total_iters} → std_max = {std_max:.3f}")
             return info
 
         runner.alg.update = _update_with_std_clamp
-        print(f"[train_sonic] installed SONIC std clamp: [{_STD_MIN}, {_STD_MAX}] (post-update)")
+        print(f"[train_sonic] installed ANNEALED SONIC std clamp: "
+              f"hold {_STD_MAX_START} until iter {_anneal_start}, "
+              f"anneal → {_STD_MAX_END} by iter {_anneal_end}, min={_STD_MIN}")
 
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
