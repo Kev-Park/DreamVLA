@@ -288,19 +288,39 @@ def orientation_tracking_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg
     root_rot = motion_res["root_rot"]
     return math_utils.quat_error_magnitude(root_rot, asset.data.root_quat_w)
 
+# Distance (m) below which the geometric "point at the bottle" orientation target fades
+# out. The target frame is built from the normalized wrist→grab_pos direction, which is
+# singular as the wrist reaches the grab point: at 5 cm a 1 cm wrist move swings the
+# target ~11°, at 2 cm ~28° — the target spins, the policy chases it, and the result is
+# inward wrist rotation + high-frequency arm corrections concentrated at final approach.
+# Inside the fade radius we blend toward the closed-phase constraint (wrist z-axis
+# vertical), which is what the reward becomes after the grab anyway — making the
+# orientation objective continuous through the grasp instead of singular at it.
+_ORIENT_FADE_RADIUS = 0.15
+
+
 def target_orientation_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
     root_pos_link = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3].clone() - env.scene.env_origins # type: ignore
     root_rot_link = math_utils.quat_unique(asset.data.body_quat_w[:, asset_cfg.body_ids[0], :].clone())
-    
-    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32) - 1.
+
+    # NOTE: this used to sample motion state at `motion_times - 1.` (one second in the
+    # past). grab_pos is static per motion so only is_closed was affected — the open→closed
+    # mask switch fired a full second AFTER the actual grab, so for the first second of the
+    # lift this reward still demanded the wrist point at the bottle's original resting
+    # position. As the wrist rises, that direction tilts down/inward — the reward was
+    # actively fighting the lift (dragging the grasped wrist back toward the table) and
+    # feeding the inward-rotation behavior. Now sampled at the true current motion time,
+    # consistent with every other reward term.
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
     motion_ids = env.motion_ids.clone().detach().to(device=env.device, dtype=torch.long)
     motion_res = env.motion_lib.get_motion_state(motion_ids, motion_times)
     root_pos = motion_res["grab_pos"] + motion_res["offsets"]
     time_mask = 1. - motion_res["is_closed"].float()
-    
+
     a_axis = root_pos - root_pos_link # (2*x_axis + y_axis)/sqrt(5)
-    a_axis = a_axis / torch.norm(a_axis, dim=1, keepdim=True)
+    wrist_to_grab_dist = torch.norm(a_axis, dim=1, keepdim=True)
+    a_axis = a_axis / torch.clamp_min(wrist_to_grab_dist, 1e-6)
     
     b_axis = torch.zeros_like(a_axis)
     b_axis[:,0] = -a_axis[:,1]
@@ -325,7 +345,14 @@ def target_orientation_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg =
     z_axis_post = torch.tensor([0.0, 0.0, 1.0], device=root_pos_link.device).unsqueeze(0).repeat(root_pos_link.shape[0], 1)
     z_axis_w = math_utils.quat_apply(root_rot_link, z_axis_post)
     angle_post = torch.acos(torch.clamp(z_axis_w[:, 2], -1.0, 1.0))
-    return torch.abs(angle) * time_mask + torch.abs(angle_post) * (1. - time_mask)
+
+    # Fade the geometric target out inside _ORIENT_FADE_RADIUS of the grab point:
+    # fade = 1 (pure geometric target) when far, → 0 (pure vertical constraint) at the
+    # bottle. Avoids the normalized-direction singularity at the grasp; the open-phase
+    # objective transitions smoothly into the closed-phase objective.
+    fade = torch.clamp(wrist_to_grab_dist.squeeze(1) / _ORIENT_FADE_RADIUS, 0.0, 1.0)
+    open_phase_err = fade * torch.abs(angle) + (1.0 - fade) * torch.abs(angle_post)
+    return open_phase_err * time_mask + torch.abs(angle_post) * (1. - time_mask)
 
 
 # Canonical per-joint open/closed pose for the right hand. Values come from the original
