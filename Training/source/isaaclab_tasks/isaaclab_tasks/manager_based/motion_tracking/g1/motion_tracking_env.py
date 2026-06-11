@@ -293,9 +293,9 @@ def orientation_tracking_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg
 # singular as the wrist reaches the grab point: at 5 cm a 1 cm wrist move swings the
 # target ~11°, at 2 cm ~28° — the target spins, the policy chases it, and the result is
 # inward wrist rotation + high-frequency arm corrections concentrated at final approach.
-# Inside the fade radius we blend toward the closed-phase constraint (wrist z-axis
-# vertical), which is what the reward becomes after the grab anyway — making the
-# orientation objective continuous through the grasp instead of singular at it.
+# Inside the fade radius we blend toward the LEVELED-REFERENCE target (see below), which
+# is also the closed-phase target — making the orientation objective continuous through
+# the grasp instead of singular at it.
 _ORIENT_FADE_RADIUS = 0.15
 
 
@@ -342,17 +342,45 @@ def target_orientation_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg =
     # angle between target and current orientation (root_rot_link)
     angle = math_utils.quat_error_magnitude(target_rot_quat, root_rot_link)
 
-    z_axis_post = torch.tensor([0.0, 0.0, 1.0], device=root_pos_link.device).unsqueeze(0).repeat(root_pos_link.shape[0], 1)
-    z_axis_w = math_utils.quat_apply(root_rot_link, z_axis_post)
-    angle_post = torch.acos(torch.clamp(z_axis_w[:, 2], -1.0, 1.0))
+    # ---- LEVELED-REFERENCE target: "follow whatever the reference wrist does, but
+    # leveled so the bottle is not rotated". Full-orientation target built from:
+    #   z-axis  = world-up          → finger-curl plane horizontal (grasped bottle stays
+    #                                  upright; URDF: hand extends along wrist-yaw local
+    #                                  +x, so z-up ⇒ side grasp of a vertical cylinder)
+    #   x-axis  = horizontal projection of the REFERENCE hand direction → heading follows
+    #             the reference, constraining yaw-about-vertical — the DOF the old z-only
+    #             constraint (angle_post) left totally free, which is where the unopposed
+    #             "inward wrist turn" after grab_idx lived.
+    # Reference hand direction from motion keypoints: right_rubber_hand (idx -1) minus
+    # right_wrist_yaw_link (idx -2) — same keypoint convention motion_lib itself uses for
+    # grab anchors (motion_lib_base.py grab_pos: global_keypts[..., -2, :]). No FK needed.
+    # Well-conditioned everywhere a side grasp operates (degenerate only if the reference
+    # hand points straight up/down) — and unlike a wrist→bottle bearing, it stays valid
+    # AFTER the grab, when the bottle is in the hand and a bearing would be singular.
+    ref_keypts = motion_res["global_keypts"]                                  # (N, 39, 3)
+    ref_hand_dir = ref_keypts[:, -1, :] - ref_keypts[:, -2, :]                # (N, 3)
+    heading = ref_hand_dir.clone()
+    heading[:, 2] = 0.0
+    heading = heading / torch.clamp_min(torch.norm(heading, dim=1, keepdim=True), 1e-6)
+    x_lvl = heading                                                           # (N, 3) horizontal
+    z_lvl = torch.zeros_like(heading)
+    z_lvl[:, 2] = 1.0                                                         # world up
+    y_lvl = torch.cross(z_lvl, x_lvl, dim=1)                                  # completes RH frame
+    target_rot_mat_lvl = torch.stack([x_lvl, y_lvl, z_lvl], dim=2)            # (N, 3, 3)
+    target_quat_lvl = math_utils.quat_from_matrix(target_rot_mat_lvl)
+    angle_lvl = math_utils.quat_error_magnitude(target_quat_lvl, root_rot_link)
 
     # Fade the geometric target out inside _ORIENT_FADE_RADIUS of the grab point:
-    # fade = 1 (pure geometric target) when far, → 0 (pure vertical constraint) at the
-    # bottle. Avoids the normalized-direction singularity at the grasp; the open-phase
-    # objective transitions smoothly into the closed-phase objective.
+    # fade = 1 (pure geometric target) when far, → 0 (leveled-reference) at the bottle.
+    # Avoids the normalized-direction singularity at the grasp. Inside the shell, a hand
+    # that follows the reference pays nothing on the heading component (the target heading
+    # IS the reference heading); the only residual cost is the reference hand's own
+    # pitch/roll deviation from level during the final approach, which is small for a
+    # counter-height side grasp and goes to zero at the grab frame (where the reference
+    # hand levels out to wrap the bottle).
     fade = torch.clamp(wrist_to_grab_dist.squeeze(1) / _ORIENT_FADE_RADIUS, 0.0, 1.0)
-    open_phase_err = fade * torch.abs(angle) + (1.0 - fade) * torch.abs(angle_post)
-    return open_phase_err * time_mask + torch.abs(angle_post) * (1. - time_mask)
+    open_phase_err = fade * torch.abs(angle) + (1.0 - fade) * torch.abs(angle_lvl)
+    return open_phase_err * time_mask + torch.abs(angle_lvl) * (1. - time_mask)
 
 
 # Canonical per-joint open/closed pose for the right hand. Values come from the original
