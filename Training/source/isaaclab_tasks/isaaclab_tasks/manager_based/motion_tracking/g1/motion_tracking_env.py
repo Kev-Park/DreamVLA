@@ -546,6 +546,55 @@ def right_hand_binary_match_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
             + (action_right_hand > 0.0).float() * (1.0 - is_closed))
 
 
+# Lower-body keypoint indices in the motion library's 39-keypoint order (see KEYPTS_MASK
+# comments above for the full list): left_knee_link, left_ankle_roll_link,
+# right_knee_link, right_ankle_roll_link.
+_LOWER_BODY_VEL_KEYPT_IDXS = [5, 7, 11, 13]
+# Time delta (s) for finite-differencing reference keypoint velocities. One motion frame
+# at the library's native 20 fps — get_motion_state lerps between stored frames, so the
+# FD over a full frame recovers the per-frame-interval velocity exactly.
+_REF_VEL_FD_DT = 0.05
+
+
+def lower_body_keypt_vel_tracking(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg(
+        "robot",
+        body_names=["left_knee_link", "left_ankle_roll_link", "right_knee_link", "right_ankle_roll_link"],
+        preserve_order=True,
+    ),
+    sigma: float = 0.5,
+) -> torch.Tensor:
+    """Holosoma-style exp-kernel tracking of lower-body keypoint LINEAR VELOCITIES.
+
+    Position-tracking terms can't distinguish a committed reference-matched step from
+    rapid in-place shuffling — both keep position error small. The velocity profile
+    distinguishes them: shuffling means high-frequency oscillation around near-zero mean
+    velocity while the reference foot swings smoothly. Matching reference keypoint
+    velocities (knees + feet) penalizes the oscillation directly, with NO added positional
+    stiffness (raising position weights cost torso-angle falls in earlier runs).
+
+    Reference velocities are finite-differenced on the fly from two ``get_motion_state``
+    calls (the library stores positions only — see Q&A in repo history; cheap, the obs
+    pipeline already makes 10+ such calls per step). Form mirrors holosoma's
+    ``motion_global_body_lin_vel``: ``exp(-mean_sq_err / sigma^2)`` ∈ (0, 1].
+    ``asset_cfg.body_names`` order MUST match ``_LOWER_BODY_VEL_KEYPT_IDXS``.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    robot_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :]              # (N, 4, 3)
+
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32
+    )
+    res0 = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    res1 = env.motion_lib.get_motion_state(env.motion_ids, motion_times + _REF_VEL_FD_DT)
+    idxs = _LOWER_BODY_VEL_KEYPT_IDXS
+    ref_vel = (res1["global_keypts"][:, idxs, :] - res0["global_keypts"][:, idxs, :]) / _REF_VEL_FD_DT  # (N, 4, 3)
+
+    err = torch.sum(torch.square(robot_vel - ref_vel), dim=-1).mean(dim=-1)      # (N,)
+    return torch.exp(-err / sigma**2)
+
+
 def feet_air_time(
     env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, threshold: float
 ) -> torch.Tensor:

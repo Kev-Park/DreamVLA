@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, feet_air_time, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, feet_air_time, lower_body_keypt_vel_tracking, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc
 import numpy as np
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -421,6 +421,25 @@ class G1Rewards(G1RewardsBase):
             params={
                 "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
                 "threshold": 0.4,
+            },
+        )
+
+        # Holosoma-style lower-body keypoint VELOCITY tracking (exp kernel, positive,
+        # bounded (0,1]). Anti-shuffle: position terms can't distinguish committed
+        # reference-matched steps from rapid in-place shuffling, the velocity profile
+        # can — and it adds no positional stiffness (raising position weights cost
+        # torso-angle falls in earlier runs). sigma=0.5 m/s: full reward when matching,
+        # ~0.2 at 0.9 m/s RMS mismatch (a fast-swing-vs-standing-foot error scale).
+        lower_body_vel_tracking = RewTerm(
+            func=lower_body_keypt_vel_tracking,
+            weight=0.25,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    body_names=["left_knee_link", "left_ankle_roll_link", "right_knee_link", "right_ankle_roll_link"],
+                    preserve_order=True,
+                ),
+                "sigma": 0.5,
             },
         )
 
