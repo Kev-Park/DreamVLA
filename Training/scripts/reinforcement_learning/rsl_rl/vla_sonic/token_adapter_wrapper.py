@@ -62,6 +62,31 @@ def _patch_reshape_batch_dims(gm) -> int:
 
     Returns the number of patched constants.
     """
+    def _resolve_constant_tensor(node):
+        """Find the tensor behind a shape-constant FX node.
+
+        onnx2torch materializes ONNX constants two ways:
+          - initializers → ``get_attr`` nodes (tensor lives as a module attribute/buffer)
+          - Constant ops → ``call_module`` nodes to an OnnxConstant submodule whose
+            tensor is stored on the submodule (attribute ``value`` or its sole buffer).
+            This is the form model_encoder.onnx uses (``constant_20 = self.Constant_20()``).
+        """
+        op = getattr(node, "op", None)
+        if op == "get_attr":
+            owner = gm
+            for atom in node.target.split("."):
+                owner = getattr(owner, atom)
+            return owner if torch.is_tensor(owner) else None
+        if op == "call_module":
+            sub = gm.get_submodule(node.target)
+            t = getattr(sub, "value", None)
+            if torch.is_tensor(t):
+                return t
+            bufs = list(sub.buffers())
+            if len(bufs) == 1:
+                return bufs[0]
+        return None
+
     patched = 0
     for node in gm.graph.nodes:
         if node.op != "call_module":
@@ -69,15 +94,14 @@ def _patch_reshape_batch_dims(gm) -> int:
         submodule = gm.get_submodule(node.target)
         if "Reshape" not in type(submodule).__name__ or len(node.args) < 2:
             continue
-        shape_node = node.args[1]
-        if getattr(shape_node, "op", None) != "get_attr":
-            continue
-        owner = gm
-        *path, leaf = shape_node.target.split(".")
-        for atom in path:
-            owner = getattr(owner, atom)
-        shape_tensor = getattr(owner, leaf)
-        if torch.is_tensor(shape_tensor) and shape_tensor.ndim == 1 and int(shape_tensor[0]) == 1:
+        shape_tensor = _resolve_constant_tensor(node.args[1])
+        if (
+            shape_tensor is not None
+            and shape_tensor.ndim == 1
+            and not shape_tensor.dtype.is_floating_point
+            and shape_tensor.numel() >= 1
+            and int(shape_tensor[0]) == 1
+        ):
             shape_tensor[0] = -1
             patched += 1
     return patched
