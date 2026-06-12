@@ -50,6 +50,62 @@ N_FUTURE_FRAMES = 10
 FUTURE_DT = 0.1
 
 
+def _patch_reshape_batch_dims(gm) -> int:
+    """Make an onnx2torch GraphModule batch-polymorphic.
+
+    ``model_encoder.onnx`` was exported at batch=1, which bakes the batch size into the
+    shape constants of its Reshape nodes (e.g. ``[1, 1, 10, 58]``). A batched input
+    (N, 1762) then fails with ``shape '[1, 1, 10, 58]' is invalid for input of size
+    N*580``. Setting the LEADING dim of every such constant to -1 lets any batch size
+    flow through (torch.reshape infers it), leaving the per-sample shape untouched.
+    The decoder ONNX never needed this — its graph ops happen to be batch-polymorphic.
+
+    Returns the number of patched constants.
+    """
+    patched = 0
+    for node in gm.graph.nodes:
+        if node.op != "call_module":
+            continue
+        submodule = gm.get_submodule(node.target)
+        if "Reshape" not in type(submodule).__name__ or len(node.args) < 2:
+            continue
+        shape_node = node.args[1]
+        if getattr(shape_node, "op", None) != "get_attr":
+            continue
+        owner = gm
+        *path, leaf = shape_node.target.split(".")
+        for atom in path:
+            owner = getattr(owner, atom)
+        shape_tensor = getattr(owner, leaf)
+        if torch.is_tensor(shape_tensor) and shape_tensor.ndim == 1 and int(shape_tensor[0]) == 1:
+            shape_tensor[0] = -1
+            patched += 1
+    return patched
+
+
+def load_frozen_encoder(onnx_path: str, device):
+    """Convert ``model_encoder.onnx`` to a frozen, BATCHED torch module.
+
+    Same onnx2torch path as ``load_frozen_decoder``, plus the batch-dim patch above
+    (the encoder export hardcodes batch=1 in its Reshape constants).
+    """
+    from onnx2torch import convert
+
+    module = convert(onnx_path)
+    module = module.to(device).eval()
+    for p in module.parameters():
+        p.requires_grad = False
+    n_patched = _patch_reshape_batch_dims(module)
+    n_buffers = sum(b.numel() for b in module.buffers())
+    n_state = len(module.state_dict())
+    print(f"[load_frozen_encoder] converted {onnx_path} → torch module "
+          f"(buffer values={n_buffers}, state_dict keys={n_state}), frozen+eval; "
+          f"patched {n_patched} Reshape batch dims (1 → -1) for batch-polymorphic forward")
+    if n_state == 0 and n_buffers == 0:
+        raise RuntimeError("Converted encoder has NO weights — conversion failed.")
+    return module
+
+
 class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
     """Frozen-encoder + residual-adapter variant of the token-action wrapper.
 

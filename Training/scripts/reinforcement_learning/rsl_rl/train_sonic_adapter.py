@@ -140,7 +140,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # SONIC wrappers (imported after app launch; depend on onnx2torch + isaaclab_rl)
 from vla_sonic.token_action_wrapper import load_frozen_decoder
-from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper
+from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
 from vla_sonic.physics_overrides import apply_sonic_physics_overrides
 from vla_sonic.adapter_actor_critic import AdapterActorCritic
 
@@ -267,7 +267,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"[train_sonic_adapter] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
     decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
     print(f"[train_sonic_adapter] loading frozen SONIC encoder ONNX: {args_cli.sonic_encoder_onnx}")
-    encoder = load_frozen_decoder(args_cli.sonic_encoder_onnx, device)  # generic onnx2torch loader
+    encoder = load_frozen_encoder(args_cli.sonic_encoder_onnx, device)  # batch-dim-patched loader
     # clip_actions=None on purpose: the residual is tanh-bounded in the wrapper and the
     # body token is FSQ-bounded downstream — an outer clamp on (base + residual) could
     # clip the FROZEN BASE's contribution, which must never be distorted.
