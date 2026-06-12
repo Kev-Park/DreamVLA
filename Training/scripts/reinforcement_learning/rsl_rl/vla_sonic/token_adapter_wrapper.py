@@ -1,0 +1,173 @@
+"""Residual token-adapter wrapper: frozen SONIC encoder → learned residual → frozen decoder.
+
+Residual-policy-learning in SONIC token space. Per step:
+
+    1. Build the G1-mode encoder input from motion_lib (10 future reference frames at
+       0.1 s spacing — the exact ``build_g1_encoder_obs`` recipe eval_parquet_sonic.py
+       validated, batched in torch).
+    2. Run the FROZEN encoder → 64-D base token (FSQ-quantized by the ONNX itself).
+    3. The rsl_rl policy (the "adapter") sees [env obs | base token] and outputs a 65-D
+       action: 64-D token RESIDUAL + 1-D right-hand binary scalar.
+    4. token = FSQ(base + residual_scale * tanh(residual)) → frozen decoder → env action.
+
+With the adapter's output layer zero-initialized (see ``adapter_actor_critic.py``), step 0
+behavior is EXACTLY zero-shot SONIC playback of the reference motion — walking, balance,
+reaching all intact before any learning. PPO then learns a *delta* for the task. The
+tanh bound is a hard anchor: behavior can never leave the ``residual_scale``-neighborhood
+of the frozen base, so there is nothing to catastrophically forget.
+
+Encoder input construction notes (mirrors eval_parquet_sonic.py:1179-1356):
+  - motion_joint_positions_10frame_step5 (290): 10 frames × 29 joints, SONIC-IsaacLab
+    INTERLEAVED order (NOT MUJOCO-grouped — see eval's 7f comment + policy_parameters.hpp:92).
+    motion_lib's dof_pos is 27 joints in env JointNamesOrder → inverse-permute to SONIC-27,
+    scatter to 29 with zeros at waist_roll/waist_pitch.
+  - motion_joint_velocities_10frame_step5 (290): np.gradient-style central differences over
+    the 10-frame window (dt = 0.1 s).
+  - motion_anchor_orientation_10frame_step5 (60): per-frame rot6d of
+    (R_robot_now)^-1 · R_ref_root(t+k·0.1), ROW-major flatten of mat[:, :2]
+    (eval: ``_R_rel_k[:, :2].flatten("C")``).
+  - encoder_mode_4 = [0,0,0,0] (G1 mode id 0 → slot stays all-zero).
+  - All other slots zero-filled (G1-mode branch ignores them).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import torch
+
+import isaaclab.utils.math as math_utils
+
+from .planner_to_utm import ENCODER_SLICES, ENCODER_TOTAL_DIM
+from .token_action_wrapper import (
+    N_BODY_JOINTS,
+    TOKEN_TOTAL_DIM,
+    TokenActionDecoderVecEnvWrapper,
+)
+
+# SONIC G1-encoder lookahead: 10 frames at 0.1 s spacing (num_future_frames=10,
+# dt_future_ref_frames=0.1 in sonic_release.yaml).
+N_FUTURE_FRAMES = 10
+FUTURE_DT = 0.1
+
+
+class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
+    """Frozen-encoder + residual-adapter variant of the token-action wrapper.
+
+    The policy action layout is unchanged (64 + 1 = 65), but the 64 body dims are now a
+    RESIDUAL added to the frozen encoder's base token instead of the full token. The
+    base token is appended to the policy observation (+64 obs dims) so the adapter knows
+    what it is correcting.
+    """
+
+    def __init__(self, env, decoder, encoder, device, *, residual_scale: float = 0.3, clip_actions=None):
+        super().__init__(env, decoder, device, clip_actions=clip_actions)
+
+        self.encoder = encoder
+        self.residual_scale = float(residual_scale)
+
+        # ---- env27 → SONIC29 bridges (inverse of the parent's SONIC→env mapping) ----
+        # Parent: env27[j] = sonic27[perm27[j]]  ⇒  sonic27[k] = env27[argsort(perm27)[k]].
+        self._inv_perm27 = torch.argsort(self._perm27)
+        # keep_idx (parent) holds the 27 SONIC-29 indices that survive the waist drop;
+        # scatter sonic27 back into a zero-filled 29 (waist_roll/pitch stay 0 — motion_lib
+        # has no waist roll/pitch reference either).
+
+        # Encoder input slices as (start, stop) tuples for torch column assignment.
+        self._sl_pos = ENCODER_SLICES["motion_joint_positions_10frame_step5"]
+        self._sl_vel = ENCODER_SLICES["motion_joint_velocities_10frame_step5"]
+        self._sl_anchor = ENCODER_SLICES["motion_anchor_orientation_10frame_step5"]
+
+        # Future time offsets (1, 10) — broadcast against (N, 1) current times.
+        self._future_offsets = (
+            torch.arange(N_FUTURE_FRAMES, device=self._dev, dtype=torch.float32) * FUTURE_DT
+        ).unsqueeze(0)
+
+        self._base_token = torch.zeros(self.num_envs, TOKEN_TOTAL_DIM, device=self._dev)
+        self._update_base_token()
+        print(
+            f"[token-adapter] frozen-encoder residual adapter ready: residual_scale={self.residual_scale}, "
+            f"base_token appended to obs (+{TOKEN_TOTAL_DIM} dims), policy action = "
+            f"{TOKEN_TOTAL_DIM} residual + 1 finger scalar"
+        )
+
+    # ---------- base-token computation ----------
+
+    def _update_base_token(self) -> None:
+        """Run the frozen encoder on the current 1.0 s reference lookahead window."""
+        N = self.num_envs
+        unw = self.unwrapped
+        with torch.no_grad():
+            # (N, 10) motion times — current + k*0.1 s.
+            t_now = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
+                device=self._dev, dtype=torch.float32
+            )
+            times = (t_now.unsqueeze(1) + self._future_offsets).reshape(-1)            # (N*10,)
+            ids = unw.motion_ids.repeat_interleave(N_FUTURE_FRAMES)                    # (N*10,)
+            res = unw.motion_lib.get_motion_state(ids, times)
+
+            # Reference joints: env27 order → SONIC-IsaacLab 29 (zeros at waist roll/pitch).
+            dof27_env = res["dof_pos"].reshape(N, N_FUTURE_FRAMES, -1)                 # (N, 10, 27)
+            sonic27 = dof27_env[..., self._inv_perm27]                                 # (N, 10, 27)
+            pos29 = torch.zeros(N, N_FUTURE_FRAMES, N_BODY_JOINTS, device=self._dev)
+            pos29[..., self._keep_idx] = sonic27
+
+            # Central-difference velocities over the window (np.gradient equivalent).
+            vel29 = torch.zeros_like(pos29)
+            vel29[:, 1:-1] = (pos29[:, 2:] - pos29[:, :-2]) / (2.0 * FUTURE_DT)
+            vel29[:, 0] = (pos29[:, 1] - pos29[:, 0]) / FUTURE_DT
+            vel29[:, -1] = (pos29[:, -1] - pos29[:, -2]) / FUTURE_DT
+
+            # Per-frame anchor rot6d: (R_robot_now)^-1 · R_ref_root(t+k·0.1), row-major
+            # flatten of the first two matrix COLUMNS (eval: _R_rel_k[:, :2].flatten("C")).
+            robot_quat = unw.scene["robot"].data.root_quat_w                            # (N, 4) wxyz
+            robot_quat_rep = robot_quat.repeat_interleave(N_FUTURE_FRAMES, dim=0)       # (N*10, 4)
+            ref_quat = res["root_rot"]                                                  # (N*10, 4) wxyz
+            rel = math_utils.quat_mul(math_utils.quat_conjugate(robot_quat_rep), ref_quat)
+            mat = math_utils.matrix_from_quat(rel)                                      # (N*10, 3, 3)
+            rot6d = mat[:, :, :2].reshape(N, N_FUTURE_FRAMES, 6)                        # row-major ✓
+
+            # Assemble the (N, 1762) encoder input. G1 mode id = 0 → mode slot stays zero.
+            buf = torch.zeros(N, ENCODER_TOTAL_DIM, device=self._dev, dtype=torch.float32)
+            buf[:, self._sl_pos] = pos29.reshape(N, -1)
+            buf[:, self._sl_vel] = vel29.reshape(N, -1)
+            buf[:, self._sl_anchor] = rot6d.reshape(N, -1)
+
+            out = self.encoder(buf)
+            if isinstance(out, (tuple, list)):
+                out = out[0]
+            self._base_token = out.reshape(N, TOKEN_TOTAL_DIM).to(torch.float32)
+
+    def _append_base_token(self, obs):
+        """Append the (fresh) base token to the policy obs group."""
+        obs["policy"] = torch.cat([obs["policy"], self._base_token], dim=-1)
+        return obs
+
+    # ---------- vec-env API ----------
+
+    def get_observations(self):
+        out = super().get_observations()
+        if isinstance(out, tuple):
+            obs, extras = out
+            return self._append_base_token(obs), extras
+        return self._append_base_token(out)
+
+    def reset(self):
+        obs, extras = super().reset()
+        self._update_base_token()
+        return self._append_base_token(obs), extras
+
+    def step(self, latent: torch.Tensor):
+        latent = latent.to(self._dev)
+        # Residual composition: hard tanh bound keeps the token within
+        # residual_scale of the frozen base — structural anti-forgetting anchor.
+        residual = self.residual_scale * torch.tanh(latent[:, :TOKEN_TOTAL_DIM])
+        body = self._base_token + residual
+        composed = torch.cat([body, latent[:, TOKEN_TOTAL_DIM:]], dim=1)
+
+        obs, rew, dones, extras = super().step(composed)
+
+        # Recompute the base token for the post-step state (episode_length_buf has
+        # advanced; reset envs were re-seeded by the parent) so the obs the policy
+        # sees next step carries the matching lookahead token.
+        self._update_base_token()
+        return self._append_base_token(obs), rew, dones, extras
