@@ -245,6 +245,33 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
                 out = out[0]
             self._base_token = out.reshape(N, TOKEN_TOTAL_DIM).to(torch.float32)
 
+            # ---- one-shot self-parity diagnostic (env 0, first call) ----
+            # At reset the robot is initialized AT the reference pose, so frame-0 of the
+            # encoder input must match the robot's live state. Mismatches localize bugs:
+            #   pos_err large (~rad)      → joint-order mapping wrong (perm/scatter)
+            #   anchor far from identity  → frame/quat convention wrong (rot6d of
+            #                                R_robot⁻¹·R_ref(now) ≈ I → [1,0,0,1,0,0]
+            #                                row-major at reset)
+            #   token degenerate (~const) → encoder input layout/batching wrong
+            if not getattr(self, "_parity_printed", False):
+                self._parity_printed = True
+                q_sonic_live = self._gather_sonic(unw.scene["robot"].data.joint_pos)   # (N, 29)
+                pos_err = (pos29[0, 0] - q_sonic_live[0]).abs()
+                ident_rot6d = torch.tensor([1.0, 0.0, 0.0, 1.0, 0.0, 0.0], device=self._dev)
+                anchor_err = (rot6d[0, 0] - ident_rot6d).abs().max()
+                print("[token-adapter PARITY @ first call, env 0]")
+                print(f"  max|enc_pos[frame0] - robot_joint_pos(sonic)| = {pos_err.max().item():.4f} rad "
+                      f"(expect <~0.05 at reset; >0.5 ⇒ joint-order bug)")
+                print(f"  worst joints (sonic idx): {pos_err.topk(3).indices.tolist()} "
+                      f"errs {pos_err.topk(3).values.tolist()}")
+                print(f"  max|anchor_rot6d[frame0] - identity(row-major)| = {anchor_err.item():.4f} "
+                      f"(expect <~0.1 at reset; ~1+ ⇒ frame/flatten bug)")
+                print(f"  vel[frame0] L2 = {vel29[0, 0].norm().item():.4f} (expect small at reset)")
+                print(f"  base_token[0][:8] = {[round(v, 3) for v in self._base_token[0, :8].tolist()]}")
+                print(f"  base_token stats: min={self._base_token.min().item():.3f} "
+                      f"max={self._base_token.max().item():.3f} "
+                      f"std={self._base_token.std().item():.3f} (degenerate ≈ 0-std ⇒ input layout bug)")
+
     def _append_base_token(self, obs):
         """Append the (fresh) base token to the policy obs group."""
         obs["policy"] = torch.cat([obs["policy"], self._base_token], dim=-1)
