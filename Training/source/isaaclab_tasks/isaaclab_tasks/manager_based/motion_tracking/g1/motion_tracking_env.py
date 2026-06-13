@@ -199,6 +199,15 @@ def reset_root_state_for_motion(
         _dq = math_utils.quat_mul(_res_next["root_rot"], math_utils.quat_conjugate(motion_res["root_rot"]))
         root_ang_vel = math_utils.axis_angle_from_quat(_dq) / _h
         velocities = torch.cat([root_lin_vel, root_ang_vel], dim=-1)
+        # One-time sanity print: walking root speed should be ~1–1.5 m/s; ~10+ ⇒ a real bug.
+        if not getattr(env, "_vel_init_printed", False):
+            env._vel_init_printed = True
+            _lin = root_lin_vel[0]
+            print(f"[vel-init] env0 motion_id={int(motion_ids[0])} start_t={float(motion_times[0]):.3f}s "
+                  f"root_lin_vel={[round(float(v),3) for v in _lin]} "
+                  f"|lin|={float(torch.norm(_lin)):.3f} m/s "
+                  f"|ang|={float(torch.norm(root_ang_vel[0])):.3f} rad/s "
+                  f"(motion_id must match across skip=0 vs skip=20 runs for a fair comparison)")
 
     # set into the physics simulation
     asset.write_root_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=env_ids)

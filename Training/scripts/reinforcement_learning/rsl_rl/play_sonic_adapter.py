@@ -289,6 +289,20 @@ def _write_reference_pose(env, joint_map, device):
 # =========================================================================
 
 def main():
+    # Deterministic motion selection. The env draws a RANDOM motion per reset
+    # (torch.randint in reset_joints_for_motion); without a fixed seed two runs play
+    # different motions, so e.g. --skip-start-frames 0 vs 20 would reach different
+    # endpoints purely from drawing different motions (not from the skip). Seeding here
+    # makes the drawn motion reproducible across runs so comparisons are apples-to-apples.
+    _seed = getattr(args_cli, "seed", None)
+    if _seed is None:
+        _seed = 0
+    torch.manual_seed(_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(_seed)
+    print(f"[play_sonic_adapter] seed = {_seed} (deterministic motion draw; "
+          "same seed → same motion across runs)")
+
     env_cfg = parse_env_cfg(
         args_cli.task,
         device=args_cli.device,
@@ -296,6 +310,7 @@ def main():
         use_fabric=not args_cli.disable_fabric,
         enable_cameras=True,
     )
+    env_cfg.seed = _seed
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
     # ---- mirror train_sonic_adapter.py's agent overrides EXACTLY ----
