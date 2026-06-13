@@ -84,6 +84,18 @@ parser.add_argument(
          "fix for the unnatural linear slide; mutually exclusive with --start-pregrab-margin.",
 )
 parser.add_argument(
+    "--legacy-substep", action="store_true", default=False,
+    help="A/B test: revert the SONIC-matched 200 Hz/decimation-4 substep back to the old "
+         "500 Hz/decimation-10. Use to isolate whether the substep change caused the "
+         "'labored' look. (Inert in --reference-playback, which ignores physics.)",
+)
+parser.add_argument(
+    "--ankle-gain-1x", action="store_true", default=False,
+    help="A/B test: halve the feet/ankle stiffness+damping+armature back to 1× (the old "
+         "value) from the SONIC-matched 2×. Isolates the ankle-gain change. (Inert in "
+         "--reference-playback.)",
+)
+parser.add_argument(
     "--reference-playback", action="store_true", default=False,
     help="KINEMATIC reference baseline: ignore the encoder/decoder/policy entirely and "
          "teleport the robot to the motion_lib reference pose every frame (no physics "
@@ -322,6 +334,23 @@ def main():
 
     # Match the SONIC decoder's training-time physics — same as train_sonic_adapter.py.
     apply_sonic_physics_overrides(env_cfg)
+
+    # A/B test overrides — revert specific SONIC-matched physics changes to isolate effects.
+    if args_cli.legacy_substep:
+        env_cfg.sim.dt = 1.0 / 500.0
+        env_cfg.decimation = 10
+        print("[play_sonic_adapter] LEGACY SUBSTEP: 500 Hz / decimation-10 "
+              "(reverting SONIC-matched 200 Hz / decimation-4)")
+    if args_cli.ankle_gain_1x:
+        try:
+            feet = env_cfg.scene.robot.actuators["feet"]
+            feet.stiffness *= 0.5
+            feet.damping *= 0.5
+            feet.armature *= 0.5
+            print("[play_sonic_adapter] ANKLE 1x: halved feet stiffness/damping/armature "
+                  "(reverting SONIC-matched 2x → 1x)")
+        except (AttributeError, KeyError, TypeError) as e:
+            print(f"[play_sonic_adapter] WARNING could not revert ankle gains: {e}")
 
     # Optional: start episodes near the grab frame to skip the foot-skating walk approach
     # (reset_joints_for_motion reads env.cfg.motion_start_pregrab_margin_s). Set on the cfg

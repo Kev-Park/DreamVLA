@@ -655,6 +655,18 @@ class G1InteractiveBaseEnvCfg(ManagerBasedRLEnvCfg):
     terminations: TerminationsCfg = TerminationsCfg()
     actions: ActionsCfg = ActionsCfg()
 
+    # Episode-start motion offsets (read in reset_joints_for_motion). Declared as real
+    # configclass fields so they survive hydra/gym cfg processing (an undeclared instance
+    # attribute set post-parse can be dropped). Both default to "no offset" (start at
+    # motion frame 0 = full motion including the refinement prepend).
+    #   motion_skip_start_frames: skip the refinement's 20-frame PAUSE+INTERP
+    #       "interpolate-to-initial-pose" prepend (the unphysical constant-rate slide),
+    #       keeping the walk. Set to 20.
+    #   motion_start_pregrab_margin_s: start this many seconds before the grab frame,
+    #       dropping BOTH the prepend and the walk. Mutually exclusive (pregrab wins).
+    motion_skip_start_frames: int | None = None
+    motion_start_pregrab_margin_s: float | None = None
+
     
     def __post_init__(self):
         # post init of parent
