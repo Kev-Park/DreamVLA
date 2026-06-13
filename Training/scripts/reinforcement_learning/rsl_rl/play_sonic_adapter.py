@@ -46,6 +46,9 @@ parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate (1 for a clean video).")
+parser.add_argument("--seed", type=int, default=0,
+                    help="Random seed for deterministic motion selection. Same seed → same "
+                         "drawn motion across runs (needed for fair skip-start comparisons).")
 parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-Pick-BinaryFingers-v0", help="Name of the task.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--name", type=str, default="sonic_adapter_play.mp4", help="Output video file name.")
