@@ -122,6 +122,28 @@ def reset_joints_for_motion(
         joint_vel = torch.zeros((len(env_ids), 41), device=env.device)
     else :
         env.motion_ids[env_ids] = torch.randint(0, env.total_motions, (len(env_ids),), device=env.device)
+        # OPT-IN: skip the (foot-skating) walk approach by starting episodes a fixed margin
+        # before each motion's annotated grab frame. The reference refinement pipeline only
+        # cleans up the right ARM (refine_motions.py optimizes right-arm joints; legs/waist/
+        # left-arm pass through the raw OmniControl retarget), so the locomotion phase carries
+        # foot-skate the policy can't physically reproduce. Set env.cfg.motion_start_pregrab_
+        # margin_s (seconds before grab) to begin episodes at the near-counter standing pose
+        # and isolate the grasp from the broken walk. Default (attr absent / None) = start at 0.
+        _pregrab_margin = getattr(env.cfg, "motion_start_pregrab_margin_s", None)
+        _skip_frames = getattr(env.cfg, "motion_skip_start_frames", None)
+        if _pregrab_margin is not None:
+            _mids = env.motion_ids[env_ids]
+            _grab_time = env.motion_lib.switch_idxs[_mids] * env.motion_lib._motion_dt[_mids]
+            env.start_motion_times[env_ids] = torch.clamp(_grab_time - float(_pregrab_margin), min=0.0)
+        elif _skip_frames is not None:
+            # Skip the refinement's PAUSE(10)+INTERP(10)=20-frame "interpolate-to-initial-pose"
+            # prepend (refine_motions.py): those frames linearly morph root translation /
+            # rotation / joints from a held init pose to the motion's true first frame, which
+            # the robot can only reproduce as an unphysical constant-rate slide. We reset
+            # directly onto the motion start, so this fade-in is pure artifact. Set
+            # motion_skip_start_frames=20 to begin at the real motion start, KEEPING the walk.
+            _mids = env.motion_ids[env_ids]
+            env.start_motion_times[env_ids] = float(_skip_frames) * env.motion_lib._motion_dt[_mids]
         motion_times = env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)[env_ids]
         motion_ids = env.motion_ids.clone().detach().to(device=env.device, dtype=torch.long)[env_ids]
         motion_res = env.motion_lib.get_motion_state(motion_ids, motion_times)

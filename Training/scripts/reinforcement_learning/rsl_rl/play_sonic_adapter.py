@@ -70,6 +70,20 @@ parser.add_argument(
          "frozen-SONIC playback of the reference motion. No checkpoint required.",
 )
 parser.add_argument(
+    "--start-pregrab-margin", type=float, default=None,
+    help="Seconds before each motion's grab frame to start episodes at, skipping the "
+         "walk approach. E.g. 0.5 starts the robot ~0.5 s before grab, already at the "
+         "counter. Default None = start at motion frame 0. Drops BOTH the prepend slide "
+         "and the walk — use to rule out locomotion overall.",
+)
+parser.add_argument(
+    "--skip-start-frames", type=int, default=None,
+    help="Skip the refinement's PAUSE+INTERP prepend (20 frames) — the ~1 s constant-rate "
+         "'interpolate-to-initial-pose' slide glued to the front of every refined motion. "
+         "Pass 20 to start at the true motion beginning while KEEPING the walk. Targeted "
+         "fix for the unnatural linear slide; mutually exclusive with --start-pregrab-margin.",
+)
+parser.add_argument(
     "--reference-playback", action="store_true", default=False,
     help="KINEMATIC reference baseline: ignore the encoder/decoder/policy entirely and "
          "teleport the robot to the motion_lib reference pose every frame (no physics "
@@ -308,6 +322,18 @@ def main():
 
     # Match the SONIC decoder's training-time physics — same as train_sonic_adapter.py.
     apply_sonic_physics_overrides(env_cfg)
+
+    # Optional: start episodes near the grab frame to skip the foot-skating walk approach
+    # (reset_joints_for_motion reads env.cfg.motion_start_pregrab_margin_s). Set on the cfg
+    # BEFORE gym.make so it's honored from the very first reset.
+    if args_cli.start_pregrab_margin is not None:
+        env_cfg.motion_start_pregrab_margin_s = args_cli.start_pregrab_margin
+        print(f"[play_sonic_adapter] start_pregrab_margin = {args_cli.start_pregrab_margin}s "
+              "(episodes begin near grab; walk approach skipped)")
+    if args_cli.skip_start_frames is not None:
+        env_cfg.motion_skip_start_frames = args_cli.skip_start_frames
+        print(f"[play_sonic_adapter] skip_start_frames = {args_cli.skip_start_frames} "
+              "(skips the refinement prepend / linear-slide fade-in; walk kept)")
 
     # eval-style camera + viewer setup
     env_cfg.viewer.eye = (1.0, -2.0, 2.0)

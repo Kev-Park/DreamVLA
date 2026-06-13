@@ -69,6 +69,17 @@ parser.add_argument(
          "correction while structurally anchoring behavior to the frozen SONIC base.",
 )
 parser.add_argument(
+    "--start-pregrab-margin", type=float, default=None,
+    help="Seconds before each motion's grab frame to start episodes at, dropping BOTH the "
+         "prepend slide and the walk. Default None = full motion. Isolates the grasp.",
+)
+parser.add_argument(
+    "--skip-start-frames", type=int, default=None,
+    help="Skip the refinement's 20-frame interpolate-to-initial-pose prepend (the ~1 s "
+         "constant-rate linear slide) while KEEPING the walk. Pass 20. Mutually exclusive "
+         "with --start-pregrab-margin.",
+)
+parser.add_argument(
     "--tracking-scale", type=float, default=0.0,
     help="Multiplier on the reference-tracking reward weights (joint/keypts/position/"
          "orientation tracking). Default 0.0 = task rewards only — the frozen base is "
@@ -239,6 +250,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # Match the SONIC decoder's training-time physics.
     apply_sonic_physics_overrides(env_cfg)
+
+    # Optional: skip the foot-skating walk approach by starting episodes near the grab.
+    if args_cli.start_pregrab_margin is not None:
+        env_cfg.motion_start_pregrab_margin_s = args_cli.start_pregrab_margin
+        print(f"[train_sonic_adapter] start_pregrab_margin = {args_cli.start_pregrab_margin}s "
+              "(episodes begin near grab; walk approach skipped)")
+    if args_cli.skip_start_frames is not None:
+        env_cfg.motion_skip_start_frames = args_cli.skip_start_frames
+        print(f"[train_sonic_adapter] skip_start_frames = {args_cli.skip_start_frames} "
+              "(skips the refinement prepend / linear-slide fade-in; walk kept)")
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
