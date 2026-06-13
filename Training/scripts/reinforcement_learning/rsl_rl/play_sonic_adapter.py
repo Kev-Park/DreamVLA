@@ -69,6 +69,14 @@ parser.add_argument(
     help="Ignore the policy and play with residual=0 (+finger open): pure zero-shot "
          "frozen-SONIC playback of the reference motion. No checkpoint required.",
 )
+parser.add_argument(
+    "--reference-playback", action="store_true", default=False,
+    help="KINEMATIC reference baseline: ignore the encoder/decoder/policy entirely and "
+         "teleport the robot to the motion_lib reference pose every frame (no physics "
+         "influence on the displayed pose). Shows the ideal target motion in the SAME "
+         "scene/camera as policy videos, so it's directly comparable. No checkpoint "
+         "required. Use this to confirm the reference motions themselves are clean.",
+)
 # append RSL-RL cli arguments (gives --checkpoint, --load_run, etc.)
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -212,6 +220,51 @@ def _overlay(frame_rgb, label: str):
     return frame_rgb
 
 
+def _build_reference_joint_map(env, device):
+    """Map motion_lib's 27 reference joints → robot articulation joint indices.
+
+    motion_lib.get_motion_state returns ``dof_pos`` in motion_lib.joint_names order
+    (27 body joints, env JointNamesOrder). The robot articulation has more joints
+    (body + fingers) in its own order. Returns a (27,) long tensor ``joint_map`` such
+    that ``robot_q[:, joint_map] = ref_dof_pos`` places each reference joint correctly.
+    """
+    unw = env.unwrapped
+    robot = unw.scene["robot"]
+    ref_names = list(unw.motion_lib.joint_names)
+    name_to_idx = {n: i for i, n in enumerate(robot.data.joint_names)}
+    missing = [n for n in ref_names if n not in name_to_idx]
+    if missing:
+        raise RuntimeError(f"[reference-playback] reference joints absent on robot: {missing}")
+    return torch.tensor([name_to_idx[n] for n in ref_names], device=device, dtype=torch.long)
+
+
+def _write_reference_pose(env, joint_map, device):
+    """Teleport the robot to the motion_lib reference pose for the current frame.
+
+    Pure kinematic: writes joint positions (reference), zero joint velocities, the
+    reference root pose (+ env origins), and zero root velocity. Fingers stay at their
+    default (no finger reference in motion_lib). Called AFTER env.step so the displayed
+    pose is the exact reference, with physics never accumulating.
+    """
+    unw = env.unwrapped
+    robot = unw.scene["robot"]
+    motion_times = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
+        device=device, dtype=torch.float32
+    )
+    res = unw.motion_lib.get_motion_state(unw.motion_ids, motion_times)
+
+    q = robot.data.default_joint_pos.clone()
+    q[:, joint_map] = res["dof_pos"].to(q.dtype)
+    qd = torch.zeros_like(q)
+    robot.write_joint_state_to_sim(q, qd)
+
+    root_pos = res["root_pos"].to(device) + unw.scene.env_origins
+    root_quat = res["root_rot"].to(device)  # wxyz, matches IsaacLab root pose convention
+    root_pose = torch.cat([root_pos, root_quat], dim=-1)
+    robot.write_root_pose_to_sim(root_pose)
+    robot.write_root_velocity_to_sim(torch.zeros((unw.num_envs, 6), device=device))
+
+
 # =========================================================================
 # Main.
 # =========================================================================
@@ -233,10 +286,11 @@ def main():
     agent_cfg.policy.critic_hidden_dims = [512, 256, 256]
     print(f"[play_sonic_adapter] policy = AdapterActorCritic, actor={agent_cfg.policy.actor_hidden_dims}")
 
-    # ---- resolve checkpoint (skipped entirely in --zero-residual mode) ----
+    # ---- resolve checkpoint (skipped in --zero-residual / --reference-playback modes) ----
     resume_path = None
     log_dir = None
-    if not args_cli.zero_residual:
+    _no_checkpoint = args_cli.zero_residual or args_cli.reference_playback
+    if not _no_checkpoint:
         log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
         if args_cli.checkpoint:
@@ -277,8 +331,17 @@ def main():
         clip_actions=None,
     )
 
-    # ---- policy: trained adapter, or the zero-residual baseline ----
-    if args_cli.zero_residual:
+    # ---- policy: trained adapter, zero-residual baseline, or reference playback ----
+    if args_cli.reference_playback:
+        print("[play_sonic_adapter] REFERENCE-PLAYBACK mode: kinematic teleport to the "
+              "motion_lib reference each frame (encoder/decoder/policy ignored). Robot is "
+              "overwritten to the reference pose after every step → pure target motion.")
+
+        def policy(obs):
+            # Action is irrelevant (robot state is overwritten post-step); zeros just
+            # advance the env machinery (episode_length_buf, cameras).
+            return torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
+    elif args_cli.zero_residual:
         print("[play_sonic_adapter] ZERO-RESIDUAL mode: pure frozen-SONIC zero-shot playback "
               "(no checkpoint loaded; action = 0 → residual = 0, fingers open)")
 
@@ -302,6 +365,8 @@ def main():
     # Open the writer AFTER the warm-up so we know the camera is ready.
     if log_dir is not None:
         video_folder = Path(log_dir) / "videos" / "play"
+    elif args_cli.reference_playback:
+        video_folder = Path("logs") / "rsl_rl" / agent_cfg.experiment_name / "reference" / "videos"
     else:
         video_folder = Path("logs") / "rsl_rl" / agent_cfg.experiment_name / "zero_shot" / "videos"
     video_path = video_folder / args_cli.name
@@ -315,6 +380,14 @@ def main():
     timestep = 0
     _prev_frame = None
 
+    # Reference-playback: build the motion_lib→robot joint map once (after reset, so
+    # motion_lib/motion_ids exist).
+    ref_joint_map = _build_reference_joint_map(env, device) if args_cli.reference_playback else None
+    if args_cli.reference_playback:
+        _write_reference_pose(env, ref_joint_map, device)  # frame 0 = reference at reset
+        _APP.update()
+        _APP.update()
+
     while simulation_app.is_running() and timestep < args_cli.video_length:
         start_time = time.time()
 
@@ -322,6 +395,11 @@ def main():
         with torch.inference_mode():
             actions = policy(obs).clone()
             obs, _, dones, _ = env.step(actions)
+
+        # 1b. reference-playback: overwrite the robot to the exact reference pose AFTER
+        # the step, so the displayed motion is the kinematic target (physics discarded).
+        if args_cli.reference_playback:
+            _write_reference_pose(env, ref_joint_map, device)
 
         # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
         _APP.update()
@@ -342,7 +420,9 @@ def main():
                 label = f"step {timestep}  object z: {object_z:.3f} m"
             except Exception:
                 label = f"step {timestep}"
-            if args_cli.zero_residual:
+            if args_cli.reference_playback:
+                label = "REFERENCE  " + label
+            elif args_cli.zero_residual:
                 label = "ZERO-SHOT  " + label
             writer.write(_overlay(frame, label))
 
