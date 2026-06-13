@@ -267,6 +267,18 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
                 print(f"  max|anchor_rot6d[frame0] - identity(row-major)| = {anchor_err.item():.4f} "
                       f"(expect <~0.1 at reset; ~1+ ⇒ frame/flatten bug)")
                 print(f"  vel[frame0] L2 = {vel29[0, 0].norm().item():.4f} (expect small at reset)")
+                # Lookahead-advancement check: do frames 1-9 actually unfold the future
+                # motion, or are all 10 frames collapsed onto the reset pose? A collapsed
+                # lookahead (≈0) means the encoder never sees future motion → emits a
+                # "stand still" token forever → robot ignores the reference. Non-zero =
+                # the lookahead is advancing in time as intended.
+                spread = (pos29[0, -1] - pos29[0, 0]).abs().max()
+                per_frame = [round((pos29[0, k] - pos29[0, 0]).abs().max().item(), 3) for k in range(N_FUTURE_FRAMES)]
+                print(f"  lookahead spread max|pos[frame9]-pos[frame0]| = {spread.item():.4f} "
+                      f"(>0 ⇒ lookahead advances; ≈0 ⇒ COLLAPSED lookahead bug or stationary motion)")
+                print(f"  per-frame max|pos[k]-pos[0]| = {per_frame}")
+                print(f"  times[env0] = {[round(v, 3) for v in times.reshape(N, N_FUTURE_FRAMES)[0].tolist()]} "
+                      f"(must be 10 DISTINCT increasing values 0.1s apart)")
                 print(f"  base_token[0][:8] = {[round(v, 3) for v in self._base_token[0, :8].tolist()]}")
                 print(f"  base_token stats: min={self._base_token.min().item():.3f} "
                       f"max={self._base_token.max().item():.3f} "
