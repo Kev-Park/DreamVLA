@@ -170,6 +170,34 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
             f"{TOKEN_TOTAL_DIM} residual + 1 finger scalar"
         )
 
+    # ---------- token quantization (lattice snap, NOT full FSQ) ----------
+
+    def _decode_body_29(self, body_latent: torch.Tensor) -> torch.Tensor:
+        """(N, 64) composed token (base + residual) → (N, 29) body command.
+
+        OVERRIDES the parent: the parent applies the full FSQ transform
+        ``round((z + shift).tanh() * 15.48 - 0.5) / 16``, which is correct for the
+        from-scratch policy's UNBOUNDED latent but WRONG here — the frozen encoder's
+        base token is ALREADY FSQ-quantized, and FSQ is not idempotent: the tanh
+        squashes on-grid values toward zero (1.0 → 0.75, 0.5 → 0.44), distorting the
+        base token and pushing the decoder off-distribution even at residual = 0.
+
+        Instead: snap ``base + residual`` to the same FSQ lattice (step 1/16, range
+        [-1, 15/16] for 32 levels) by plain rounding. At residual = 0 this is an exact
+        passthrough of the encoder's token — byte-identical to the validated
+        eval_parquet_sonic.py encoder→decoder path.
+        """
+        half_width = 16.0  # FSQ levels 32 → half_width = 32 // 2
+        token = torch.clamp(
+            torch.round(body_latent * half_width) / half_width,
+            min=-1.0, max=(half_width - 1.0) / half_width,
+        )
+        obs = self._build_obs_dict(token).to(torch.float32)
+        out = self.decoder(obs)
+        if isinstance(out, (tuple, list)):
+            out = out[0]
+        return out.reshape(self.num_envs, -1)[:, :N_BODY_JOINTS]
+
     # ---------- base-token computation ----------
 
     def _update_base_token(self) -> None:
