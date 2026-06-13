@@ -248,21 +248,26 @@ def _write_reference_pose(env, joint_map, device):
     """
     unw = env.unwrapped
     robot = unw.scene["robot"]
-    motion_times = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
-        device=device, dtype=torch.float32
-    )
-    res = unw.motion_lib.get_motion_state(unw.motion_ids, motion_times)
+    # IsaacLab's write_joint_*_to_sim does in-place updates to its data buffers (e.g.
+    # joint_acc), which are inference tensors — those writes must happen inside
+    # inference_mode or torch raises "Inplace update to inference tensor outside
+    # InferenceMode is not allowed".
+    with torch.inference_mode():
+        motion_times = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
+            device=device, dtype=torch.float32
+        )
+        res = unw.motion_lib.get_motion_state(unw.motion_ids, motion_times)
 
-    q = robot.data.default_joint_pos.clone()
-    q[:, joint_map] = res["dof_pos"].to(q.dtype)
-    qd = torch.zeros_like(q)
-    robot.write_joint_state_to_sim(q, qd)
+        q = robot.data.default_joint_pos.clone()
+        q[:, joint_map] = res["dof_pos"].to(q.dtype)
+        qd = torch.zeros_like(q)
+        robot.write_joint_state_to_sim(q, qd)
 
-    root_pos = res["root_pos"].to(device) + unw.scene.env_origins
-    root_quat = res["root_rot"].to(device)  # wxyz, matches IsaacLab root pose convention
-    root_pose = torch.cat([root_pos, root_quat], dim=-1)
-    robot.write_root_pose_to_sim(root_pose)
-    robot.write_root_velocity_to_sim(torch.zeros((unw.num_envs, 6), device=device))
+        root_pos = res["root_pos"].to(device) + unw.scene.env_origins
+        root_quat = res["root_rot"].to(device)  # wxyz, matches IsaacLab root pose convention
+        root_pose = torch.cat([root_pos, root_quat], dim=-1)
+        robot.write_root_pose_to_sim(root_pose)
+        robot.write_root_velocity_to_sim(torch.zeros((unw.num_envs, 6), device=device))
 
 
 # =========================================================================
