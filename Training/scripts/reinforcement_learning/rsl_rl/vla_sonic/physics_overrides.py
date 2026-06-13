@@ -34,21 +34,23 @@ def apply_sonic_physics_overrides(
     Matches gear_sonic's IsaacLab training env (base_env.yaml + g1.py). Wrapped in
     try/except per term because not every env variant exposes the same paths.
     """
-    # 1. Substep rate: 200 Hz physics, 50 Hz control — matches gear_sonic base_env.yaml
-    # (sim_dt=0.005, decimation=4), i.e. the dynamics the decoder was trained against.
-    # `decimation` is on the env_cfg TOP LEVEL (the env sets self.decimation in
-    # __post_init__); env_cfg.sim.decimation is a no-op on this IsaacLab version but set
-    # defensively.
-    env_cfg.sim.dt = 0.005
-    env_cfg.decimation = 4
+    # 1. Substep rate: 500 Hz physics (sim.dt=2ms), 50 Hz control (decimation=10).
+    # EMPIRICAL: although gear_sonic TRAINS at 200 Hz/decimation-4, 500 Hz produces visibly
+    # cleaner motion here — the decoder emits absolute joint-position targets and a finer
+    # PhysX substep tracks them more faithfully (less contact softness / penetration), so
+    # the robot follows the decoder's intent more precisely. The 200 Hz "match training"
+    # variant was A/B-tested and looked worse (more labored). 500 Hz was the original tuning
+    # (eval_parquet_sonic.py:755) and remains the best-performing setting.
+    env_cfg.sim.dt = 1.0 / 500.0
+    env_cfg.decimation = 10
     try:
-        env_cfg.sim.decimation = 4
+        env_cfg.sim.decimation = 10
     except Exception:
         pass
     actual_step_ms = env_cfg.sim.dt * env_cfg.decimation * 1000.0
     actual_hz = 1.0 / (env_cfg.sim.dt * env_cfg.decimation)
     print(f"[sonic-physics] sim.dt={env_cfg.sim.dt}s, env_cfg.decimation={env_cfg.decimation} "
-          f"→ control step = {actual_step_ms:.1f} ms ({actual_hz:.1f} Hz) [matches gear_sonic training]")
+          f"→ control step = {actual_step_ms:.1f} ms ({actual_hz:.1f} Hz) [500Hz substep: empirically best]")
     if abs(actual_hz - 50.0) > 0.5:
         raise RuntimeError(
             f"[sonic-physics] computed control rate {actual_hz:.1f} Hz != 50 Hz target — "

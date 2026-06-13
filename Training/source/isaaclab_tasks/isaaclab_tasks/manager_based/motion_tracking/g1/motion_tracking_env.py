@@ -153,7 +153,14 @@ def reset_joints_for_motion(
         inv_joint_ids[joint_ids] = torch.arange(len(joint_ids), device=env.device)
         joint_pos_new = torch.zeros((len(env_ids), 41), device=env.device)
         joint_pos_new[:, joint_ids] = joint_pos.clone()
+        # Initialize joint velocities from the reference (finite difference over one control
+        # step) instead of zero. A mid-motion reset (skip_start_frames / pregrab margin, or
+        # init_at_random_ep_len during training) lands the robot in a moving pose; spawning
+        # it at standstill makes it lurch to catch the already-moving reference. h = control dt.
         joint_vel = asset.data.default_joint_vel[env_ids].clone()
+        _h = 0.02
+        _dof_next = env.motion_lib.get_motion_state(motion_ids, motion_times + _h)["dof_pos"]
+        joint_vel[:, joint_ids] = (_dof_next - joint_pos) / _h
 
     asset.write_joint_state_to_sim(joint_pos_new, joint_vel, env_ids=env_ids)
 
@@ -178,12 +185,20 @@ def reset_root_state_for_motion(
         motion_times = env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)[env_ids]
         motion_ids = env.motion_ids.clone().detach().to(device=env.device, dtype=torch.long)[env_ids]
         motion_res = env.motion_lib.get_motion_state(motion_ids, motion_times)
-        velocities = torch.zeros((env.scene.num_envs, 6), device=env.device)[env_ids]
-        root_states = torch.cat([motion_res["root_pos"], motion_res["root_rot"], velocities], dim=-1)
-        positions = root_states[:, 0:3] + env.scene.env_origins[env_ids]
-        orientations = root_states[:, 3:7]
-        velocities = root_states[:, 7:13]
+        positions = motion_res["root_pos"] + env.scene.env_origins[env_ids]
+        orientations = motion_res["root_rot"]
         positions[:, 2] += offset_z
+        # Initialize root velocity from the reference (finite difference over one control
+        # step) instead of zero. Critical for mid-motion resets: the reference root is moving
+        # (walking) at the start frame, and spawning the robot stationary makes it lurch /
+        # get "pushed back" as physics catches the already-moving reference. Linear vel from
+        # root_pos difference; angular vel from the world-frame quaternion difference. h = ctrl dt.
+        _h = 0.02
+        _res_next = env.motion_lib.get_motion_state(motion_ids, motion_times + _h)
+        root_lin_vel = (_res_next["root_pos"] - motion_res["root_pos"]) / _h
+        _dq = math_utils.quat_mul(_res_next["root_rot"], math_utils.quat_conjugate(motion_res["root_rot"]))
+        root_ang_vel = math_utils.axis_angle_from_quat(_dq) / _h
+        velocities = torch.cat([root_lin_vel, root_ang_vel], dim=-1)
 
     # set into the physics simulation
     asset.write_root_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=env_ids)

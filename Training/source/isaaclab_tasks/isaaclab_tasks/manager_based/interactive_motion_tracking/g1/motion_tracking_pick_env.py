@@ -112,17 +112,14 @@ def _build_sonic_matched_actuators() -> dict:
             effort_limit_sim=50.0,
             velocity_limit_sim=37.0,
             joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            # 2.0× STIFFNESS/DAMPING/ARMATURE_5020 — matches gear_sonic training
-            # (g1.py:281-283), which is the dynamics the frozen decoder was trained
-            # against. A prior version used 1× to dodge ankle oscillation, but that
-            # oscillation was a 500 Hz/10-substep artifact of the old (incorrect)
-            # physics_overrides; at the corrected 200 Hz/decimation-4 substep rate
-            # (matching gear_sonic) the 2× gains are what the decoder expects.
-            # NOTE: if ankle oscillation reappears, check that physics_overrides is
-            # applying 200 Hz (sim.dt=0.005), not the old 500 Hz.
-            stiffness=2.0 * _SONIC_STIFFNESS_5020,
-            damping=2.0 * _SONIC_DAMPING_5020,
-            armature=2.0 * _SONIC_ARMATURE_5020,
+            # 1× STIFFNESS/DAMPING/ARMATURE_5020. EMPIRICAL: although gear_sonic training
+            # (g1.py:281-283) uses 2× for the ankles, the 2× variant was A/B-tested here and
+            # produced worse, more rigid/oscillatory motion under PhysX implicit drives at
+            # 500 Hz; 1× tracks contact more stably and was the best-performing setting.
+            # (Paired with the 500 Hz substep in physics_overrides.py.)
+            stiffness=_SONIC_STIFFNESS_5020,
+            damping=_SONIC_DAMPING_5020,
+            armature=_SONIC_ARMATURE_5020,
         ),
         "waist_yaw": ImplicitActuatorCfg(
             effort_limit_sim=88,
