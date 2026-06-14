@@ -456,10 +456,22 @@ class G1Rewards(G1RewardsBase):
     
     
     if TASK_SPARSE:
+        # Strict lift reward calibrated to the ACTUAL achievable lift. The object rests at
+        # z=0.9; an observed *successful* grasp peaks at ~0.976 (only ~7.6 cm of lift is
+        # reachable given the reference motion). has_grasped ramps 0→1 over
+        # (fall_thres, height_thres):
+        #   fall_thres = 0.92  → 2 cm above rest: resting/jitter scores exactly 0, gradient
+        #                        starts as soon as the bottle lifts off.
+        #   height_thres = 0.97 → full reward near the observed success apex (~0.976), so a
+        #                        genuine pickup earns full credit and the gradient spans the
+        #                        whole reachable range (0.92→0.97) instead of saturating at
+        #                        an unreachable target. n_successes keys off z>0.97.
+        # (Earlier 1.05 was unreachable — a successful grasp scored only ~0.43, giving the
+        # policy no signal that it had actually succeeded.)
         object_above_the_ground = RewTerm(
             func=object_above_threshold,
-            weight=.5,    
-            params={"height_thres": 1.05, "fall_thres": 0.9}
+            weight=.5,
+            params={"height_thres": 0.97, "fall_thres": 0.92}
         )
 @configclass
 class TerminationsCfg(TerminationsCfgBase):
@@ -676,6 +688,13 @@ class G1PickEnvCfg(G1InteractiveBaseEnvCfg):
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
+        # Green-box "table" pos. Box size=(1,2,0.8) → top = pos_z + 0.4. Table top kept at
+        # 0.8 (pos_z=0.4) so the object rests at 0.8 + 0.1 (half-height) = 0.9 m. The
+        # reference hand grabs at ~0.86 m (TrajGen refine_motions.py OFFSET_Z), so a 0.8
+        # table top leaves ~6 cm of clearance between the hand and the table — deliberately
+        # below the refinement's exact 0.86 table top to avoid the hand scraping/colliding
+        # with the surface during the grasp. Object rest height = 0.9 (reward thresholds set
+        # accordingly below).
         self.scene.kitchen.init_state.pos = (2.55, 0, 0.4)
 
         enable_cameras = bool(getattr(self, "enable_cameras", False))
