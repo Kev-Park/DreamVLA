@@ -527,6 +527,7 @@ def main() -> None:
     tried = 0
     rejected_fall = 0
     rejected_nograsp = 0
+    errored = 0
     try:
         for motion_id in range(total_motions):
             if written >= target_successes or not simulation_app.is_running():
@@ -535,11 +536,25 @@ def main() -> None:
             _set_all_seeds(args_cli.seed + motion_id)          # deterministic per-motion init
             print(f"[INFO] motion {motion_id}/{total_motions} (written {written}/{target_successes})")
 
-            camera_frames, raw_state, meta, teleop_payload = _run_rollout_adapter(
-                env, policy, simulation_app=simulation_app, max_steps=args_cli.rollout_length,
-                state_on=bool(args_cli.state_on), real_time=bool(args_cli.real_time),
-                reset_at_start=True,  # always reset so the forced motion takes effect
-            )
+            # Per-motion resilience: a single bad rollout (or a recoverable error) shouldn't
+            # lose the whole run / the partial dataset. If the sim app itself died (e.g. an
+            # RTX/render crash on reset), is_running() goes False and we stop cleanly with
+            # whatever was written so far.
+            try:
+                camera_frames, raw_state, meta, teleop_payload = _run_rollout_adapter(
+                    env, policy, simulation_app=simulation_app, max_steps=args_cli.rollout_length,
+                    state_on=bool(args_cli.state_on), real_time=bool(args_cli.real_time),
+                    reset_at_start=True,  # always reset so the forced motion takes effect
+                )
+            except Exception as rollout_exc:
+                errored += 1
+                print(f"[WARN] motion={motion_id} rollout raised {type(rollout_exc).__name__}: "
+                      f"{rollout_exc} — skipping.")
+                if not simulation_app.is_running():
+                    print("[WARN] simulation app is no longer running — stopping collection "
+                          f"with {written} successes preserved.")
+                    break
+                continue
             tried += 1
 
             # SUCCESS FILTER: write only non-fallen, task-successful trajectories.
@@ -576,7 +591,7 @@ def main() -> None:
 
         print(f"\n[INFO] Collection finished. Successes written: {written}/{target_successes} "
               f"(motions tried={tried}/{total_motions}, rejected_fall={rejected_fall}, "
-              f"rejected_nograsp={rejected_nograsp})")
+              f"rejected_nograsp={rejected_nograsp}, errored={errored})")
         if written < target_successes:
             print(f"[WARN] Wrote {written} successes from {tried} motions tried. With a DETERMINISTIC "
                   f"policy the unique-success ceiling is the number of motions that succeed — re-running "
