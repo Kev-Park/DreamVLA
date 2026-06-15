@@ -462,16 +462,16 @@ class G1Rewards(G1RewardsBase):
         # (fall_thres, height_thres):
         #   fall_thres = 0.92  → 2 cm above rest: resting/jitter scores exactly 0, gradient
         #                        starts as soon as the bottle lifts off.
-        #   height_thres = 0.97 → full reward near the observed success apex (~0.976), so a
-        #                        genuine pickup earns full credit and the gradient spans the
-        #                        whole reachable range (0.92→0.97) instead of saturating at
-        #                        an unreachable target. n_successes keys off z>0.97.
+        #   height_thres = 0.95 → full reward at a 5 cm lift, comfortably below the observed
+        #                        success apex (~0.976) so genuine pickups reliably earn full
+        #                        credit; the gradient spans 0.92→0.95. n_successes keys off
+        #                        z>0.95, so eval/collection "success" = a real ~5 cm lift.
         # (Earlier 1.05 was unreachable — a successful grasp scored only ~0.43, giving the
-        # policy no signal that it had actually succeeded.)
+        # policy no signal that it had actually succeeded; 0.97 was tight against the apex.)
         object_above_the_ground = RewTerm(
             func=object_above_threshold,
             weight=.5,
-            params={"height_thres": 0.97, "fall_thres": 0.92}
+            params={"height_thres": 0.95, "fall_thres": 0.92}
         )
 @configclass
 class TerminationsCfg(TerminationsCfgBase):
@@ -992,3 +992,67 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
         feet = self.scene.robot.actuators["feet"]
         print(f"[SONIC-gains] feet.stiffness = {feet.stiffness} damping = {feet.damping}")
         print("[BinaryFingers] right_hand reward swapped to binary-match against is_closed")
+
+
+@configclass
+class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
+    """Kitchen-VISUALS pick env with binary fingers + the EXACT training physics.
+
+    For ego-view data collection of the SONIC adapter (collect_sonic_adapter.py). Inherits
+    EVERYTHING physics-relevant from G1PickBinaryFingersEnvCfg unchanged — the green-box
+    collision table (top 0.8 → object rests at 0.9), the cuboid object, passthrough body +
+    binary fingers, SONIC-matched actuators, and the binary-match reward — so the policy the
+    adapter learned at the 0.9 grasp height behaves identically. On top of that it adds:
+      - the HQ kitchen USD as a visual backdrop, and
+      - the third-person + torso-ego (d435) cameras,
+    so the recorded ego frames show a realistic scene.
+
+    IMPORTANT CAVEAT (verify in sim): the cuboid object + green-box collision table are kept
+    for grasp-physics fidelity (rest = 0.9 m, matching training). The kitchen USD is a
+    pure visual; its counter will NOT necessarily line up with the 0.8 collision top, so the
+    object may appear to float/clip relative to the kitchen counter. The POLICY works (it
+    only sees physics), but if you need the cuboid to visually sit on the kitchen counter,
+    nudge ``self.scene.kitchen.init_state.pos`` z so the counter visual top reaches ~0.8.
+    A fully realistic kitchen+bottle collection at 0.9 would require re-training the adapter
+    on that geometry; this env prioritizes policy fidelity + kitchen backdrop.
+    """
+
+    kitchen_usd_path: str = "assets/HQ Kitchen/Collected_kitchen_flat/kitchen_flat3.usd"
+
+    def __post_init__(self):
+        super().__post_init__()  # green-box physics @ 0.9 + SONIC gains + binary reward
+        # Kitchen USD visual backdrop (no rigid body; AssetBaseCfg). Positioned as in
+        # G1PickCamEnvCfg. The green-box collision table (from the parent) remains the
+        # physics surface so the 0.9 rest height is preserved.
+        self.scene.kitchen_visual = AssetBaseCfg(
+            prim_path="{ENV_REGEX_NS}/KitchenVisual",
+            spawn=sim_utils.UsdFileCfg(usd_path=self.kitchen_usd_path, scale=(1.0, 1.0, 0.89)),
+            init_state=AssetBaseCfg.InitialStateCfg(pos=(2.1 - 0.06, 1.0, 0.0), rot=(1, 0, 0, 0)),
+        )
+        # Third-person + torso-ego cameras (same configs as G1PickCamEnvCfg).
+        rot = np.array([0.7538, 0.61221, -0.1505, -0.1853])
+        rot_mat = np.array(math_utils.matrix_from_quat(torch.tensor(rot)))
+        theta = -np.pi * 0.75
+        rot_z_theta = np.array([[np.cos(theta), -np.sin(theta), 0.0],
+                                [np.sin(theta), np.cos(theta), 0.0],
+                                [0.0, 0.0, 1.0]])
+        rot_mat = rot_z_theta @ rot_mat
+        rot_quat = tuple(math_utils.quat_from_matrix(torch.tensor(rot_mat)).tolist())
+        self.scene.camera = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Camera_new",
+            spawn=PinholeCameraCfg(focal_length=18.1476, focus_distance=400.0,
+                                   horizontal_aperture=20.955, clipping_range=(0.1, 10000.0)),
+            data_types=["rgb"], height=1920, width=2560,
+            offset=CameraCfg.OffsetCfg(pos=(-1.03 + 2.1 - 0.034, 4.05 - 0.9, 1.31),
+                                       rot=rot_quat, convention="opengl"),
+        )
+        self.scene.camera_robot = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
+            spawn=PinholeCameraCfg(focal_length=7.6, focus_distance=400.0,
+                                   horizontal_aperture=20.0, clipping_range=(0.01, 100.0)),
+            data_types=["rgb"], height=720, width=1280,
+            offset=CameraCfg.OffsetCfg(pos=(0.05, 0.0, 0.36),
+                                       rot=(0.568, 0.421, -0.421, -0.568), convention="opengl"),
+        )
+        print("[CamBinaryFingers] kitchen visual + third-person/ego cameras added; "
+              "physics (table 0.9, cuboid object) inherited from BinaryFingers env")

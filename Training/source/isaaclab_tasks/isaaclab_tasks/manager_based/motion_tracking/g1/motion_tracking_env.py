@@ -122,6 +122,14 @@ def reset_joints_for_motion(
         joint_vel = torch.zeros((len(env_ids), 41), device=env.device)
     else :
         env.motion_ids[env_ids] = torch.randint(0, env.total_motions, (len(env_ids),), device=env.device)
+        # OPT-IN: force a specific motion id instead of the random draw. Used by deterministic
+        # data collection (collect_sonic_adapter.py) to iterate the motion library one motion
+        # at a time — with a deterministic policy, random re-draws waste attempts on motions
+        # that always fail and can duplicate successful trajectories, so the collector sets
+        # ``env._forced_motion_id`` per episode to sweep motions exactly once.
+        _forced_motion_id = getattr(env, "_forced_motion_id", None)
+        if _forced_motion_id is not None:
+            env.motion_ids[env_ids] = int(_forced_motion_id)
         # OPT-IN: skip the (foot-skating) walk approach by starting episodes a fixed margin
         # before each motion's annotated grab frame. The reference refinement pipeline only
         # cleans up the right ARM (refine_motions.py optimizes right-arm joints; legs/waist/

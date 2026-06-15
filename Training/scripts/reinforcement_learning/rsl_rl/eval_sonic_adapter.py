@@ -65,10 +65,10 @@ parser.add_argument("--residual-scale", type=float, default=0.3,
 parser.add_argument("--zero-residual", action="store_true", default=False,
                     help="Evaluate the frozen-SONIC base (residual=0, fingers open) as a "
                          "baseline. No checkpoint required.")
-parser.add_argument("--lift-thres", type=float, default=0.97,
-                    help="Bottle z (m) above which a frame counts as 'lifted'. Match the "
-                         "env's object_above height_thres (object rests at 0.9, success "
-                         "apex ~0.976, so 0.97 = a genuine pickup).")
+parser.add_argument("--lift-thres", type=float, default=0.95,
+                    help="Bottle z (m) above which a frame counts as 'lifted'. Matches the "
+                         "env's object_above height_thres (object rests at 0.9; 0.95 = a "
+                         "5 cm pickup, below the observed success apex ~0.976).")
 parser.add_argument("--skip-start-frames", type=int, default=None,
                     help="Skip the refinement's 20-frame interpolate-to-initial-pose prepend "
                          "(pass 20). Keeps the walk.")

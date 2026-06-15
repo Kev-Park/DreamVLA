@@ -86,6 +86,20 @@ gym.register(
     },
 )
 
+# Kitchen-VISUALS BinaryFingers env (binary fingers + passthrough body + SONIC actuators +
+# 0.9 grasp physics inherited from BinaryFingers, plus kitchen USD backdrop + ego/3rd-person
+# cameras). Used by collect_sonic_adapter.py for ego-view data collection of the adapter.
+gym.register(
+    id="Isaac-Motion-Tracking-Pick-Cam-BinaryFingers-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_env:G1PickCamBinaryFingersEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
+
 gym.register(
     id="Isaac-Motion-Tracking-Pick-Top-UB-Real-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
