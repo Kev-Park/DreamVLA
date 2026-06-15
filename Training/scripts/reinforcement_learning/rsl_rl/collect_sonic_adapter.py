@@ -289,7 +289,16 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     state_history: list[dict[str, Any]] = []
     teleop_history: list[dict[str, torch.Tensor]] = []
 
-    obs_out = env.reset() if reset_at_start else env.get_observations()
+    # The explicit reset must run inside inference_mode: after a prior rollout's
+    # inference_mode policy/step, the env's persistent buffers (joint_acc, etc.) are
+    # inference tensors, and the reset events do in-place writes to them
+    # (write_joint_state_to_sim → joint_acc[...] = 0). Updating an inference tensor in-place
+    # OUTSIDE inference_mode raises RuntimeError, so wrap the reset to match.
+    if reset_at_start:
+        with torch.inference_mode():
+            obs_out = env.reset()
+    else:
+        obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
 
     if not hasattr(env.unwrapped, "n_successes"):
