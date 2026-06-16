@@ -1,9 +1,11 @@
-"""VLA + SONIC closed-loop *statistical* eval in Isaac Lab.
+"""VLA + SONIC closed-loop *recording* script in Isaac Lab.
 
-Runs the VLA→SONIC closed loop for a configurable number of episodes and reports
-height-lift statistics — the VLA analog of ``eval_sonic_adapter.py``. No video is
-written; see ``play_vla_sonic.py`` for the qualitative recording sibling (the two
-share the exact same closed-loop wiring so the videos reflect what is measured here).
+Records a video of the VLA rolling out its policy (third-person + ego + a
+synthetic VLA-skeleton view). This is the qualitative sibling of
+``eval_vla_sonic.py`` — that one runs many episodes headlessly and reports lift
+statistics; this one renders one (or a few) rollouts so you can WATCH the policy.
+Cloned from ``eval_vla_sonic.py`` and kept wiring-identical so videos reflect the
+exact same closed-loop pipeline the eval measures.
 
 Pipeline per env step (inside the chunk, see --chunk-size):
 
@@ -23,24 +25,16 @@ Pipeline per env step (inside the chunk, see --chunk-size):
                                                                      │
                                                               env.step(env_action_41)
 
-Reports (matching eval_sonic_adapter.py):
-  1. ``Episodes with any lift`` — per-episode discrete success rate (the bottle
-     cleared the lift threshold during the closed/grasp phase).
-  2. ``Mean lift fraction`` — over lifted episodes, fraction of closed-phase steps
-     the bottle stayed lifted (grasp-retention quality).
-  3. ``Cumulative lift-steps`` — env.n_successes.sum() (the reward's own counter).
-  4. ``Termination breakdown`` — time_out vs terminated.
-
-NOTE: unlike eval_sonic_adapter.py, this eval CANNOT run thousands of parallel
-envs — the VLA needs the ego camera every step (camera VRAM caps us at num_envs=1)
-and the whole vla_sonic pipeline is single-env (numpy, index [0]). Episodes are
-therefore run sequentially; --num-episodes is a sequential count, not parallel.
-
 Run:
 
-    cd WBCBenchmark/Training && python3 scripts/reinforcement_learning/rsl_rl/eval_vla_sonic.py \\
+    cd WBCBenchmark/Training && python3 scripts/reinforcement_learning/rsl_rl/play_vla_sonic.py \\
         --vla-checkpoint /home/dvij/kevin/checkpoints/run-01 \\
-        --num-episodes 50
+        --num-episodes 1 \\
+        --record-video /home/dvij/kevin/eval_videos/run01_ep0
+
+Produces ``<prefix>_third_person.mp4``, ``<prefix>_ego.mp4`` and
+``<prefix>_vla_skeleton.mp4``. ``--record-video`` defaults to ``./vla_rollout``
+so a video is always written.
 """
 
 from __future__ import annotations
@@ -67,12 +61,11 @@ DEFAULT_BASE_MODEL_REPO = "nvidia/GR00T-N1.7-3B"
 # =========================================================================
 
 def _parse_cli() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="VLA+SONIC closed-loop statistical eval")
+    parser = argparse.ArgumentParser(description="VLA+SONIC closed-loop video recorder")
     parser.add_argument("--task", default="Isaac-Motion-Tracking-Pick-Cam-ContFingers-v0")
     parser.add_argument("--num-envs", type=int, default=1,
-                        help="Keep at 1 to avoid camera OOM (the VLA pipeline is single-env).")
-    parser.add_argument("--num-episodes", type=int, default=20,
-                        help="Number of episodes to run sequentially and aggregate stats over.")
+                        help="Keep at 1 to avoid camera OOM.")
+    parser.add_argument("--num-episodes", type=int, default=1)
     parser.add_argument("--max-steps-per-episode", type=int, default=500)
     parser.add_argument("--chunk-size", type=int, default=8,
                         help="Execute first N of the VLA's 16 predicted steps before replanning.")
@@ -92,10 +85,11 @@ def _parse_cli() -> argparse.Namespace:
                         default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx")
     parser.add_argument("--planner-onnx",
                         default="../../GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx")
-    parser.add_argument("--lift-thres", type=float, default=0.95,
-                        help="Bottle z (m) above which a frame counts as 'lifted'. Matches the "
-                             "env's object_above height_thres (object rests at 0.9; 0.95 = a "
-                             "5 cm pickup).")
+    parser.add_argument("--record-video", default="vla_rollout",
+                        help="Output prefix for MP4 files. Saves third-person + ego + VLA "
+                             "skeleton. This is a recording script, so it defaults to "
+                             "'./vla_rollout' — pass an explicit prefix to place the videos.")
+    parser.add_argument("--video-fps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
     # AppLauncher args get appended below.
     return parser
@@ -127,6 +121,7 @@ import isaaclab_tasks  # noqa: E402,F401  # registers tasks
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 from isaaclab.sensors import CameraCfg  # noqa: E402
 from isaaclab.sim import PinholeCameraCfg  # noqa: E402
+import isaaclab.utils.math as math_utils  # noqa: E402
 
 # Ensure vla_sonic package is importable from its parent dir.
 _HERE = Path(__file__).resolve().parent
@@ -279,6 +274,8 @@ PLANNER_JOINTS_SLICE = slice(7, 36)
 # **MuJoCo order** — left-leg-all-6 (pitch, roll, yaw, knee, apitch, aroll)
 # then right-leg-all-6 — per policy_parameters.hpp:93:
 #   lower_body_joint_mujoco_order_in_mujoco_index = {0,1,2,3,4,5,6,7,8,9,10,11}
+# Earlier I used an interleaved L/R order — that was the bug scrambling the
+# encoder's leg inputs, causing the decoder to emit wild leg commands.
 # The planner's mujoco_qpos is already in MuJoCo order; just slice the first
 # 12 joint slots after the 7-element root prefix.
 LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER = np.array(
@@ -353,20 +350,303 @@ def extract_vr_3pt(
 
 
 # =========================================================================
-# Camera injection — the env cfg's __post_init__ ran inside parse_env_cfg
-# before we had a handle to flip `enable_cameras_for_collection`, so we wire
-# the ego camera (which the VLA reads) directly into the scene config here.
-# Only the ego d435 is injected — no third-person camera, since this is a
-# headless statistical eval (no video). Matches collect_pick_cam.py:683-699.
+# Video writer wrapping imageio-ffmpeg.
 # =========================================================================
 
-def _inject_ego_camera(env_cfg) -> None:
-    """Force-set the robot-mounted `camera_robot` ego camera on the scene cfg.
+class VideoWriter:
+    def __init__(self, path: Path, fps: int):
+        import imageio
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._writer = imageio.get_writer(str(path), fps=fps, codec="libx264", quality=7)
+        self.path = path
 
-    Overwriting unconditionally because SceneCfg dataclasses often declare this
-    field as an annotation even when the env cfg's ``__post_init__`` did not
-    assign a value — ``hasattr`` returns True for annotated-but-unset.
+    def write(self, frame_rgb: np.ndarray) -> None:
+        self._writer.append_data(frame_rgb)
+
+    def close(self) -> None:
+        self._writer.close()
+
+
+class VLAVisWriter:
+    """Renders VLA output skeleton to an MP4 using matplotlib offscreen (Agg).
+
+    Shows the predicted vr_3pt skeleton (positions + orientation axes), trail,
+    planner state, and the actual robot root position from the env — all without
+    any Isaac Lab UI dependencies.
     """
+
+    _AXIS_LEN = 0.08          # orientation quiver length (m)
+    _TRAIL_ALPHA_MIN = 0.15
+    _BG  = "#0d1117"
+    _FG  = "#e6edf3"
+    _C_LW = (0.33, 0.53, 1.00)   # blue  — left wrist
+    _C_RW = (1.00, 0.33, 0.27)   # red   — right wrist
+    _C_NK = (0.27, 0.87, 0.40)   # green — neck
+    _C_RT = (1.00, 0.80, 0.00)   # gold  — robot root (env)
+
+    def __init__(self, path: Path, fps: int, trail_len: int = 60):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers projection
+        self._plt = plt
+
+        fig = plt.figure(figsize=(14, 8), facecolor=self._BG, dpi=100)
+        fig.patch.set_facecolor(self._BG)
+        self._ax3d  = fig.add_axes([0.00, 0.00, 0.65, 1.00], projection="3d")
+        self._ax_txt = fig.add_axes([0.65, 0.00, 0.35, 1.00])
+        self._ax3d.set_facecolor(self._BG)
+        self._ax_txt.set_facecolor(self._BG)
+        self._ax_txt.axis("off")
+        self._fig = fig
+
+        self._trails: dict[str, list] = {"lw": [], "rw": [], "nk": []}
+        self._trail_len = trail_len
+
+        import imageio
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._writer = imageio.get_writer(str(path), fps=fps, codec="libx264", quality=7)
+        self.path = path
+
+    @staticmethod
+    def _rot6d_to_matrix(r6d: np.ndarray) -> np.ndarray:
+        """First-two-columns 6D → 3×3 rotation matrix."""
+        col0 = r6d[:3].astype(np.float64)
+        col1 = r6d[3:6].astype(np.float64)
+        n0 = np.linalg.norm(col0)
+        if n0 > 1e-8:
+            col0 /= n0
+        col1 -= np.dot(col1, col0) * col0
+        n1 = np.linalg.norm(col1)
+        if n1 > 1e-8:
+            col1 /= n1
+        return np.stack([col0, col1, np.cross(col0, col1)], axis=1)
+
+    def write(
+        self,
+        vr_pos: np.ndarray,           # (9,)  lwrist/rwrist/neck xyz
+        vr_rot6d: np.ndarray,         # (18,) rot6d per point
+        root_pos: np.ndarray,         # (3,)  actual env robot root position
+        planner_mode: int,
+        planner_speed: float,
+        planner_height: float,
+        planner_facing: np.ndarray,   # (3,)
+        planner_movement: np.ndarray, # (3,)
+        step: int,
+    ) -> None:
+        lw_pos = vr_pos[0:3].astype(np.float64)
+        rw_pos = vr_pos[3:6].astype(np.float64)
+        nk_pos = vr_pos[6:9].astype(np.float64)
+        lw_R = self._rot6d_to_matrix(vr_rot6d[0:6])
+        rw_R = self._rot6d_to_matrix(vr_rot6d[6:12])
+        nk_R = self._rot6d_to_matrix(vr_rot6d[12:18])
+
+        for key, pt in [("lw", lw_pos), ("rw", rw_pos), ("nk", nk_pos)]:
+            self._trails[key].append(pt.copy())
+            if len(self._trails[key]) > self._trail_len:
+                self._trails[key].pop(0)
+
+        # ── 3D axes ──────────────────────────────────────────────────────────
+        ax = self._ax3d
+        ax.cla()
+        ax.set_facecolor(self._BG)
+        for pane in [ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane]:
+            pane.fill = False
+            pane.set_edgecolor("#2d3040")
+        ax.tick_params(colors=self._FG, labelsize=7)
+        for axis_obj in [ax.xaxis, ax.yaxis, ax.zaxis]:
+            axis_obj.label.set_color(self._FG)
+        ax.set_xlabel("X (m)", fontsize=8)
+        ax.set_ylabel("Y (m)", fontsize=8)
+        ax.set_zlabel("Z (m)", fontsize=8)
+        ax.set_title(f"VLA output — step {step}", color=self._FG, fontsize=10, pad=4)
+
+        # Center view on neck; fixed ±1.2 m cube
+        cx, cy, cz = nk_pos
+        half = 1.2
+        ax.set_xlim(cx - half, cx + half)
+        ax.set_ylim(cy - half, cy + half)
+        ax.set_zlim(cz - half, cz + half)
+        ax.set_box_aspect([1, 1, 1])
+
+        # Sparse ground grid at z = 0
+        gs = np.linspace(-half, half, 6)
+        for g in gs:
+            ax.plot([cx + g, cx + g], [cy - half, cy + half], [0, 0],
+                    color="#2d3040", lw=0.5, alpha=0.6)
+            ax.plot([cx - half, cx + half], [cy + g, cy + g], [0, 0],
+                    color="#2d3040", lw=0.5, alpha=0.6)
+
+        # Trails (fading alpha)
+        for key, color in [("lw", self._C_LW), ("rw", self._C_RW), ("nk", self._C_NK)]:
+            trail = self._trails[key]
+            if len(trail) >= 2:
+                pts = np.array(trail)
+                k = len(pts)
+                for i in range(k - 1):
+                    alpha = self._TRAIL_ALPHA_MIN + (1.0 - self._TRAIL_ALPHA_MIN) * (i / (k - 1))
+                    ax.plot(pts[i:i+2, 0], pts[i:i+2, 1], pts[i:i+2, 2],
+                            color=color, lw=1.5, alpha=alpha)
+
+        # Actual robot root (env state) + facing arrow
+        rp = root_pos.astype(np.float64)
+        ax.scatter(*rp, color=self._C_RT, s=100, zorder=5, depthshade=False)
+        fv = planner_facing.astype(np.float64)
+        ax.quiver(*rp, *(fv * 0.4), color=self._C_RT, lw=2, arrow_length_ratio=0.25)
+
+        # VR 3-point spheres + labels
+        for pos, color, label in [
+            (lw_pos, self._C_LW, "L wrist"),
+            (rw_pos, self._C_RW, "R wrist"),
+            (nk_pos, self._C_NK, "Neck"),
+        ]:
+            ax.scatter(*pos, color=color, s=220, zorder=6, depthshade=False)
+            ax.text(pos[0], pos[1], pos[2] + 0.07, label,
+                    color=color, fontsize=7, ha="center")
+
+        # Skeleton lines: neck → each wrist
+        for start, end, color in [
+            (lw_pos, nk_pos, self._C_LW),
+            (rw_pos, nk_pos, self._C_RW),
+        ]:
+            ax.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]],
+                    color=color, lw=2.5, alpha=0.85)
+
+        # Torso stub: neck → estimated torso_link (reverse TORSO_LOCAL_OFFSET)
+        torso_est = nk_pos - nk_R[:, 2] * 0.35
+        ax.plot([nk_pos[0], torso_est[0]], [nk_pos[1], torso_est[1]],
+                [nk_pos[2], torso_est[2]], color="#888888", lw=2.0, alpha=0.6)
+
+        # Orientation axes per VR point (red=X, green=Y, blue=Z)
+        a = self._AXIS_LEN
+        for pos, R_mat in [(lw_pos, lw_R), (rw_pos, rw_R), (nk_pos, nk_R)]:
+            ax.quiver(*pos, *(R_mat[:, 0] * a), color="#ff4444", lw=1.5,
+                      arrow_length_ratio=0.35)
+            ax.quiver(*pos, *(R_mat[:, 1] * a), color="#44ff44", lw=1.5,
+                      arrow_length_ratio=0.35)
+            ax.quiver(*pos, *(R_mat[:, 2] * a), color="#4488ff", lw=1.5,
+                      arrow_length_ratio=0.35)
+
+        ax.view_init(elev=20, azim=-60)
+
+        # ── Info panel ────────────────────────────────────────────────────────
+        _PLANNER_MODE_LABELS = {0: "IDLE", 1: "SLOW_WALK", 2: "WALK", 3: "RUN"}
+        mode_str = _PLANNER_MODE_LABELS.get(planner_mode, f"MODE_{planner_mode}")
+        mv = planner_movement.astype(np.float64)
+        fv = planner_facing.astype(np.float64)
+
+        lines = [
+            ("VLA OUTPUT", True, "#f7d060"),
+            ("", False, self._FG),
+            ("── Planner ──────────────────", False, "#888899"),
+            (f"Mode:   {mode_str}", False, self._FG),
+            (f"Speed:  {planner_speed:.3f} m/s", False, self._FG),
+            (f"Height: {planner_height:.3f} m", False, self._FG),
+            (f"Facing:  [{fv[0]:+.3f}, {fv[1]:+.3f}, {fv[2]:+.3f}]", False, self._FG),
+            (f"Move:    [{mv[0]:+.3f}, {mv[1]:+.3f}, {mv[2]:+.3f}]", False, self._FG),
+            ("", False, self._FG),
+            ("── VR 3-pt Positions ─────────", False, "#888899"),
+            (f"L wrist  [{lw_pos[0]:+.3f}, {lw_pos[1]:+.3f}, {lw_pos[2]:+.3f}]",
+             False, "#5588ff"),
+            (f"R wrist  [{rw_pos[0]:+.3f}, {rw_pos[1]:+.3f}, {rw_pos[2]:+.3f}]",
+             False, "#ff5544"),
+            (f"Neck     [{nk_pos[0]:+.3f}, {nk_pos[1]:+.3f}, {nk_pos[2]:+.3f}]",
+             False, "#44dd66"),
+            ("", False, self._FG),
+            ("── Arm lengths ───────────────", False, "#888899"),
+            (f"L arm:  {np.linalg.norm(lw_pos - nk_pos):.3f} m", False, self._FG),
+            (f"R arm:  {np.linalg.norm(rw_pos - nk_pos):.3f} m", False, self._FG),
+            (f"Wrists: {np.linalg.norm(lw_pos - rw_pos):.3f} m", False, self._FG),
+            ("", False, self._FG),
+            ("── Robot root (env) ──────────", False, "#888899"),
+            (f"[{rp[0]:+.3f}, {rp[1]:+.3f}, {rp[2]:+.3f}]", False, "#ffcc00"),
+        ]
+
+        axt = self._ax_txt
+        axt.cla()
+        axt.set_facecolor(self._BG)
+        axt.axis("off")
+        y, dy = 0.97, 0.042
+        for text, bold, color in lines:
+            axt.text(0.04, y, text, transform=axt.transAxes,
+                     color=color, fontsize=9 if bold else 8,
+                     fontweight="bold" if bold else "normal",
+                     fontfamily="monospace", va="top")
+            y -= dy
+
+        # ── Render to numpy → video ───────────────────────────────────────────
+        self._fig.canvas.draw()
+        w, h = self._fig.canvas.get_width_height()
+        buf = np.frombuffer(self._fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
+        self._writer.append_data(buf[:, :, :3])
+
+    def close(self) -> None:
+        self._writer.close()
+        self._plt.close(self._fig)
+
+
+def _read_camera_rgb(env, key: str, *, verbose: bool = False) -> np.ndarray | None:
+    try:
+        cam = env.unwrapped.scene[key]
+    except KeyError:
+        if verbose:
+            print(f"[video] scene has no '{key}'")
+        return None
+    try:
+        output = cam.data.output
+    except Exception as e:  # noqa: BLE001
+        if verbose:
+            print(f"[video] {key}: cam.data.output failed: {e}")
+        return None
+    if "rgb" not in output:
+        if verbose:
+            print(f"[video] {key}: no 'rgb' key in output, have {list(output.keys())}")
+        return None
+    rgb = output["rgb"][0, ..., :3]
+    if rgb.dtype != torch.uint8:
+        rgb = rgb.clamp(0.0, 255.0).to(torch.uint8)
+    return rgb.cpu().numpy()
+
+
+# =========================================================================
+# Camera injection — the env cfg's __post_init__ ran inside parse_env_cfg
+# before we had a handle to flip `enable_cameras_for_collection`, so we wire
+# the two cameras directly into the scene config here.
+# =========================================================================
+
+def _inject_cameras(env_cfg) -> None:
+    """Force-set 3rd-person `camera` and robot-mounted `camera_robot` on the scene cfg.
+
+    Overwriting unconditionally because SceneCfg dataclasses often declare
+    these fields as annotations even when the env cfg's ``__post_init__`` did
+    not assign a value — ``hasattr`` returns True for annotated-but-unset.
+    """
+    rot = np.array([0.7538, 0.61221, -0.1505, -0.1853])
+    rot_mat = np.array(math_utils.matrix_from_quat(torch.tensor(rot)))
+    theta = -np.pi * 0.75
+    rot_z = np.array([
+        [np.cos(theta), -np.sin(theta), 0.0],
+        [np.sin(theta),  np.cos(theta), 0.0],
+        [0.0, 0.0, 1.0],
+    ])
+    rot_mat = rot_z @ rot_mat
+    rot_quat = tuple(math_utils.quat_from_matrix(torch.tensor(rot_mat)).tolist())
+    env_cfg.scene.camera = CameraCfg(
+        prim_path="{ENV_REGEX_NS}/Camera_new",
+        spawn=PinholeCameraCfg(
+            focal_length=18.1476,
+            focus_distance=400.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.1, 10000.0),
+        ),
+        data_types=["rgb"],
+        height=1920, width=2560,
+        offset=CameraCfg.OffsetCfg(
+            pos=(-1.03 + 2.1 - 0.034, 4.05 - 0.9, 1.31),
+            rot=rot_quat,
+            convention="opengl",
+        ),
+    )
     env_cfg.scene.camera_robot = CameraCfg(
         prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
         spawn=PinholeCameraCfg(
@@ -392,22 +672,19 @@ def _inject_ego_camera(env_cfg) -> None:
 def main() -> int:
     args = _ARGS
 
-    # Deterministic motion draw (reproducible across runs).
-    torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
-    print(f"[eval_vla_sonic] seed = {args.seed}")
-
     # --- 1. Build env ---------------------------------------------------
     env_cfg = parse_env_cfg(
         args.task,
-        device="cuda:0",
+        device=f"cuda:0",
         num_envs=args.num_envs,
         enable_cameras=True,
     )
-    env_cfg.seed = args.seed
-    # Inject only the ego camera the VLA needs (no third-person camera — headless).
-    _inject_ego_camera(env_cfg)
+    # The env cfg's __post_init__ adds cameras only when
+    # ``enable_cameras_for_collection`` is True on the cfg at construction time
+    # — too late to flip after parse_env_cfg. So inject them manually here,
+    # matching the offsets from motion_tracking_pick_env.py (3rd-person)
+    # and collect_pick_cam.py:683-699 (robot-mounted d435).
+    _inject_cameras(env_cfg)
     env = gym.make(args.task, cfg=env_cfg)
     print(f"[env] {args.task}  action_space={env.action_space}")
 
@@ -442,29 +719,25 @@ def main() -> int:
     isaac_to_utm_perm = build_isaac_to_utm_perm(list(robot.data.joint_names))
 
     # The pick reward's ``object_above_threshold`` only increments its success
-    # counter when ``hasattr(env, "n_successes")`` AND num_envs < 1001. Without
-    # this init the counter never exists and cumulative lift-steps stays 0.
+    # counter when ``hasattr(env, "n_successes")`` AND num_envs < 1001. We read
+    # n_successes below, so it MUST be initialized here or the counter stays 0.
     env.unwrapped.n_successes = torch.zeros(env.num_envs, device="cuda:0", dtype=torch.float32)
 
     # --- 5. History buffer for decoder + planner context ---------------
     history = HistoryBuffer()
 
-    # --- 6. Rollout setup ----------------------------------------------
+    # --- 6. Video writers — opened after Isaac Lab initializes to avoid
+    #         matplotlib thread conflicts with Omniverse during env.reset().
+    writers: dict[str, VideoWriter] = {}
+    vla_vis_writer: VLAVisWriter | None = None
+    prefix: Path | None = Path(args.record_video) if args.record_video else None
+
+    # --- 7. Rollout -----------------------------------------------------
     action_space_dim = env.action_space.shape[-1]
     zero_action = torch.zeros((args.num_envs, action_space_dim), device="cuda:0", dtype=torch.float32)
-    lift_thres = args.lift_thres
+    prev_utm_body_29 = np.zeros(29, dtype=np.float32)
 
-    # Aggregate stats across episodes (single env → scalar bookkeeping).
-    completed_episodes = 0
-    completed_any_lift = 0
-    sum_lift_fraction_over_lifted_episodes = 0.0
-    completed_episodes_with_any_lift = 0
-    termination_counts = {"time_out": 0, "terminated": 0}
-    episode_lengths: list[int] = []
-
-    print(f"[eval_vla_sonic] starting eval: num_episodes={args.num_episodes}, "
-          f"max_steps_per_episode={args.max_steps_per_episode}, lift_thres={lift_thres}")
-    t_start = time.time()
+    total_successes = 0
 
     for ep in range(args.num_episodes):
         print(f"\n[episode {ep}]")
@@ -473,22 +746,36 @@ def main() -> int:
         # One silent warm-up step fills the camera buffer so obs_adapter() can
         # read ego-view pixels without blocking on an empty output dict. Pump the
         # Omniverse event loop afterwards to flush the RTX render pipeline so the
-        # first ego frame the VLA sees is current.
+        # camera annotator's first delivered frame is current (matches the proven
+        # play_sonic_adapter.py pattern).
         env.step(zero_action)
         _APP.update()
         _APP.update()
         history.reset()
         prev_utm_body_29 = np.zeros(29, dtype=np.float32)
 
-        # Per-episode lift trackers.
-        had_any_lift = False
-        closed_steps = 0
-        lift_steps = 0
+        # Open video writers on first episode after Isaac Lab is fully up.
+        if ep == 0 and prefix is not None and not writers:
+            scene_keys = list(env.unwrapped.scene.keys()) if hasattr(env.unwrapped.scene, "keys") else []
+            print(f"[video] scene entities: {scene_keys}")
+            if "camera" in scene_keys:
+                writers["camera"] = VideoWriter(prefix.with_name(prefix.name + "_third_person.mp4"), args.video_fps)
+            else:
+                print("[video] 3rd-person 'camera' missing — skipping third_person.mp4")
+            if "camera_robot" in scene_keys:
+                writers["camera_robot"] = VideoWriter(prefix.with_name(prefix.name + "_ego.mp4"), args.video_fps)
+            else:
+                print("[video] ego 'camera_robot' missing — skipping ego.mp4")
+            for key, w in writers.items():
+                print(f"[video] writing {w.path}")
+            vla_vis_writer = VLAVisWriter(
+                prefix.with_name(prefix.name + "_vla_skeleton.mp4"),
+                fps=args.video_fps,
+            )
+            print(f"[video] writing {vla_vis_writer.path}")
 
         vla_chunk: dict | None = None
         chunk_step = 0
-        was_time_out = False
-        step = 0
 
         for step in range(args.max_steps_per_episode):
             # 7a. Build VLA obs + refresh action chunk every `chunk_size` steps.
@@ -498,11 +785,14 @@ def main() -> int:
                 # Gr00tPolicy.get_action returns either a dict or (dict, ...) tuple.
                 vla_chunk = vla_out[0] if isinstance(vla_out, tuple) else vla_out
                 chunk_step = 0
-                if ep == 0 and step == 0:
-                    print("\n[VLA @ ep0 step0] action-dict dump (t=0 slice, batch=0):")
+                if step == 0:
+                    print("\n[VLA @ step 0] action-dict dump (t=0 slice, batch=0):")
                     for k in sorted(vla_chunk.keys()):
                         arr = np.asarray(vla_chunk[k])
-                        slice_ = arr[0, 0] if arr.ndim == 3 else arr.reshape(-1)
+                        if arr.ndim == 3:  # (B, T, D)
+                            slice_ = arr[0, 0]
+                        else:
+                            slice_ = arr.reshape(-1)
                         print(f"  {k} [shape {tuple(arr.shape)}] = {slice_.round(4).tolist()}")
 
             # 7b. Extract this chunk-step's VLA slice.
@@ -517,6 +807,8 @@ def main() -> int:
             q_sonic = _gather_with_mask(q_isaac, isaac_to_utm_perm)
             qd_sonic = _gather_with_mask(qd_isaac, isaac_to_utm_perm)
             # The planner's context_mujoco_qpos needs MuJoCo order (per its name).
+            # Convert SONIC -> MuJoCo via the cross-reference permutation from
+            # policy_parameters.hpp (MUJOCO_TO_ISAACLAB[mj_idx] = sonic_idx).
             q_mujoco = q_sonic[MUJOCO_TO_ISAACLAB]
             root_pos_w = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
             root_quat_w = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)  # wxyz
@@ -545,19 +837,62 @@ def main() -> int:
             )
             planner_out = planner.run(**planner_inputs.as_kwargs())
 
+            if step == 0:
+                ctx_last = planner_inputs.context_mujoco_qpos[0, -1]  # (36,)
+                out_first = planner_out.mujoco_qpos[0, 0]            # (36,)
+                print("\n[PLANNER @ step 0] inputs:")
+                print(f"  target_vel = {planner_inputs.target_vel.tolist()}")
+                print(f"  mode = {planner_inputs.mode.tolist()}")
+                print(f"  movement_direction = {planner_inputs.movement_direction[0].round(4).tolist()}")
+                print(f"  facing_direction   = {planner_inputs.facing_direction[0].round(4).tolist()}")
+                print(f"  height = {planner_inputs.height.tolist()}")
+                print(f"  context[-1] root_pos  = {ctx_last[0:3].round(4).tolist()}")
+                print(f"  context[-1] root_quat = {ctx_last[3:7].round(4).tolist()}")
+                print(f"  context[-1] legs[:12] = {ctx_last[7:19].round(4).tolist()}")
+                print("[PLANNER @ step 0] outputs:")
+                print(f"  num_pred_frames = {planner_out.num_pred_frames}")
+                print(f"  out[0] root_pos  = {out_first[0:3].round(4).tolist()}")
+                print(f"  out[0] root_quat = {out_first[3:7].round(4).tolist()}")
+                print(f"  out[0] legs[:12] = {out_first[7:19].round(4).tolist()}")
+                diff = np.abs(out_first - ctx_last)
+                print(f"  |out[0] - context[-1]| max = {diff.max():.4f}, mean = {diff.mean():.4f}")
+                # Lower-body future samples at encoder grid (0, 5, 10, ..., 45).
+                print(f"  out[5]  legs[:6] = {planner_out.mujoco_qpos[0, 5, 7:13].round(4).tolist() if planner_out.num_pred_frames > 5 else 'N/A'}")
+                print(f"  out[45] legs[:6] = {planner_out.mujoco_qpos[0, 45, 7:13].round(4).tolist() if planner_out.num_pred_frames > 45 else 'N/A'}")
+
             # 7e. Extract anchor + lower-body trajectory from planner output.
             anchor_pos_w, anchor_quat_wxyz = extract_anchor_pose(planner_out.mujoco_qpos)
-            # motion_anchor_orientation: relative rotation (robot_base_inv × planner_frame0)
-            # as first-2-columns of the rotation matrix, flattened ROW-WISE
-            # (identity → [1, 0, 0, 1, 0, 0]).
+            # motion_anchor_orientation: C++ GatherMotionAnchorOrientationMutiFrame stores
+            # the RELATIVE rotation (robot_base_inv × planner_frame0) as first-2-columns of
+            # the rotation matrix, flattened ROW-WISE: [R[0,0], R[0,1], R[1,0], R[1,1], R[2,0], R[2,1]].
+            # (identity → [1, 0, 0, 1, 0, 0], NOT the gear_sonic col-major rot6d [1, 0, 0, 0, 1, 0])
+            # We compute the actual relative rotation to match training.
             _R_robot = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
             _R_anchor = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
             _R_rel_mat = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
             anchor_rot6d = _R_rel_mat[:, :2].flatten('C').astype(np.float32)  # C++ row-wise
+            if step == 0:
+                print(f"\n[ENC @ step 0] anchor_rot6d (C++ row-wise, identity→[1,0,0,1,0,0]) = {anchor_rot6d.round(4).tolist()}")
             lb_pos, lb_vel = extract_lower_body_future(planner_out.mujoco_qpos)
 
             # 7f. VR 3-point from VLA (world frame; encoder builder does the anchor-local transform).
             vr_pos_world, vr_rot6d = extract_vr_3pt(vla_chunk, t_index=t_idx)
+
+            # 7f-vis. Render VLA skeleton frame (no-op when --record-video not set).
+            if vla_vis_writer is not None:
+                vla_vis_writer.write(
+                    vr_pos=vr_pos_world,
+                    vr_rot6d=vr_rot6d,
+                    root_pos=root_pos_w,
+                    planner_mode=int(np.atleast_1d(planner_inputs.mode).flat[0]),
+                    planner_speed=float(np.atleast_1d(planner_inputs.target_vel).flat[0]),
+                    planner_height=float(np.atleast_1d(planner_inputs.height).flat[0]),
+                    planner_facing=np.asarray(planner_inputs.facing_direction[0],
+                                              dtype=np.float32),
+                    planner_movement=np.asarray(planner_inputs.movement_direction[0],
+                                                dtype=np.float32),
+                    step=step,
+                )
 
             # 7g. Build encoder obs → run encoder → build decoder obs → run decoder.
             enc_obs = build_encoder_obs(
@@ -586,101 +921,62 @@ def main() -> int:
                 vla_action=vla_chunk,
                 t_index=t_idx,
             )  # (41,)
+            if step < 3:
+                print(f"[step {step}] utm_body_29[:15] = {utm_body_29[:15].round(3).tolist()}")
+                print(f"[step {step}]   env body[:12] (legs)        = {env_action_np[:12].round(3).tolist()}")
+                print(f"[step {step}]   env body[12]   (waist_yaw)  = {env_action_np[12].round(3)}")
+                print(f"[step {step}]   env body[13:27] (arms)      = {env_action_np[13:27].round(3).tolist()}")
+                print(f"[step {step}]   env left fingers[27:34]     = {env_action_np[27:34].round(3).tolist()}")
+                print(f"[step {step}]   env right fingers[34:41]    = {env_action_np[34:41].round(3).tolist()}")
+                cur_q_isaac = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
+                print(f"[step {step}]   robot current joint_pos[:12] = {cur_q_isaac[:12].round(3).tolist()}")
             env_action = torch.as_tensor(env_action_np[None, :], device="cuda:0", dtype=torch.float32)
 
             # 7i. Step.
             obs, rew, term, trunc, info = env.step(env_action)
-            # Flush render so the next chunk's obs_adapter() reads a fresh ego frame
-            # (the VLA must not act on a one-step-stale image).
+
+            # Flush the RTX render pipeline so the camera annotator delivers THIS
+            # step's frame — both for the video below and for the ego view the
+            # next chunk's obs_adapter() will read. Without this the VLA can act
+            # on a one-step-stale image. (Same pattern as play_sonic_adapter.py.)
             _APP.update()
             _APP.update()
 
-            # 7j. Lift bookkeeping — read bottle z + is_closed AFTER the step.
-            bottle_z = float(env.unwrapped.scene["object"].data.root_pos_w[0, 2].item())
-            motion_times = (
-                env.unwrapped.episode_length_buf * env.unwrapped.step_dt
-                + env.unwrapped.start_motion_times.clone().detach().to(
-                    device="cuda:0", dtype=torch.float32)
-            )
-            motion_res = env.unwrapped.motion_lib.get_motion_state(
-                env.unwrapped.motion_ids, motion_times)
-            is_closed = bool(motion_res["is_closed"][0].item() > 0.5)
-            lifted = (bottle_z > lift_thres) and is_closed
-            if is_closed:
-                closed_steps += 1
-            if lifted:
-                lift_steps += 1
-                had_any_lift = True
+            # 7j. Video frames.
+            if writers:
+                for key, w in writers.items():
+                    frame = _read_camera_rgb(env, key)
+                    if frame is not None:
+                        w.write(frame)
 
             prev_utm_body_29 = utm_body_29
             chunk_step += 1
 
-            # End on termination OR truncation (time-out). The env auto-resets
-            # done envs on the NEXT step, so break here to keep one episode clean.
-            term_flag = bool(term[0] if hasattr(term, "ndim") and term.ndim > 0 else term)
-            trunc_flag = bool(trunc[0] if hasattr(trunc, "ndim") and trunc.ndim > 0 else trunc)
-            if term_flag or trunc_flag:
-                was_time_out = trunc_flag and not term_flag
+            # End the episode on termination OR truncation (time-out). The env
+            # auto-resets done envs on the next step, so we must break here to
+            # keep this rollout's video to a single episode.
+            done = bool((term[0] if term.ndim > 0 else term)) or bool(
+                (trunc[0] if hasattr(trunc, "ndim") and trunc.ndim > 0 else trunc)
+            )
+            if done:
                 break
 
-        # --- episode bookkeeping ---
-        completed_episodes += 1
-        episode_lengths.append(step + 1)
-        if had_any_lift:
-            completed_any_lift += 1
-            if closed_steps > 0:
-                sum_lift_fraction_over_lifted_episodes += lift_steps / closed_steps
-                completed_episodes_with_any_lift += 1
-        if was_time_out:
-            termination_counts["time_out"] += 1
-        else:
-            termination_counts["terminated"] += 1
+        n_succ = int(env.unwrapped.n_successes.sum().item())
+        total_successes = n_succ  # cumulative lift-steps, tracked by env reward
+        print(f"[episode {ep}] ended at step {step+1}; cumulative lift-steps={n_succ}")
 
-        n_succ_so_far = float(env.unwrapped.n_successes.sum().item())
-        any_lift_rate = completed_any_lift / max(completed_episodes, 1)
-        print(f"[episode {ep}] ended at step {step+1}  any_lift={had_any_lift}  "
-              f"closed_steps={closed_steps}  lift_steps={lift_steps}  "
-              f"(running any_lift_rate={any_lift_rate:.3f}, cumulative_lift_steps={n_succ_so_far:.0f})")
-
-    elapsed = time.time() - t_start
-
-    # --- final report (mirrors eval_sonic_adapter.py) ------------------
-    n_succ_total = float(env.unwrapped.n_successes.sum().item())
-    any_lift_rate = completed_any_lift / max(completed_episodes, 1)
-    mean_lift_fraction = (
-        sum_lift_fraction_over_lifted_episodes / max(completed_episodes_with_any_lift, 1)
-        if completed_episodes_with_any_lift > 0 else 0.0
-    )
-    mean_ep_len = sum(episode_lengths) / max(len(episode_lengths), 1)
-
-    print("\n" + "=" * 60)
-    print("                  VLA + SONIC EVAL SUMMARY")
-    print("=" * 60)
-    print(f"  VLA model:                  {vla_model_path}"
-          f"{'  (base N1.7, no --vla-checkpoint)' if not args.vla_checkpoint else ''}")
-    print(f"  Task:                       {args.task}")
-    print(f"  num_envs:                   {args.num_envs}")
-    print(f"  chunk_size:                 {args.chunk_size}")
-    print(f"  lift_thres:                 {lift_thres} m")
-    print(f"  Completed episodes:         {completed_episodes}")
-    print(f"  Mean episode length:        {mean_ep_len:.1f} steps")
-    print(f"  Wall time:                  {elapsed:.1f}s")
-    print(f"")
-    print(f"  Episodes with any lift:     {completed_any_lift} / {completed_episodes} "
-          f"= {100*any_lift_rate:.2f}%")
-    print(f"  Mean lift fraction          {100*mean_lift_fraction:.2f}%")
-    print(f"    (over episodes with lift; closed_phase_lift_steps / closed_phase_steps)")
-    print(f"  Cumulative lift-steps       {n_succ_total:.0f}")
-    print(f"    (env.n_successes.sum() — uses the env reward's height_thres)")
-    print(f"")
-    print(f"  Termination breakdown (of completed episodes):")
-    for k, v in termination_counts.items():
-        if v > 0:
-            print(f"    {k:30s} {v}  ({100*v/max(completed_episodes,1):.1f}%)")
-    print("=" * 60)
+    for w in writers.values():
+        w.close()
+    if vla_vis_writer is not None:
+        vla_vis_writer.close()
 
     env.close()
     _APP.close()
+
+    print(f"\n[play] recorded {args.num_episodes} episode(s); "
+          f"cumulative lift-steps={total_successes}")
+    if prefix is not None:
+        print(f"[play] videos written with prefix: {prefix}")
     return 0
 
 

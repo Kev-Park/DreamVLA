@@ -178,7 +178,7 @@ def _build_env_args(env, *, task_name: str | None) -> dict[str, Any]:
         "right_finger_joint_names": list(right_finger_names),
         "ref_joint_names": ref_joint_names,
         "producer": "collect_sonic_adapter.py",
-        "producer_version": 1,
+        "producer_version": 2,  # same v2 RolloutRecorder HDF5 schema as the old producer
     }
     setattr(env.unwrapped, cache_attr, env_args)
     return env_args
