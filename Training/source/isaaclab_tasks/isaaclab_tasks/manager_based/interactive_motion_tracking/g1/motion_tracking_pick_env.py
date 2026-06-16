@@ -994,6 +994,38 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
         print("[BinaryFingers] right_hand reward swapped to binary-match against is_closed")
 
 
+def hide_training_only_visuals(env, env_ids=None):
+    """Startup event: hide the RENDER of training-only assets while KEEPING their colliders.
+
+    The kitchen-visuals collection env (G1PickCamBinaryFingersEnvCfg) deliberately keeps the
+    training physics — the green collision-box "table" (``/World/envs/env_*/Kitchen``, so the
+    object rests at 0.9 m) and the ``/World/ground`` terrain plane (so the robot stands) — and
+    layers the HQ kitchen USD (``KitchenVisual``) on top purely as a visual backdrop. Without
+    this hook the green box and the marble ground plane ALSO render, so the ego camera sees
+    assets from BOTH the RL-training scene and the kitchen at once.
+
+    ``UsdGeom.MakeInvisible`` toggles only the USD ``visibility`` token; the PhysX collision
+    APIs are untouched, so physics (rest height, ground contact) is identical to training.
+    We hide the green box and the ground plane but NOT ``KitchenVisual`` (the backdrop) or
+    ``Object`` (the manipuland), so only kitchen-related assets remain on camera.
+    """
+    import omni.usd
+    from pxr import UsdGeom
+
+    stage = omni.usd.get_context().get_stage()
+    hidden = []
+    for prim in stage.Traverse():
+        name = prim.GetName()
+        path = str(prim.GetPath())
+        # Green collision-box table (per-env "/World/envs/env_*/Kitchen"), and the terrain
+        # ground plane ("/World/ground"). Exact name match avoids hiding "KitchenVisual".
+        if name == "Kitchen" or path == "/World/ground":
+            UsdGeom.Imageable(prim).MakeInvisible()
+            hidden.append(path)
+    print(f"[CamBinaryFingers] hid {len(hidden)} training-only visual prim(s) (green box + "
+          f"ground plane); colliders kept, kitchen USD backdrop remains: {hidden}")
+
+
 @configclass
 class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
     """Kitchen-VISUALS pick env with binary fingers + the EXACT training physics.
@@ -1018,6 +1050,7 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
     """
 
     kitchen_usd_path: str = "assets/HQ Kitchen/Collected_kitchen_flat/kitchen_flat3.usd"
+    object_usd_path: str = "assets/mustard_bottle.usd"
 
     def __post_init__(self):
         super().__post_init__()  # green-box physics @ 0.9 + SONIC gains + binary reward
@@ -1028,6 +1061,24 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
             prim_path="{ENV_REGEX_NS}/KitchenVisual",
             spawn=sim_utils.UsdFileCfg(usd_path=self.kitchen_usd_path, scale=(1.0, 1.0, 0.89)),
             init_state=AssetBaseCfg.InitialStateCfg(pos=(2.1 - 0.06, 1.0, 0.0), rot=(1, 0, 0, 0)),
+        )
+        # Swap the blue cuboid manipuland for the mustard bottle USD so the recorded footage
+        # shows a realistic object (same init pose / mass / scale as G1PickCamEnvCfg's bottle).
+        # CAVEAT (grasp fidelity): the adapter was trained to grasp the 5x5x20cm cuboid, so the
+        # bottle's different collision geometry can lower the grasp success rate — the
+        # collector's success filter then simply writes fewer trajectories. Also note UsdFileCfg
+        # has NO `physics_material` field (unlike CuboidCfg), so the bottle's friction comes from
+        # mustard_bottle.usd, not the cuboid's static/dynamic 1.2 grip. If grasps slip badly,
+        # the fidelity-preserving alternative is to keep the cuboid as an INVISIBLE collider and
+        # parent the bottle mesh under /Object as a visual-only child so it tracks the rigid body.
+        self.scene.object = RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/Object",
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.35, 0.40, 1.0413], rot=[1, 0, 0, 0]),
+            spawn=sim_utils.UsdFileCfg(
+                usd_path=self.object_usd_path,
+                scale=(1.0, 1.0, 1.5),
+                mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+            ),
         )
         # Third-person + torso-ego cameras (same configs as G1PickCamEnvCfg).
         rot = np.array([0.7538, 0.61221, -0.1505, -0.1853])
@@ -1054,5 +1105,15 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
             offset=CameraCfg.OffsetCfg(pos=(0.05, 0.0, 0.36),
                                        rot=(0.568, 0.421, -0.421, -0.568), convention="opengl"),
         )
+        # Hide the training-only visuals (green collision box + marble ground plane) so the
+        # ego camera sees ONLY the kitchen USD backdrop. Startup event → runs once after the
+        # scene spawns; colliders are kept so physics is unchanged. Without this the recorded
+        # footage shows assets from both the training scene and the kitchen overlapping.
+        self.events.hide_training_only_visuals = EventTerm(
+            func=hide_training_only_visuals,
+            mode="startup",
+        )
         print("[CamBinaryFingers] kitchen visual + third-person/ego cameras added; "
-              "physics (table 0.9, cuboid object) inherited from BinaryFingers env")
+              "manipuland swapped to mustard bottle (grasp physics now from the bottle USD, "
+              "not the trained cuboid); table-0.9 + SONIC gains inherited from BinaryFingers env; "
+              "training-only visuals (green box + ground plane) hidden via startup event")
