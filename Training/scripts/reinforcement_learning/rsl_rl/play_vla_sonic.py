@@ -49,11 +49,6 @@ from pathlib import Path
 
 print = partial(builtins.print, flush=True)
 
-# HuggingFace repo id for the base (un-finetuned) GR00T N1.7 model. Used only as
-# a last-resort fallback — see resolve_vla_model_path, which prefers the weights
-# already referenced by the local Isaac-GR00T checkout so we don't re-download.
-DEFAULT_BASE_MODEL_REPO = "nvidia/GR00T-N1.7-3B"
-
 
 # =========================================================================
 # Phase 1: Isaac Lab AppLauncher MUST come first (before any gym/torch that
@@ -69,12 +64,12 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--max-steps-per-episode", type=int, default=500)
     parser.add_argument("--chunk-size", type=int, default=8,
                         help="Execute first N of the VLA's 16 predicted steps before replanning.")
-    parser.add_argument("--vla-checkpoint", default=None,
-                        help="Path to a fine-tuned GR00T checkpoint dir. If omitted, "
-                             "reuses the base GR00T N1.7 weights referenced by the local "
-                             "Isaac-GR00T checkout (its checkpoints/GR00T-N1.7-3B dir, or "
-                             "$GR00T_N1_7_PATH), falling back to the HuggingFace base model "
-                             "only if no local copy exists. See resolve_vla_model_path.")
+    parser.add_argument("--vla-checkpoint", required=True,
+                        help="Path to a gear_sonic fine-tuned GR00T checkpoint dir (the "
+                             "'new_embodiment' VLA that emits vr_3pt / motion_token). The "
+                             "base nvidia/GR00T-N1.7-3B model does NOT work here — it lacks "
+                             "the gear_sonic action heads, so a fine-tuned checkpoint is "
+                             "mandatory. There is no released pretrained SONIC-token VLA.")
     parser.add_argument("--embodiment-tag", default="new_embodiment")
     parser.add_argument("--language", default="pick up the mustard bottle")
     # Default paths assume DreamVLA/ and GR00T-WholeBodyControl/ are sibling repos,
@@ -142,45 +137,7 @@ from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
 from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter  # noqa: E402
 from vla_sonic.simple_robot_model import SimpleG1RobotModel  # noqa: E402
 
-import gr00t  # noqa: E402
 from gr00t.policy.gr00t_policy import Gr00tPolicy  # noqa: E402
-
-
-def resolve_vla_model_path(cli_value: str | None) -> str:
-    """Resolve the VLA model path/id, preferring weights already on disk.
-
-    Resolution order (first hit wins):
-      1. ``cli_value`` — an explicit --vla-checkpoint.
-      2. ``$GR00T_N1_7_PATH`` — local override env var.
-      3. ``<Isaac-GR00T repo root>/checkpoints/GR00T-N1.7-3B`` — the base weights
-         the local Isaac-GR00T checkout references (Isaac-GR00T's own
-         ``checkpoints/<model_name>`` convention). Reused as-is; no download.
-      4. The HuggingFace repo id ``nvidia/GR00T-N1.7-3B`` — only if nothing local
-         is found. ``from_pretrained`` still reuses the local HF cache if present.
-    """
-    if cli_value:
-        return cli_value
-
-    env_override = os.environ.get("GR00T_N1_7_PATH", "").strip()
-    if env_override:
-        print(f"[vla] no --vla-checkpoint; using $GR00T_N1_7_PATH = {env_override}")
-        return env_override
-
-    try:
-        # gr00t/__init__.py lives at <Isaac-GR00T>/gr00t/__init__.py.
-        isaac_groot_root = Path(gr00t.__file__).resolve().parent.parent
-        local_ckpt = isaac_groot_root / "checkpoints" / "GR00T-N1.7-3B"
-        if local_ckpt.is_dir() and any(local_ckpt.iterdir()):
-            print(f"[vla] no --vla-checkpoint; reusing local Isaac-GR00T base "
-                  f"weights at {local_ckpt}")
-            return str(local_ckpt)
-        print(f"[vla] no local base weights at {local_ckpt}")
-    except Exception as e:  # noqa: BLE001
-        print(f"[vla] could not locate Isaac-GR00T checkpoints dir: {e}")
-
-    print(f"[vla] falling back to HuggingFace base model '{DEFAULT_BASE_MODEL_REPO}' "
-          f"(uses local HF cache if present, else downloads).")
-    return DEFAULT_BASE_MODEL_REPO
 
 
 # =========================================================================
@@ -689,11 +646,10 @@ def main() -> int:
     print(f"[env] {args.task}  action_space={env.action_space}")
 
     # --- 2. Build VLA policy -------------------------------------------
-    vla_model_path = resolve_vla_model_path(args.vla_checkpoint)
-    print(f"[vla] loading {vla_model_path}")
+    print(f"[vla] loading {args.vla_checkpoint}")
     policy = Gr00tPolicy(
         embodiment_tag=args.embodiment_tag,
-        model_path=vla_model_path,
+        model_path=args.vla_checkpoint,
         device="cuda:0",
     )
 

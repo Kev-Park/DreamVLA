@@ -301,6 +301,13 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
 
+    # Flush the RTX render pipeline after the reset so the FIRST camera read below
+    # reflects the post-reset pose with a converged (not warm-up) render. Without
+    # these pumps every captured frame is the noisy first-bounce warm-up render —
+    # see play_sonic_adapter.py, which does the identical flush after each step.
+    simulation_app.update()
+    simulation_app.update()
+
     if not hasattr(env.unwrapped, "n_successes"):
         env.unwrapped.n_successes = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device, dtype=torch.long)
     n_successes_start = env.unwrapped.n_successes.detach().clone()
@@ -335,6 +342,11 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
             terminated = done
             truncated = torch.zeros_like(done)
         obs = obs.clone() if hasattr(obs, "clone") else obs
+        # Flush the RTX render pipeline so the NEXT iteration's camera read delivers
+        # this step's frame (the camera annotator otherwise lags / stays on the warm-up
+        # render). Two pumps match the proven play_sonic_adapter.py cadence.
+        simulation_app.update()
+        simulation_app.update()
         terminated_flag = bool(torch.as_tensor(terminated).any().item())
         truncated_flag = bool(torch.as_tensor(truncated).any().item())
         if terminated_flag or truncated_flag:
@@ -501,9 +513,19 @@ def main() -> None:
         resume_path = _find_latest_adapter_checkpoint(log_root)
     print(f"[collect_sonic_adapter] checkpoint: {resume_path}")
 
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+    # render_mode="rgb_array" (matching play_sonic_adapter.py) so the RTX render
+    # product is active and the camera annotators receive flushed frames.
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
+
+    # Pump the Omniverse event loop once at startup so RTX shaders/materials and
+    # texture streaming finish loading before the first rollout. Without this the
+    # opening frames render against partially-loaded assets (the "scene not loaded"
+    # look). Mirrors the 60-pump warm-up in play_sonic_adapter.py.
+    print("[collect_sonic_adapter] pumping Omniverse event loop to init render/materials...")
+    for _ in range(60):
+        simulation_app.update()
 
     device = agent_cfg.device
     decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
