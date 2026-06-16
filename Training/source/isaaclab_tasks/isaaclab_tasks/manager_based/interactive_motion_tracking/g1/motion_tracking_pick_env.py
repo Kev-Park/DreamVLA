@@ -994,20 +994,28 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
         print("[BinaryFingers] right_hand reward swapped to binary-match against is_closed")
 
 
-def hide_training_only_visuals(env, env_ids=None):
-    """Startup event: hide the RENDER of training-only assets while KEEPING their colliders.
+def hide_unwanted_visuals(env, env_ids=None):
+    """Startup event: hide the RENDER of unwanted prims while KEEPING any colliders.
 
     The kitchen-visuals collection env (G1PickCamBinaryFingersEnvCfg) deliberately keeps the
     training physics — the green collision-box "table" (``/World/envs/env_*/Kitchen``, so the
     object rests at 0.9 m) and the ``/World/ground`` terrain plane (so the robot stands) — and
     layers the HQ kitchen USD (``KitchenVisual``) on top purely as a visual backdrop. Without
     this hook the green box and the marble ground plane ALSO render, so the ego camera sees
-    assets from BOTH the RL-training scene and the kitchen at once.
+    assets from BOTH the RL-training scene and the kitchen at once. The kitchen USD also ships
+    a decorative glass beer bottle prop (``aBottle``, from Corona.usd) sitting on the counter,
+    which we don't want in the recorded footage either.
 
     ``UsdGeom.MakeInvisible`` toggles only the USD ``visibility`` token; the PhysX collision
-    APIs are untouched, so physics (rest height, ground contact) is identical to training.
-    We hide the green box and the ground plane but NOT ``KitchenVisual`` (the backdrop) or
-    ``Object`` (the manipuland), so only kitchen-related assets remain on camera.
+    APIs are untouched, so physics (rest height, ground contact) is identical to training. We
+    hide the green box, the ground plane, and the kitchen's glass-bottle prop — but NOT
+    ``KitchenVisual`` itself, nor ``Object`` (the mustard-bottle manipuland, which lives under
+    ``/World/envs/env_*/Object``, not under ``KitchenVisual``).
+
+    NOTE on the red grab-location marker: ``env.goal_marker`` is created in
+    ``ManagerBasedRLEnv.__init__`` AFTER the startup events run, so it can't be hidden here —
+    it is disabled instead via the ``target_ref`` ``visualize_markers=False`` obs params (see
+    G1PickCamBinaryFingersEnvCfg.__post_init__).
     """
     import omni.usd
     from pxr import UsdGeom
@@ -1017,13 +1025,18 @@ def hide_training_only_visuals(env, env_ids=None):
     for prim in stage.Traverse():
         name = prim.GetName()
         path = str(prim.GetPath())
-        # Green collision-box table (per-env "/World/envs/env_*/Kitchen"), and the terrain
-        # ground plane ("/World/ground"). Exact name match avoids hiding "KitchenVisual".
-        if name == "Kitchen" or path == "/World/ground":
+        # (1) green collision-box table (per-env "/World/envs/env_*/Kitchen") and (2) the
+        #     terrain ground plane ("/World/ground") — exact match avoids hiding "KitchenVisual".
+        # (3) the kitchen's decorative glass bottle prop: any "bottle"-named prim WITHIN the
+        #     KitchenVisual subtree (so the mustard-bottle Object under /Object is never touched).
+        is_collision_box = name == "Kitchen"
+        is_ground = path == "/World/ground"
+        is_kitchen_bottle = "/KitchenVisual" in path and "bottle" in name.lower()
+        if is_collision_box or is_ground or is_kitchen_bottle:
             UsdGeom.Imageable(prim).MakeInvisible()
             hidden.append(path)
-    print(f"[CamBinaryFingers] hid {len(hidden)} training-only visual prim(s) (green box + "
-          f"ground plane); colliders kept, kitchen USD backdrop remains: {hidden}")
+    print(f"[CamBinaryFingers] hid {len(hidden)} unwanted visual prim(s) (green box + ground "
+          f"plane + kitchen glass bottle); colliders kept, kitchen backdrop remains: {hidden}")
 
 
 @configclass
@@ -1097,23 +1110,39 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
             offset=CameraCfg.OffsetCfg(pos=(-1.03 + 2.1 - 0.034, 4.05 - 0.9, 1.31),
                                        rot=rot_quat, convention="opengl"),
         )
+        # Ego camera rendered at 1280x960 (4:3) — a clean 2x of the 640x480 SONIC ego-view
+        # feature. The previous 1280x720 (16:9) forced the converter's _resize_ego_view to
+        # squish 16:9 into 4:3 (non-uniform: 0.5x horizontal, 0.667x vertical), which BLURS and
+        # horizontally distorts every frame. Rendering at the target 4:3 aspect makes the
+        # downscale a uniform 2x anti-aliased shrink → crisp, undistorted, and the stored
+        # intrinsics finally match the 4:3 dataset spec. Higher native res also helps the RTX
+        # denoiser. (FOV is set by aperture, not pixel count, so this only adds detail.)
         self.scene.camera_robot = CameraCfg(
             prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
             spawn=PinholeCameraCfg(focal_length=7.6, focus_distance=400.0,
                                    horizontal_aperture=20.0, clipping_range=(0.01, 100.0)),
-            data_types=["rgb"], height=720, width=1280,
+            data_types=["rgb"], height=960, width=1280,
             offset=CameraCfg.OffsetCfg(pos=(0.05, 0.0, 0.36),
                                        rot=(0.568, 0.421, -0.421, -0.568), convention="opengl"),
         )
-        # Hide the training-only visuals (green collision box + marble ground plane) so the
-        # ego camera sees ONLY the kitchen USD backdrop. Startup event → runs once after the
-        # scene spawns; colliders are kept so physics is unchanged. Without this the recorded
-        # footage shows assets from both the training scene and the kitchen overlapping.
-        self.events.hide_training_only_visuals = EventTerm(
-            func=hide_training_only_visuals,
+        # Hide the unwanted visuals (green collision box + marble ground plane + kitchen glass
+        # bottle prop) so the ego camera sees only the kitchen backdrop + the mustard bottle.
+        # Startup event → runs once after the scene spawns; colliders are kept so physics is
+        # unchanged. Without this the footage shows training-scene assets overlapping the kitchen.
+        self.events.hide_unwanted_visuals = EventTerm(
+            func=hide_unwanted_visuals,
             mode="startup",
         )
-        print("[CamBinaryFingers] kitchen visual + third-person/ego cameras added; "
-              "manipuland swapped to mustard bottle (grasp physics now from the bottle USD, "
-              "not the trained cuboid); table-0.9 + SONIC gains inherited from BinaryFingers env; "
-              "training-only visuals (green box + ground plane) hidden via startup event")
+        # Remove the red grab-location marker (env.goal_marker) from the footage. target_ref
+        # draws it at the grab point when visualize_markers=True; set False on all three
+        # target_ref obs terms so it is parked at z=-0.1 (below the floor, out of the ego view)
+        # every step instead. This gates ONLY marker drawing — the returned obs tensor is
+        # identical, so the policy is unaffected. (Guarded getattr in case TRACKING disabled them.)
+        for _term_name in ("target_ref_curr", "target_ref_next", "target_ref_next_next"):
+            _term = getattr(self.observations.policy, _term_name, None)
+            if _term is not None:
+                _term.params = {**_term.params, "visualize_markers": False}
+        print("[CamBinaryFingers] kitchen visual + third-person/ego cameras added; ego cam at "
+              "1280x960 (4:3, crisp); manipuland swapped to mustard bottle (grasp physics now "
+              "from the bottle USD, not the trained cuboid); table-0.9 + SONIC gains inherited; "
+              "green box + ground plane + glass bottle hidden; red grab marker disabled")
