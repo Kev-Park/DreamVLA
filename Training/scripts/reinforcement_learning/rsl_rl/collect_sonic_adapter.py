@@ -284,10 +284,15 @@ def _find_latest_adapter_checkpoint(log_root: Path) -> str:
     return str(ckpts[-1])
 
 
-def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, real_time, reset_at_start):
+def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, real_time,
+                         reset_at_start, lift_thres):
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
     teleop_history: list[dict[str, torch.Tensor]] = []
+    # Eval-parity success: a frame is a real pickup when the object (bottle) clears lift_thres
+    # AND the reference motion is in its closed/grasp phase. Mirrors eval_sonic_adapter.py
+    # (bottle_z > lift_thres & is_closed). Evaluated per-step on the SAME frames we record.
+    had_any_lift = False
 
     # The explicit reset must run inside inference_mode: after a prior rollout's
     # inference_mode policy/step, the env's persistent buffers (joint_acc, etc.) are
@@ -333,6 +338,23 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         if state_on:
             state_history.append(_capture_rollout_state(env, actions))
             teleop_history.append(_capture_teleop_frame(env))
+        # Eval-parity lift check on THIS (pre-step) frame — the exact instant the camera frame
+        # and state above were captured. Identical criterion to eval_sonic_adapter.py: the
+        # bottle root z must exceed lift_thres while the reference is_closed (grasp) flag is set.
+        # Read pre-step (not post-step) so it reflects the recorded frame and is immune to the
+        # env's on-done auto-reset clobbering the object pose.
+        u = env.unwrapped
+        if hasattr(u, "motion_lib") and hasattr(u, "motion_ids"):
+            bottle_z = float(u.scene["object"].data.root_pos_w[0, 2].item())
+            motion_times = (
+                u.episode_length_buf.float() * float(u.step_dt)
+                + u.start_motion_times.to(u.device, dtype=torch.float32)
+            )
+            is_closed = bool(
+                u.motion_lib.get_motion_state(u.motion_ids, motion_times)["is_closed"][0].item()
+            )
+            if bottle_z > lift_thres and is_closed:
+                had_any_lift = True
         with torch.inference_mode():
             step_result = env.step(actions)
         if len(step_result) == 5:
@@ -386,14 +408,22 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
             },
         }
 
+    # Authoritative success = eval-parity lift criterion (bottle above lift_thres during the
+    # grasp phase, on the recorded frames). n_successes is kept only as a diagnostic — it goes
+    # through the env reward's counter, which the dataset screening showed is NOT a reliable
+    # filter for the bottle, so it must NOT gate what gets written.
     n_successes_delta = env.unwrapped.n_successes - n_successes_start
-    rollout_success = bool((n_successes_delta > 0).any().item())
+    success_n_successes = bool((n_successes_delta > 0).any().item())
+    rollout_success = had_any_lift
     error_terminated = terminated_flag and step_index < max_steps
     metadata = {
         "terminated": terminated_flag,
         "truncated": truncated_flag,
         "error_terminated": error_terminated,
         "success": rollout_success,
+        "success_criterion": f"bottle_z>{lift_thres} & is_closed (eval_sonic_adapter parity)",
+        "lift_thres": float(lift_thres),
+        "success_n_successes": success_n_successes,
         "num_steps": len(camera_frames),
         "app_running": bool(simulation_app.is_running()),
         "camera_on": True,
@@ -434,6 +464,12 @@ def main() -> None:
                         default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx")
     parser.add_argument("--residual-scale", type=float, default=0.3,
                         help="MUST match the value train_sonic_adapter.py used.")
+    parser.add_argument("--lift-thres", type=float, default=0.95,
+                        help="Object (bottle) root z (m) above which a frame counts as 'lifted' "
+                             "for the SUCCESS filter, evaluated during the reference grasp "
+                             "(is_closed) phase. MUST match eval_sonic_adapter.py --lift-thres "
+                             "(default 0.95 = object rests at 0.9, a 5 cm pickup). Only "
+                             "trajectories with at least one lifted+closed frame are written.")
     parser.add_argument("--skip-start-frames", type=int, default=None,
                         help="Start episodes N frames into the motion (pass 20 to skip the refinement "
                              "prepend). The recorded trajectory begins at the skip frame.")
@@ -576,6 +612,7 @@ def main() -> None:
                     env, policy, simulation_app=simulation_app, max_steps=args_cli.rollout_length,
                     state_on=bool(args_cli.state_on), real_time=bool(args_cli.real_time),
                     reset_at_start=True,  # always reset so the forced motion takes effect
+                    lift_thres=float(args_cli.lift_thres),
                 )
             except Exception as rollout_exc:
                 errored += 1
