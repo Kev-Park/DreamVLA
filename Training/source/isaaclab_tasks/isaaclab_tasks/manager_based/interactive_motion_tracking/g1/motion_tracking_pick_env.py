@@ -1017,21 +1017,35 @@ def hide_unwanted_visuals(env, env_ids=None):
     it is disabled instead via the ``target_ref`` ``visualize_markers=False`` obs params (see
     G1PickCamBinaryFingersEnvCfg.__post_init__).
     """
+    import re
+
     import omni.usd
     from pxr import UsdGeom
+
+    # The green collision box is the per-env prim "/World/envs/env_<N>/Kitchen" — a DIRECT
+    # child of the env namespace. Match that exact shape (segment before "/Kitchen" is the
+    # env), NOT a bare name=="Kitchen", because the referenced kitchen USD also contains a
+    # prim named "Kitchen" deeper under ".../KitchenVisual/...". A bare name match hid the
+    # entire kitchen backdrop.
+    green_box_re = re.compile(r"/env_\d+/Kitchen$")
 
     stage = omni.usd.get_context().get_stage()
     hidden = []
     for prim in stage.Traverse():
         name = prim.GetName()
         path = str(prim.GetPath())
-        # (1) green collision-box table (per-env "/World/envs/env_*/Kitchen") and (2) the
-        #     terrain ground plane ("/World/ground") — exact match avoids hiding "KitchenVisual".
-        # (3) the kitchen's decorative glass bottle prop: any "bottle"-named prim WITHIN the
-        #     KitchenVisual subtree (so the mustard-bottle Object under /Object is never touched).
-        is_collision_box = name == "Kitchen"
-        is_ground = path == "/World/ground"
-        is_kitchen_bottle = "/KitchenVisual" in path and "bottle" in name.lower()
+        # Never touch the kitchen backdrop subtree (except its glass-bottle prop below).
+        in_kitchen_visual = "/KitchenVisual" in path
+        # (1) green collision-box table, (2) the terrain ground plane ("/World/ground"),
+        # (3) the kitchen's decorative glass bottle prop (any "bottle"-named prim WITHIN the
+        #     KitchenVisual subtree; the mustard-bottle Object under /Object is never touched).
+        is_collision_box = bool(green_box_re.search(path)) and not in_kitchen_visual
+        # Terrain ground plane. For terrain_type="plane" the importer spawns the DEFAULT
+        # grid-world ground plane (default_environment.usd → a grid texture) at
+        # "/World/ground/terrain", not at "/World/ground" itself. Hide the whole subtree so the
+        # grid mesh prim is set invisible directly (don't rely on ancestor-visibility pruning).
+        is_ground = path == "/World/ground" or path.startswith("/World/ground/")
+        is_kitchen_bottle = in_kitchen_visual and "bottle" in name.lower()
         if is_collision_box or is_ground or is_kitchen_bottle:
             UsdGeom.Imageable(prim).MakeInvisible()
             hidden.append(path)
