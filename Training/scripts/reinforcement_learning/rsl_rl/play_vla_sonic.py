@@ -124,8 +124,9 @@ from vla_sonic import (  # noqa: E402
     build_decoder_obs,
     utm_plus_vla_to_env_action,
 )
-from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
+from vla_sonic.action_assembler import G1_ACTION_SCALE_SONIC, G1_DEFAULT_ANGLES_SONIC  # noqa: E402
 from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter  # noqa: E402
+from vla_sonic.physics_overrides import apply_sonic_physics_overrides  # noqa: E402
 from vla_sonic.simple_robot_model import SimpleG1RobotModel  # noqa: E402
 
 from gr00t.policy.gr00t_policy import Gr00tPolicy  # noqa: E402
@@ -315,6 +316,12 @@ def main() -> int:
         num_envs=args.num_envs,
         enable_cameras=True,
     )
+    # Match the SONIC decoder's training-time physics (500 Hz substep, fixed
+    # friction, self-collisions, solver iters). The decoder emits ABSOLUTE joint
+    # targets calibrated for this regime; without it the env's default randomized
+    # friction / coarser substep / self-collisions-off make the robot unstable.
+    # Same call both working SONIC scripts use (eval/play_sonic_adapter.py).
+    apply_sonic_physics_overrides(env_cfg)
     _inject_cameras(env_cfg)
     env = gym.make(args.task, cfg=env_cfg)
     print(f"[env] {args.task}  action_space={env.action_space}")
@@ -369,7 +376,7 @@ def main() -> int:
         _APP.update()
         _APP.update()
         history.reset()
-        prev_utm_body_29 = np.zeros(29, dtype=np.float32)
+        prev_utm_body_29 = None  # set to (q-default)/scale on frame 0, then decoder output
 
         # Open video writers on first episode after Isaac Lab is fully up.
         if ep == 0 and prefix is not None and not writers:
@@ -408,24 +415,31 @@ def main() -> int:
 
             t_idx = chunk_step
 
-            # 7b. Push current env state into the decoder history (SONIC order).
+            # 7b. Push current env state into the decoder history. Convention
+            # matches the validated token_action_wrapper.py: joint positions are
+            # RELATIVE to the SONIC default standing pose, gravity is IsaacLab's
+            # body-frame projected gravity (NOT recomputed), and last_action is the
+            # previous decoder output (seeded on frame 0 with the latent that
+            # reproduces the current pose, q-default/scale). Feeding raw absolute
+            # joint positions here is off-distribution for the decoder → instability.
             q_isaac = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
             qd_isaac = robot.data.joint_vel[0].detach().cpu().numpy().astype(np.float32)
             q_sonic = _gather_with_mask(q_isaac, isaac_to_utm_perm)
             qd_sonic = _gather_with_mask(qd_isaac, isaac_to_utm_perm)
-            root_quat_w = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)  # wxyz
+            jp_sonic = (q_sonic - G1_DEFAULT_ANGLES_SONIC).astype(np.float32)
+            gravity_body = robot.data.projected_gravity_b[0].detach().cpu().numpy().astype(np.float32)
             root_ang_vel_b = robot.data.root_ang_vel_b[0].detach().cpu().numpy().astype(np.float32)
-            from scipy.spatial.transform import Rotation as R
-            gravity_body = R.from_quat(quat_wxyz_to_xyzw(root_quat_w)).inv().apply(
-                np.array([0.0, 0.0, -1.0], dtype=np.float32)
-            ).astype(np.float32)
+            if prev_utm_body_29 is None:
+                last_action = (jp_sonic / G1_ACTION_SCALE_SONIC).astype(np.float32)
+            else:
+                last_action = prev_utm_body_29
             history.push(
-                joint_pos=q_sonic,
+                joint_pos=jp_sonic,
                 joint_vel=qd_sonic,
-                last_action=prev_utm_body_29,
+                last_action=last_action,
                 base_ang_vel=root_ang_vel_b,
                 gravity_dir=gravity_body,
-                mujoco_qpos=np.zeros(36, dtype=np.float32),  # unused in direct-token pipeline
+                mujoco_qpos=np.zeros(36, dtype=np.float32),  # unused (no planner)
             )
 
             # 7c. Token straight from the VLA (no planner/encoder).
