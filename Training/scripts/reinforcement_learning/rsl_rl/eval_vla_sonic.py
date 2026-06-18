@@ -1,40 +1,39 @@
-"""VLA + SONIC closed-loop *statistical* eval in Isaac Lab.
+"""VLA (unitree_g1_sonic) + SONIC decoder closed-loop *statistical* eval in Isaac Lab.
 
-Runs the VLA→SONIC closed loop for a configurable number of episodes and reports
-height-lift statistics — the VLA analog of ``eval_sonic_adapter.py``. No video is
-written; see ``play_vla_sonic.py`` for the qualitative recording sibling (the two
-share the exact same closed-loop wiring so the videos reflect what is measured here).
+Runs a ``unitree_g1_sonic`` VLA in closed loop for a configurable number of
+episodes and reports height-lift statistics. VLA analog of ``eval_sonic_adapter.py``.
+No video is written; see ``play_vla_sonic.py`` for the recording sibling (the two
+share the exact same closed-loop wiring).
 
-Pipeline per env step (inside the chunk, see --chunk-size):
+This VLA embodiment predicts the SONIC latent token DIRECTLY (``motion_token``,
+64-D) plus the finger joints, so the pipeline is short — no kinematic planner,
+no encoder, no vr_3pt teleop stage:
 
     env obs ─▶ ObsToPolicyAdapter ─▶ Gr00tPolicy.get_action ─▶ action_dict
                                                                      │
-           action_dict (first chunk step only) ──▶ PlannerWrapper ───▶ mujoco_qpos
+                          action_dict["motion_token"] (64-D)  ───────┤
                                                                      │
-           anchor_pose + lb_trajectory + vr_3pt  ──▶ build_encoder_obs
+                          token + HistoryBuffer ──▶ build_decoder_obs
                                                                      │
-                                                            UtmWrapper.run_encoder → token
+                                              UtmWrapper.run_decoder → body_29
                                                                      │
-                                       token + HistoryBuffer ──▶ build_decoder_obs
-                                                                     │
-                                                            UtmWrapper.run_decoder → body_29
-                                                                     │
-                body_29 + vla_fingers ──▶ utm_plus_vla_to_env_action → env_action_41
+        body_29 + action_dict["{left,right}_hand_joints"] ──▶ utm_plus_vla_to_env_action → env_action_41
                                                                      │
                                                               env.step(env_action_41)
 
+(The older vr_3pt → planner → encoder → token path was for the ``new_embodiment``
+VLA formulation; a ``unitree_g1_sonic`` VLA outputs the token itself, replacing
+that whole front half.)
+
 Reports (matching eval_sonic_adapter.py):
-  1. ``Episodes with any lift`` — per-episode discrete success rate (the bottle
-     cleared the lift threshold during the closed/grasp phase).
-  2. ``Mean lift fraction`` — over lifted episodes, fraction of closed-phase steps
-     the bottle stayed lifted (grasp-retention quality).
-  3. ``Cumulative lift-steps`` — env.n_successes.sum() (the reward's own counter).
+  1. ``Episodes with any lift`` — per-episode discrete success rate.
+  2. ``Mean lift fraction`` — over lifted episodes, fraction of closed-phase steps lifted.
+  3. ``Cumulative lift-steps`` — env.n_successes.sum().
   4. ``Termination breakdown`` — time_out vs terminated.
 
-NOTE: unlike eval_sonic_adapter.py, this eval CANNOT run thousands of parallel
-envs — the VLA needs the ego camera every step (camera VRAM caps us at num_envs=1)
-and the whole vla_sonic pipeline is single-env (numpy, index [0]). Episodes are
-therefore run sequentially; --num-episodes is a sequential count, not parallel.
+NOTE: cameras are required (the VLA needs the ego view) and the pipeline is
+single-env (numpy, index [0]), so episodes run sequentially; --num-episodes is a
+sequential count, not parallel.
 
 Run:
 
@@ -54,6 +53,11 @@ from pathlib import Path
 
 print = partial(builtins.print, flush=True)
 
+# This VLA embodiment predicts the SONIC token directly. Its tag is baked into
+# the checkpoint as ``unitree_g1_sonic`` (NOT ``new_embodiment`` — that was the
+# older vr_3pt formulation). Overridable via --embodiment-tag.
+DEFAULT_EMBODIMENT_TAG = "unitree_g1_sonic"
+
 
 # =========================================================================
 # Phase 1: Isaac Lab AppLauncher MUST come first (before any gym/torch that
@@ -61,7 +65,7 @@ print = partial(builtins.print, flush=True)
 # =========================================================================
 
 def _parse_cli() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="VLA+SONIC closed-loop statistical eval")
+    parser = argparse.ArgumentParser(description="VLA(unitree_g1_sonic)+SONIC closed-loop statistical eval")
     parser.add_argument("--task", default="Isaac-Motion-Tracking-Pick-Cam-ContFingers-v0")
     parser.add_argument("--num-envs", type=int, default=1,
                         help="Keep at 1 to avoid camera OOM (the VLA pipeline is single-env).")
@@ -69,27 +73,24 @@ def _parse_cli() -> argparse.Namespace:
                         help="Number of episodes to run sequentially and aggregate stats over.")
     parser.add_argument("--max-steps-per-episode", type=int, default=500)
     parser.add_argument("--chunk-size", type=int, default=8,
-                        help="Execute first N of the VLA's 16 predicted steps before replanning.")
+                        help="Execute first N of the VLA's predicted steps before replanning.")
     parser.add_argument("--vla-checkpoint", required=True,
-                        help="Path to a gear_sonic fine-tuned GR00T checkpoint dir (the "
-                             "'new_embodiment' VLA that emits vr_3pt / motion_token). The "
-                             "base nvidia/GR00T-N1.7-3B model does NOT work here — it lacks "
-                             "the gear_sonic action heads, so a fine-tuned checkpoint is "
-                             "mandatory. There is no released pretrained SONIC-token VLA.")
-    parser.add_argument("--embodiment-tag", default="new_embodiment")
+                        help="Path to the unitree_g1_sonic fine-tuned GR00T checkpoint dir "
+                             "(the VLA that emits motion_token + hand joints).")
+    parser.add_argument("--embodiment-tag", default=DEFAULT_EMBODIMENT_TAG)
     parser.add_argument("--language", default="pick up the mustard bottle")
     # Default paths assume DreamVLA/ and GR00T-WholeBodyControl/ are sibling repos,
     # and you run this script from DreamVLA/Training/. Override if your layout differs.
+    # Only the decoder is used; the encoder is loaded by UtmWrapper but never run
+    # (this VLA replaces the encoder by predicting the token directly).
     parser.add_argument("--encoder-onnx",
-                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx")
+                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
+                        help="Loaded by UtmWrapper for consistency but NOT used in this pipeline.")
     parser.add_argument("--decoder-onnx",
                         default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx")
-    parser.add_argument("--planner-onnx",
-                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx")
     parser.add_argument("--lift-thres", type=float, default=0.95,
                         help="Bottle z (m) above which a frame counts as 'lifted'. Matches the "
-                             "env's object_above height_thres (object rests at 0.9; 0.95 = a "
-                             "5 cm pickup).")
+                             "env's object_above height_thres (object rests at 0.9; 0.95 = 5 cm).")
     parser.add_argument("--seed", type=int, default=0)
     # AppLauncher args get appended below.
     return parser
@@ -129,14 +130,10 @@ if str(_HERE) not in sys.path:
 
 from vla_sonic import (  # noqa: E402
     HistoryBuffer,
-    PlannerWrapper,
     UtmWrapper,
     build_decoder_obs,
-    build_encoder_obs,
-    build_planner_inputs,
     utm_plus_vla_to_env_action,
 )
-from vla_sonic.action_assembler import MUJOCO_TO_ISAACLAB  # noqa: E402
 from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
 from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter  # noqa: E402
 from vla_sonic.simple_robot_model import SimpleG1RobotModel  # noqa: E402
@@ -145,26 +142,23 @@ from gr00t.policy.gr00t_policy import Gr00tPolicy  # noqa: E402
 
 
 # =========================================================================
-# Joint-order helpers: Isaac's robot → UTM's 29-DoF MuJoCo order.
+# Joint-order helpers: Isaac's robot → UTM's 29-DoF SONIC-IsaacLab order.
+# The decoder's proprio history (joint pos/vel/last-action) is in SONIC order.
 # =========================================================================
 
-# SONIC-IsaacLab 29-DoF joint order — the order the UTM ONNX models see on
-# BOTH input (history joint positions/velocities/last_actions) and output
-# (decoder body action). Reconstructed from
-# GR00T-WholeBodyControl/gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/
-#   policy_parameters.hpp:100 (isaaclab_to_mujoco = MuJoCo order in IsaacLab index).
-# This interleaves left/right pairs at each kinematic level — very different
-# from the obvious "left leg then right leg" DEFAULT_DOF_ANGLES ordering.
+# SONIC-IsaacLab 29-DoF joint order — the order the UTM decoder sees on its
+# history inputs and emits on its body output. Reconstructed from
+# policy_parameters.hpp:100 (isaaclab_to_mujoco). Interleaves left/right pairs.
 UTM_29_JOINT_NAMES = [
     "left_hip_pitch_joint",       # 0
     "right_hip_pitch_joint",      # 1
     "waist_yaw_joint",            # 2
     "left_hip_roll_joint",        # 3
     "right_hip_roll_joint",       # 4
-    "waist_roll_joint",           # 5  <-- drop when mapping to env
+    "waist_roll_joint",           # 5  <-- absent on env's 27-DoF G1 (zero-filled)
     "left_hip_yaw_joint",         # 6
     "right_hip_yaw_joint",        # 7
-    "waist_pitch_joint",          # 8  <-- drop when mapping to env
+    "waist_pitch_joint",          # 8  <-- absent on env's 27-DoF G1 (zero-filled)
     "left_knee_joint",            # 9
     "right_knee_joint",           # 10
     "left_shoulder_pitch_joint",  # 11
@@ -192,9 +186,8 @@ assert len(UTM_29_JOINT_NAMES) == 29
 def build_isaac_to_utm_perm(isaac_joint_names: list[str]) -> np.ndarray:
     """Return (29,) array of Isaac indices s.t. ``isaac_q[perm] == utm_q``.
 
-    Entries are -1 for UTM joints that don't exist on the Isaac robot
-    (expected: waist_roll/pitch are absent from the env's 27-DoF G1). Callers
-    must mask and zero-fill those entries via ``_gather_with_mask``.
+    Entries are -1 for UTM joints absent on the Isaac robot (waist_roll/pitch on
+    the 27-DoF G1). Callers must mask + zero-fill via ``_gather_with_mask``.
     """
     name_to_idx = {n: i for i, n in enumerate(isaac_joint_names)}
     perm = np.full(29, -1, dtype=np.int64)
@@ -219,110 +212,36 @@ def _gather_with_mask(isaac_values: np.ndarray, perm: np.ndarray) -> np.ndarray:
 
 
 # =========================================================================
-# Planner output decomposition.
+# VLA SONIC-token extraction.
 # =========================================================================
 
-# Planner output layout per frame (mujoco_qpos, 36-D):
-#   [0:3]   root_pos  (world frame)
-#   [3:7]   root_quat (wxyz scalar-first)
-#   [7:36]  29 joints in UTM_29_JOINT_NAMES order
-PLANNER_ROOT_POS_SLICE = slice(0, 3)
-PLANNER_ROOT_QUAT_SLICE = slice(3, 7)
-PLANNER_JOINTS_SLICE = slice(7, 36)
-
-# Lower body = legs (12 joints). The encoder's
-# ``motion_joint_positions_lowerbody_10frame_step5`` slot expects values in
-# **MuJoCo order** — left-leg-all-6 (pitch, roll, yaw, knee, apitch, aroll)
-# then right-leg-all-6 — per policy_parameters.hpp:93:
-#   lower_body_joint_mujoco_order_in_mujoco_index = {0,1,2,3,4,5,6,7,8,9,10,11}
-# The planner's mujoco_qpos is already in MuJoCo order; just slice the first
-# 12 joint slots after the 7-element root prefix.
-LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER = np.array(
-    [7 + i for i in range(12)], dtype=np.int64,
-)
-
-# Encoder expects 10 future frames at step 5 (frames [0, 5, 10, ..., 45]).
-ENCODER_FUTURE_FRAME_INDICES = list(range(0, 50, 5))
-
-# Planner raw output frame rate (before resampling, per planner_onnx.md).
-PLANNER_OUTPUT_FPS = 30.0
-
-
-def extract_anchor_pose(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return (anchor_pos_world, anchor_quat_wxyz) from planner frame 0.
-
-    The caller must compute anchor_rot6d itself in C++ row-wise format:
-        R_mat[:, :2].flatten('C') — identity → [1,0,0,1,0,0].
-    Do NOT compute rot6d here; gear_sonic col-major format [col0,col1] differs
-    at positions [3,4] and would feed wrong data to the encoder.
-    """
-    frame0 = mujoco_qpos[0, 0]  # (36,)
-    anchor_pos = np.asarray(frame0[PLANNER_ROOT_POS_SLICE], dtype=np.float32).copy()
-    anchor_quat = np.asarray(frame0[PLANNER_ROOT_QUAT_SLICE], dtype=np.float32).copy()
-    return anchor_pos, anchor_quat
-
-
-def extract_lower_body_future(mujoco_qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return (positions (10,12), velocities (10,12)) at the encoder's subsample grid.
-
-    The 12 joints are in MuJoCo order (left-leg-all-6 then right-leg-all-6):
-    [L_hip_pitch, L_hip_roll, L_hip_yaw, L_knee, L_ankle_pitch, L_ankle_roll,
-     R_hip_pitch, R_hip_roll, R_hip_yaw, R_knee, R_ankle_pitch, R_ankle_roll]
-    This matches the encoder's training convention (policy_parameters.hpp:93).
-    """
-    qpos = np.asarray(mujoco_qpos[0], dtype=np.float32)  # (N, 36)
-    n_frames = qpos.shape[0]
-    need = max(ENCODER_FUTURE_FRAME_INDICES) + 1
-    if n_frames < need:
-        # Pad by repeating the last frame so the slicer doesn't error.
-        pad = np.repeat(qpos[-1:], need - n_frames, axis=0)
-        qpos = np.concatenate([qpos, pad], axis=0)
-    # Gather the 12 lower-body joints in SONIC-IsaacLab interleaved order.
-    lb_all = qpos[:, LOWER_BODY_QPOS_INDICES_MUJOCO_ORDER]  # (N, 12) MuJoCo order
-    # Velocities at 30 Hz: central differences over the full trajectory, then subsample.
-    vel_all = np.gradient(lb_all, 1.0 / PLANNER_OUTPUT_FPS, axis=0).astype(np.float32)
-    pos = lb_all[ENCODER_FUTURE_FRAME_INDICES].astype(np.float32)  # (10, 12)
-    vel = vel_all[ENCODER_FUTURE_FRAME_INDICES].astype(np.float32)  # (10, 12)
-    return pos, vel
-
-
-# =========================================================================
-# VR 3-point extraction from the VLA action dict.
-# =========================================================================
-
-def extract_vr_3pt(
+def extract_motion_token(
     vla_action: dict, *, t_index: int = 0, batch_index: int = 0
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return (vr_3pt_position_world (9,), vr_3pt_rot6d (18,)) for one VLA step.
+) -> np.ndarray:
+    """Return the (64,) SONIC latent token for one VLA step.
 
-    The VLA emits these keys as (B, T, D) per ``gear_sonic_config.py``:
-        vr_3pt_position    : (B, T, 9)   world-frame xyz per point
-        vr_3pt_orientation : (B, T, 18)  rot6d per point (left_wrist, right_wrist, torso)
+    The ``unitree_g1_sonic`` VLA emits ``motion_token`` as (B, T, 64) — the same
+    64-D latent the SONIC encoder would otherwise produce. Fed straight into the
+    decoder's ``token_state`` slot.
     """
-    pos = np.asarray(vla_action["vr_3pt_position"], dtype=np.float32)
-    orn = np.asarray(vla_action["vr_3pt_orientation"], dtype=np.float32)
-    if pos.ndim != 3 or pos.shape[-1] != 9:
-        raise ValueError(f"vr_3pt_position must be (B,T,9); got {pos.shape}")
-    if orn.ndim != 3 or orn.shape[-1] != 18:
-        raise ValueError(f"vr_3pt_orientation must be (B,T,18); got {orn.shape}")
-    return pos[batch_index, t_index].copy(), orn[batch_index, t_index].copy()
+    if "motion_token" not in vla_action:
+        raise KeyError(
+            f"vla_action has no 'motion_token'; got {sorted(vla_action.keys())}. "
+            f"Is this a unitree_g1_sonic checkpoint? (--embodiment-tag)"
+        )
+    tok = np.asarray(vla_action["motion_token"], dtype=np.float32)
+    if tok.ndim != 3 or tok.shape[-1] != 64:
+        raise ValueError(f"motion_token must be (B,T,64); got {tok.shape}")
+    return tok[batch_index, t_index].copy()
 
 
 # =========================================================================
-# Camera injection — the env cfg's __post_init__ ran inside parse_env_cfg
-# before we had a handle to flip `enable_cameras_for_collection`, so we wire
-# the ego camera (which the VLA reads) directly into the scene config here.
-# Only the ego d435 is injected — no third-person camera, since this is a
-# headless statistical eval (no video). Matches collect_pick_cam.py:683-699.
+# Camera injection — inject only the ego camera the VLA reads (headless eval,
+# no third-person camera). Matches collect_pick_cam.py:683-699.
 # =========================================================================
 
 def _inject_ego_camera(env_cfg) -> None:
-    """Force-set the robot-mounted `camera_robot` ego camera on the scene cfg.
-
-    Overwriting unconditionally because SceneCfg dataclasses often declare this
-    field as an annotation even when the env cfg's ``__post_init__`` did not
-    assign a value — ``hasattr`` returns True for annotated-but-unset.
-    """
+    """Force-set the robot-mounted `camera_robot` ego camera on the scene cfg."""
     env_cfg.scene.camera_robot = CameraCfg(
         prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/Camera_robot",
         spawn=PinholeCameraCfg(
@@ -362,26 +281,21 @@ def main() -> int:
         enable_cameras=True,
     )
     env_cfg.seed = args.seed
-    # Inject only the ego camera the VLA needs (no third-person camera — headless).
     _inject_ego_camera(env_cfg)
     env = gym.make(args.task, cfg=env_cfg)
     print(f"[env] {args.task}  action_space={env.action_space}")
 
     # --- 2. Build VLA policy -------------------------------------------
-    print(f"[vla] loading {args.vla_checkpoint}")
+    print(f"[vla] loading {args.vla_checkpoint}  (embodiment={args.embodiment_tag})")
     policy = Gr00tPolicy(
         embodiment_tag=args.embodiment_tag,
         model_path=args.vla_checkpoint,
         device="cuda:0",
     )
 
-    # --- 3. Build SONIC wrappers ---------------------------------------
-    print(f"[utm] encoder={args.encoder_onnx}")
+    # --- 3. Build SONIC decoder (encoder loaded but unused) ------------
     print(f"[utm] decoder={args.decoder_onnx}")
     utm = UtmWrapper(args.encoder_onnx, args.decoder_onnx)
-
-    print(f"[planner] {args.planner_onnx}")
-    planner = PlannerWrapper(args.planner_onnx)
 
     # --- 4. Obs adapter & joint-order perm -----------------------------
     robot_model = SimpleG1RobotModel.build()
@@ -401,7 +315,7 @@ def main() -> int:
     # this init the counter never exists and cumulative lift-steps stays 0.
     env.unwrapped.n_successes = torch.zeros(env.num_envs, device="cuda:0", dtype=torch.float32)
 
-    # --- 5. History buffer for decoder + planner context ---------------
+    # --- 5. Decoder proprio-history buffer -----------------------------
     history = HistoryBuffer()
 
     # --- 6. Rollout setup ----------------------------------------------
@@ -424,11 +338,8 @@ def main() -> int:
     for ep in range(args.num_episodes):
         print(f"\n[episode {ep}]")
         obs, info = env.reset()
-        # Isaac Lab camera sensors are populated on env.step(), not env.reset().
-        # One silent warm-up step fills the camera buffer so obs_adapter() can
-        # read ego-view pixels without blocking on an empty output dict. Pump the
-        # Omniverse event loop afterwards to flush the RTX render pipeline so the
-        # first ego frame the VLA sees is current.
+        # Camera sensors populate on env.step(), not env.reset(). Warm-up step +
+        # render flush so the first ego frame the VLA sees is current.
         env.step(zero_action)
         _APP.update()
         _APP.update()
@@ -450,7 +361,6 @@ def main() -> int:
             if vla_chunk is None or chunk_step >= args.chunk_size:
                 vla_obs = obs_adapter()
                 vla_out = policy.get_action(vla_obs)
-                # Gr00tPolicy.get_action returns either a dict or (dict, ...) tuple.
                 vla_chunk = vla_out[0] if isinstance(vla_out, tuple) else vla_out
                 chunk_step = 0
                 if ep == 0 and step == 0:
@@ -458,84 +368,44 @@ def main() -> int:
                     for k in sorted(vla_chunk.keys()):
                         arr = np.asarray(vla_chunk[k])
                         slice_ = arr[0, 0] if arr.ndim == 3 else arr.reshape(-1)
-                        print(f"  {k} [shape {tuple(arr.shape)}] = {slice_.round(4).tolist()}")
+                        prev = slice_.reshape(-1)[:8]
+                        print(f"  {k} [shape {tuple(arr.shape)}] = {prev.round(4).tolist()}"
+                              f"{' ...' if slice_.size > 8 else ''}")
 
-            # 7b. Extract this chunk-step's VLA slice.
             t_idx = chunk_step
 
-            # 7c. Push current env state into history BEFORE planner so context is up to date.
+            # 7b. Push current env state into the decoder history (SONIC order).
             q_isaac = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
             qd_isaac = robot.data.joint_vel[0].detach().cpu().numpy().astype(np.float32)
-            # History buffer expects joint state in SONIC-IsaacLab order (what the
-            # UTM decoder was trained with). UTM_29_JOINT_NAMES is in SONIC order,
-            # so isaac_to_utm_perm produces SONIC-ordered values.
             q_sonic = _gather_with_mask(q_isaac, isaac_to_utm_perm)
             qd_sonic = _gather_with_mask(qd_isaac, isaac_to_utm_perm)
-            # The planner's context_mujoco_qpos needs MuJoCo order (per its name).
-            q_mujoco = q_sonic[MUJOCO_TO_ISAACLAB]
-            root_pos_w = robot.data.root_pos_w[0].detach().cpu().numpy().astype(np.float32)
             root_quat_w = robot.data.root_quat_w[0].detach().cpu().numpy().astype(np.float32)  # wxyz
             root_ang_vel_b = robot.data.root_ang_vel_b[0].detach().cpu().numpy().astype(np.float32)
-            # Projected gravity in body frame.
             from scipy.spatial.transform import Rotation as R
             gravity_body = R.from_quat(quat_wxyz_to_xyzw(root_quat_w)).inv().apply(
                 np.array([0.0, 0.0, -1.0], dtype=np.float32)
             ).astype(np.float32)
-            mujoco_qpos = np.concatenate([root_pos_w, root_quat_w, q_mujoco]).astype(np.float32)
-
             history.push(
                 joint_pos=q_sonic,
                 joint_vel=qd_sonic,
                 last_action=prev_utm_body_29,
                 base_ang_vel=root_ang_vel_b,
                 gravity_dir=gravity_body,
-                mujoco_qpos=mujoco_qpos,
+                # Planner context is unused in the direct-token pipeline; the
+                # decoder history doesn't read mujoco_qpos, so a zero placeholder
+                # keeps HistoryBuffer.push happy without computing it.
+                mujoco_qpos=np.zeros(36, dtype=np.float32),
             )
 
-            # 7d. Run planner using this chunk-step's VLA planner commands.
-            planner_inputs = build_planner_inputs(
-                vla_action=vla_chunk,
-                context_mujoco_qpos=history.planner_context(),
-                t_index=t_idx,
-            )
-            planner_out = planner.run(**planner_inputs.as_kwargs())
+            # 7c. Token comes straight from the VLA (no planner/encoder).
+            token = extract_motion_token(vla_chunk, t_index=t_idx)  # (64,)
 
-            # 7e. Extract anchor + lower-body trajectory from planner output.
-            anchor_pos_w, anchor_quat_wxyz = extract_anchor_pose(planner_out.mujoco_qpos)
-            # motion_anchor_orientation: relative rotation (robot_base_inv × planner_frame0)
-            # as first-2-columns of the rotation matrix, flattened ROW-WISE
-            # (identity → [1, 0, 0, 1, 0, 0]).
-            _R_robot = R.from_quat(quat_wxyz_to_xyzw(root_quat_w))
-            _R_anchor = R.from_quat(quat_wxyz_to_xyzw(anchor_quat_wxyz))
-            _R_rel_mat = (_R_robot.inv() * _R_anchor).as_matrix().astype(np.float32)
-            anchor_rot6d = _R_rel_mat[:, :2].flatten('C').astype(np.float32)  # C++ row-wise
-            lb_pos, lb_vel = extract_lower_body_future(planner_out.mujoco_qpos)
-
-            # 7f. VR 3-point from VLA (world frame; encoder builder does the anchor-local transform).
-            vr_pos_world, vr_rot6d = extract_vr_3pt(vla_chunk, t_index=t_idx)
-
-            # 7g. Build encoder obs → run encoder → build decoder obs → run decoder.
-            enc_obs = build_encoder_obs(
-                anchor_pos_world=anchor_pos_w,
-                anchor_quat_wxyz=anchor_quat_wxyz,
-                anchor_rot6d=anchor_rot6d,
-                lower_body_positions_future=lb_pos,
-                lower_body_velocities_future=lb_vel,
-                # VLA output is already pelvis-local (matches converter's
-                # subtract_frame_transforms step); no further transform needed.
-                vr_3pt_position_anchor_local=vr_pos_world,
-                vr_3pt_rot6d=vr_rot6d,
-            )
-            token = utm.run_encoder({"obs_dict": enc_obs}).reshape(-1)  # (64,)
-
+            # 7d. Decoder: token + proprio history → 29-D SONIC body action.
             dec_hist = history.decoder_history()
-            dec_obs = build_decoder_obs(
-                token_state=token,
-                **dec_hist.as_kwargs(),
-            )
+            dec_obs = build_decoder_obs(token_state=token, **dec_hist.as_kwargs())
             utm_body_29 = utm.run_decoder({"obs_dict": dec_obs}).reshape(-1)  # (29,)
 
-            # 7h. Assemble env action.
+            # 7e. Assemble env action (body + VLA fingers).
             env_action_np = utm_plus_vla_to_env_action(
                 utm_body_29_sonic=utm_body_29,
                 vla_action=vla_chunk,
@@ -543,14 +413,12 @@ def main() -> int:
             )  # (41,)
             env_action = torch.as_tensor(env_action_np[None, :], device="cuda:0", dtype=torch.float32)
 
-            # 7i. Step.
+            # 7f. Step.
             obs, rew, term, trunc, info = env.step(env_action)
-            # Flush render so the next chunk's obs_adapter() reads a fresh ego frame
-            # (the VLA must not act on a one-step-stale image).
             _APP.update()
             _APP.update()
 
-            # 7j. Lift bookkeeping — read bottle z + is_closed AFTER the step.
+            # 7g. Lift bookkeeping — read bottle z + is_closed AFTER the step.
             bottle_z = float(env.unwrapped.scene["object"].data.root_pos_w[0, 2].item())
             motion_times = (
                 env.unwrapped.episode_length_buf * env.unwrapped.step_dt
@@ -612,6 +480,7 @@ def main() -> int:
     print("                  VLA + SONIC EVAL SUMMARY")
     print("=" * 60)
     print(f"  VLA checkpoint:             {args.vla_checkpoint}")
+    print(f"  Embodiment tag:             {args.embodiment_tag}")
     print(f"  Task:                       {args.task}")
     print(f"  num_envs:                   {args.num_envs}")
     print(f"  chunk_size:                 {args.chunk_size}")
