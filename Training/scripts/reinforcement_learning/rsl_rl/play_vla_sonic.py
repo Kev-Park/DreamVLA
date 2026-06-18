@@ -80,6 +80,10 @@ def _parse_cli() -> argparse.Namespace:
                         help="Output prefix for MP4 files. Saves third-person + ego. This is a "
                              "recording script, so it defaults to './vla_rollout'.")
     parser.add_argument("--video-fps", type=int, default=50)
+    parser.add_argument("--no-fsq-snap", dest="fsq_snap", action="store_false", default=True,
+                        help="Disable snapping the VLA's continuous motion_token onto the FSQ "
+                             "lattice (32 levels) before the decoder. Snapping is ON by default "
+                             "because the decoder was trained on on-grid tokens.")
     parser.add_argument("--seed", type=int, default=0)
     # AppLauncher args get appended below.
     return parser
@@ -207,6 +211,20 @@ def extract_motion_token(
     if tok.ndim != 3 or tok.shape[-1] != 64:
         raise ValueError(f"motion_token must be (B,T,64); got {tok.shape}")
     return tok[batch_index, t_index].copy()
+
+
+def fsq_snap_token(token: np.ndarray) -> np.ndarray:
+    """Snap a continuous token onto SONIC's FSQ lattice (32 levels, step 1/16).
+
+    The decoder was trained on FSQ-quantized tokens (exact grid points k/16 in
+    [-1, 15/16]); the VLA regresses a continuous approximation. Snapping recovers
+    the on-grid values the decoder expects (matches token_adapter_wrapper.py).
+    """
+    half_width = 16.0  # 32 FSQ levels → half_width = 32 // 2
+    return np.clip(
+        np.round(token * half_width) / half_width,
+        -1.0, (half_width - 1.0) / half_width,
+    ).astype(np.float32)
 
 
 # =========================================================================
@@ -444,6 +462,8 @@ def main() -> int:
 
             # 7c. Token straight from the VLA (no planner/encoder).
             token = extract_motion_token(vla_chunk, t_index=t_idx)  # (64,)
+            if args.fsq_snap:
+                token = fsq_snap_token(token)
 
             # 7d. Decoder: token + proprio history → 29-D SONIC body action.
             dec_hist = history.decoder_history()
