@@ -313,7 +313,7 @@ def main() -> int:
     # The pick reward's ``object_above_threshold`` only increments its success
     # counter when ``hasattr(env, "n_successes")`` AND num_envs < 1001. Without
     # this init the counter never exists and cumulative lift-steps stays 0.
-    env.unwrapped.n_successes = torch.zeros(env.num_envs, device="cuda:0", dtype=torch.float32)
+    env.unwrapped.n_successes = torch.zeros(env.unwrapped.num_envs, device="cuda:0", dtype=torch.float32)
 
     # --- 5. Decoder proprio-history buffer -----------------------------
     history = HistoryBuffer()
