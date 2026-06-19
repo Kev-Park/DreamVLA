@@ -430,6 +430,13 @@ def main() -> int:
 
             # 7c. Token comes straight from the VLA (no planner/encoder).
             token = extract_motion_token(vla_chunk, t_index=t_idx)  # (64,)
+            if ep == 0 and step == 0 and float(np.abs(token).max()) < 1e-6:
+                print("\n[WARN] motion_token is ALL ZERO — the VLA is emitting a null SONIC "
+                      "token, so the robot is NOT VLA-controlled (the decoder runs on a constant "
+                      "zero token → nominal gait). Likely cause: action.motion_token was "
+                      "zero-filled in the training dataset (the populator in PARQUET_POPULATE_PLAN.md "
+                      "was never run) or its normalization stats are degenerate. Any lift/success "
+                      "numbers below are meaningless until this is fixed.\n")
             if args.fsq_snap:
                 token = fsq_snap_token(token)
 
