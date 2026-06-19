@@ -113,6 +113,7 @@ class RolloutRecorder:
                   robot0_right_finger_joint_pos   (N, K_R)     f64
                   object_pos                      (N, 3)       f64
                   object_quat                     (N, 4)       f64  wxyz
+                  motion_token                    (N, 64)      f64  (optional; executed SONIC token)
                 actions                           (N, A)       f64
                 /teleop                           (see _write_teleop_group)
             /  @metadata_json    json string
@@ -194,6 +195,17 @@ class RolloutRecorder:
                         data=np.asarray(_to_numpy(ref["dof_pos"]), dtype=np.float64),
                         compression="gzip",
                     )
+
+            # Executed SONIC token per frame (adapter's base + learned residual, FSQ-snapped
+            # — the exact decoder input that produced this motion). Recorded so the
+            # HDF5→LeRobot converter can populate action.motion_token DIRECTLY (the correct
+            # VLA target) instead of re-deriving the un-adapted base token from the reference.
+            if raw_state is not None and "motion_token" in raw_state:
+                obs_grp.create_dataset(
+                    "motion_token",
+                    data=np.asarray(_to_numpy(raw_state["motion_token"]), dtype=np.float64),
+                    compression="gzip",
+                )
 
             if raw_state is not None and "action" in raw_state:
                 demo_grp.create_dataset(

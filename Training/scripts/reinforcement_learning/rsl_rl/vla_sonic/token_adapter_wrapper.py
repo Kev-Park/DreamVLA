@@ -163,6 +163,9 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         ).unsqueeze(0)
 
         self._base_token = torch.zeros(self.num_envs, TOKEN_TOTAL_DIM, device=self._dev)
+        # Most recent executed (FSQ-snapped) token, set every step in _decode_body_29.
+        # Read by collect_sonic_adapter.py to record the true VLA supervision target.
+        self._last_token: torch.Tensor | None = None
         self._update_base_token()
         print(
             f"[token-adapter] frozen-encoder residual adapter ready: residual_scale={self.residual_scale}, "
@@ -192,6 +195,11 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
             torch.round(body_latent * half_width) / half_width,
             min=-1.0, max=(half_width - 1.0) / half_width,
         )
+        # Stash the executed (base + learned residual, FSQ-snapped) token so data
+        # collection can record the EXACT token that drove the decoder this step —
+        # the correct VLA supervision target. Mirrors the real robot's
+        # ``proprio["token_state"]`` (run_data_exporter.py). (N, 64), on the FSQ grid.
+        self._last_token = token.detach()
         obs = self._build_obs_dict(token).to(torch.float32)
         out = self.decoder(obs)
         if isinstance(out, (tuple, list)):

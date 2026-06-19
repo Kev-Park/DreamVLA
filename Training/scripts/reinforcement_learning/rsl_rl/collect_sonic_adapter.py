@@ -289,6 +289,11 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
     teleop_history: list[dict[str, torch.Tensor]] = []
+    # Executed SONIC token per frame (base + learned residual, FSQ-snapped), read from
+    # the adapter wrapper AFTER each step. This is the exact decoder input that produced
+    # the recorded motion → the correct VLA supervision target, stored directly instead
+    # of being re-derived offline (which would recover only the un-adapted base token).
+    token_history: list[np.ndarray] = []
     # Eval-parity success: a frame is a real pickup when the object (bottle) clears lift_thres
     # AND the reference motion is in its closed/grasp phase. Mirrors eval_sonic_adapter.py
     # (bottle_z > lift_thres & is_closed). Evaluated per-step on the SAME frames we record.
@@ -364,6 +369,13 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
             terminated = done
             truncated = torch.zeros_like(done)
         obs = obs.clone() if hasattr(obs, "clone") else obs
+        # Record the executed token for THIS frame (computed inside env.step from the
+        # actions applied above). Pairs index-for-index with camera_frames/state_history
+        # since all three append exactly once per iteration before the break check.
+        if state_on:
+            last_token = getattr(env, "_last_token", None)
+            if last_token is not None:
+                token_history.append(last_token[0].detach().cpu().numpy().astype(np.float64))
         # Flush the RTX render pipeline so the NEXT iteration's camera read delivers
         # this step's frame (the camera annotator otherwise lags / stays on the warm-up
         # render). Two pumps match the proven play_sonic_adapter.py cadence.
@@ -382,6 +394,17 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     if step_index == 0:
         raise RuntimeError("No rollout steps executed before SimulationApp stopped.")
     raw_state = _stack_nested(state_history) if state_history else None
+
+    # Attach the executed-token sequence as a top-level field so the recorder writes
+    # obs/motion_token. Guard the frame count: if (rarely) it diverges from the state
+    # count, drop it rather than write a misaligned column (converter then re-derives).
+    if raw_state is not None and token_history:
+        n_state = int(np.asarray(raw_state["robot"]["joint_pos"]).shape[0])
+        if len(token_history) == n_state:
+            raw_state["motion_token"] = np.stack(token_history, axis=0)  # (N, 64)
+        else:
+            print(f"[WARN] token_history ({len(token_history)}) != state frames ({n_state}) "
+                  "— NOT writing obs/motion_token; converter will re-derive instead.")
 
     teleop_payload: dict[str, Any] | None = None
     if teleop_history:
