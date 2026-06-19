@@ -296,8 +296,14 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     token_history: list[np.ndarray] = []
     # Eval-parity success: a frame is a real pickup when the object (bottle) clears lift_thres
     # AND the reference motion is in its closed/grasp phase. Mirrors eval_sonic_adapter.py
-    # (bottle_z > lift_thres & is_closed). Evaluated per-step on the SAME frames we record.
+    # (bottle_z > lift_thres & is_closed), evaluated POST-step.
     had_any_lift = False
+    # reset_object_state drops the object from z=1.0 each episode; it settles to its ~0.9
+    # rest over the first several frames, so it STARTS above the 0.95 lift threshold. Only
+    # count a lift once the object has been observed at/below the threshold at least once
+    # (i.e., it reached rest) — otherwise the reset-drop transient is mistaken for a pickup
+    # (the bug that let no-lift trajectories through, esp. with --skip-start near the grab).
+    object_settled = False
 
     # The explicit reset must run inside inference_mode: after a prior rollout's
     # inference_mode policy/step, the env's persistent buffers (joint_acc, etc.) are
@@ -343,23 +349,6 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         if state_on:
             state_history.append(_capture_rollout_state(env, actions))
             teleop_history.append(_capture_teleop_frame(env))
-        # Eval-parity lift check on THIS (pre-step) frame — the exact instant the camera frame
-        # and state above were captured. Identical criterion to eval_sonic_adapter.py: the
-        # bottle root z must exceed lift_thres while the reference is_closed (grasp) flag is set.
-        # Read pre-step (not post-step) so it reflects the recorded frame and is immune to the
-        # env's on-done auto-reset clobbering the object pose.
-        u = env.unwrapped
-        if hasattr(u, "motion_lib") and hasattr(u, "motion_ids"):
-            bottle_z = float(u.scene["object"].data.root_pos_w[0, 2].item())
-            motion_times = (
-                u.episode_length_buf.float() * float(u.step_dt)
-                + u.start_motion_times.to(u.device, dtype=torch.float32)
-            )
-            is_closed = bool(
-                u.motion_lib.get_motion_state(u.motion_ids, motion_times)["is_closed"][0].item()
-            )
-            if bottle_z > lift_thres and is_closed:
-                had_any_lift = True
         with torch.inference_mode():
             step_result = env.step(actions)
         if len(step_result) == 5:
@@ -376,6 +365,26 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
             last_token = getattr(env, "_last_token", None)
             if last_token is not None:
                 token_history.append(last_token[0].detach().cpu().numpy().astype(np.float64))
+        # Eval-parity lift check — POST-step, matching eval_sonic_adapter.py
+        # (bottle_z > lift_thres while the reference is_closed). The settle gate
+        # (object_settled) ignores the reset-drop transient: the object is reset to z=1.0
+        # and only its genuine rise back above the threshold AFTER reaching rest counts.
+        # On a terminal step the env auto-resets (episode_length_buf→0 ⇒ is_closed=0), so
+        # the re-clobbered pose cannot register — same immunity eval gets.
+        u = env.unwrapped
+        if hasattr(u, "motion_lib") and hasattr(u, "motion_ids"):
+            bottle_z = float(u.scene["object"].data.root_pos_w[0, 2].item())
+            motion_times = (
+                u.episode_length_buf.float() * float(u.step_dt)
+                + u.start_motion_times.to(u.device, dtype=torch.float32)
+            )
+            is_closed = bool(
+                u.motion_lib.get_motion_state(u.motion_ids, motion_times)["is_closed"][0].item()
+            )
+            if bottle_z <= lift_thres:
+                object_settled = True
+            if object_settled and bottle_z > lift_thres and is_closed:
+                had_any_lift = True
         # Flush the RTX render pipeline so the NEXT iteration's camera read delivers
         # this step's frame (the camera annotator otherwise lags / stays on the warm-up
         # render). Two pumps match the proven play_sonic_adapter.py cadence.
