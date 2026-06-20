@@ -390,6 +390,13 @@ def main() -> int:
         had_any_lift = False
         closed_steps = 0
         lift_steps = 0
+        # reset_object_state drops the bottle from z=1.0 each episode; it settles to its
+        # rest over the first frames, so it STARTS above lift_thres. Only count a lift once
+        # the bottle has been seen at/below the threshold (i.e. reached rest) — otherwise the
+        # reset-drop transient, OR a resting height already above thres (e.g. the kitchen
+        # counter), registers as a spurious lift (lift_steps == closed_steps every episode).
+        # Same gate as collect_sonic_adapter.py.
+        object_settled = False
 
         vla_chunk: dict | None = None
         chunk_step = 0
@@ -481,7 +488,9 @@ def main() -> int:
             motion_res = env.unwrapped.motion_lib.get_motion_state(
                 env.unwrapped.motion_ids, motion_times)
             is_closed = bool(motion_res["is_closed"][0].item() > 0.5)
-            lifted = (bottle_z > lift_thres) and is_closed
+            if bottle_z <= lift_thres:
+                object_settled = True
+            lifted = object_settled and (bottle_z > lift_thres) and is_closed
             if is_closed:
                 closed_steps += 1
             if lifted:
@@ -515,7 +524,7 @@ def main() -> int:
         n_succ_so_far = float(env.unwrapped.n_successes.sum().item())
         any_lift_rate = completed_any_lift / max(completed_episodes, 1)
         print(f"[episode {ep}] ended at step {step+1}  any_lift={had_any_lift}  "
-              f"closed_steps={closed_steps}  lift_steps={lift_steps}  "
+              f"settled={object_settled}  closed_steps={closed_steps}  lift_steps={lift_steps}  "
               f"(running any_lift_rate={any_lift_rate:.3f}, cumulative_lift_steps={n_succ_so_far:.0f})")
 
     elapsed = time.time() - t_start
