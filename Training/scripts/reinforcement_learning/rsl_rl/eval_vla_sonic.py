@@ -309,8 +309,21 @@ def main() -> int:
     # Same call both working SONIC scripts use (eval/play_sonic_adapter.py).
     apply_sonic_physics_overrides(env_cfg)
     _inject_ego_camera(env_cfg)
-    env = gym.make(args.task, cfg=env_cfg)
+    # The env injects a 1920x2560 third-person `camera` under enable_cameras=True; eval
+    # never uses it (no video) — drop it to save VRAM/render time (keeps only the ego cam).
+    if getattr(env_cfg.scene, "camera", None) is not None:
+        env_cfg.scene.camera = None
+    # render_mode="rgb_array" activates the RTX render product so the camera annotators
+    # actually receive frames. Without it camera_robot.data.output["rgb"] comes back
+    # empty (1-D) and the obs adapter's permute fails. Matches the working camera scripts
+    # (collect_sonic_adapter.py / play_sonic_adapter.py).
+    env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array")
     print(f"[env] {args.task}  action_space={env.action_space}")
+    # Pump the Omniverse event loop so RTX shaders/materials/texture streaming finish
+    # loading before the first camera read (early frames otherwise render against
+    # partially-loaded assets). Mirrors the 60-pump warm-up in the camera scripts.
+    for _ in range(60):
+        _APP.update()
 
     # --- 2. Build VLA policy -------------------------------------------
     print(f"[vla] loading {args.vla_checkpoint}  (embodiment={args.embodiment_tag})")
