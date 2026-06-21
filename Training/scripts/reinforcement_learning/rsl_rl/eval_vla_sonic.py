@@ -96,6 +96,15 @@ def _parse_cli() -> argparse.Namespace:
                              "lattice (32 levels) before the decoder. Snapping is ON by default "
                              "because the decoder was trained on on-grid tokens; pass this to A/B "
                              "test whether the snap helps or hurts your checkpoint.")
+    parser.add_argument("--skip-start-frames", type=int, default=None,
+                        help="Start episodes N frames into the motion (e.g. 20 skips the "
+                             "refinement's interpolate-to-initial-pose prepend; keeps the walk). "
+                             "MUST match the value used to COLLECT the training data, or the VLA "
+                             "starts out-of-distribution.")
+    parser.add_argument("--start-pregrab-margin", type=float, default=None,
+                        help="Start episodes this many seconds before the grab (drops the prepend "
+                             "AND the walk approach). MUST match the training collection setting "
+                             "for an in-distribution eval.")
     parser.add_argument("--seed", type=int, default=0)
     # AppLauncher args get appended below.
     return parser
@@ -313,6 +322,16 @@ def main() -> int:
     # never uses it (no video) — drop it to save VRAM/render time (keeps only the ego cam).
     if getattr(env_cfg.scene, "camera", None) is not None:
         env_cfg.scene.camera = None
+    # Episode-start offset — MUST match the training-data collection (collect_sonic_adapter.py
+    # has the same flags). If the data was collected near the grab (skip-start / pregrab-margin)
+    # but eval starts at the full motion beginning, the VLA faces a walk-up it never trained on
+    # → out-of-distribution start → falls / poor grasps / premature terminations.
+    if args.start_pregrab_margin is not None:
+        env_cfg.motion_start_pregrab_margin_s = args.start_pregrab_margin
+        print(f"[eval_vla_sonic] start_pregrab_margin = {args.start_pregrab_margin}s")
+    if args.skip_start_frames is not None:
+        env_cfg.motion_skip_start_frames = args.skip_start_frames
+        print(f"[eval_vla_sonic] skip_start_frames = {args.skip_start_frames}")
     # render_mode="rgb_array" activates the RTX render product so the camera annotators
     # actually receive frames. Without it camera_robot.data.output["rgb"] comes back
     # empty (1-D) and the obs adapter's permute fails. Matches the working camera scripts
