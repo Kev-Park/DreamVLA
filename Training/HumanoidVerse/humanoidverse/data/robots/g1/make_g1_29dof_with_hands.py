@@ -136,15 +136,27 @@ def convert(args) -> int:
         out_prim, _ = out_joints[w]
         path = out_prim.GetPath()
 
-        # read the joint frame from the TARGET (preserves the hands-asset hierarchy)
+        # body relationships from the TARGET (keep the hands-asset namespace, since
+        # the two assets root the robot under different prim paths).
         old = UsdPhysics.Joint(out_prim)
         b0 = old.GetBody0Rel().GetTargets()
         b1 = old.GetBody1Rel().GetTargets()
-        lp0 = old.GetLocalPos0Attr().Get(); lr0 = old.GetLocalRot0Attr().Get()
-        lp1 = old.GetLocalPos1Attr().Get(); lr1 = old.GetLocalRot1Attr().Get()
 
-        # read axis / limits / drive from the SOURCE revolute joint
+        # joint intrinsics from the SOURCE revolute joint. Local poses are
+        # frame-relative transforms (path-independent) and define the revolute
+        # pivot / rest pose, so prefer the source's proper revolute def; fall back
+        # to the target's welded poses only if the source omits them.
         src_rev = UsdPhysics.RevoluteJoint(src_prim)
+        src_joint = UsdPhysics.Joint(src_prim)
+
+        def _pose(src_getter, tgt_getter):
+            v = src_getter().Get()
+            return tgt_getter().Get() if v is None else v
+
+        lp0 = _pose(src_joint.GetLocalPos0Attr, old.GetLocalPos0Attr)
+        lr0 = _pose(src_joint.GetLocalRot0Attr, old.GetLocalRot0Attr)
+        lp1 = _pose(src_joint.GetLocalPos1Attr, old.GetLocalPos1Attr)
+        lr1 = _pose(src_joint.GetLocalRot1Attr, old.GetLocalRot1Attr)
         axis = src_rev.GetAxisAttr().Get()
         lo = src_rev.GetLowerLimitAttr().Get()
         hi = src_rev.GetUpperLimitAttr().Get()
