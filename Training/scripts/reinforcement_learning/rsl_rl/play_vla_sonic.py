@@ -92,6 +92,9 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--start-pregrab-margin", type=float, default=None,
                         help="Start episodes this many seconds before the grab (drops the prepend "
                              "AND the walk approach). MUST match the training collection setting.")
+    parser.add_argument("--raw-visuals", action="store_true", default=False,
+                        help="Skip matching the ego view to the collection scene (keep the red grab "
+                             "marker, kitchen glass bottle, and ground plane visible).")
     parser.add_argument("--seed", type=int, default=0)
     # AppLauncher args get appended below.
     return parser
@@ -123,6 +126,7 @@ import isaaclab_tasks  # noqa: E402,F401  # registers tasks
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 from isaaclab.sensors import CameraCfg  # noqa: E402
 from isaaclab.sim import PinholeCameraCfg  # noqa: E402
+from isaaclab.managers import EventTermCfg  # noqa: E402
 import isaaclab.utils.math as math_utils  # noqa: E402
 
 # Ensure vla_sonic package is importable from its parent dir.
@@ -329,6 +333,43 @@ def _inject_cameras(env_cfg) -> None:
 
 
 # =========================================================================
+# Match the ego view to the collection (training) scene — hide the red grab
+# marker, the kitchen USD's glass-bottle prop, and the ground plane, exactly as
+# collect_sonic_adapter.py's env does, so the VLA sees the view it trained on.
+# =========================================================================
+
+def _hide_eval_clutter(env, env_ids=None) -> None:
+    """Startup event: hide the ground plane + kitchen glass-bottle prop (visibility only)."""
+    import omni.usd
+    from pxr import UsdGeom
+
+    stage = omni.usd.get_context().get_stage()
+    hidden = 0
+    for prim in stage.Traverse():
+        path = str(prim.GetPath())
+        name = prim.GetName().lower()
+        is_ground = path == "/World/ground" or path.startswith("/World/ground/")
+        is_kitchen_bottle = ("/Kitchen" in path) and ("/Object" not in path) and ("bottle" in name)
+        if is_ground or is_kitchen_bottle:
+            UsdGeom.Imageable(prim).MakeInvisible()
+            hidden += 1
+    print(f"[match-visuals] hid {hidden} clutter prim(s) (ground plane + kitchen glass bottle)")
+
+
+def _match_collection_visuals(env_cfg) -> None:
+    """Disable the red grab marker and schedule the clutter-hide startup event."""
+    pol = getattr(env_cfg.observations, "policy", None)
+    if pol is not None:
+        for _t in ("target_ref_curr", "target_ref_next", "target_ref_next_next"):
+            term = getattr(pol, _t, None)
+            if term is not None and isinstance(getattr(term, "params", None), dict):
+                term.params = {**term.params, "visualize_markers": False}
+    env_cfg.events.match_visuals_hide = EventTermCfg(func=_hide_eval_clutter, mode="startup")
+    print("[match-visuals] red grab marker disabled; ground + glass-bottle hide scheduled "
+          "(matches collect_sonic_adapter.py ego view)")
+
+
+# =========================================================================
 # Main rollout.
 # =========================================================================
 
@@ -358,6 +399,9 @@ def main() -> int:
     if args.skip_start_frames is not None:
         env_cfg.motion_skip_start_frames = args.skip_start_frames
         print(f"[play_vla_sonic] skip_start_frames = {args.skip_start_frames}")
+    # Match the collection (training) ego view: hide red grab marker / glass bottle / ground.
+    if not args.raw_visuals:
+        _match_collection_visuals(env_cfg)
     # render_mode="rgb_array" activates the RTX render product so the camera annotators
     # actually receive frames. Without it camera_robot.data.output["rgb"] comes back
     # empty (1-D) and the obs adapter's permute fails. Matches the working camera scripts.
