@@ -83,6 +83,18 @@ def _parse_cli() -> argparse.ArgumentParser:
     parser.add_argument("--dynamic-friction", type=float, default=1.0,
                         help="Terrain + robot body dynamic friction coefficient. Default 1.0 matches UTM "
                              "training (gear_sonic). Use 0.5 to match MuJoCo deployment scene friction.")
+    parser.add_argument("--physics-preset", type=str, default="training", choices=["training", "deploy"],
+                        help="Physics substep preset (both → 50 Hz control). 'training' (default) = "
+                             "200 Hz/decimation-4, matches gear_sonic training exactly. 'deploy' = "
+                             "500 Hz/decimation-10, a finer substep that earlier A/B tests found produced "
+                             "visibly cleaner / less-labored motion — try it if motion looks labored.")
+    parser.add_argument("--waist-dof", type=int, default=29, choices=[27, 29],
+                        help="Actuated body DOF. 29 (default, strict fidelity) actuates waist_roll/pitch "
+                             "to match SONIC's 29-DOF training articulation — requires the 29-DOF+hands USD "
+                             "(build via make_g1_29dof_with_hands.py). 27 = legacy welded-waist asset.")
+    parser.add_argument("--robot-usd-29", type=str, default=None,
+                        help="Explicit path to the 29-DOF+hands USD. Default: derive from the env's 27-DOF "
+                             "asset filename (g1_27dof_..._white -> g1_29dof_..._white).")
     parser.add_argument("--bypass-stride-hz", type=int, default=50, choices=[30, 50],
                         help="Reference-motion bypass: encoder lookahead temporal stride. "
                              "50 (default) = 50Hz stride-5 = 100ms per encoder frame, 0.9s lookahead — "
@@ -183,8 +195,13 @@ from vla_sonic.action_assembler import (  # noqa: E402
     G1_DEFAULT_ANGLES_SONIC,
     ISAACLAB_TO_MUJOCO,
     MUJOCO_TO_ISAACLAB,
+    build_sonic29_to_env_perm,
+    utm_plus_vla_to_env_action_dyn,
 )
+from vla_sonic.robot_29dof import apply_29dof_waist_override  # noqa: E402
 from vla_sonic.frame_transforms import quat_wxyz_to_xyzw  # noqa: E402
+from vla_sonic.physics_overrides import PHYSICS_PRESETS  # noqa: E402
+from vla_sonic.planner_to_utm import ENCODER_TOTAL_DIM, DECODER_TOTAL_DIM  # noqa: E402
 
 
 # =========================================================================
@@ -752,11 +769,14 @@ def main() -> int:
         print("[physics] events.physics_material not found — skipping body friction override")
 
     # --- 2b. Physics substep rate -------------------------------------------
-    # 500 Hz (dt=2ms, 10 substeps per 20ms control step) matches MuJoCo's
-    # integration rate and is required for stable contact dynamics.
-    env_cfg.sim.dt = 1.0 / 500.0
-    env_cfg.sim.decimation = 10
-    print("[physics] substep rate: 500 Hz (dt=2 ms, decimation=10)")
+    # Both presets resolve to 50 Hz control. 'training' (200 Hz/dec-4) matches
+    # gear_sonic training exactly and is the default; 'deploy' (500 Hz/dec-10) is a
+    # finer substep that earlier A/B tests found produced cleaner/less-labored motion.
+    _sim_dt, _decim = PHYSICS_PRESETS[args.physics_preset]
+    env_cfg.sim.dt = _sim_dt
+    env_cfg.sim.decimation = _decim
+    print(f"[physics] preset='{args.physics_preset}': dt={_sim_dt:.5f}s, decimation={_decim} "
+          f"→ {1.0 / (_sim_dt * _decim):.0f} Hz control")
 
     # --- 2c. Articulation solver iterations ---------------------------------
     try:
@@ -764,6 +784,16 @@ def main() -> int:
         print("[physics] articulation solver pos_iter overridden to 8")
     except AttributeError:
         print("[physics] could not override articulation solver pos_iter")
+
+    # --- 2d. 29-DOF articulation (strict fidelity: actuated waist roll/pitch) ---
+    # SONIC trains on 29 DOF; promote the env to match (swaps USD, adds waist
+    # actuator, extends the body action term 27->29). _body_action_joint_names is the
+    # env's body-action joint order used to build the SONIC-29 -> env permutation.
+    _body_action_joint_names = None
+    if args.waist_dof == 29:
+        _body_action_joint_names = apply_29dof_waist_override(env_cfg, usd_path=args.robot_usd_29)
+    else:
+        print("[29dof] --waist-dof 27: legacy welded-waist asset (waist roll/pitch fixed)")
 
     _inject_cameras(env_cfg)
     env = gym.make(args.task, cfg=env_cfg)
@@ -774,11 +804,33 @@ def main() -> int:
     print(f"[utm] encoder={args.encoder_onnx}")
     print(f"[utm] decoder={args.decoder_onnx}")
     utm     = UtmWrapper(args.encoder_onnx, args.decoder_onnx)
+    # Fail fast if the downloaded ONNX doesn't match our obs layout (catches a
+    # no-z 1751 encoder or a 4-frame-history 436 decoder before the rollout starts).
+    _enc_dim = utm.encoder_inputs[0].shape[-1]
+    _dec_dim = utm.decoder_inputs[0].shape[-1]
+    if _enc_dim != ENCODER_TOTAL_DIM or _dec_dim != DECODER_TOTAL_DIM:
+        raise RuntimeError(
+            f"ONNX/layout mismatch: encoder input {_enc_dim} (expected {ENCODER_TOTAL_DIM}), "
+            f"decoder input {_dec_dim} (expected {DECODER_TOTAL_DIM}). The encoder may be the "
+            f"no-z (1751) release or the decoder a 4-frame-history (436) variant — re-download "
+            f"the matching ONNX or update the layout in planner_to_utm.py."
+        )
+    print(f"[utm] ONNX dims OK: encoder={_enc_dim}, decoder={_dec_dim}")
     planner = PlannerWrapper(args.planner_onnx)
 
     # --- 4. Joint-order permutation -----------------------------------
     robot = env.unwrapped.scene["robot"]
     isaac_to_utm_perm = build_isaac_to_utm_perm(list(robot.data.joint_names))
+
+    # SONIC-29 -> env body-action permutation (29-DOF strict-fidelity path). The body
+    # action vector is ordered by the joint_pos action term's joint_names (preserve_order
+    # =True), captured as _body_action_joint_names. Name-matched, so it adapts to the order.
+    _body_perm = None
+    if args.waist_dof == 29:
+        _body_perm = build_sonic29_to_env_perm(_body_action_joint_names)
+        _n_body = len(_body_perm)
+        print(f"[29dof] SONIC-29 -> env body perm built ({_n_body} body joints, "
+              f"action dim = {_n_body} body + 14 fingers = {_n_body + 14})")
 
     # --- 4b. Lookups for grasp detection -------------------------------
     # Right wrist body for hand-vs-bottle offset; right-hand finger joints for closure check.
@@ -1354,6 +1406,8 @@ def main() -> int:
                     vr_3pt_position_anchor_local=vr_pos_anchor_local,
                     vr_3pt_rot6d=vr_rot6d_anchor_local,
                 )
+            # Encoder ONNX bakes in full FSQ, so this token is already on the FSQ
+            # lattice — feed it straight to the decoder, NO snap (see vla_sonic/fsq.py).
             token = utm.run_encoder({"obs_dict": enc_obs}).reshape(-1)
 
             if step == 0:
@@ -1376,11 +1430,22 @@ def main() -> int:
             utm_body_29 = utm.run_decoder({"obs_dict": dec_obs}).reshape(-1)
 
             # 7g. Assemble env action (body from UTM, fingers from parquet).
-            env_action_np = utm_plus_vla_to_env_action(
-                utm_body_29_sonic=utm_body_29,
-                vla_action=parquet_frame,
-                t_index=0,
-            )
+            if _body_perm is not None:
+                # 29-DOF: name-matched body perm, no waist drop. Action = body_29 + 14 fingers.
+                env_action_np = utm_plus_vla_to_env_action_dyn(
+                    utm_body_29_sonic=utm_body_29,
+                    vla_action=parquet_frame,
+                    sonic_to_env_body_perm=_body_perm,
+                    t_index=0,
+                )
+            else:
+                # 27-DOF legacy: waist roll/pitch dropped.
+                env_action_np = utm_plus_vla_to_env_action(
+                    utm_body_29_sonic=utm_body_29,
+                    vla_action=parquet_frame,
+                    t_index=0,
+                )
+            _n_body_act = len(env_action_np) - 14  # 27 or 29 — finger slices below adapt
 
             # 7g-grip. Finger command post-processing for grip-strength tuning.
             # teleop.{left,right}_hand_joints in the parquet are EXECUTED finger angles
@@ -1392,16 +1457,17 @@ def main() -> int:
             # negative-direction-closing index/middle joints proportionally. No clamping
             # is applied — the WBC's internal joint-limit handling takes over for any
             # commands beyond physical range.
+            _lh0, _rh0 = _n_body_act, _n_body_act + 7  # finger offsets adapt to 27/29 body
             if _ARGS.left_hand_closure_scale != 1.0:
-                env_action_np[27:34] *= _ARGS.left_hand_closure_scale
+                env_action_np[_lh0:_lh0 + 7] *= _ARGS.left_hand_closure_scale
             if _ARGS.right_hand_closure_scale != 1.0:
-                env_action_np[34:41] *= _ARGS.right_hand_closure_scale
+                env_action_np[_rh0:_rh0 + 7] *= _ARGS.right_hand_closure_scale
 
             if step < 3:
                 print(f"[step {step}] utm_body_29[:15]       = {utm_body_29[:15].round(3).tolist()}")
                 print(f"[step {step}]   env body[:12] (legs) = {env_action_np[:12].round(3).tolist()}")
-                print(f"[step {step}]   env left  fingers    = {env_action_np[27:34].round(3).tolist()}")
-                print(f"[step {step}]   env right fingers    = {env_action_np[34:41].round(3).tolist()}")
+                print(f"[step {step}]   env left  fingers    = {env_action_np[_lh0:_lh0 + 7].round(3).tolist()}")
+                print(f"[step {step}]   env right fingers    = {env_action_np[_rh0:_rh0 + 7].round(3).tolist()}")
 
             env_action = torch.as_tensor(
                 env_action_np[None, :], device="cuda:0", dtype=torch.float32)

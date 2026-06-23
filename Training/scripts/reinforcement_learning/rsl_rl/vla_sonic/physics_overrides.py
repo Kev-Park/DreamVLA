@@ -22,9 +22,25 @@ against, the same dynamics the frozen decoder was trained for.
 from __future__ import annotations
 
 
+# Physics substep presets. Both resolve to a 50 Hz control rate; they differ only
+# in the PhysX integration substep:
+#   "training" — 200 Hz / decimation-4: EXACTLY matches gear_sonic training
+#                (base_env.yaml:30,32). This is the DEFAULT so the decoder is run on
+#                the dynamics distribution it was trained for.
+#   "deploy"   — 500 Hz / decimation-10: a finer substep that empirically produced
+#                visibly cleaner / less-labored motion in earlier A/B tests (the
+#                decoder emits absolute joint targets and a finer substep tracks them
+#                more faithfully). Opt in with this preset if motion looks labored.
+PHYSICS_PRESETS = {
+    "training": (1.0 / 200.0, 4),
+    "deploy": (1.0 / 500.0, 10),
+}
+
+
 def apply_sonic_physics_overrides(
     env_cfg,
     *,
+    preset: str = "training",
     static_friction: float = 1.0,
     dynamic_friction: float = 1.0,
     enable_self_collisions: bool = True,
@@ -33,24 +49,26 @@ def apply_sonic_physics_overrides(
 
     Matches gear_sonic's IsaacLab training env (base_env.yaml + g1.py). Wrapped in
     try/except per term because not every env variant exposes the same paths.
+
+    Args:
+        preset: "training" (200 Hz/dec-4, default — matches gear_sonic) or
+            "deploy" (500 Hz/dec-10 — finer substep, empirically cleaner motion).
     """
-    # 1. Substep rate: 500 Hz physics (sim.dt=2ms), 50 Hz control (decimation=10).
-    # EMPIRICAL: although gear_sonic TRAINS at 200 Hz/decimation-4, 500 Hz produces visibly
-    # cleaner motion here — the decoder emits absolute joint-position targets and a finer
-    # PhysX substep tracks them more faithfully (less contact softness / penetration), so
-    # the robot follows the decoder's intent more precisely. The 200 Hz "match training"
-    # variant was A/B-tested and looked worse (more labored). 500 Hz was the original tuning
-    # (eval_parquet_sonic.py:755) and remains the best-performing setting.
-    env_cfg.sim.dt = 1.0 / 500.0
-    env_cfg.decimation = 10
+    # 1. Substep rate: see PHYSICS_PRESETS. Both yield 50 Hz control.
+    if preset not in PHYSICS_PRESETS:
+        raise ValueError(f"unknown physics preset '{preset}'; choose from {list(PHYSICS_PRESETS)}")
+    sim_dt, decimation = PHYSICS_PRESETS[preset]
+    env_cfg.sim.dt = sim_dt
+    env_cfg.decimation = decimation
     try:
-        env_cfg.sim.decimation = 10
+        env_cfg.sim.decimation = decimation
     except Exception:
         pass
     actual_step_ms = env_cfg.sim.dt * env_cfg.decimation * 1000.0
     actual_hz = 1.0 / (env_cfg.sim.dt * env_cfg.decimation)
-    print(f"[sonic-physics] sim.dt={env_cfg.sim.dt}s, env_cfg.decimation={env_cfg.decimation} "
-          f"→ control step = {actual_step_ms:.1f} ms ({actual_hz:.1f} Hz) [500Hz substep: empirically best]")
+    note = "matches gear_sonic training" if preset == "training" else "finer substep (empirically cleaner)"
+    print(f"[sonic-physics] preset='{preset}': sim.dt={env_cfg.sim.dt}s, decimation={env_cfg.decimation} "
+          f"→ control step = {actual_step_ms:.1f} ms ({actual_hz:.1f} Hz) [{note}]")
     if abs(actual_hz - 50.0) > 0.5:
         raise RuntimeError(
             f"[sonic-physics] computed control rate {actual_hz:.1f} Hz != 50 Hz target — "

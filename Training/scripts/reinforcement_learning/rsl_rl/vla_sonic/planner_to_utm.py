@@ -228,9 +228,12 @@ def build_g1_encoder_obs(
     All other slots zero-filled — the G1-mode branch of the encoder ignores them.
 
     Use this when WBCBenchmark has a known reference trajectory (from motion_lib
-    or similar). Joint values in body_positions_future must be in MUJOCO-grouped
-    order (the gear_sonic.joint_names body slice — left leg, right leg, waist,
-    left arm, right arm), matching what observation.state stores.
+    or similar). Joint values in body_positions_future must be in SONIC-IsaacLab
+    interleaved order (the order the encoder's motion_joint_positions slot expects,
+    per policy_parameters.hpp:92 / ISAACLAB_TO_MUJOCO). NOTE: observation.state and
+    reference_qpos are stored in MUJOCO-grouped order, so callers must permute
+    MUJOCO->IsaacLab (``arr[:, ISAACLAB_TO_MUJOCO]``) BEFORE calling this — see
+    eval_parquet_sonic.py and convert_isaac_hdf5_to_lerobot.py.
     """
     buf = np.zeros((ENCODER_TOTAL_DIM,), dtype=np.float32)
 

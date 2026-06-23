@@ -419,11 +419,11 @@ def main() -> int:
         args.task, device="cuda:0", num_envs=args.num_envs, enable_cameras=True,
     )
 
-    # --- 2a. Equilibrate physics to match MuJoCo (gear_sonic_deploy/scene_full.xml) ---
-    # MuJoCo uses gravity=-7.5 m/s² (not -9.81), floor friction=0.5, body friction=0.5.
-    # IsaacSim defaults differ on all three; mismatches cause systematic under-actuation.
-    # NOTE: verify gravity against the actual GR00T scene file if results are unexpected.
-    env_cfg.sim.gravity = (0.0, 0.0, -7.5)
+    # --- 2a. Equilibrate physics to match SONIC training (gear_sonic Isaac Lab) ---
+    # gravity = -9.81 m/s². SONIC trains in Isaac Lab (no gravity override) and the
+    # MuJoCo deploy scene_29dof.xml has no <option gravity> tag either, so both use
+    # standard -9.81. (The earlier -7.5 here was an unverified assumption — wrong.)
+    env_cfg.sim.gravity = (0.0, 0.0, -9.81)
     print(f"[physics] gravity overridden to {env_cfg.sim.gravity}")
     try:
         env_cfg.scene.terrain.physics_material.static_friction = 0.5

@@ -258,6 +258,105 @@ def utm_plus_vla_to_env_action(
 
 
 # =========================================================================
+# 29-DOF (strict-fidelity) path — dynamic, name-matched, no waist drop.
+#
+# SONIC was trained on a 29-DOF articulation (waist_roll/pitch actuated). When the
+# env uses the 29-DOF asset (g1_29dof_with_hands_*.usd), we map the decoder's 29-D
+# output straight onto the env's body joints with NO waist drop. The permutation is
+# derived by NAME MATCHING against the env's actual body-joint order at runtime, so
+# it adapts to whatever order Isaac resolves (mirrors build_isaac_to_utm_perm on the
+# obs side) and fails loudly if a name is missing.
+# =========================================================================
+
+# 29 body joint names in SONIC-IsaacLab interleaved order (the decoder output order).
+# Derived from the MuJoCo-ordered names via ISAACLAB_TO_MUJOCO; asserted below.
+_MUJOCO_JOINT_NAMES = [
+    "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint",
+    "left_ankle_pitch_joint", "left_ankle_roll_joint",
+    "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint", "right_knee_joint",
+    "right_ankle_pitch_joint", "right_ankle_roll_joint",
+    "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+    "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
+    "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
+    "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+]
+SONIC29_JOINT_NAMES = [_MUJOCO_JOINT_NAMES[mj] for mj in ISAACLAB_TO_MUJOCO]
+assert len(SONIC29_JOINT_NAMES) == 29
+# Sanity: waist_roll lands at SONIC idx 5, waist_pitch at 8 (matches WAIST_*_SONIC_IDX).
+assert SONIC29_JOINT_NAMES[WAIST_ROLL_SONIC_IDX] == "waist_roll_joint"
+assert SONIC29_JOINT_NAMES[WAIST_PITCH_SONIC_IDX] == "waist_pitch_joint"
+
+
+def build_sonic29_to_env_perm(env_body_joint_names: list[str]) -> np.ndarray:
+    """Map the env's body-joint order to SONIC-IsaacLab-29 indices, by name.
+
+    Returns ``perm`` of length ``len(env_body_joint_names)`` such that
+    ``env_body[i] = sonic29[perm[i]]``. Works for a 27- or 29-DOF env (the 27-DOF
+    env simply never references SONIC's waist_roll/pitch). Raises if any env body
+    joint name is not a known SONIC body joint.
+    """
+    name_to_sonic = {n: i for i, n in enumerate(SONIC29_JOINT_NAMES)}
+    missing = [n for n in env_body_joint_names if n not in name_to_sonic]
+    if missing:
+        raise ValueError(
+            f"env body joints not in SONIC-29 set: {missing}. "
+            f"Known: {SONIC29_JOINT_NAMES}"
+        )
+    return np.array([name_to_sonic[n] for n in env_body_joint_names], dtype=np.int64)
+
+
+def utm_body_29_to_env_body(
+    utm_body_29_sonic: np.ndarray,
+    sonic_to_env_body_perm: np.ndarray,
+    *,
+    apply_default_offset: bool = True,
+) -> np.ndarray:
+    """UTM decoder output (SONIC-IsaacLab 29-D) → env body action, NO waist drop.
+
+    ``sonic_to_env_body_perm`` comes from ``build_sonic29_to_env_perm`` and selects/
+    reorders the 29-D vector into the env's body-joint order (length 27 or 29).
+    """
+    arr = np.asarray(utm_body_29_sonic, dtype=np.float32).reshape(-1)
+    if arr.shape[0] != 29:
+        raise ValueError(f"utm_body_29 must be 29-D, got {arr.shape}")
+    if apply_default_offset:
+        arr = utm_body_29_to_q_target_29_sonic(arr)
+    return arr[sonic_to_env_body_perm].astype(np.float32)
+
+
+def utm_plus_vla_to_env_action_dyn(
+    utm_body_29_sonic: np.ndarray,
+    vla_action: Mapping[str, np.ndarray],
+    *,
+    sonic_to_env_body_perm: np.ndarray,
+    t_index: int = 0,
+    batch_index: int = 0,
+) -> np.ndarray:
+    """Like ``utm_plus_vla_to_env_action`` but name-matched (27- or 29-DOF body).
+
+    Returns ``(n_body + 14,)``: ``n_body`` body joints in the env's order (from the
+    perm) followed by 7 left + 7 right fingers.
+    """
+    body = utm_body_29_to_env_body(utm_body_29_sonic, sonic_to_env_body_perm)
+
+    def _pick_fingers(key: str) -> np.ndarray:
+        if key not in vla_action:
+            raise KeyError(f"vla_action missing '{key}'; got {sorted(vla_action.keys())}")
+        arr = np.asarray(vla_action[key], dtype=np.float32)
+        if arr.ndim != 3:
+            raise ValueError(f"vla_action['{key}'] must be (B, T, 7); got {arr.shape}")
+        slice_ = arr[batch_index, t_index]
+        if slice_.shape != (7,):
+            raise ValueError(f"vla_action['{key}'] last dim must be 7; got {slice_.shape}")
+        return slice_.astype(np.float32)
+
+    left = _pick_fingers("left_hand_joints")
+    right = _pick_fingers("right_hand_joints")
+    return np.concatenate([body, left, right], axis=0).astype(np.float32)
+
+
+# =========================================================================
 # Backwards-compat re-exports so eval_vla_sonic.py imports don't break.
 # =========================================================================
 
