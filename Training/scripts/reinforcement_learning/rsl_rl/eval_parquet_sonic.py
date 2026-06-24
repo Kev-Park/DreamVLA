@@ -95,6 +95,12 @@ def _parse_cli() -> argparse.ArgumentParser:
     parser.add_argument("--robot-usd-29", type=str, default=None,
                         help="Explicit path to the 29-DOF+hands USD. Default: derive from the env's 27-DOF "
                              "asset filename (g1_27dof_..._white -> g1_29dof_..._white).")
+    parser.add_argument("--history-warmup-frames", type=int, default=10,
+                        help="Start the control loop this many parquet frames in (default 10), using the "
+                             "PRECEDING frames as the decoder's causal proprioception history. The dataset "
+                             "is skip-started (frame 0 is already mid-motion), so the robot is spawned in the "
+                             "MOVING state at this frame (joint + root velocities from the parquet), not from "
+                             "rest. Must be >= 10 to fill the 10-frame history.")
     parser.add_argument("--bypass-stride-hz", type=int, default=50, choices=[30, 50],
                         help="Reference-motion bypass: encoder lookahead temporal stride. "
                              "50 (default) = 50Hz stride-5 = 100ms per encoder frame, 0.9s lookahead — "
@@ -1013,6 +1019,64 @@ def main() -> int:
         env.step(zero_action)   # warm-up camera buffer + propagates object pose and heading overrides
         _APP.update()           # flush warm-up render to annotators
         _APP.update()
+
+        # ---- Initialise the robot in the parquet's MOVING state at the warmup frame ----
+        # The dataset is skip-started: frame 0 is already mid-motion (~0.8 m/s, ~8 rad/s
+        # joint speed). Spawning from rest (zero root velocity + a near-static joint pose)
+        # makes the robot lurch to catch the moving reference and never settles into a gait.
+        # Set the FULL state (root pose+velocity, joint pos+velocity) from parquet frame
+        # _F0, velocities by 50 Hz finite difference. Done AFTER the zero-action warm-up step
+        # so that step (which commands a zero pose) doesn't snap the spawn. Source = executed
+        # (post-WBC) recording, matching --bypass-source executed.
+        _F0  = max(int(args.history_warmup_frames), 1)
+        _fps = _PARQUET_HZ
+        _obs_state_arr = streamer._arrays["obs_state"]          # (N, 43) gear_sonic order
+        _root_pos_arr  = streamer._arrays["root_pos_w"]         # (N, 3)
+        _root_orn_arr  = streamer._arrays["root_orientation"]   # (N, 4) wxyz
+
+        def _sonic_body29(f: int) -> np.ndarray:
+            """obs_state[f] (gear_sonic 43) -> SONIC-IsaacLab 29 body joints (abs radians)."""
+            s = _obs_state_arr[int(np.clip(f, 0, streamer.n_frames - 1))].astype(np.float32)
+            return s[BODY_INDICES_IN_GEAR_SONIC][ISAACLAB_TO_MUJOCO]
+
+        _q_sonic_f0  = _sonic_body29(_F0)
+        _qd_sonic_f0 = (_sonic_body29(_F0) - _sonic_body29(_F0 - 1)) * _fps
+        _jp = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32).copy()
+        _jv = robot.data.joint_vel[0].detach().cpu().numpy().astype(np.float32).copy()
+        for _s in range(29):
+            _idx = int(isaac_to_utm_perm[_s])
+            if _idx >= 0:
+                _jp[_idx] = _q_sonic_f0[_s]
+                _jv[_idx] = _qd_sonic_f0[_s]
+        _eid = torch.tensor([0], device="cuda:0")
+        robot.write_joint_state_to_sim(
+            torch.tensor(_jp[None, :], device="cuda:0", dtype=torch.float32),
+            torch.tensor(_jv[None, :], device="cuda:0", dtype=torch.float32),
+            env_ids=_eid,
+        )
+        _rp_f0 = _root_pos_arr[_F0].astype(np.float32) + np.array(
+            [_ARGS.robot_spawn_offset_x, _ARGS.robot_spawn_offset_y, _ARGS.robot_spawn_offset_z],
+            dtype=np.float32,
+        )
+        _rq_f0 = _root_orn_arr[_F0].astype(np.float32)          # wxyz, full (keeps roll/pitch)
+        robot.write_root_pose_to_sim(
+            torch.tensor(np.concatenate([_rp_f0, _rq_f0])[None, :], device="cuda:0", dtype=torch.float32),
+            env_ids=_eid,
+        )
+        # Root velocity (WORLD frame): linear from pos finite-diff, angular from quat delta.
+        _lin_w = (_root_pos_arr[_F0] - _root_pos_arr[_F0 - 1]).astype(np.float32) * _fps
+        _Rprev = R.from_quat(quat_wxyz_to_xyzw(_root_orn_arr[_F0 - 1].astype(np.float32)))
+        _Rcur  = R.from_quat(quat_wxyz_to_xyzw(_rq_f0))
+        _ang_w = ((_Rcur * _Rprev.inv()).as_rotvec().astype(np.float32)) * _fps
+        robot.write_root_velocity_to_sim(
+            torch.tensor(np.concatenate([_lin_w, _ang_w])[None, :], device="cuda:0", dtype=torch.float32),
+            env_ids=_eid,
+        )
+        env.unwrapped.sim.forward()   # propagate the written state into robot.data before the loop
+        print(f"[spawn] moving-state init @ parquet frame {_F0}: pos={_rp_f0.round(3).tolist()} "
+              f"|lin_vel|={float(np.linalg.norm(_lin_w)):.2f} m/s  "
+              f"|joint_vel|max={float(np.abs(_qd_sonic_f0).max()):.2f} rad/s")
+
         history.reset()
         planner_step       = 0
         cached_planner_out = None
@@ -1030,30 +1094,33 @@ def main() -> int:
         # we rotate by the robot's full initial world orientation (not yaw-only).
         _R_robot_init = R.from_quat(quat_wxyz_to_xyzw(_rq_b))
 
-        # Pre-fill decoder history with 10 frames of initial robot state.
-        # Without pre-seeding, the decoder's zero history has no gait phase signal,
-        # causing symmetric bilateral motion (both feet lifting simultaneously).
+        # Pre-fill decoder history with the 10 parquet frames PRECEDING the start frame _F0
+        # (genuine causal MOVING history) instead of a frozen frame-0 repeat. Positions
+        # evolve consistently with velocities, giving the decoder a real gait phase. The old
+        # frozen-repeat seeding told the decoder the robot was standing still, which (with the
+        # from-rest spawn) caused the spawn lurch and the uncoordinated, settle-to-stand gait.
         _scale_inv_h = 1.0 / G1_ACTION_SCALE_SONIC
-        _qd0 = _gather_with_mask(
-            robot.data.joint_vel[0].detach().cpu().numpy().astype(np.float32),
-            isaac_to_utm_perm,
-        )
-        _av0 = robot.data.root_ang_vel_b[0].detach().cpu().numpy().astype(np.float32)
-        _grav0 = R.from_quat(quat_wxyz_to_xyzw(_rq_b)).inv().apply(
-            np.array([0.0, 0.0, -1.0], dtype=np.float32)
-        ).astype(np.float32)
-        _mq0 = np.concatenate([_rp_b, _rq_b, _qm_b]).astype(np.float32)
-        _q0_delta = _qs_b - G1_DEFAULT_ANGLES_SONIC
-        for _ in range(10):
+        for _hf in range(_F0 - 10, _F0):
+            _hc   = int(np.clip(_hf, 0, streamer.n_frames - 1))
+            _q_s  = _sonic_body29(_hc)
+            _qd_s = (_sonic_body29(_hc) - _sonic_body29(_hc - 1)) * _fps
+            _rqh  = _root_orn_arr[_hc].astype(np.float32)
+            _rph  = _root_pos_arr[_hc].astype(np.float32)
+            _Rh   = R.from_quat(quat_wxyz_to_xyzw(_rqh))
+            _Rhp  = R.from_quat(quat_wxyz_to_xyzw(
+                _root_orn_arr[int(np.clip(_hc - 1, 0, streamer.n_frames - 1))].astype(np.float32)))
+            _angb = _Rh.inv().apply((_Rh * _Rhp.inv()).as_rotvec() * _fps).astype(np.float32)
+            _grav = _Rh.inv().apply(np.array([0.0, 0.0, -1.0], dtype=np.float32)).astype(np.float32)
+            _qdlt = _q_s - G1_DEFAULT_ANGLES_SONIC
             history.push(
-                joint_pos=_q0_delta,
-                joint_vel=_qd0,
-                last_action=_q0_delta * _scale_inv_h,
-                base_ang_vel=_av0,
-                gravity_dir=_grav0,
-                mujoco_qpos=_mq0,
+                joint_pos=_qdlt,
+                joint_vel=_qd_s,
+                last_action=_qdlt * _scale_inv_h,
+                base_ang_vel=_angb,
+                gravity_dir=_grav,
+                mujoco_qpos=np.concatenate([_rph, _rqh, _q_s[MUJOCO_TO_ISAACLAB]]).astype(np.float32),
             )
-        print(f"[episode {ep}] decoder history pre-filled from initial robot state (10 frames)")
+        print(f"[episode {ep}] decoder history seeded from parquet frames {_F0-10}..{_F0-1} (moving)")
 
         # Open video writers on first episode after Isaac Lab is fully up.
         if ep == 0 and prefix is not None and not writers:
@@ -1074,9 +1141,13 @@ def main() -> int:
             vla_vis_writer = VLAVisWriter(
                 prefix.with_name(prefix.name + "_parquet_skeleton.mp4"), args.video_fps)
             print(f"[video] writing {vla_vis_writer.path}")
-        prev_utm_body_29 = np.zeros(29, dtype=np.float32)
+        # Seed last-action from the frame just before the start so the first decode's
+        # last_action history is consistent with the moving seed (not a zero frame).
+        prev_utm_body_29 = ((_sonic_body29(_F0 - 1) - G1_DEFAULT_ANGLES_SONIC) * _scale_inv_h).astype(np.float32)
 
-        for step in range(max_steps):
+        # Start the control loop at _F0: frames [_F0-10 .. _F0-1] are the decoder's seeded
+        # causal history (above), and the robot was spawned in frame-_F0's moving state.
+        for step in range(_F0, max_steps):
             # Read current parquet frame for VR and finger data (planner drives locomotion;
             # one parquet frame per control step, no VLA chunk buffering needed).
             parquet_frame = streamer.get_lerp_frame(float(step))
