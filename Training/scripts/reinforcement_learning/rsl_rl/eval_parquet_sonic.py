@@ -799,6 +799,19 @@ def main() -> int:
     else:
         print("[29dof] --waist-dof 27: legacy welded-waist asset (waist roll/pitch fixed)")
 
+    # Disable the red grab-location marker (env.goal_marker). It's drawn by the target_ref
+    # obs terms from env.motion_lib at a RANDOM motion_id's grab point — misleading in
+    # eval_parquet (the robot is driven by the parquet, not motion_lib). Setting
+    # visualize_markers=False parks it below the floor; the obs tensor is unchanged. Mirrors
+    # G1PickCamBinaryFingersEnvCfg (which the ContinuousFingers task does not inherit).
+    _marker_off = 0
+    for _term_name in ("target_ref_curr", "target_ref_next", "target_ref_next_next"):
+        _term = getattr(env_cfg.observations.policy, _term_name, None)
+        if _term is not None and isinstance(getattr(_term, "params", None), dict):
+            _term.params = {**_term.params, "visualize_markers": False}
+            _marker_off += 1
+    print(f"[marker] disabled red goal_marker on {_marker_off} target_ref obs term(s)")
+
     _inject_cameras(env_cfg)
     env = gym.make(args.task, cfg=env_cfg)
     print(f"[env] {args.task}  action_space={env.action_space}")
