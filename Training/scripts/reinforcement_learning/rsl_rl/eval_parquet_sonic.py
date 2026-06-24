@@ -95,6 +95,12 @@ def _parse_cli() -> argparse.ArgumentParser:
     parser.add_argument("--robot-usd-29", type=str, default=None,
                         help="Explicit path to the 29-DOF+hands USD. Default: derive from the env's 27-DOF "
                              "asset filename (g1_27dof_..._white -> g1_29dof_..._white).")
+    parser.add_argument("--kinematic-replay", action="store_true", default=False,
+                        help="Pure kinematic playback of the --bypass-source trajectory: each step writes "
+                             "the reference root+joints straight to the robot (no encoder/decoder, no physics "
+                             "integration), then renders/records. Starts at --history-warmup-frames (same F0 "
+                             "as the physics rollout) so the clip aligns frame-for-frame for comparison. Shows "
+                             "the ideal body trajectory; does NOT exhibit contact with the bottle.")
     parser.add_argument("--history-warmup-frames", type=int, default=10,
                         help="Start the control loop this many parquet frames in (default 10), using the "
                              "PRECEDING frames as the decoder's causal proprioception history. The dataset "
@@ -812,6 +818,16 @@ def main() -> int:
             _marker_off += 1
     print(f"[marker] disabled red goal_marker on {_marker_off} target_ref obs term(s)")
 
+    # Kinematic replay: disable fall-terminations so a transient zero-action step can't
+    # trip a DoneTerm and auto-reset the env while we're force-posing the robot each frame.
+    if args.kinematic_replay:
+        _disabled = []
+        for _t in ("base_contact", "torso_below_threshold", "torso_angle_below_threshold"):
+            if getattr(env_cfg.terminations, _t, None) is not None:
+                setattr(env_cfg.terminations, _t, None)
+                _disabled.append(_t)
+        print(f"[kinematic] disabled terminations {_disabled} (kept time_out)")
+
     _inject_cameras(env_cfg)
     env = gym.make(args.task, cfg=env_cfg)
     print(f"[env] {args.task}  action_space={env.action_space}")
@@ -1171,6 +1187,43 @@ def main() -> int:
             # Read current parquet frame for VR and finger data (planner drives locomotion;
             # one parquet frame per control step, no VLA chunk buffering needed).
             parquet_frame = streamer.get_lerp_frame(float(step))
+
+            # ---- KINEMATIC REPLAY: force the robot onto the reference frame, no decoder/physics ----
+            if args.kinematic_replay:
+                # advance the env framework (sensors/render timing); physics result is discarded.
+                env.step(zero_action)
+                # overwrite the robot to the EXACT reference pose for this frame.
+                _qref = _sonic_body29(step)
+                _jpk = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32).copy()
+                for _sk in range(29):
+                    _ixk = int(isaac_to_utm_perm[_sk])
+                    if _ixk >= 0:
+                        _jpk[_ixk] = _qref[_sk]
+                _rpk = _root_pos_arr[int(np.clip(step, 0, streamer.n_frames - 1))].astype(np.float32) + np.array(
+                    [_ARGS.robot_spawn_offset_x, _ARGS.robot_spawn_offset_y, _ARGS.robot_spawn_offset_z],
+                    dtype=np.float32)
+                _rqk = _root_orn_arr[int(np.clip(step, 0, streamer.n_frames - 1))].astype(np.float32)
+                _eidk = torch.tensor([0], device="cuda:0")
+                robot.write_joint_state_to_sim(
+                    torch.tensor(_jpk[None, :], device="cuda:0", dtype=torch.float32),
+                    torch.zeros((1, robot.data.joint_vel.shape[1]), device="cuda:0", dtype=torch.float32),
+                    env_ids=_eidk)
+                robot.write_root_pose_to_sim(
+                    torch.tensor(np.concatenate([_rpk, _rqk])[None, :], device="cuda:0", dtype=torch.float32),
+                    env_ids=_eidk)
+                robot.write_root_velocity_to_sim(
+                    torch.zeros((1, 6), device="cuda:0", dtype=torch.float32), env_ids=_eidk)
+                env.unwrapped.sim.forward()
+                _APP.update(); _APP.update()
+                if writers:
+                    for _key, _w in writers.items():
+                        _frame = _read_camera_rgb(env, _key)
+                        if _frame is not None:
+                            _w.write(_frame)
+                if step < _F0 + 3:
+                    print(f"[kinematic step {step}] robot set to reference pose")
+                continue
+
             if step == 0:
                 print("\n[parquet @ step 0] initial frame values:")
                 for k, v in sorted(parquet_frame.items()):
