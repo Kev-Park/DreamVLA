@@ -118,8 +118,10 @@ def reset_joints_for_motion(
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
     if not hasattr(env, 'start_motion_times'):
-        joint_pos_new = torch.zeros((len(env_ids), 41), device=env.device)
-        joint_vel = torch.zeros((len(env_ids), 41), device=env.device)
+        # Size to the articulation's actual joint count (41 for the 27-DoF asset,
+        # 43 for the 29-DoF waist-actuated asset) — never hardcode.
+        joint_pos_new = torch.zeros((len(env_ids), asset.num_joints), device=env.device)
+        joint_vel = torch.zeros((len(env_ids), asset.num_joints), device=env.device)
     else :
         env.motion_ids[env_ids] = torch.randint(0, env.total_motions, (len(env_ids),), device=env.device)
         # OPT-IN: force a specific motion id instead of the random draw. Used by deterministic
@@ -157,9 +159,10 @@ def reset_joints_for_motion(
         motion_res = env.motion_lib.get_motion_state(motion_ids, motion_times)
         joint_pos: torch.tensor = motion_res["dof_pos"]
         joint_ids = torch.tensor(asset_cfg.joint_ids, device=env.device)
-        inv_joint_ids = torch.zeros_like(joint_ids)
-        inv_joint_ids[joint_ids] = torch.arange(len(joint_ids), device=env.device)
-        joint_pos_new = torch.zeros((len(env_ids), 41), device=env.device)
+        # Size to the articulation's actual joint count (41 for 27-DoF, 43 for the
+        # 29-DoF waist-actuated asset). The joint_ids are articulation indices, which
+        # for a 43-joint robot exceed 41 — hardcoding 41 overflowed this scatter.
+        joint_pos_new = torch.zeros((len(env_ids), asset.num_joints), device=env.device)
         joint_pos_new[:, joint_ids] = joint_pos.clone()
         # Initialize joint velocities from the reference (finite difference over one control
         # step) instead of zero. A mid-motion reset (skip_start_frames / pregrab margin, or
