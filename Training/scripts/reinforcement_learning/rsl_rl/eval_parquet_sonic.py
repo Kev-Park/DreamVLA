@@ -83,11 +83,11 @@ def _parse_cli() -> argparse.ArgumentParser:
     parser.add_argument("--dynamic-friction", type=float, default=1.0,
                         help="Terrain + robot body dynamic friction coefficient. Default 1.0 matches UTM "
                              "training (gear_sonic). Use 0.5 to match MuJoCo deployment scene friction.")
-    parser.add_argument("--physics-preset", type=str, default="training", choices=["training", "deploy"],
-                        help="Physics substep preset (both → 50 Hz control). 'training' (default) = "
-                             "200 Hz/decimation-4, matches gear_sonic training exactly. 'deploy' = "
-                             "500 Hz/decimation-10, a finer substep that earlier A/B tests found produced "
-                             "visibly cleaner / less-labored motion — try it if motion looks labored.")
+    parser.add_argument("--physics-preset", type=str, default="deploy", choices=["training", "deploy"],
+                        help="Physics substep preset (both → 50 Hz control). 'deploy' (default) = "
+                             "500 Hz/decimation-10, matches the real G1's 500 Hz motor rate and gives the "
+                             "crispest live-feel motion. 'training' = 200 Hz/decimation-4, matches the "
+                             "gear_sonic training sim substep (can feel sluggish/labored).")
     parser.add_argument("--waist-dof", type=int, default=29, choices=[27, 29],
                         help="Actuated body DOF. 29 (default, strict fidelity) actuates waist_roll/pitch "
                              "to match SONIC's 29-DOF training articulation — requires the 29-DOF+hands USD "

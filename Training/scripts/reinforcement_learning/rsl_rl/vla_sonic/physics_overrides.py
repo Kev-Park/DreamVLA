@@ -22,37 +22,38 @@ against, the same dynamics the frozen decoder was trained for.
 from __future__ import annotations
 
 
-# Physics substep presets. Both resolve to a 50 Hz control rate; they differ only
-# in the PhysX integration substep:
-#   "training" — 200 Hz / decimation-4: EXACTLY matches gear_sonic training
-#                (base_env.yaml:30,32). This is the DEFAULT so the decoder is run on
-#                the dynamics distribution it was trained for.
-#   "deploy"   — 500 Hz / decimation-10: a finer substep that empirically produced
-#                visibly cleaner / less-labored motion in earlier A/B tests (the
-#                decoder emits absolute joint targets and a finer substep tracks them
-#                more faithfully). Opt in with this preset if motion looks labored.
+# Physics substep presets. Both resolve to a 50 Hz control (decoder) rate — which is
+# what SONIC uses in BOTH training and deploy — and differ only in the PhysX substep:
+#   "deploy"   — 500 Hz / decimation-10 (DEFAULT). Matches the real G1's 500 Hz
+#                motor-command/PD rate (g1_deploy_onnx_ref.cpp publish_dt=0.002), so it
+#                best mimics LIVE control, and a finer substep tracks the decoder's
+#                absolute joint targets more crisply (empirically cleaner / less-labored;
+#                200 Hz feels sluggish / "not live").
+#   "training" — 200 Hz / decimation-4. Matches the gear_sonic TRAINING sim substep
+#                (base_env.yaml:30,32). Opt in when you specifically want the env's
+#                integration granularity to equal training (e.g. adapter RL train==eval).
 PHYSICS_PRESETS = {
-    "training": (1.0 / 200.0, 4),
     "deploy": (1.0 / 500.0, 10),
+    "training": (1.0 / 200.0, 4),
 }
 
 
 def apply_sonic_physics_overrides(
     env_cfg,
     *,
-    preset: str = "training",
+    preset: str = "deploy",
     static_friction: float = 1.0,
     dynamic_friction: float = 1.0,
     enable_self_collisions: bool = True,
 ) -> None:
-    """Override env_cfg physics in-place to match the SONIC decoder's training conditions.
+    """Override env_cfg physics in-place to match the SONIC decoder's run conditions.
 
-    Matches gear_sonic's IsaacLab training env (base_env.yaml + g1.py). Wrapped in
-    try/except per term because not every env variant exposes the same paths.
+    Wrapped in try/except per term because not every env variant exposes the same paths.
 
     Args:
-        preset: "training" (200 Hz/dec-4, default — matches gear_sonic) or
-            "deploy" (500 Hz/dec-10 — finer substep, empirically cleaner motion).
+        preset: "deploy" (500 Hz/dec-10, default — matches the real robot's 500 Hz motor
+            rate, crispest live-feel motion) or "training" (200 Hz/dec-4 — matches the
+            gear_sonic training sim substep).
     """
     # 1. Substep rate: see PHYSICS_PRESETS. Both yield 50 Hz control.
     if preset not in PHYSICS_PRESETS:

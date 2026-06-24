@@ -49,6 +49,10 @@ parser.add_argument("--path", type=str, default=None,
 parser.add_argument("--sonic-decoder-onnx", type=str,
                     default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
                     help="Path to the frozen SONIC decoder ONNX (must match training).")
+parser.add_argument("--physics-preset", type=str, default="deploy", choices=["training", "deploy"],
+                    help="Physics substep (both → 50 Hz control). 'deploy' (default) = 500 Hz/dec-10, "
+                         "matches the real G1 motor rate / crispest live motion. 'training' = 200 Hz/dec-4 "
+                         "(gear_sonic training substep; can feel sluggish).")
 # append RSL-RL cli args (gives --checkpoint, --load_run, etc.)
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -111,8 +115,8 @@ def main():
     # Match training-time split-head architecture so load_state_dict succeeds.
     agent_cfg.policy.class_name = "SplitHeadActorCritic"
 
-    # Match SONIC decoder's training-time physics.
-    apply_sonic_physics_overrides(env_cfg)
+    # SONIC physics substep (default 'deploy'=500 Hz, matches real-robot motor rate).
+    apply_sonic_physics_overrides(env_cfg, preset=args_cli.physics_preset)
 
     # ---- resolve checkpoint ----
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
