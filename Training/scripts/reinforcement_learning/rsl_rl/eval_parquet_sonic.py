@@ -110,17 +110,15 @@ def _parse_cli() -> argparse.ArgumentParser:
                              "100ms produces wrong cadence and 167ms (the planner-path's effective rate) "
                              "tracks the recorded trajectory better.")
     parser.add_argument("--bypass-source", type=str, default="executed",
-                        choices=["reference", "executed", "mixed"],
-                        help="Source for G1-mode body lookahead. "
-                             "'executed' (default) reads observation.state and observation.root_orientation "
-                             "— the robot's ACTUAL recorded state at each frame, internally consistent with "
-                             "the teleop.vr_3pt_* data (which is also derived from executed wrist FK in "
-                             "collect_pick_cam.py). 'reference' reads motion.reference_qpos — the IDEAL "
-                             "kinematic trajectory the WBC was trying to track. Reference is smoother but "
-                             "may diverge from the executed trajectory under WBC tracking error. "
-                             "'mixed' splices: lower body (legs, MJ indices 0-11) from REFERENCE for clean "
-                             "locomotion intent, upper body (waist + both arms) from EXECUTED for accurate "
-                             "recorded reach trajectory, anchor from REFERENCE (heading is leg-driven).")
+                        choices=["executed", "reference"],
+                        help="Source for the G1-mode body trajectory — ALL executed or ALL reference, never "
+                             "spliced. 'executed' (default) reads observation.state + "
+                             "observation.root_orientation (the robot's ACTUAL recorded state, internally "
+                             "consistent with teleop.vr_3pt_*). 'reference' reads motion.reference_qpos "
+                             "(root + joints) — the IDEAL kinematic trajectory the WBC tracked; smoother but "
+                             "may diverge from executed under tracking error. The robot spawn + decoder "
+                             "history are taken from the SAME source so the initial state matches what the "
+                             "encoder/decoder track.")
     parser.add_argument("--velocity-source", type=str, default="parquet_50hz",
                         choices=["lookahead_gradient", "parquet_50hz"],
                         help="How to compute body_vel_future. "
@@ -1030,13 +1028,22 @@ def main() -> int:
         # (post-WBC) recording, matching --bypass-source executed.
         _F0  = max(int(args.history_warmup_frames), 1)
         _fps = _PARQUET_HZ
-        _obs_state_arr = streamer._arrays["obs_state"]          # (N, 43) gear_sonic order
-        _root_pos_arr  = streamer._arrays["root_pos_w"]         # (N, 3)
-        _root_orn_arr  = streamer._arrays["root_orientation"]   # (N, 4) wxyz
+        # Source the spawn + history from the SAME trajectory the encoder/decoder track
+        # (--bypass-source), so the initial state matches what's being tracked. ALL-executed
+        # or ALL-reference, never spliced.
+        if args.bypass_source == "reference":
+            _ref_qp       = streamer._arrays["reference_qpos"]   # (N, 50) root(3)+quat(4)+43 joints
+            _joints_src   = _ref_qp[:, 7:]                       # (N, 43) gear_sonic joints
+            _root_pos_arr = _ref_qp[:, 0:3]                      # (N, 3)
+            _root_orn_arr = _ref_qp[:, 3:7]                      # (N, 4) wxyz
+        else:  # executed
+            _joints_src   = streamer._arrays["obs_state"]        # (N, 43) gear_sonic
+            _root_pos_arr = streamer._arrays["root_pos_w"]       # (N, 3)
+            _root_orn_arr = streamer._arrays["root_orientation"] # (N, 4) wxyz
 
         def _sonic_body29(f: int) -> np.ndarray:
-            """obs_state[f] (gear_sonic 43) -> SONIC-IsaacLab 29 body joints (abs radians)."""
-            s = _obs_state_arr[int(np.clip(f, 0, streamer.n_frames - 1))].astype(np.float32)
+            """source joints[f] (gear_sonic 43) -> SONIC-IsaacLab 29 body joints (abs radians)."""
+            s = _joints_src[int(np.clip(f, 0, streamer.n_frames - 1))].astype(np.float32)
             return s[BODY_INDICES_IN_GEAR_SONIC][ISAACLAB_TO_MUJOCO]
 
         _q_sonic_f0  = _sonic_body29(_F0)
@@ -1303,27 +1310,20 @@ def main() -> int:
                 # Pick / cache source position array (full 43-joint gear_sonic).
                 # Cache via streamer attribute so the mixed-mode .copy() + override only
                 # happens once per episode (not once per env step).
+                # ALL-executed or ALL-reference — never spliced.
                 _src_pos_attr = f"_cached_src_pos_{_ARGS.bypass_source}"
                 if not hasattr(streamer, _src_pos_attr):
                     if _ARGS.bypass_source == "reference":
-                        _val = _ref_qpos_arr[:, 7:].astype(np.float32)
-                    elif _ARGS.bypass_source == "executed":
-                        _val = _obs_state_arr_local.astype(np.float32)
-                    else:  # mixed: legs from reference, upper body from executed
-                        _val = _obs_state_arr_local.astype(np.float32).copy()
-                        # gear_sonic joint layout: indices 0-11 are legs (left then right,
-                        # MUJOCO order). Replace only those with reference's leg joints.
-                        # Indices 12-42 (waist, arms, hands) come from executed.
-                        _val[:, 0:12] = _ref_qpos_arr[:, 7:7+12].astype(np.float32)
+                        _val = _ref_qpos_arr[:, 7:].astype(np.float32)          # reference joints
+                    else:  # executed
+                        _val = _obs_state_arr_local.astype(np.float32)          # executed joints
                     setattr(streamer, _src_pos_attr, _val)
                 _src_pos_full = getattr(streamer, _src_pos_attr)
-                # Root quat source — for anchor orientation.
-                # executed → executed root; reference & mixed → reference root (since
-                # heading is locomotion-driven and locomotion comes from reference in mixed).
-                if _ARGS.bypass_source == "executed":
-                    _root_quat_full = _root_orn_arr_local                       # (N, 4)
-                else:  # reference or mixed
+                # Root quat source for the anchor — from the SAME source as the joints.
+                if _ARGS.bypass_source == "reference":
                     _root_quat_full = _ref_qpos_arr[:, 3:7]                     # (N, 4) wxyz
+                else:  # executed
+                    _root_quat_full = _root_orn_arr_local                       # (N, 4)
                 # Pre-compute velocities at the parquet's native 50Hz (dt=20ms central diff)
                 # once per source — sharper than np.gradient on the sparse 100ms-stride
                 # lookahead. Cached on the streamer keyed by the source name.
