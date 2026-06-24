@@ -225,7 +225,15 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         keep = [i for i in range(N_BODY_JOINTS) if i not in (WAIST_ROLL_SONIC_IDX, WAIST_PITCH_SONIC_IDX)]
         self._keep_idx = torch.as_tensor(keep, device=self._dev, dtype=torch.long)
         self._perm27 = torch.as_tensor(PERM_SONIC27_TO_ENV27, device=self._dev, dtype=torch.long)
-        self._n_body_env = len(keep)  # 27
+        self._inv_perm27 = torch.argsort(self._perm27)  # env-JointNamesOrder-27 -> SONIC-27
+        # SONIC-29 -> env-29 body perm for the 29-DOF env (apply_29dof_waist_override appends
+        # waist_roll then waist_pitch after the 27 JointNamesOrder body joints).
+        # env_body[i] = sonic29[_perm29[i]].
+        self._perm29 = torch.cat([
+            self._keep_idx.index_select(0, self._perm27),
+            torch.as_tensor([WAIST_ROLL_SONIC_IDX, WAIST_PITCH_SONIC_IDX],
+                            device=self._dev, dtype=torch.long),
+        ])
 
         # ---- finger action slots: train.py-style 1-D binary per hand ----
         # The policy emits ONE right-hand scalar; the wrapper writes that scalar into the
@@ -234,12 +242,15 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         # actual 1-D → 7-D joint expansion via open/close_command_expr — the wrapper never
         # touches individual finger joints. This is exactly the train.py contract.
         self._env_action_dim = self.unwrapped.action_manager.total_action_dim
-        expected = self._n_body_env + ENV_FINGER_SLOTS
-        assert self._env_action_dim == expected, (
-            f"env action dim {self._env_action_dim} != body{self._n_body_env} + "
-            f"finger_slots{ENV_FINGER_SLOTS} — expected BinaryFingersActionsCfg layout "
-            f"(use Isaac-Motion-Tracking-Pick-BinaryFingers-v0)"
+        self._n_body_env = self._env_action_dim - ENV_FINGER_SLOTS  # 27 (welded) or 29 (waist-actuated)
+        self._is_29dof = (self._n_body_env == N_BODY_JOINTS)        # 29
+        assert self._n_body_env in (27, N_BODY_JOINTS), (
+            f"env body action dim {self._n_body_env} (= total {self._env_action_dim} - "
+            f"{ENV_FINGER_SLOTS} finger slots) must be 27 (BinaryFingers welded-waist) or 29 "
+            f"(apply_29dof_waist_override). Got total={self._env_action_dim}."
         )
+        print(f"[token-wrapper] env body DOF = {self._n_body_env} "
+              f"({'29-DOF: waist actuated, no drop' if self._is_29dof else '27-DOF: waist roll/pitch dropped'})")
         self._left_open_scalar = torch.tensor(_LEFT_HAND_OPEN_SCALAR, device=self._dev, dtype=torch.float32)
 
         # ---- batched decoder history (oldest at index 0) ----
@@ -273,10 +284,8 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         gv = robot.data.projected_gravity_b
         return q_sonic, qd_sonic, av, gv
 
-    def _seed_history(self, mask: torch.Tensor):
-        """Fill all 10 history frames for masked envs from current robot state."""
-        if not bool(mask.any()):
-            return
+    def _seed_history_frozen(self, mask: torch.Tensor):
+        """Fallback: fill all 10 history frames from the current robot state (static)."""
         q_sonic, qd_sonic, av, gv = self._read_state()
         jp = q_sonic - self._default_sonic
         la = jp * self._scale_inv
@@ -287,6 +296,50 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         self._h_av[m] = av[m].unsqueeze(1).expand(-1, N_HISTORY_FRAMES, -1)
         self._h_gv[m] = gv[m].unsqueeze(1).expand(-1, N_HISTORY_FRAMES, -1)
         self._prev_body_29[m] = la[m]
+
+    def _seed_history(self, mask: torch.Tensor):
+        """Seed the 10 history frames PRECEDING the reset frame from motion_lib (causal,
+        MOVING) so the decoder gets a real gait phase when the env resets mid-motion
+        (skip_start). Joint positions/velocities — the gait signal — come from the reference;
+        base angular velocity + gravity are taken from the reset state (near-constant over
+        0.2 s for a roughly-upright torso). Falls back to the frozen-frame seed if motion_lib
+        is unavailable.
+        """
+        if not bool(mask.any()):
+            return
+        unw = self.unwrapped
+        if not (hasattr(unw, "motion_lib") and hasattr(unw, "motion_ids")
+                and hasattr(unw, "start_motion_times")):
+            self._seed_history_frozen(mask)
+            return
+        N = self.num_envs
+        dt = float(unw.step_dt)
+        mids = unw.motion_ids
+        t0 = unw.start_motion_times.to(self._dev, dtype=torch.float32)   # (N,) reset frame time [s]
+        # 11 reference position frames p[i] = motion @ (t0 - (10-i)*dt), SONIC-29 order.
+        # p[0]=t0-10dt (oldest) ... p[10]=t0. History slots 0..9 use p[0..9]; vel = forward diff.
+        pos = []
+        for i in range(N_HISTORY_FRAMES + 1):
+            tk = torch.clamp(t0 - (N_HISTORY_FRAMES - i) * dt, min=0.0)
+            dof = unw.motion_lib.get_motion_state(mids, tk)["dof_pos"]    # (N, 27) JointNamesOrder
+            sonic27 = dof.index_select(1, self._inv_perm27)               # (N, 27) SONIC-27
+            sonic29 = torch.zeros(N, N_BODY_JOINTS, device=self._dev, dtype=dof.dtype)
+            sonic29.index_copy_(1, self._keep_idx, sonic27)              # waist roll/pitch stay 0
+            pos.append(sonic29)
+        pos = torch.stack(pos, dim=1)                                    # (N, 11, 29)
+        jp = pos[:, :N_HISTORY_FRAMES, :] - self._default_sonic          # (N, 10, 29)
+        jv = (pos[:, 1:, :] - pos[:, :N_HISTORY_FRAMES, :]) / dt          # (N, 10, 29) forward diff
+        la = jp * self._scale_inv
+        _, _, av0, gv0 = self._read_state()
+        av = av0.unsqueeze(1).expand(-1, N_HISTORY_FRAMES, -1)
+        gv = gv0.unsqueeze(1).expand(-1, N_HISTORY_FRAMES, -1)
+        m = mask
+        self._h_jp[m] = jp[m].to(self._h_jp.dtype)
+        self._h_jv[m] = jv[m].to(self._h_jv.dtype)
+        self._h_la[m] = la[m].to(self._h_la.dtype)
+        self._h_av[m] = av[m]
+        self._h_gv[m] = gv[m]
+        self._prev_body_29[m] = la[m, -1].to(self._prev_body_29.dtype)   # last seeded action (t0-dt)
 
     @staticmethod
     def _push(buf: torch.Tensor, frame: torch.Tensor) -> torch.Tensor:
@@ -349,8 +402,11 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         """(N,29) SONIC body + (N,2) binary finger cmds → (N, env_action_dim) full env action."""
         N = self.num_envs
         q_target = self._default_sonic + body_29 * self._scale_sonic
-        sonic27 = q_target.index_select(1, self._keep_idx)
-        env_body = sonic27.index_select(1, self._perm27)
+        if self._is_29dof:
+            env_body = q_target.index_select(1, self._perm29)   # 29 body, no waist drop
+        else:
+            sonic27 = q_target.index_select(1, self._keep_idx)  # drop waist roll/pitch
+            env_body = sonic27.index_select(1, self._perm27)    # 27 body
         act = torch.empty(N, self._env_action_dim, device=self._dev, dtype=env_body.dtype)
         act[:, : self._n_body_env] = env_body
         act[:, self._n_body_env : self._n_body_env + ENV_FINGER_SLOTS] = finger_cmds

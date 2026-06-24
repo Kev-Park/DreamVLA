@@ -507,6 +507,9 @@ def main() -> None:
                              "prepend). The recorded trajectory begins at the skip frame.")
     parser.add_argument("--start-pregrab-margin", type=float, default=None,
                         help="Start episodes this many seconds before the grab (drops prepend + walk).")
+    parser.add_argument("--waist-dof", type=int, default=27, choices=[27, 29],
+                        help="Body DOF. 29 actuates waist_roll/pitch (29-DOF + dex-hands USD) to match "
+                             "SONIC's training articulation. 27 = legacy welded-waist asset.")
 
     cli_args.add_rsl_rl_args(parser)
     AppLauncher.add_app_launcher_args(parser)
@@ -535,6 +538,7 @@ def main() -> None:
     from vla_sonic.token_action_wrapper import load_frozen_decoder
     from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
     from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+    from vla_sonic.robot_29dof import apply_29dof_waist_override
     from vla_sonic.adapter_actor_critic import AdapterActorCritic
     import rsl_rl.modules
     import rsl_rl.runners.on_policy_runner as _rsl_rl_opr
@@ -549,13 +553,20 @@ def main() -> None:
         env_cfg.seed = args_cli.seed
     apply_sonic_physics_overrides(env_cfg)
 
+    # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
+    if args_cli.waist_dof == 29:
+        apply_29dof_waist_override(env_cfg)
+
     if args_cli.start_pregrab_margin is not None:
         env_cfg.motion_start_pregrab_margin_s = args_cli.start_pregrab_margin
         print(f"[collect_sonic_adapter] start_pregrab_margin = {args_cli.start_pregrab_margin}s")
     if args_cli.skip_start_frames is not None:
-        env_cfg.motion_skip_start_frames = args_cli.skip_start_frames
+        # +10: reset 10 frames LATER so the decoder-history seed (the 10 frames PRECEDING the
+        # reset) lands on REAL motion. Recorded data starts at frame skip+10; frames skip..skip+9
+        # are decoder-history context only (not recorded).
+        env_cfg.motion_skip_start_frames = args_cli.skip_start_frames + 10
         print(f"[collect_sonic_adapter] skip_start_frames = {args_cli.skip_start_frames} "
-              "(recorded data starts at the skip frame)")
+              f"(+10 history warmup -> recorded data starts at frame {args_cli.skip_start_frames + 10})")
 
     # Inject the ego camera if the env doesn't already define it (green-box env).
     if not hasattr(env_cfg.scene, "camera_robot"):

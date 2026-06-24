@@ -75,9 +75,16 @@ parser.add_argument(
 )
 parser.add_argument(
     "--skip-start-frames", type=int, default=None,
-    help="Skip the refinement's 20-frame interpolate-to-initial-pose prepend (the ~1 s "
-         "constant-rate linear slide) while KEEPING the walk. Pass 20. Mutually exclusive "
-         "with --start-pregrab-margin.",
+    help="Skip the refinement's interpolate-to-initial-pose prepend (the ~1 s constant-rate "
+         "linear slide) while KEEPING the walk. Pass 22. The env actually resets 10 frames "
+         "later (frame skip+10) so the decoder-history seed lands on real motion. Mutually "
+         "exclusive with --start-pregrab-margin.",
+)
+parser.add_argument(
+    "--waist-dof", type=int, default=27, choices=[27, 29],
+    help="Body DOF. 29 actuates waist_roll/pitch (29-DOF + dex-hands USD) to match SONIC's "
+         "training articulation; requires the asset from make_g1_29dof_with_hands.py. "
+         "27 = legacy welded-waist asset.",
 )
 parser.add_argument(
     "--tracking-scale", type=float, default=0.0,
@@ -153,6 +160,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 from vla_sonic.token_action_wrapper import load_frozen_decoder
 from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
 from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+from vla_sonic.robot_29dof import apply_29dof_waist_override
 from vla_sonic.adapter_actor_critic import AdapterActorCritic
 
 # Register the custom ActorCritic with rsl_rl (eval(class_name) resolves in the
@@ -251,15 +259,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # Match the SONIC decoder's training-time physics.
     apply_sonic_physics_overrides(env_cfg)
 
+    # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
+    if args_cli.waist_dof == 29:
+        apply_29dof_waist_override(env_cfg)
+
     # Optional: skip the foot-skating walk approach by starting episodes near the grab.
     if args_cli.start_pregrab_margin is not None:
         env_cfg.motion_start_pregrab_margin_s = args_cli.start_pregrab_margin
         print(f"[train_sonic_adapter] start_pregrab_margin = {args_cli.start_pregrab_margin}s "
               "(episodes begin near grab; walk approach skipped)")
     if args_cli.skip_start_frames is not None:
-        env_cfg.motion_skip_start_frames = args_cli.skip_start_frames
+        # +10: reset 10 frames LATER so the decoder-history seed (the 10 frames PRECEDING the
+        # reset) lands on REAL motion, not the skipped interpolation prepend. So
+        # --skip-start-frames 22 -> robot resets at frame 32, history = frames 22..31.
+        env_cfg.motion_skip_start_frames = args_cli.skip_start_frames + 10
         print(f"[train_sonic_adapter] skip_start_frames = {args_cli.skip_start_frames} "
-              "(skips the refinement prepend / linear-slide fade-in; walk kept)")
+              f"(+10 history warmup -> env resets at frame {args_cli.skip_start_frames + 10}; "
+              "decoder history seeded from the 10 preceding real frames)")
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

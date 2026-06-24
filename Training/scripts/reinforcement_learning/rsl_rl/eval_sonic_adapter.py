@@ -70,8 +70,10 @@ parser.add_argument("--lift-thres", type=float, default=0.95,
                          "env's object_above height_thres (object rests at 0.9; 0.95 = a "
                          "5 cm pickup, below the observed success apex ~0.976).")
 parser.add_argument("--skip-start-frames", type=int, default=None,
-                    help="Skip the refinement's 20-frame interpolate-to-initial-pose prepend "
-                         "(pass 20). Keeps the walk.")
+                    help="Skip the refinement's interpolate-to-initial-pose prepend (pass 22). The env "
+                         "resets 10 frames later so the decoder-history seed lands on real motion.")
+parser.add_argument("--waist-dof", type=int, default=27, choices=[27, 29],
+                    help="Body DOF. 29 actuates waist_roll/pitch to match SONIC training. 27 = welded.")
 parser.add_argument("--start-pregrab-margin", type=float, default=None,
                     help="Start episodes this many seconds before the grab (drops prepend + walk).")
 # append RSL-RL cli args (gives --checkpoint, --load_run, etc.)
@@ -114,6 +116,7 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 from vla_sonic.token_action_wrapper import load_frozen_decoder
 from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
 from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+from vla_sonic.robot_29dof import apply_29dof_waist_override
 from vla_sonic.adapter_actor_critic import AdapterActorCritic
 
 # Register the custom ActorCritic with rsl_rl (eval(class_name) resolves in on_policy_runner globals).
@@ -149,13 +152,19 @@ def main():
     # Match SONIC decoder's training-time physics.
     apply_sonic_physics_overrides(env_cfg)
 
+    # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
+    if args_cli.waist_dof == 29:
+        apply_29dof_waist_override(env_cfg)
+
     # Optional episode-start offsets (same flags as train/play).
     if args_cli.start_pregrab_margin is not None:
         env_cfg.motion_start_pregrab_margin_s = args_cli.start_pregrab_margin
         print(f"[eval_sonic_adapter] start_pregrab_margin = {args_cli.start_pregrab_margin}s")
     if args_cli.skip_start_frames is not None:
-        env_cfg.motion_skip_start_frames = args_cli.skip_start_frames
-        print(f"[eval_sonic_adapter] skip_start_frames = {args_cli.skip_start_frames}")
+        # +10: reset 10 frames later so the decoder-history seed lands on real motion.
+        env_cfg.motion_skip_start_frames = args_cli.skip_start_frames + 10
+        print(f"[eval_sonic_adapter] skip_start_frames = {args_cli.skip_start_frames} "
+              f"(+10 warmup -> reset at frame {args_cli.skip_start_frames + 10})")
 
     # ---- resolve checkpoint (skipped in --zero-residual mode) ----
     resume_path = None

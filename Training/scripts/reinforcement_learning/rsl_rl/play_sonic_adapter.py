@@ -87,6 +87,11 @@ parser.add_argument(
          "fix for the unnatural linear slide; mutually exclusive with --start-pregrab-margin.",
 )
 parser.add_argument(
+    "--waist-dof", type=int, default=27, choices=[27, 29],
+    help="Body DOF. 29 actuates waist_roll/pitch (29-DOF + dex-hands USD) to match SONIC's "
+         "training articulation. 27 = legacy welded-waist asset.",
+)
+parser.add_argument(
     "--reference-playback", action="store_true", default=False,
     help="KINEMATIC reference baseline: ignore the encoder/decoder/policy entirely and "
          "teleport the robot to the motion_lib reference pose every frame (no physics "
@@ -133,6 +138,7 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 from vla_sonic.token_action_wrapper import load_frozen_decoder
 from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
 from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+from vla_sonic.robot_29dof import apply_29dof_waist_override
 from vla_sonic.adapter_actor_critic import AdapterActorCritic
 
 # Register the custom ActorCritic with rsl_rl (eval(class_name) resolves in the
@@ -341,6 +347,10 @@ def main():
     # Match the SONIC decoder's training-time physics — same as train_sonic_adapter.py.
     apply_sonic_physics_overrides(env_cfg)
 
+    # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
+    if args_cli.waist_dof == 29:
+        apply_29dof_waist_override(env_cfg)
+
     # Optional: start episodes near the grab frame to skip the foot-skating walk approach
     # (reset_joints_for_motion reads env.cfg.motion_start_pregrab_margin_s). Set on the cfg
     # BEFORE gym.make so it's honored from the very first reset.
@@ -349,9 +359,11 @@ def main():
         print(f"[play_sonic_adapter] start_pregrab_margin = {args_cli.start_pregrab_margin}s "
               "(episodes begin near grab; walk approach skipped)")
     if args_cli.skip_start_frames is not None:
-        env_cfg.motion_skip_start_frames = args_cli.skip_start_frames
+        # +10: reset 10 frames LATER so the decoder-history seed (the 10 frames PRECEDING the
+        # reset) lands on REAL motion, not the skipped interpolation prepend.
+        env_cfg.motion_skip_start_frames = args_cli.skip_start_frames + 10
         print(f"[play_sonic_adapter] skip_start_frames = {args_cli.skip_start_frames} "
-              "(skips the refinement prepend / linear-slide fade-in; walk kept)")
+              f"(+10 history warmup -> env resets at frame {args_cli.skip_start_frames + 10})")
 
     # eval-style camera + viewer setup
     env_cfg.viewer.eye = (1.0, -2.0, 2.0)
