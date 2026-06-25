@@ -18,10 +18,12 @@ Differences vs train_sonic.py:
     policy's 64-D residual is added to (tanh-bounded by --residual-scale).
   - The policy is a small MLP (default [256, 128]) with a ZERO-INIT output layer —
     step-0 behavior is exact zero-shot SONIC playback; PPO learns a task delta.
-  - Reference-tracking reward terms are scaled by --tracking-scale (default 0.0 —
-    task rewards only): the frozen base IS the tracking prior, enforced structurally
-    by the residual bound rather than by reward. Survival, task (finger binary, wrist
-    orientation, object lift) and smoothness regularizers stay active.
+  - Reference-tracking reward terms are scaled by --tracking-scale (default 1.0 —
+    full tracking reward retained): the residual is rewarded for following the
+    reference walk/reach/grasp. The loose residual bound alone does NOT pin the base
+    motion, so dropping tracking (0.0) collapses the policy to standing. Survival,
+    task (finger binary, wrist orientation, object lift) and smoothness regularizers
+    stay active alongside tracking.
   - std anneal runs 0.3 → 0.15 (smaller than train_sonic's 0.5 → 0.2: exploration is
     around a competent base, large noise just fights the anchor).
 """
@@ -87,10 +89,12 @@ parser.add_argument(
          "27 = legacy welded-waist asset.",
 )
 parser.add_argument(
-    "--tracking-scale", type=float, default=0.0,
+    "--tracking-scale", type=float, default=1.0,
     help="Multiplier on the reference-tracking reward weights (joint/keypts/position/"
-         "orientation tracking). Default 0.0 = task rewards only — the frozen base is "
-         "the tracking prior. Set e.g. 0.25 to keep a light tracking backstop.",
+         "orientation tracking). Default 1.0 = full tracking reward retained, so the "
+         "residual is rewarded for following the reference (walk + reach + grasp). "
+         "Set 0.0 to drop tracking (task rewards only) — but the loose residual bound "
+         "alone does NOT hold the base motion, so the policy collapses to standing.",
 )
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
