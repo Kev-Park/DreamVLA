@@ -301,9 +301,10 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         """Seed the 10 history frames PRECEDING the reset frame from motion_lib (causal,
         MOVING) so the decoder gets a real gait phase when the env resets mid-motion
         (skip_start). Joint positions/velocities — the gait signal — come from the reference;
-        base angular velocity + gravity are taken from the reset state (near-constant over
-        0.2 s for a roughly-upright torso). Falls back to the frozen-frame seed if motion_lib
-        is unavailable.
+        base angular velocity + projected gravity are computed PER-FRAME from the reference
+        root orientation (forward quaternion finite-difference), matching the per-frame seed
+        in eval_parquet_sonic.py rather than broadcasting the single reset-frame value. Falls
+        back to the frozen-frame seed if motion_lib is unavailable.
         """
         if not bool(mask.any()):
             return
@@ -312,33 +313,43 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
                 and hasattr(unw, "start_motion_times")):
             self._seed_history_frozen(mask)
             return
+        import isaaclab.utils.math as math_utils
         N = self.num_envs
         dt = float(unw.step_dt)
         mids = unw.motion_ids
         t0 = unw.start_motion_times.to(self._dev, dtype=torch.float32)   # (N,) reset frame time [s]
-        # 11 reference position frames p[i] = motion @ (t0 - (10-i)*dt), SONIC-29 order.
-        # p[0]=t0-10dt (oldest) ... p[10]=t0. History slots 0..9 use p[0..9]; vel = forward diff.
+        # 11 reference frames f[i] = motion @ (t0 - (10-i)*dt). f[0]=t0-10dt (oldest) ...
+        # f[10]=t0. History slots 0..9 use f[0..9]; velocities = forward diff f[i+1]-f[i].
         pos = []
+        rot = []
         for i in range(N_HISTORY_FRAMES + 1):
             tk = torch.clamp(t0 - (N_HISTORY_FRAMES - i) * dt, min=0.0)
-            dof = unw.motion_lib.get_motion_state(mids, tk)["dof_pos"]    # (N, 27) JointNamesOrder
+            res = unw.motion_lib.get_motion_state(mids, tk)
+            dof = res["dof_pos"]                                         # (N, 27) JointNamesOrder
             sonic27 = dof.index_select(1, self._inv_perm27)               # (N, 27) SONIC-27
             sonic29 = torch.zeros(N, N_BODY_JOINTS, device=self._dev, dtype=dof.dtype)
             sonic29.index_copy_(1, self._keep_idx, sonic27)              # waist roll/pitch stay 0
             pos.append(sonic29)
+            rot.append(res["root_rot"].to(self._dev))                   # (N, 4) wxyz
         pos = torch.stack(pos, dim=1)                                    # (N, 11, 29)
         jp = pos[:, :N_HISTORY_FRAMES, :] - self._default_sonic          # (N, 10, 29)
         jv = (pos[:, 1:, :] - pos[:, :N_HISTORY_FRAMES, :]) / dt          # (N, 10, 29) forward diff
         la = jp * self._scale_inv
-        _, _, av0, gv0 = self._read_state()
-        av = av0.unsqueeze(1).expand(-1, N_HISTORY_FRAMES, -1)
-        gv = gv0.unsqueeze(1).expand(-1, N_HISTORY_FRAMES, -1)
+        # Per-frame projected gravity (body) and base angular velocity (body), from root_rot.
+        quats = torch.stack(rot, dim=1)                                  # (N, 11, 4) wxyz
+        q_s = quats[:, :N_HISTORY_FRAMES, :].reshape(-1, 4)              # (N*10, 4) frames 0..9
+        q_s1 = quats[:, 1:, :].reshape(-1, 4)                            # (N*10, 4) frames 1..10
+        grav_w = torch.tensor([0.0, 0.0, -1.0], device=self._dev, dtype=q_s.dtype).expand(q_s.shape[0], 3)
+        gv = math_utils.quat_rotate_inverse(q_s, grav_w).reshape(N, N_HISTORY_FRAMES, 3)
+        dq = math_utils.quat_mul(q_s1, math_utils.quat_conjugate(q_s))   # world-frame delta s->s+1
+        ang_w = math_utils.axis_angle_from_quat(dq) / dt                 # (N*10, 3) world ang vel
+        av = math_utils.quat_rotate_inverse(q_s, ang_w).reshape(N, N_HISTORY_FRAMES, 3)  # body frame
         m = mask
         self._h_jp[m] = jp[m].to(self._h_jp.dtype)
         self._h_jv[m] = jv[m].to(self._h_jv.dtype)
         self._h_la[m] = la[m].to(self._h_la.dtype)
-        self._h_av[m] = av[m]
-        self._h_gv[m] = gv[m]
+        self._h_av[m] = av[m].to(self._h_av.dtype)
+        self._h_gv[m] = gv[m].to(self._h_gv.dtype)
         self._prev_body_29[m] = la[m, -1].to(self._prev_body_29.dtype)   # last seeded action (t0-dt)
 
     @staticmethod
