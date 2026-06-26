@@ -345,6 +345,63 @@ def orientation_tracking_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg
     root_rot = motion_res["root_rot"]
     return math_utils.quat_error_magnitude(root_rot, asset.data.root_quat_w)
 
+
+# =====================================================================================
+# SONIC / holosoma-matched whole-body TRACKING rewards (exp Gaussian kernels in (0, 1]).
+# These replace the raw-L1/L2 tracking penalties (joint_deviation_ref, position/orientation
+# _tracking_error, keypts_deviation_ref) with the exact formulation + weights/stds the frozen
+# SONIC base (encoder->decoder) was trained against -- see
+# GR00T-WholeBodyControl/gear_sonic/config/manager_env/rewards/tracking/base.yaml and
+# .../mdp/rewards.py (tracking_anchor_pos_error, tracking_relative_body_pos_error, ...).
+# Rationale: a raw, unbounded, per-step L2 position penalty punishes the transient root
+# excursion of a natural stride, so the policy hugs the instantaneous reference root with
+# rapid micro-steps (the 4x shuffle). A soft, bounded exp kernel tolerates that excursion;
+# the high-weight RELATIVE (root-anchored) body term rewards reference-like gait SHAPE
+# independent of global position; velocity tracking rewards smooth committed locomotion.
+# =====================================================================================
+
+def anchor_pos_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.3) -> torch.Tensor:
+    """Global anchor (root) position tracking, exp(-||Δroot||^2 / std^2). gear_sonic: std=0.3, w=0.5."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    root_pos = motion_res["root_pos"]
+    root_pos_robot = asset.data.root_pos_w - env.scene.env_origins
+    sq_dist = torch.sum((root_pos - root_pos_robot) ** 2, dim=1)
+    return torch.exp(-sq_dist / (std * std))
+
+
+def anchor_ori_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.4) -> torch.Tensor:
+    """Global anchor (root) orientation tracking, exp(-angle^2 / std^2). gear_sonic: std=0.4, w=0.5."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    angle = math_utils.quat_error_magnitude(motion_res["root_rot"], asset.data.root_quat_w)
+    return torch.exp(-(angle ** 2) / (std * std))
+
+
+def relative_keypts_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.3, keypts_mask: List = KEYPTS_MASK) -> torch.Tensor:
+    """Relative (root-anchored) body keypoint tracking, exp(-mean_sq_err / std^2) over masked
+    keypoints. Reference and robot keypoints are both expressed in the robot's current root
+    frame (identical framing to keypts_deviation_ref_l2), so this rewards matching the
+    reference gait SHAPE independent of global position/heading. gear_sonic
+    tracking_relative_body_pos: std=0.3, w=1.0 (the dominant, 2x-anchor gait-shape term)."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    joints = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    keypts_robot = get_keypts(joints, env.joint_names, env.pk2_robot)
+    global_keypts = motion_res["global_keypts"] + env.scene.env_origins.unsqueeze(1)
+    robot_pos = asset.data.root_pos_w
+    robot_quat = asset.data.root_quat_w
+    ref_keypts_robot = math_utils.quat_apply(
+        math_utils.quat_conjugate(robot_quat).unsqueeze(1).repeat_interleave(repeats=global_keypts.shape[1], dim=1),
+        global_keypts - robot_pos.unsqueeze(1))
+    mask = torch.tensor(keypts_mask, device=env.device, dtype=torch.float32)            # (K,)
+    sq_err = torch.sum((ref_keypts_robot - keypts_robot) ** 2, dim=2)                    # (N, K)
+    mean_sq = (sq_err * mask.unsqueeze(0)).sum(dim=1) / mask.sum().clamp(min=1.0)        # (N,)
+    return torch.exp(-mean_sq / (std * std))
+
 # Distance (m) below which the geometric "point at the bottle" orientation target fades
 # out. The target frame is built from the normalized wrist→grab_pos direction, which is
 # singular as the wrist reaches the grab point: at 5 cm a 1 cm wrist move swings the

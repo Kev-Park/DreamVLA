@@ -206,13 +206,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"[train_sonic_adapter] policy = AdapterActorCritic, actor={agent_cfg.policy.actor_hidden_dims}, "
           f"critic={agent_cfg.policy.critic_hidden_dims}, init_noise_std={agent_cfg.policy.init_noise_std}")
 
-    # ---- reward configuration: task-first ----
-    # The frozen base is the tracking prior (enforced by the residual bound), so the
-    # reference-tracking penalties that taught the from-scratch encoder body control are
-    # scaled down (default 0.0). Survival, task and smoothness terms stay untouched.
+    # ---- reward configuration ----
+    # --tracking-scale multiplies the SONIC-matched whole-body tracking weights (anchor
+    # pos/ori + relative-body pos + body linvel; exp Gaussian kernels). Default 1.0 keeps
+    # them at the gear_sonic-trained values (0.5/0.5/1.0/1.0); set <1 to down-weight body
+    # tracking. Survival, grasp/task (lift, finger, wrist) and smoothness terms stay untouched.
     ts = float(args_cli.tracking_scale)
-    for term_name in ("joint_deviation_ref", "keypts_deviation_ref",
-                      "position_tracking_error", "orientation_tracking_error"):
+    for term_name in ("tracking_anchor_pos", "tracking_anchor_ori",
+                      "tracking_relative_body_pos", "tracking_body_linvel"):
         term = getattr(env_cfg.rewards, term_name, None)
         if term is not None:
             old_w = term.weight

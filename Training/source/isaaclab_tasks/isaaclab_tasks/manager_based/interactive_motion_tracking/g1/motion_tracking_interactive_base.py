@@ -259,6 +259,36 @@ def object_above_threshold(env: ManagerBasedRLEnv, height_thres = 0.7, fall_thre
     return (has_grasped)*motion_res["is_closed"].float()
 
 
+def object_lift_reward(env: ManagerBasedRLEnv, rest_z: float = 0.90, success_z: float = 0.95,
+                       hold_rate: float = 0.02, hold_cap: float = 50.0) -> torch.Tensor:
+    """Continuous, hold-accumulating object-lift reward (replaces dead-zoned object_above_threshold).
+
+      * DEAD before the reference grasp time -- gated by is_closed (0 pre-grab), so the policy
+        earns nothing for knocking the object up before it is meant to grip.
+      * LINEAR in lift height from rest: lift = (z - rest_z)/(success_z - rest_z) -> 0 at rest,
+        1.0 at the +5 cm success bar, and >1 for higher lifts (keeps scaling up). No dead zone,
+        so there is a gradient the instant the bottle leaves the table.
+      * ACCUMULATES with continued gripping: a per-env consecutive-held-steps counter ramps the
+        per-step reward from 1x up to (1 + hold_rate*hold_cap)x and self-resets to 0 the instant
+        the object is dropped or the episode resets (object returns to rest -> held=0), so the
+        policy is pushed to grab early and KEEP gripping.
+    Success counter (z>success_z & closed) is unchanged so eval/collection stay comparable.
+    """
+    obj: RigidObject = env.scene["object"]
+    z = obj.data.root_pos_w[:, 2]
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
+    is_closed = env.motion_lib.get_motion_state(env.motion_ids, motion_times)["is_closed"].float()
+    lift = torch.clamp(z - rest_z, min=0.0) / (success_z - rest_z)
+    held = (lift > 0.0).float() * is_closed
+    if not hasattr(env, "object_hold_steps") or env.object_hold_steps.shape[0] != z.shape[0]:
+        env.object_hold_steps = torch.zeros_like(z)
+    env.object_hold_steps = (env.object_hold_steps + 1.0) * held
+    hold_bonus = 1.0 + hold_rate * torch.clamp(env.object_hold_steps, max=hold_cap)
+    if env.num_envs < 1001 and hasattr(env, "n_successes"):
+        env.n_successes += (z > success_z) * is_closed
+    return lift * is_closed * hold_bonus
+
+
 def object_approach_reward_left(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 1.0, offset_x: float = 0., offset_y: float = 0.) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
     root_pos_link = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3].clone() - env.scene.env_origins # type: ignore

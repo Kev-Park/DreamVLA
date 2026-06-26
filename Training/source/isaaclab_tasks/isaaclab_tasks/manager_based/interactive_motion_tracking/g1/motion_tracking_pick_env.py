@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, lower_body_keypt_vel_tracking
 import numpy as np
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -25,7 +25,7 @@ from isaaclab.sensors import CameraCfg
 from isaac_utils.rotations import(
     slerp,
 )
-from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking_interactive_base import G1InteractiveBaseEnvCfg, hand_state_target, hand_state_target_1, rel_pose_object_w_link, object_above_threshold, reset_object_state, rel_pose_object, hand_pose, object_approach_reward_right, G1Rewards as G1RewardsBase, TerminationsCfg as TerminationsCfgBase, ActionsCfg as ActionsCfgBase, MySceneCfg as MySceneCfgBase, EventCfg as EventCfgBase
+from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking_interactive_base import G1InteractiveBaseEnvCfg, hand_state_target, hand_state_target_1, rel_pose_object_w_link, object_above_threshold, object_lift_reward, reset_object_state, rel_pose_object, hand_pose, object_approach_reward_right, G1Rewards as G1RewardsBase, TerminationsCfg as TerminationsCfgBase, ActionsCfg as ActionsCfgBase, MySceneCfg as MySceneCfgBase, EventCfg as EventCfgBase
 from isaaclab_assets import G1_MINIMAL_CFG  # isort: skip
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder
@@ -378,31 +378,39 @@ class G1Rewards(G1RewardsBase):
     """Reward terms for the MDP."""
 
     if TRACKING:
-        joint_deviation_ref = RewTerm(
-            func=joint_deviation_ref_l1,
-            weight=-0.4,  # bumped from -0.2: stronger reference tracking to suppress
-                          # stance-phase foot oscillation during reach (hips+knees are
-                          # in JOINTS_MASK; tighter hip tracking constrains foot position
-                          # downstream of the kinematic chain).
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True), "joint_mask": JOINTS_MASK})
+        # ---- SONIC / holosoma-matched whole-body tracking (exp Gaussian kernels) ----
+        # Replaces the previous raw-L1/L2 penalties (joint_deviation_ref, keypts_deviation_ref,
+        # position/orientation_tracking_error). Weights + stds copied verbatim from
+        # gear_sonic/config/manager_env/rewards/tracking/base.yaml -- the SAME reward the frozen
+        # SONIC base (encoder->decoder) was trained against. Each term is exp(-err/std^2) in (0,1].
+        # Total tracking budget = 0.5 + 0.5 + 1.0 + 1.0 = 3.0/step (relative-body weighted 2x the
+        # global anchor, as in SONIC). The soft global anchor + high-weight RELATIVE (root-anchored)
+        # body term let the policy reach a corrected root location with reference-like wider strides
+        # instead of the raw-L2 instantaneous-error shuffle. joint_deviation_ref is dropped: SONIC
+        # tracks body keypoints (via FK), not joint angles, and relative_keypts subsumes it.
+        tracking_anchor_pos = RewTerm(
+            func=anchor_pos_tracking_exp,
+            weight=0.5,
+            params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.3})
 
-        keypts_deviation_ref = RewTerm(
-            func=keypts_deviation_ref_l2,
-            weight=-0.05,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True), "keypts_mask": KEYPTS_MASK})
+        tracking_anchor_ori = RewTerm(
+            func=anchor_ori_tracking_exp,
+            weight=0.5,
+            params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.4})
 
+        tracking_relative_body_pos = RewTerm(
+            func=relative_keypts_tracking_exp,
+            weight=1.0,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                    "std": 0.3, "keypts_mask": KEYPTS_MASK})
 
-        position_tracking_error = RewTerm(
-            func=position_tracking_error,
-            weight=-0.2,
-            params={"asset_cfg": SceneEntityCfg("robot")}
-        )
-
-        orientation_tracking_error = RewTerm(
-            func=orientation_tracking_error,
-            weight=-0.2,
-            params={"asset_cfg": SceneEntityCfg("robot")}
-        )
+        tracking_body_linvel = RewTerm(
+            func=lower_body_keypt_vel_tracking,
+            weight=1.0,
+            params={"asset_cfg": SceneEntityCfg("robot",
+                        body_names=["left_knee_link", "left_ankle_roll_link", "right_knee_link", "right_ankle_roll_link"],
+                        preserve_order=True),
+                    "sigma": 1.0})
 
         right_hand_state_target_reward_val = RewTerm(
             func=right_hand_state_target_reward,
@@ -456,22 +464,21 @@ class G1Rewards(G1RewardsBase):
     
     
     if TASK_SPARSE:
-        # Strict lift reward calibrated to the ACTUAL achievable lift. The object rests at
-        # z=0.9; an observed *successful* grasp peaks at ~0.976 (only ~7.6 cm of lift is
-        # reachable given the reference motion). has_grasped ramps 0→1 over
-        # (fall_thres, height_thres):
-        #   fall_thres = 0.92  → 2 cm above rest: resting/jitter scores exactly 0, gradient
-        #                        starts as soon as the bottle lifts off.
-        #   height_thres = 0.95 → full reward at a 5 cm lift, comfortably below the observed
-        #                        success apex (~0.976) so genuine pickups reliably earn full
-        #                        credit; the gradient spans 0.92→0.95. n_successes keys off
-        #                        z>0.95, so eval/collection "success" = a real ~5 cm lift.
-        # (Earlier 1.05 was unreachable — a successful grasp scored only ~0.43, giving the
-        # policy no signal that it had actually succeeded; 0.97 was tight against the apex.)
-        object_above_the_ground = RewTerm(
-            func=object_above_threshold,
-            weight=.5,
-            params={"height_thres": 0.95, "fall_thres": 0.92}
+        # Continuous, hold-accumulating lift reward (replaces the dead-zoned object_above_threshold).
+        # Object rests at z=0.9; a successful grasp peaks at ~0.976 (~7.6 cm reachable).
+        #   * LINEAR from rest: lift = (z-0.90)/(0.95-0.90) -> 0 at rest, 1.0 at the +5 cm success
+        #     bar, >1 above. No dead zone, so a gradient exists the instant the bottle leaves the table.
+        #   * DEAD before the grasp time -- gated by is_closed (anti-knockover), as before.
+        #   * ACCUMULATES with hold: per-step reward ramps 1x -> 2x over a 1 s continuous grip
+        #     (hold_rate=0.02, hold_cap=50) and self-resets on drop -> rewards KEEPING the grip.
+        # n_successes (z>0.95 & closed) unchanged so eval/collection stay comparable.
+        # Weight 1.0: max per-step ~ lift(<=1.5) * hold(<=2.0) = ~3.0, matching the 3.0 tracking
+        # budget so during the grasp window the lift competes on equal footing without drowning
+        # tracking (and it is 0 during the pre-grasp walk, where tracking should dominate).
+        object_lift = RewTerm(
+            func=object_lift_reward,
+            weight=1.0,
+            params={"rest_z": 0.90, "success_z": 0.95, "hold_rate": 0.02, "hold_cap": 50.0}
         )
 @configclass
 class TerminationsCfg(TerminationsCfgBase):
