@@ -454,18 +454,14 @@ class G1Rewards(G1RewardsBase):
 
         target_orientation_error = RewTerm(func=target_orientation_error,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])},
-            weight=-5.0)  # up-weighted to -5.0 (primary pre-contact reach AIM now that the right
-                          # arm is stripped from body tracking); was -3.0, bumped from -1.0: keeps wrist-orientation penalty larger than
-                          # the finger reward (~0.26 weighted) so PPO's credit assignment
-                          # around the grab frame doesn't reinforce incidental inward wrist
-                          # rotation. Diagnosis: wrist tracked perfectly early in training
-                          # when finger reward was ~0.003 (33x smaller); drift emerged once
-                          # finger reward grew ~85x and overtook the orientation penalty.
-                          # Note: target_orientation_error's `time_mask` switches from
-                          # `angle` (bottle-pointing) to `angle_post` (just-vertical) at
-                          # is_closed=1, so the closed-phase term is structurally weaker —
-                          # the -3.0 weight compensates for both magnitude crossover AND
-                          # the time-mask attenuation at the grab transition.
+            weight=-1.0)  # LIGHT pre-contact aim prior (was -3.0, then a mistaken -5.0 bump).
+                          # Empirically -5.0 VETOED the grasp: the policy bootstrapped a grasp
+                          # (lift 0.028 -> 0.54 by iter ~697) but the grasp pose sits ~0.28 rad off
+                          # this aim target, costing ~-1.4 of penalty vs only +0.54 of lift, so it
+                          # dropped the grasp to realign the wrist. At -1.0 the grasp's wrist penalty
+                          # (~0.28) stays well under the lift, so lift wins and the grasp survives
+                          # while a light aim still guides the reach. time_mask: `angle` (bottle-
+                          # pointing) pre-grasp -> `angle_post` (vertical) post-grasp at is_closed=1.
 
 
     if TASK_DENSE:
