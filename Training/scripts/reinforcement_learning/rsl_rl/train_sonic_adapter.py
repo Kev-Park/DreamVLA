@@ -213,7 +213,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # tracking. Survival, grasp/task (lift, finger, wrist) and smoothness terms stay untouched.
     ts = float(args_cli.tracking_scale)
     for term_name in ("tracking_anchor_pos", "tracking_anchor_ori",
-                      "tracking_relative_body_pos", "tracking_body_linvel"):
+                      "tracking_relative_body_pos", "tracking_relative_body_ori",
+                      "tracking_body_linvel"):
         term = getattr(env_cfg.rewards, term_name, None)
         if term is not None:
             old_w = term.weight

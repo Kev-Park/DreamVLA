@@ -260,26 +260,27 @@ def object_above_threshold(env: ManagerBasedRLEnv, height_thres = 0.7, fall_thre
 
 
 def object_lift_reward(env: ManagerBasedRLEnv, rest_z: float = 0.90, success_z: float = 0.95,
-                       hold_rate: float = 0.02, hold_cap: float = 50.0) -> torch.Tensor:
-    """Continuous, hold-accumulating object-lift reward (replaces dead-zoned object_above_threshold).
+                       tau: float = 0.03, hold_rate: float = 0.02, hold_cap: float = 50.0) -> torch.Tensor:
+    """Continuous saturating-exponential object-lift reward, gated to the reference grasp window.
 
-      * DEAD before the reference grasp time -- gated by is_closed (0 pre-grab), so the policy
-        earns nothing for knocking the object up before it is meant to grip.
-      * LINEAR in lift height from rest: lift = (z - rest_z)/(success_z - rest_z) -> 0 at rest,
-        1.0 at the +5 cm success bar, and >1 for higher lifts (keeps scaling up). No dead zone,
-        so there is a gradient the instant the bottle leaves the table.
-      * ACCUMULATES with continued gripping: a per-env consecutive-held-steps counter ramps the
-        per-step reward from 1x up to (1 + hold_rate*hold_cap)x and self-resets to 0 the instant
-        the object is dropped or the episode resets (object returns to rest -> held=0), so the
-        policy is pushed to grab early and KEEP gripping.
-    Success counter (z>success_z & closed) is unchanged so eval/collection stay comparable.
+      * is_closed-GATED (dead before the grasp time -> no knock-over credit). is_closed turns on
+        at the grab frame and STAYS on through the hold, so the reward is continuous for the rest
+        of the episode -- it is NOT re-zeroed once grasping has begun.
+      * SATURATING EXP in lift height: R_h = 1 - exp(-(z - rest_z)/tau). 0 at rest (0.90), with the
+        STRONGEST gradient right at lift-off (where the grasp must bootstrap), saturating toward 1
+        (~0.81 at the +5 cm success bar, ~0.92 at the ~0.976 apex). Bounded (0, 1] -- the SAME
+        currency as the exp tracking terms, so weighting them against each other is honest.
+      * HOLD bonus: a per-env consecutive-held-steps counter ramps the per-step reward 1x ->
+        (1 + hold_rate*hold_cap)x and self-resets to 0 on drop / episode reset (object back to
+        rest -> held=0), pushing the policy to grab early and KEEP gripping.
+    Success counter (z>success_z & closed) unchanged so eval/collection stay comparable.
     """
     obj: RigidObject = env.scene["object"]
     z = obj.data.root_pos_w[:, 2]
     motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
     is_closed = env.motion_lib.get_motion_state(env.motion_ids, motion_times)["is_closed"].float()
-    lift = torch.clamp(z - rest_z, min=0.0) / (success_z - rest_z)
-    held = (lift > 0.0).float() * is_closed
+    lift = 1.0 - torch.exp(-torch.clamp(z - rest_z, min=0.0) / tau)        # saturating, (0, 1]
+    held = ((z - rest_z) > 0.005).float() * is_closed                     # genuinely lifted (>5mm) & in grasp window
     if not hasattr(env, "object_hold_steps") or env.object_hold_steps.shape[0] != z.shape[0]:
         env.object_hold_steps = torch.zeros_like(z)
     env.object_hold_steps = (env.object_hold_steps + 1.0) * held

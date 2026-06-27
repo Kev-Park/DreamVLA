@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, lower_body_keypt_vel_tracking
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, lower_body_keypt_vel_tracking
 import numpy as np
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -296,6 +296,14 @@ KEYPTS_MASK = [
     0, # right_rubber_hand
 ]
 
+# Right arm (right_shoulder_pitch .. right_rubber_hand, indices >=31) REMOVED from body
+# tracking. The right arm is the task-execution limb: tracking it toward the reference pose
+# fights the actual grasp (empirically the right arm got strong tracking reward + ~0 lift).
+# Driven instead by the lift + pointing (target_orientation_error) + finger rewards, with the
+# frozen base still providing the gross reach as a structural prior. Used by the relative-body
+# pos/ori tracking terms only; lower-body velocity + anchor terms don't touch the arm anyway.
+KEYPTS_MASK_NO_RARM = [m if i < 31 else 0 for i, m in enumerate(KEYPTS_MASK)]
+
 
         
 @configclass
@@ -383,11 +391,13 @@ class G1Rewards(G1RewardsBase):
         # position/orientation_tracking_error). Weights + stds copied verbatim from
         # gear_sonic/config/manager_env/rewards/tracking/base.yaml -- the SAME reward the frozen
         # SONIC base (encoder->decoder) was trained against. Each term is exp(-err/std^2) in (0,1].
-        # Total tracking budget = 0.5 + 0.5 + 1.0 + 1.0 = 3.0/step (relative-body weighted 2x the
-        # global anchor, as in SONIC). The soft global anchor + high-weight RELATIVE (root-anchored)
-        # body term let the policy reach a corrected root location with reference-like wider strides
-        # instead of the raw-L2 instantaneous-error shuffle. joint_deviation_ref is dropped: SONIC
-        # tracks body keypoints (via FK), not joint angles, and relative_keypts subsumes it.
+        # Nominal budget = anchor_pos 0.5 + anchor_ori 0.5 + relative_body_pos 1.0 +
+        # relative_body_ori 1.0 + body_linvel 1.0 = 4.0/step (relative body 2x global anchor, as
+        # in SONIC). At launch --tracking-scale 0.5 halves all five -> ~2.0/step, so tracking is a
+        # GAIT/POSE REGULARIZER, not the objective (the base already tracks; saturated tracking
+        # gave ~0 learning gradient while drowning the grasp). The relative-body terms EXCLUDE the
+        # right arm (KEYPTS_MASK_NO_RARM) so the task owns it. joint_deviation_ref is dropped:
+        # SONIC tracks body keypoints (via FK), not joint angles; relative_keypts/ori subsume it.
         tracking_anchor_pos = RewTerm(
             func=anchor_pos_tracking_exp,
             weight=0.5,
@@ -402,7 +412,13 @@ class G1Rewards(G1RewardsBase):
             func=relative_keypts_tracking_exp,
             weight=1.0,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
-                    "std": 0.3, "keypts_mask": KEYPTS_MASK})
+                    "std": 0.3, "keypts_mask": KEYPTS_MASK_NO_RARM})
+
+        tracking_relative_body_ori = RewTerm(
+            func=relative_body_ori_tracking_exp,
+            weight=1.0,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                    "std": 0.4, "keypts_mask": KEYPTS_MASK_NO_RARM})
 
         tracking_body_linvel = RewTerm(
             func=lower_body_keypt_vel_tracking,
@@ -438,7 +454,8 @@ class G1Rewards(G1RewardsBase):
 
         target_orientation_error = RewTerm(func=target_orientation_error,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])},
-            weight=-3.0)  # bumped from -1.0: keeps wrist-orientation penalty larger than
+            weight=-5.0)  # up-weighted to -5.0 (primary pre-contact reach AIM now that the right
+                          # arm is stripped from body tracking); was -3.0, bumped from -1.0: keeps wrist-orientation penalty larger than
                           # the finger reward (~0.26 weighted) so PPO's credit assignment
                           # around the grab frame doesn't reinforce incidental inward wrist
                           # rotation. Diagnosis: wrist tracked perfectly early in training
@@ -464,21 +481,23 @@ class G1Rewards(G1RewardsBase):
     
     
     if TASK_SPARSE:
-        # Continuous, hold-accumulating lift reward (replaces the dead-zoned object_above_threshold).
+        # Continuous saturating-exp, hold-accumulating lift reward (replaces dead-zoned object_above_threshold).
         # Object rests at z=0.9; a successful grasp peaks at ~0.976 (~7.6 cm reachable).
-        #   * LINEAR from rest: lift = (z-0.90)/(0.95-0.90) -> 0 at rest, 1.0 at the +5 cm success
-        #     bar, >1 above. No dead zone, so a gradient exists the instant the bottle leaves the table.
-        #   * DEAD before the grasp time -- gated by is_closed (anti-knockover), as before.
-        #   * ACCUMULATES with hold: per-step reward ramps 1x -> 2x over a 1 s continuous grip
-        #     (hold_rate=0.02, hold_cap=50) and self-resets on drop -> rewards KEEPING the grip.
+        #   * SATURATING EXP from rest: 1-exp(-(z-0.90)/tau), tau=0.03 -> 0 at rest, ~0.81 at the
+        #     +5 cm success bar, ~0.92 at apex. Strongest gradient at lift-off (bootstrap), bounded
+        #     (0,1] -- same currency as the exp tracking terms.
+        #   * is_closed-GATED (anti-knockover) and continuous through the hold (not re-zeroed).
+        #   * ACCUMULATES with hold: 1x -> 2x over a 1 s grip, self-resets on drop.
         # n_successes (z>0.95 & closed) unchanged so eval/collection stay comparable.
-        # Weight 1.0: max per-step ~ lift(<=1.5) * hold(<=2.0) = ~3.0, matching the 3.0 tracking
-        # budget so during the grasp window the lift competes on equal footing without drowning
-        # tracking (and it is 0 during the pre-grasp walk, where tracking should dominate).
+        # Weight 3.0 (vs scaled tracking ~2.0): peak per-step ~0.8*hold(1.5)*3 = ~3.6 > tracking,
+        # to compensate for SCARCITY -- lift only pays in the is_closed window (~half the episode)
+        # and only when actually lifting, while tracking pays every step. Higher peak makes the
+        # episodic lift competitive with always-on tracking once the grasp succeeds. It is 0 in
+        # the pre-grasp walk (tracking owns that) and the right arm has NO competing tracking.
         object_lift = RewTerm(
             func=object_lift_reward,
-            weight=1.0,
-            params={"rest_z": 0.90, "success_z": 0.95, "hold_rate": 0.02, "hold_cap": 50.0}
+            weight=3.0,
+            params={"rest_z": 0.90, "success_z": 0.95, "tau": 0.03, "hold_rate": 0.02, "hold_cap": 50.0}
         )
 @configclass
 class TerminationsCfg(TerminationsCfgBase):

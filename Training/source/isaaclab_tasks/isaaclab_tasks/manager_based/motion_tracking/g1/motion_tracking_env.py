@@ -276,11 +276,23 @@ def get_keypts(joint_angles, joint_names, pk2_robot):
     cntr = 0 
     
     for name in tf_dict.keys():
-        tf_val = tf_dict[name].get_matrix()  
+        tf_val = tf_dict[name].get_matrix()
         t = tf_val[:, :3, -1 ]
-        keypts[:, cntr , :] = t 
-        cntr += 1 
+        keypts[:, cntr , :] = t
+        cntr += 1
     return keypts
+
+
+def get_link_rotations(joint_angles, joint_names, pk2_robot):
+    """Per-link rotation matrices (N, K, 3, 3) in the root frame, from the SAME FK as
+    ``get_keypts`` (which keeps only the translation ``tf_val[:, :3, -1]``). Link order
+    matches ``get_keypts`` / ``KEYPTS_MASK``. Used for SONIC-style relative_body_ori."""
+    q_dict = {name: joint_angles[:, i] for i, name in enumerate(joint_names)}
+    tf_dict = pk2_robot.forward_kinematics(q_dict)
+    rots = torch.zeros((len(joint_angles), len(tf_dict), 3, 3), device=joint_angles.device)
+    for cntr, name in enumerate(tf_dict.keys()):
+        rots[:, cntr, :, :] = tf_dict[name].get_matrix()[:, :3, :3]
+    return rots
 
 
 def keypts_deviation_ref_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), keypts_mask: List = KEYPTS_MASK) -> torch.Tensor:
@@ -400,6 +412,27 @@ def relative_keypts_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityC
     mask = torch.tensor(keypts_mask, device=env.device, dtype=torch.float32)            # (K,)
     sq_err = torch.sum((ref_keypts_robot - keypts_robot) ** 2, dim=2)                    # (N, K)
     mean_sq = (sq_err * mask.unsqueeze(0)).sum(dim=1) / mask.sum().clamp(min=1.0)        # (N,)
+    return torch.exp(-mean_sq / (std * std))
+
+
+def relative_body_ori_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.4, keypts_mask: List = KEYPTS_MASK) -> torch.Tensor:
+    """SONIC relative_body_ori: per-link ORIENTATION error between the robot and the reference,
+    each as FK link rotations in its OWN root frame (root-relative, heading-invariant), scored
+    exp(-mean angle^2 / std^2) over the masked links. The geodesic angle per link is taken from
+    R_rel = R_ref^T @ R_robot via arccos((trace-1)/2). Complements relative_body_pos: position
+    says WHERE each link is, orientation says HOW it is rotated (foot flatness, wrist/forearm
+    roll, torso lean). gear_sonic tracking_relative_body_ori: std=0.4, w=1.0."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    joints_robot = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    R_robot = get_link_rotations(joints_robot, env.joint_names, env.pk2_robot)            # (N, K, 3, 3)
+    R_ref = get_link_rotations(motion_res["dof_pos"], env.joint_names, env.pk2_robot)     # (N, K, 3, 3)
+    R_rel = torch.matmul(R_ref.transpose(-1, -2), R_robot)                                # (N, K, 3, 3)
+    trace = R_rel[..., 0, 0] + R_rel[..., 1, 1] + R_rel[..., 2, 2]                        # (N, K)
+    angle = torch.acos(torch.clamp((trace - 1.0) / 2.0, -1.0, 1.0))                       # (N, K) geodesic
+    mask = torch.tensor(keypts_mask, device=env.device, dtype=torch.float32)             # (K,)
+    mean_sq = (angle ** 2 * mask.unsqueeze(0)).sum(dim=1) / mask.sum().clamp(min=1.0)     # (N,)
     return torch.exp(-mean_sq / (std * std))
 
 # Distance (m) below which the geometric "point at the bottle" orientation target fades
