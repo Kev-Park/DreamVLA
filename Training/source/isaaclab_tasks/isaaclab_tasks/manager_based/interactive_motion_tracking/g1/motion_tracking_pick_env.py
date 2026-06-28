@@ -503,14 +503,16 @@ class G1Rewards(G1RewardsBase):
         #   * is_closed-GATED (anti-knockover) and continuous through the hold (not re-zeroed).
         #   * ACCUMULATES with hold: 1x -> 2x over a 1 s grip, self-resets on drop.
         # n_successes (z>0.95 & closed) unchanged so eval/collection stay comparable.
-        # Weight 3.0 (vs scaled tracking ~2.0): peak per-step ~0.8*hold(1.5)*3 = ~3.6 > tracking,
-        # to compensate for SCARCITY -- lift only pays in the is_closed window (~half the episode)
-        # and only when actually lifting, while tracking pays every step. Higher peak makes the
-        # episodic lift competitive with always-on tracking once the grasp succeeds. It is 0 in
-        # the pre-grasp walk (tracking owns that) and the right arm has NO competing tracking.
+        # Weight 8.0 (bumped from 3.0): the grasp DOES get discovered (object_lift peaked ~0.96
+        # mid-run) but then FADES because grasping costs more in stability/tracking than lift 3.0
+        # repaid -> net-negative -> policy abandons it. 8.0 pushes the successful-grasp lift well
+        # above that cost so the policy KEEPS the grasp it finds. Compensates for SCARCITY too --
+        # lift only pays in the is_closed window and only when actually lifting, while tracking pays
+        # every step. It is 0 in the pre-grasp walk (tracking owns that); the right arm has no
+        # competing tracking, so a large lift here doesn't fight the gait.
         object_lift = RewTerm(
             func=object_lift_reward,
-            weight=3.0,
+            weight=8.0,
             params={"rest_z": 0.90, "success_z": 0.95, "tau": 0.03, "hold_rate": 0.02, "hold_cap": 50.0}
         )
 @configclass
