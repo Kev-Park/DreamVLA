@@ -372,15 +372,20 @@ def orientation_tracking_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg
 # independent of global position; velocity tracking rewards smooth committed locomotion.
 # =====================================================================================
 
-def anchor_pos_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.3) -> torch.Tensor:
-    """Global anchor (root) position tracking, exp(-||Δroot||^2 / std^2). gear_sonic: std=0.3, w=0.5."""
+def anchor_pos_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.3, eps: float = 0.0) -> torch.Tensor:
+    """Global anchor (root) position tracking, exp(-clamp(||Δroot||-eps, 0)^2 / std^2). gear_sonic:
+    std=0.3, w=0.5. eps is a DEADBAND (m): within eps of the reference root the reward is flat 1.0
+    (no penalty, no gradient -> the root is free to deviate slightly for gait/position adjustment,
+    which kills the per-step micro-correction shuffle); beyond eps it decays as before, so a high
+    weight still pulls it firmly back. eps=0 reproduces the plain exp kernel."""
     asset: Articulation = env.scene[asset_cfg.name]
     motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
     motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
     root_pos = motion_res["root_pos"]
     root_pos_robot = asset.data.root_pos_w - env.scene.env_origins
-    sq_dist = torch.sum((root_pos - root_pos_robot) ** 2, dim=1)
-    return torch.exp(-sq_dist / (std * std))
+    dist = torch.norm(root_pos - root_pos_robot, dim=1)
+    db = torch.clamp(dist - eps, min=0.0)
+    return torch.exp(-(db * db) / (std * std))
 
 
 def anchor_ori_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.4) -> torch.Tensor:
@@ -392,12 +397,15 @@ def anchor_ori_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = 
     return torch.exp(-(angle ** 2) / (std * std))
 
 
-def relative_keypts_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.3, keypts_mask: List = KEYPTS_MASK) -> torch.Tensor:
+def relative_keypts_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.3, keypts_mask: List = KEYPTS_MASK, eps: float = 0.0) -> torch.Tensor:
     """Relative (root-anchored) body keypoint tracking, exp(-mean_sq_err / std^2) over masked
     keypoints. Reference and robot keypoints are both expressed in the robot's current root
     frame (identical framing to keypts_deviation_ref_l2), so this rewards matching the
     reference gait SHAPE independent of global position/heading. gear_sonic
-    tracking_relative_body_pos: std=0.3, w=1.0 (the dominant, 2x-anchor gait-shape term)."""
+    tracking_relative_body_pos: std=0.3, w=1.0 (the dominant, 2x-anchor gait-shape term).
+    eps is a PER-KEYPOINT DEADBAND (m): each keypoint within eps of its reference is free (no
+    penalty), so limbs can vary a few cm (e.g. wider/narrower steps) without micro-correction;
+    beyond eps it decays as before. eps=0 reproduces the plain exp kernel."""
     asset: Articulation = env.scene[asset_cfg.name]
     motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
     motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
@@ -410,9 +418,29 @@ def relative_keypts_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityC
         math_utils.quat_conjugate(robot_quat).unsqueeze(1).repeat_interleave(repeats=global_keypts.shape[1], dim=1),
         global_keypts - robot_pos.unsqueeze(1))
     mask = torch.tensor(keypts_mask, device=env.device, dtype=torch.float32)            # (K,)
-    sq_err = torch.sum((ref_keypts_robot - keypts_robot) ** 2, dim=2)                    # (N, K)
-    mean_sq = (sq_err * mask.unsqueeze(0)).sum(dim=1) / mask.sum().clamp(min=1.0)        # (N,)
+    per_kpt = torch.norm(ref_keypts_robot - keypts_robot, dim=2)                         # (N, K) dist per keypoint
+    db = torch.clamp(per_kpt - eps, min=0.0)                                             # per-keypoint deadband
+    mean_sq = ((db * db) * mask.unsqueeze(0)).sum(dim=1) / mask.sum().clamp(min=1.0)     # (N,)
     return torch.exp(-mean_sq / (std * std))
+
+
+def global_keypts_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.3, keypt_idxs: List = None) -> torch.Tensor:
+    """GLOBAL (world-frame) keypoint position tracking for the selected bodies,
+    exp(-mean_sq_err / std^2). Unlike relative_keypts_tracking_exp (root-anchored = gait SHAPE,
+    invariant to root drift), this tracks the bodies' ABSOLUTE world positions toward the
+    reference's global keypoints -- so the target is hit regardless of root drift. Used for the
+    RIGHT ARM: the reference hand reaches the bottle, so global tracking lands the robot hand at
+    the bottle (root-relative tracking can't -- a root drift puts a root-relative-correct hand at
+    the wrong global spot). asset_cfg.body_ids MUST correspond 1:1 (same order) to keypt_idxs
+    into global_keypts (both env-local, env_origin cancels)."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    robot_kpt = asset.data.body_pos_w[:, asset_cfg.body_ids, :] - env.scene.env_origins.unsqueeze(1)  # (N, K, 3) env-local
+    idxs = torch.tensor(keypt_idxs, device=env.device, dtype=torch.long)
+    ref_kpt = motion_res["global_keypts"][:, idxs, :]                                                  # (N, K, 3) env-local
+    sq_err = torch.sum((robot_kpt - ref_kpt) ** 2, dim=2)                                              # (N, K)
+    return torch.exp(-sq_err.mean(dim=1) / (std * std))
 
 
 def relative_body_ori_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.4, keypts_mask: List = KEYPTS_MASK) -> torch.Tensor:

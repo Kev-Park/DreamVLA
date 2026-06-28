@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, lower_body_keypt_vel_tracking
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, lower_body_keypt_vel_tracking
 import numpy as np
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -408,7 +408,7 @@ class G1Rewards(G1RewardsBase):
         tracking_anchor_pos = RewTerm(
             func=anchor_pos_tracking_exp,
             weight=0.5,
-            params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.3})
+            params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.3, "eps": 0.08})  # 8cm root deadband
 
         tracking_anchor_ori = RewTerm(
             func=anchor_ori_tracking_exp,
@@ -419,7 +419,7 @@ class G1Rewards(G1RewardsBase):
             func=relative_keypts_tracking_exp,
             weight=1.0,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
-                    "std": 0.3, "keypts_mask": KEYPTS_MASK_NO_RARM})
+                    "std": 0.3, "keypts_mask": KEYPTS_MASK_NO_RARM, "eps": 0.05})  # 5cm per-keypoint deadband
 
         tracking_relative_body_ori = RewTerm(
             func=relative_body_ori_tracking_exp,
@@ -435,16 +435,20 @@ class G1Rewards(G1RewardsBase):
                         preserve_order=True),
                     "sigma": 1.0})
 
-        # LIGHT positional supervision for the TASK arm (stripped from the body-tracking terms
-        # above). Re-adds a reach reference so the hand lands at the grasp spot before the finger
-        # closes (the stripped arm was closing short and knocking the bottle over). weight 0.3 ->
-        # 0.15 after --tracking-scale 0.5: well below the lift (~0.96 peak), so it guides the reach
-        # without vetoing the grasp. Position only (relative_keypts) -- the wrist pointing handles aim.
+        # GLOBAL (world-frame) tracking for the TASK arm (stripped from the root-relative body
+        # terms above). The right-arm keypoints (shoulder->wrist, indices 31-36) track the
+        # reference's ABSOLUTE world positions, not root-relative -- so the hand lands at the
+        # reference's global hand pose (= the bottle) REGARDLESS of root drift. Root-relative
+        # tracking can't do this: a root drift puts a root-relative-correct hand at the wrong
+        # global spot, missing the bottle. body_names order must match keypt_idxs. weight 1.0.
         tracking_right_arm_pos = RewTerm(
-            func=relative_keypts_tracking_exp,
-            weight=0.3,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
-                    "std": 0.3, "keypts_mask": KEYPTS_MASK_RARM_ONLY})
+            func=global_keypts_tracking_exp,
+            weight=1.0,
+            params={"asset_cfg": SceneEntityCfg("robot",
+                        body_names=["right_shoulder_pitch_link", "right_shoulder_roll_link", "right_shoulder_yaw_link",
+                                    "right_elbow_link", "right_wrist_roll_link", "right_wrist_pitch_link"],
+                        preserve_order=True),
+                    "std": 0.3, "keypt_idxs": [31, 32, 33, 34, 35, 36]})
 
         right_hand_state_target_reward_val = RewTerm(
             func=right_hand_state_target_reward,
