@@ -340,10 +340,10 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         q_s = quats[:, :N_HISTORY_FRAMES, :].reshape(-1, 4)              # (N*10, 4) frames 0..9
         q_s1 = quats[:, 1:, :].reshape(-1, 4)                            # (N*10, 4) frames 1..10
         grav_w = torch.tensor([0.0, 0.0, -1.0], device=self._dev, dtype=q_s.dtype).expand(q_s.shape[0], 3)
-        gv = math_utils.quat_rotate_inverse(q_s, grav_w).reshape(N, N_HISTORY_FRAMES, 3)
+        gv = math_utils.quat_apply_inverse(q_s, grav_w).reshape(N, N_HISTORY_FRAMES, 3)
         dq = math_utils.quat_mul(q_s1, math_utils.quat_conjugate(q_s))   # world-frame delta s->s+1
         ang_w = math_utils.axis_angle_from_quat(dq) / dt                 # (N*10, 3) world ang vel
-        av = math_utils.quat_rotate_inverse(q_s, ang_w).reshape(N, N_HISTORY_FRAMES, 3)  # body frame
+        av = math_utils.quat_apply_inverse(q_s, ang_w).reshape(N, N_HISTORY_FRAMES, 3)  # body frame
         m = mask
         self._h_jp[m] = jp[m].to(self._h_jp.dtype)
         self._h_jv[m] = jv[m].to(self._h_jv.dtype)
