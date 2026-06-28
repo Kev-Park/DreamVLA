@@ -214,7 +214,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     ts = float(args_cli.tracking_scale)
     for term_name in ("tracking_anchor_pos", "tracking_anchor_ori",
                       "tracking_relative_body_pos", "tracking_relative_body_ori",
-                      "tracking_body_linvel"):
+                      "tracking_body_linvel", "tracking_right_arm_pos"):
         term = getattr(env_cfg.rewards, term_name, None)
         if term is not None:
             old_w = term.weight

@@ -304,6 +304,13 @@ KEYPTS_MASK = [
 # pos/ori tracking terms only; lower-body velocity + anchor terms don't touch the arm anyway.
 KEYPTS_MASK_NO_RARM = [m if i < 31 else 0 for i, m in enumerate(KEYPTS_MASK)]
 
+# Right-arm keypoints ONLY (the complement of NO_RARM). Used for a LIGHT positional-supervision
+# term on the task arm: re-adds a reach reference (the reference arm pose lands the hand at the
+# grasp spot, which is exactly where the object sits) so the hand arrives before the finger closes
+# -- without it the arm closes short and shoves the bottle over. Weighted well below the lift so
+# it guides the reach but never vetoes the grasp.
+KEYPTS_MASK_RARM_ONLY = [m if i >= 31 else 0 for i, m in enumerate(KEYPTS_MASK)]
+
 
         
 @configclass
@@ -427,6 +434,17 @@ class G1Rewards(G1RewardsBase):
                         body_names=["left_knee_link", "left_ankle_roll_link", "right_knee_link", "right_ankle_roll_link"],
                         preserve_order=True),
                     "sigma": 1.0})
+
+        # LIGHT positional supervision for the TASK arm (stripped from the body-tracking terms
+        # above). Re-adds a reach reference so the hand lands at the grasp spot before the finger
+        # closes (the stripped arm was closing short and knocking the bottle over). weight 0.3 ->
+        # 0.15 after --tracking-scale 0.5: well below the lift (~0.96 peak), so it guides the reach
+        # without vetoing the grasp. Position only (relative_keypts) -- the wrist pointing handles aim.
+        tracking_right_arm_pos = RewTerm(
+            func=relative_keypts_tracking_exp,
+            weight=0.3,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                    "std": 0.3, "keypts_mask": KEYPTS_MASK_RARM_ONLY})
 
         right_hand_state_target_reward_val = RewTerm(
             func=right_hand_state_target_reward,
