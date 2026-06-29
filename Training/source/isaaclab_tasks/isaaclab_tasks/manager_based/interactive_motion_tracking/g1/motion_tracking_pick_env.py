@@ -341,51 +341,17 @@ class EventCfg(EventCfgBase):
 
 def target_orientation_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
-    root_pos_link = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3].clone() - env.scene.env_origins # type: ignore
     root_rot_link = math_utils.quat_unique(asset.data.body_quat_w[:, asset_cfg.body_ids[0], :].clone())
-    
-    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32) - 1.
-    motion_ids = env.motion_ids.clone().detach().to(device=env.device, dtype=torch.long)
-    motion_res = env.motion_lib.get_motion_state(motion_ids, motion_times)
-    root_pos = motion_res["grab_pos"] + motion_res["offsets"]
-    time_mask = 1. - motion_res["is_closed"].float()
-    
-    time_init = torch.clip((motion_times+1.)/1.5, 0., 1.)  # Ensure the time mask is between 0 and 1
-    
-    x_axis = torch.tensor([0.0, 0.0, -1.0], device=root_pos_link.device).unsqueeze(0).repeat(root_pos_link.shape[0], 1).float()
-    y_axis = torch.tensor([0.0, 1.0, 0.0], device=root_pos_link.device).unsqueeze(0).repeat(root_pos_link.shape[0], 1).float()
-    z_axis = torch.tensor([1.0, 0.0, 0.0], device=root_pos_link.device).unsqueeze(0).repeat(root_pos_link.shape[0], 1).float()
 
-    target_rot_mat_init = torch.stack([x_axis, y_axis, z_axis], dim=2)  # shape (N, 3, 3)
-    target_rot_quat_init = math_utils.quat_from_matrix(target_rot_mat_init)
-
-    a_axis = root_pos - root_pos_link # (2*x_axis + y_axis)/sqrt(5)
-    a_axis = a_axis / torch.norm(a_axis, dim=1, keepdim=True)
-    
-    b_axis = torch.zeros_like(a_axis)
-    b_axis[:,0] = -a_axis[:,1]
-    b_axis[:,1] = a_axis[:,0]
-    b_axis[:,2] = 0.0
-    b_axis = b_axis / torch.norm(b_axis, dim=1, keepdim=True)
-
-    # z_axis is a_axis x b_axis
-    z_axis = torch.cross(a_axis, b_axis, dim=1)
-
-    x_axis = 2*a_axis - b_axis
-    x_axis = x_axis / torch.norm(x_axis, dim=1, keepdim=True)
-
-    y_axis = torch.cross(z_axis, x_axis, dim=1)
-
-    target_rot_mat = torch.stack([x_axis, y_axis, z_axis], dim=2)  # shape (N, 3, 3)
-    target_rot_quat = math_utils.quat_from_matrix(target_rot_mat)
-    
-    target_rot_quat = slerp(target_rot_quat_init, target_rot_quat, time_init.unsqueeze(1))
-    angle = math_utils.quat_error_magnitude(target_rot_quat, root_rot_link)
-
-    z_axis_post = torch.tensor([0.0, 0.0, 1.0], device=root_pos_link.device).unsqueeze(0).repeat(root_pos_link.shape[0], 1)
+    # Keep the wrist's local z-axis pointing to world up (hand held level/horizontal),
+    # for BOTH pre- and post-grasp. Was: aim-the-wrist-at-the-object pre-grasp (slerped-in
+    # object-directed frame) + upright post-grasp. Dropped the pre-grasp aim so the only
+    # orientation objective the whole episode is "hold the hand level" — the dense aim penalty
+    # was competing with the sparse grasp/lift and is suspected in the late-training grasp drift.
+    z_axis_post = torch.tensor([0.0, 0.0, 1.0], device=root_rot_link.device).unsqueeze(0).repeat(root_rot_link.shape[0], 1)
     z_axis_w = math_utils.quat_apply(root_rot_link, z_axis_post)
     angle_post = torch.acos(torch.clamp(z_axis_w[:, 2], -1.0, 1.0))
-    return torch.abs(angle) * time_mask + torch.abs(angle_post) * (1. - time_mask)
+    return torch.abs(angle_post)
 
 
 @configclass
