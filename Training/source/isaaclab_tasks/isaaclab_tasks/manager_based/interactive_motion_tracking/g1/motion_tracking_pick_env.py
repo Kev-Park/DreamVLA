@@ -436,22 +436,23 @@ class G1Rewards(G1RewardsBase):
                     "sigma": 1.0})
 
         # GLOBAL (world-frame) tracking for the TASK arm (stripped from the root-relative body
-        # terms above). The right-arm keypoints (shoulder->elbow->wrist->HAND, indices 31-38)
-        # track the reference's ABSOLUTE world positions, not root-relative -- so the hand lands
-        # at the reference's global hand pose (= the bottle) REGARDLESS of root drift. NOW INCLUDES
-        # wrist_yaw (37) + rubber_hand (38): the actual grasp point, previously untracked (the term
-        # tracked the forearm but let the hand dangle, so the hand was off the bottle). Root-relative
-        # tracking can't do this: a root drift puts a root-relative-correct hand at the wrong global
-        # spot. body_names order must match keypt_idxs. weight 1.0.
+        # terms above). The right-arm keypoints (shoulder->elbow->wrist, indices 31-37) track the
+        # reference's ABSOLUTE world positions, not root-relative -- so the hand lands at the
+        # reference's global hand pose (= the bottle) REGARDLESS of root drift. NOW INCLUDES
+        # wrist_yaw (37) -- the grasp-point proxy, previously untracked (the term tracked the
+        # forearm to wrist_pitch but let the wrist/hand dangle off the bottle). rubber_hand (38) is
+        # the original-G1 hand link, absent on the dex-hand robot, so wrist_yaw is the closest
+        # shared grasp point. Root-relative tracking can't do this: a root drift puts a root-
+        # relative-correct hand at the wrong global spot. body_names order must match keypt_idxs.
         tracking_right_arm_pos = RewTerm(
             func=global_keypts_tracking_exp,
             weight=1.0,
             params={"asset_cfg": SceneEntityCfg("robot",
                         body_names=["right_shoulder_pitch_link", "right_shoulder_roll_link", "right_shoulder_yaw_link",
                                     "right_elbow_link", "right_wrist_roll_link", "right_wrist_pitch_link",
-                                    "right_wrist_yaw_link", "right_rubber_hand"],
+                                    "right_wrist_yaw_link"],
                         preserve_order=True),
-                    "std": 0.3, "keypt_idxs": [31, 32, 33, 34, 35, 36, 37, 38]})
+                    "std": 0.3, "keypt_idxs": [31, 32, 33, 34, 35, 36, 37]})  # wrist_yaw(37)=grasp-point proxy; rubber_hand(38) absent on dex robot
 
         right_hand_state_target_reward_val = RewTerm(
             func=right_hand_state_target_reward,
