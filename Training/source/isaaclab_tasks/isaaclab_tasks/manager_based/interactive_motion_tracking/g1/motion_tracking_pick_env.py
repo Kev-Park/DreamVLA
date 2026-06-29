@@ -408,7 +408,7 @@ class G1Rewards(G1RewardsBase):
         tracking_anchor_pos = RewTerm(
             func=anchor_pos_tracking_exp,
             weight=0.5,
-            params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.3, "eps": 0.08})  # 8cm root deadband
+            params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.3, "eps": 0.15})  # 15cm root deadband (was 8cm) -- more slack for posture/balance to reduce jerk/knockover
 
         tracking_anchor_ori = RewTerm(
             func=anchor_ori_tracking_exp,
@@ -453,6 +453,17 @@ class G1Rewards(G1RewardsBase):
                                     "right_wrist_yaw_link"],
                         preserve_order=True),
                     "std": 0.3, "keypt_idxs": [31, 32, 33, 34, 35, 36, 37]})  # wrist_yaw(37)=grasp-point proxy; rubber_hand(38) absent on dex robot
+
+        # PRECISION term for the grasp point: tight-sigma (0.1) GLOBAL track of wrist_yaw (the dex
+        # hand base -- fingers branch off it; no separate palm link) to the reference grasp-wrist
+        # pose (keypt 37). The wide arm term above (sigma 0.3) does the gross reach but tops out
+        # ~9cm off; this kicks in for the last few cm to put the hand precisely on the bottle.
+        # Tight sigma => near-dead far away, so the two layer cleanly (gross then fine).
+        tracking_hand_precise = RewTerm(
+            func=global_keypts_tracking_exp,
+            weight=1.0,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"], preserve_order=True),
+                    "std": 0.1, "keypt_idxs": [37]})
 
         right_hand_state_target_reward_val = RewTerm(
             func=right_hand_state_target_reward,
