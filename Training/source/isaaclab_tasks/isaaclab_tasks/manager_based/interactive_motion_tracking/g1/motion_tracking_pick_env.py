@@ -406,13 +406,17 @@ class G1Rewards(G1RewardsBase):
 
         tracking_relative_body_pos = RewTerm(
             func=relative_keypts_tracking_exp,
-            weight=1.0,
+            weight=2.0,  # 1.0->2.0: up-weight whole-body (non-right-arm) gait/pose tracking to recover
+                         # locomotion quality (degraded as the upper body got busier). Root anchor +
+                         # deadband left unchanged. Note: this also pins the FROZEN reference left arm
+                         # (source motions only animate the right arm) more rigidly at its static pose.
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
                     "std": 0.3, "keypts_mask": KEYPTS_MASK_NO_RARM})  # NO deadband: keep body pose/orientation tight (orientation was still off); deadband only on root
 
         tracking_relative_body_ori = RewTerm(
             func=relative_body_ori_tracking_exp,
-            weight=1.0,
+            weight=2.0,  # 1.0->2.0: up-weight whole-body (non-right-arm) orientation tracking alongside
+                         # the position term, to recover locomotion quality. Root/deadband unchanged.
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
                     "std": 0.4, "keypts_mask": KEYPTS_MASK_NO_RARM})
 
