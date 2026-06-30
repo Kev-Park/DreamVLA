@@ -341,17 +341,40 @@ class EventCfg(EventCfgBase):
 
 def target_orientation_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
+    root_pos_link = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3].clone() - env.scene.env_origins  # type: ignore
     root_rot_link = math_utils.quat_unique(asset.data.body_quat_w[:, asset_cfg.body_ids[0], :].clone())
 
-    # Keep the wrist's local z-axis pointing to world up (hand held level/horizontal),
-    # for BOTH pre- and post-grasp. Was: aim-the-wrist-at-the-object pre-grasp (slerped-in
-    # object-directed frame) + upright post-grasp. Dropped the pre-grasp aim so the only
-    # orientation objective the whole episode is "hold the hand level" — the dense aim penalty
-    # was competing with the sparse grasp/lift and is suspected in the late-training grasp drift.
-    z_axis_post = torch.tensor([0.0, 0.0, 1.0], device=root_rot_link.device).unsqueeze(0).repeat(root_rot_link.shape[0], 1)
-    z_axis_w = math_utils.quat_apply(root_rot_link, z_axis_post)
-    angle_post = torch.acos(torch.clamp(z_axis_w[:, 2], -1.0, 1.0))
-    return torch.abs(angle_post)
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32) - 1.
+    motion_ids = env.motion_ids.clone().detach().to(device=env.device, dtype=torch.long)
+    motion_res = env.motion_lib.get_motion_state(motion_ids, motion_times)
+    root_pos = motion_res["grab_pos"] + motion_res["offsets"]  # world-frame grab target
+
+    # Wrist orientation enforces TWO things at once (sum of angular penalties), both phases:
+    #   (1) LEVELNESS — wrist local z-axis -> world up, so the hand is held flat/horizontal.
+    #   (2) POINTING  — wrist local x-axis (the "forward" axis, per this file's convention)
+    #       points horizontally at the grab target. Horizontal bearing only: levelness already
+    #       pins z up, which forces x into the horizontal plane, so the two are consistent and
+    #       don't fight (a full-3D aim WOULD fight levelness when reaching down).
+    n = root_pos_link.shape[0]
+    z_axis = torch.tensor([0.0, 0.0, 1.0], device=root_rot_link.device).unsqueeze(0).repeat(n, 1)
+    x_axis = torch.tensor([1.0, 0.0, 0.0], device=root_rot_link.device).unsqueeze(0).repeat(n, 1)
+    z_w = math_utils.quat_apply(root_rot_link, z_axis)
+    x_w = math_utils.quat_apply(root_rot_link, x_axis)
+
+    # (1) levelness: angle of wrist-z off world up
+    level_angle = torch.acos(torch.clamp(z_w[:, 2], -1.0, 1.0))
+
+    # (2) pointing: angle between wrist-x (horizontal projection) and the horizontal bearing to target
+    x_h = x_w.clone(); x_h[:, 2] = 0.0
+    dir_h = (root_pos - root_pos_link).clone(); dir_h[:, 2] = 0.0
+    x_h = x_h / (torch.norm(x_h, dim=1, keepdim=True) + 1e-6)
+    dir_norm = torch.norm(dir_h, dim=1, keepdim=True)
+    dir_h = dir_h / (dir_norm + 1e-6)
+    point_angle = torch.acos(torch.clamp(torch.sum(x_h * dir_h, dim=1), -1.0, 1.0))
+    # gate pointing off once essentially on top of the target (horizontal bearing ill-defined)
+    point_mask = (dir_norm.squeeze(1) > 0.05).float()
+
+    return torch.abs(level_angle) + torch.abs(point_angle) * point_mask
 
 
 @configclass
@@ -463,8 +486,9 @@ class G1Rewards(G1RewardsBase):
                           # this aim target, costing ~-1.4 of penalty vs only +0.54 of lift, so it
                           # dropped the grasp to realign the wrist. At -1.0 the grasp's wrist penalty
                           # (~0.28) stays well under the lift, so lift wins and the grasp survives
-                          # while a light aim still guides the reach. time_mask: `angle` (bottle-
-                          # pointing) pre-grasp -> `angle_post` (vertical) post-grasp at is_closed=1.
+                          # while a light aim still guides the reach. Penalty = levelness (wrist-z ->
+                          # world up) + horizontal pointing (wrist-x -> bearing to grab target), both
+                          # enforced every step; pointing gated off when on top of the target.
 
 
     if TASK_DENSE:
