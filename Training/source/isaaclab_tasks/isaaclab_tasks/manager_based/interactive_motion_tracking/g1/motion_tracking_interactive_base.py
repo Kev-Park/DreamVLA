@@ -260,7 +260,8 @@ def object_above_threshold(env: ManagerBasedRLEnv, height_thres = 0.7, fall_thre
 
 
 def object_lift_reward(env: ManagerBasedRLEnv, rest_z: float = 0.90, success_z: float = 0.95,
-                       tau: float = 0.03, hold_rate: float = 0.02, hold_cap: float = 50.0) -> torch.Tensor:
+                       tau: float = 0.03, hold_rate: float = 0.02, hold_cap: float = 50.0,
+                       upright_sigma: float = 0.5) -> torch.Tensor:
     """Continuous saturating-exponential object-lift reward, gated to the reference grasp window.
 
       * is_closed-GATED (dead before the grasp time -> no knock-over credit). is_closed turns on
@@ -273,13 +274,26 @@ def object_lift_reward(env: ManagerBasedRLEnv, rest_z: float = 0.90, success_z: 
       * HOLD bonus: a per-env consecutive-held-steps counter ramps the per-step reward 1x ->
         (1 + hold_rate*hold_cap)x and self-resets to 0 on drop / episode reset (object back to
         rest -> held=0), pushing the policy to grab early and KEEP gripping.
-    Success counter (z>success_z & closed) unchanged so eval/collection stay comparable.
+      * UPRIGHT gate (NEW): multiplied by exp(-tilt^2/upright_sigma^2), where tilt is the angle of
+        the bottle's own up-axis (local +z; it spawns identity-upright via reset_object_state) from
+        world up. ~1 while vertical, ->0 as it tips, so lift credit is UNAVAILABLE while the bottle
+        is tipping. This makes the goal DIRECT (the bottle stays vertical) instead of relying on the
+        wrist-orientation proxy, and closes the abuse where lift was maxed with a tipped bottle /
+        non-level wrist. Bites only on actual tip (upright at rest -> ~no bootstrap cost). The wrist
+        target_orientation_error still shapes the pre-grasp APPROACH; this owns post-grasp verticality.
+    Success counter (z>success_z & closed) unchanged so eval/collection stay comparable (NOTE: it does
+    not require upright -- a tipped lift can still count as success; gate it too if eval should reflect that).
     """
     obj: RigidObject = env.scene["object"]
     z = obj.data.root_pos_w[:, 2]
     motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
     is_closed = env.motion_lib.get_motion_state(env.motion_ids, motion_times)["is_closed"].float()
     lift = 1.0 - torch.exp(-torch.clamp(z - rest_z, min=0.0) / tau)        # saturating, (0, 1]
+    # bottle uprightness: cos(tilt) = world-z component of the object's local +z axis
+    up_local = torch.tensor([0.0, 0.0, 1.0], device=z.device).unsqueeze(0).repeat(z.shape[0], 1)
+    up_world = math_utils.quat_apply(obj.data.root_quat_w, up_local)
+    tilt = torch.acos(torch.clamp(up_world[:, 2], -1.0, 1.0))
+    upright = torch.exp(-(tilt * tilt) / (upright_sigma * upright_sigma))  # 1 vertical -> 0 tipped
     held = ((z - rest_z) > 0.005).float() * is_closed                     # genuinely lifted (>5mm) & in grasp window
     if not hasattr(env, "object_hold_steps") or env.object_hold_steps.shape[0] != z.shape[0]:
         env.object_hold_steps = torch.zeros_like(z)
@@ -287,7 +301,7 @@ def object_lift_reward(env: ManagerBasedRLEnv, rest_z: float = 0.90, success_z: 
     hold_bonus = 1.0 + hold_rate * torch.clamp(env.object_hold_steps, max=hold_cap)
     if env.num_envs < 1001 and hasattr(env, "n_successes"):
         env.n_successes += (z > success_z) * is_closed
-    return lift * is_closed * hold_bonus
+    return lift * is_closed * hold_bonus * upright
 
 
 def object_approach_reward_left(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 1.0, offset_x: float = 0., offset_y: float = 0.) -> torch.Tensor:
