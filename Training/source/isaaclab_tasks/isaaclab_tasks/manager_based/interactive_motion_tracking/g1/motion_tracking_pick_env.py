@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, target_orientation_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, lower_body_keypt_vel_tracking
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, lower_body_keypt_vel_tracking
 import numpy as np
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -453,6 +453,21 @@ class G1Rewards(G1RewardsBase):
             weight=1.0,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"], preserve_order=True),
                     "std": 0.1, "keypt_idxs": [37]})
+
+        # ORIENTATION baseline for the TASK arm. relative_body_ori (above) masks the right arm
+        # out (KEYPTS_MASK_NO_RARM); this re-adds it on its OWN mask for distinct weighting.
+        # Tracks right-arm LINK rotations to the reference, exp kernel, over KEYPTS_MASK_RARM_ONLY
+        # = idx 31-36 (shoulder_pitch -> wrist_pitch); wrist_yaw(37) is masked 0 in KEYPTS_MASK so
+        # the hand base is left entirely to target_orientation_error. LOW weight (0.5, well under
+        # the wrist level+point penalty's -1.0 scale): a good-behavior prior on forearm/upper-arm
+        # roll -- the DOF keypoint positions don't pin -- that the bespoke wrist term overrides at
+        # the hand. Same rationale as tracking_right_arm_pos: reference guides, task owns the grasp.
+        # Fixed weight (not in --tracking-scale loop), like the other task-arm terms.
+        tracking_right_arm_ori = RewTerm(
+            func=relative_body_ori_tracking_exp,
+            weight=0.5,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                    "std": 0.4, "keypts_mask": KEYPTS_MASK_RARM_ONLY})
 
         right_hand_state_target_reward_val = RewTerm(
             func=right_hand_state_target_reward,
