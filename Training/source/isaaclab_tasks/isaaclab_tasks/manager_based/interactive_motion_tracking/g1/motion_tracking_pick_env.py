@@ -397,7 +397,7 @@ class G1Rewards(G1RewardsBase):
         tracking_anchor_pos = RewTerm(
             func=anchor_pos_tracking_exp,
             weight=0.5,
-            params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.3, "eps": 0.15})  # 15cm root deadband (was 8cm) -- more slack for posture/balance to reduce jerk/knockover
+            params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.3, "eps": 0.20})  # 20cm root deadband (8->15->20) -- more slack so the robot SETTLES near the grasp root instead of micro-correcting/stumbling at the exact target, which jostled the arm into the bottle
 
         tracking_anchor_ori = RewTerm(
             func=anchor_ori_tracking_exp,
