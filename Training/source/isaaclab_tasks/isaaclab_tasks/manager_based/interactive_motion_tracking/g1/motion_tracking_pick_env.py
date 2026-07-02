@@ -498,8 +498,8 @@ class G1Rewards(G1RewardsBase):
 
         target_orientation_error = RewTerm(func=target_orientation_error,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])},
-            weight=-2.0)  # up-weighted -1.0->-2.0 to enforce the wrist level+point harder (bottle-upright
-                          # gate now guards against a full veto). (hist: -3.0, a mistaken -5.0 that VETOED, then -1.0.)
+            weight=-1.0)  # back to -1.0: -2.0 over-prioritized wrist orientation and KILLED the grasp
+                          # (rate 22%->8%, dead by mid-training). Rely on the doubled lift instead. (hist: -3.0, -5.0 VETOED, -1.0, -2.0 killed it.)
                           # Empirically -5.0 VETOED the grasp: the policy bootstrapped a grasp
                           # (lift 0.028 -> 0.54 by iter ~697) but the grasp pose sits ~0.28 rad off
                           # this aim target, costing ~-1.4 of penalty vs only +0.54 of lift, so it
@@ -540,7 +540,8 @@ class G1Rewards(G1RewardsBase):
         # competing tracking, so a large lift here doesn't fight the gait.
         object_lift = RewTerm(
             func=object_lift_reward,
-            weight=8.0,
+            weight=16.0,  # 8.0->16.0 (2x): push grasp discovery/rate harder relative to tracking, now that
+                          # the wrist term is back to -1.0. Still upright-gated (2x of ~0 when tipped = ~0).
             params={"rest_z": 0.90, "success_z": 0.95, "tau": 0.03, "hold_rate": 0.02, "hold_cap": 50.0}
         )
 @configclass
