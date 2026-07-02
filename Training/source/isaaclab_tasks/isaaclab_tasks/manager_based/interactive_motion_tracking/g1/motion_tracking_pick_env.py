@@ -406,17 +406,16 @@ class G1Rewards(G1RewardsBase):
 
         tracking_relative_body_pos = RewTerm(
             func=relative_keypts_tracking_exp,
-            weight=2.0,  # 1.0->2.0: up-weight whole-body (non-right-arm) gait/pose tracking to recover
-                         # locomotion quality (degraded as the upper body got busier). Root anchor +
-                         # deadband left unchanged. Note: this also pins the FROZEN reference left arm
-                         # (source motions only animate the right arm) more rigidly at its static pose.
+            weight=1.5,  # 1.0->2.0->1.5: whole-body (non-right-arm) gait/pose tracking. Eased 2.0->1.5
+                         # to give the grasp/wrist more room (2.0 over-competed with the task). Root
+                         # anchor + deadband unchanged. Also pins the FROZEN reference left arm's static pose.
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
                     "std": 0.3, "keypts_mask": KEYPTS_MASK_NO_RARM})  # NO deadband: keep body pose/orientation tight (orientation was still off); deadband only on root
 
         tracking_relative_body_ori = RewTerm(
             func=relative_body_ori_tracking_exp,
-            weight=2.0,  # 1.0->2.0: up-weight whole-body (non-right-arm) orientation tracking alongside
-                         # the position term, to recover locomotion quality. Root/deadband unchanged.
+            weight=1.5,  # 1.0->2.0->1.5: whole-body (non-right-arm) orientation tracking, eased to 1.5
+                         # alongside the position term to give the grasp/wrist more room. Root/deadband unchanged.
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
                     "std": 0.4, "keypts_mask": KEYPTS_MASK_NO_RARM})
 
@@ -499,7 +498,8 @@ class G1Rewards(G1RewardsBase):
 
         target_orientation_error = RewTerm(func=target_orientation_error,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])},
-            weight=-1.0)  # LIGHT pre-contact aim prior (was -3.0, then a mistaken -5.0 bump).
+            weight=-2.0)  # up-weighted -1.0->-2.0 to enforce the wrist level+point harder (bottle-upright
+                          # gate now guards against a full veto). (hist: -3.0, a mistaken -5.0 that VETOED, then -1.0.)
                           # Empirically -5.0 VETOED the grasp: the policy bootstrapped a grasp
                           # (lift 0.028 -> 0.54 by iter ~697) but the grasp pose sits ~0.28 rad off
                           # this aim target, costing ~-1.4 of penalty vs only +0.54 of lift, so it
