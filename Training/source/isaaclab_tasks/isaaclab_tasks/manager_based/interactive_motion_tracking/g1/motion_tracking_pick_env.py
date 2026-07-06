@@ -498,8 +498,8 @@ class G1Rewards(G1RewardsBase):
 
         target_orientation_error = RewTerm(func=target_orientation_error,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])},
-            weight=-1.0)  # back to -1.0: -2.0 over-prioritized wrist orientation and KILLED the grasp
-                          # (rate 22%->8%, dead by mid-training). Rely on the doubled lift instead. (hist: -3.0, -5.0 VETOED, -1.0, -2.0 killed it.)
+            weight=-1.5)  # -1.0->-1.5: moderate wrist up-weight (between safe -1.0 and the -2.0 that
+                          # killed the grasp) w/ residual_scale 0.3 + lift 16. (hist: -3.0, -5.0 VETOED, -1.0, -2.0 killed, -1.5.)
                           # Empirically -5.0 VETOED the grasp: the policy bootstrapped a grasp
                           # (lift 0.028 -> 0.54 by iter ~697) but the grasp pose sits ~0.28 rad off
                           # this aim target, costing ~-1.4 of penalty vs only +0.54 of lift, so it
