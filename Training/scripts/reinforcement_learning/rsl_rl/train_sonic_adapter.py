@@ -96,6 +96,18 @@ parser.add_argument(
          "Set 0.0 to drop tracking (task rewards only) — but the loose residual bound "
          "alone does NOT hold the base motion, so the policy collapses to standing.",
 )
+parser.add_argument(
+    "--wrist-weight", type=float, default=None,
+    help="Override target_orientation_error (wrist level+point) weight — a PENALTY, pass "
+         "negative (e.g. -1.5). Default None = use the env cfg value.")
+parser.add_argument(
+    "--lift-weight", type=float, default=None,
+    help="Override object_lift reward weight (e.g. 16.0). Default None = use env cfg value.")
+parser.add_argument(
+    "--body-track-weight", type=float, default=None,
+    help="Override BOTH tracking_relative_body_pos and tracking_relative_body_ori weights "
+         "(whole-body non-right-arm keypoint + link-orientation tracking). Applied AFTER "
+         "--tracking-scale. Default None = use env cfg values.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -221,6 +233,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             term.weight = old_w * ts
             print(f"[train_sonic_adapter] rewards.{term_name}.weight: {old_w} -> {term.weight} "
                   f"(tracking_scale={ts})")
+
+    # Direct per-term weight overrides (applied AFTER --tracking-scale so they win). Default
+    # None = keep the env cfg value. Lets reward-weight sweeps run in parallel on separate GPUs
+    # differing by FLAG instead of by an edited source file (no shared-file race).
+    _overrides = []
+    if args_cli.wrist_weight is not None:
+        _overrides.append(("target_orientation_error", args_cli.wrist_weight))
+    if args_cli.lift_weight is not None:
+        _overrides.append(("object_lift", args_cli.lift_weight))
+    if args_cli.body_track_weight is not None:
+        _overrides.append(("tracking_relative_body_pos", args_cli.body_track_weight))
+        _overrides.append(("tracking_relative_body_ori", args_cli.body_track_weight))
+    for term_name, new_w in _overrides:
+        term = getattr(env_cfg.rewards, term_name, None)
+        if term is not None:
+            old_w = term.weight
+            term.weight = float(new_w)
+            print(f"[train_sonic_adapter] rewards.{term_name}.weight: {old_w} -> {term.weight} (CLI override)")
+        else:
+            print(f"[train_sonic_adapter] WARN: rewards.{term_name} not found; weight override ignored")
+
+    # One-line effective-config banner for run identification — grep 'EFFECTIVE CONFIG' in the log.
+    def _w(n):
+        t = getattr(env_cfg.rewards, n, None)
+        return t.weight if t is not None else None
+    _ap = getattr(env_cfg.rewards, "tracking_anchor_pos", None)
+    _eps = _ap.params.get("eps") if _ap is not None else None
+    print(f"[train_sonic_adapter] EFFECTIVE CONFIG: residual_scale={args_cli.residual_scale} "
+          f"tracking_scale={ts} wrist={_w('target_orientation_error')} lift={_w('object_lift')} "
+          f"body_pos={_w('tracking_relative_body_pos')} body_ori={_w('tracking_relative_body_ori')} "
+          f"deadband_eps={_eps}")
 
     # set the environment seed
     env_cfg.seed = agent_cfg.seed
