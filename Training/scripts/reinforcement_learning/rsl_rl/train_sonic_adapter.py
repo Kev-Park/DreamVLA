@@ -112,6 +112,10 @@ parser.add_argument(
     "--arm-pos-weight", type=float, default=None,
     help="Override tracking_right_arm_pos weight (global right-arm keypoint position tracking, "
          "shoulder->wrist_yaw). Applied AFTER --tracking-scale. Default None = use env cfg value.")
+parser.add_argument(
+    "--hand-pos-weight", type=float, default=None,
+    help="Override tracking_hand_precise weight (tight-sigma global wrist_yaw position tracking, "
+         "the grasp-point precision term). Default None = use env cfg value.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -251,6 +255,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         _overrides.append(("tracking_relative_body_ori", args_cli.body_track_weight))
     if args_cli.arm_pos_weight is not None:
         _overrides.append(("tracking_right_arm_pos", args_cli.arm_pos_weight))
+    if args_cli.hand_pos_weight is not None:
+        _overrides.append(("tracking_hand_precise", args_cli.hand_pos_weight))
     for term_name, new_w in _overrides:
         term = getattr(env_cfg.rewards, term_name, None)
         if term is not None:
@@ -269,7 +275,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"[train_sonic_adapter] EFFECTIVE CONFIG: residual_scale={args_cli.residual_scale} "
           f"tracking_scale={ts} wrist={_w('target_orientation_error')} lift={_w('object_lift')} "
           f"body_pos={_w('tracking_relative_body_pos')} body_ori={_w('tracking_relative_body_ori')} "
-          f"arm_pos={_w('tracking_right_arm_pos')} deadband_eps={_eps}")
+          f"arm_pos={_w('tracking_right_arm_pos')} hand_pos={_w('tracking_hand_precise')} deadband_eps={_eps}")
 
     # set the environment seed
     env_cfg.seed = agent_cfg.seed
