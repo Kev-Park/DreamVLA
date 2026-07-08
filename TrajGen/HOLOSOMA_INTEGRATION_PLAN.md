@@ -223,17 +223,18 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
   - **CPU VALIDATION (no GPU, dreamcontrol_51):** loaded `pick_20.pkl` via pk `g1_29dof.urdf` (motion_lib's FK method): pk joint order == JointNamesOrder(29) ✓; right hand @grab=[1.067,-0.364,0.848] vs grab_pos [1.118,-0.422,0.843] (dist 0.078 = wrist-link→hand offset) ✓; feet grounded (min-foot z=0.000) ✓; hand lifts 0.79→1.005 ✓.
   - **QUEUED (needs GPU — both GPUs pinned by nima + 2 non-my dvij procs):** CHECKPOINT 3 Isaac visual playback of the 29-DOF .pkl (place .pkl in motion_lib reference dir; run pick play script `--waist-dof 29`). Finalize exact play cmd + run when a GPU frees.
 - [ ] Phase 3 — downstream 29-DOF + reference-playback (CHECKPOINT 3) — Isaac visual pending GPU
-- [ ] **Phase 3.5 — Multi-motion grasp-validation harness + auto-refine to 100% (user-requested).**
-  - **GOAL:** across many motion IDs, auto-assess (no human) whether each synthesized reference ends with the
-    mustard HELD, and auto-refine any failures until 100% grasp (valid for controlled generation + modification).
-  - **"HELD" (reference-level, keypoint-based, CPU):** object (qpos[36:39]) at the last frame is (a) LIFTED
-    (`obj_z[end] - obj_z[grab] > ~0.05m`) and (b) CO-LOCATED with the right hand (`|obj - right_rubber_hand| < ~0.15m`),
-    and grab was actually detected (object moved). NOTE: physics finger-closure grasp (does it stay held under
-    contact) is a further layer = Phase 5; this validates the reference/attachment grasp.
-  - **Plan:** (1) batch Adapter A→holosoma→check over IDs, measure grasp% + failure modes FIRST; (2) design
-    auto-refine targeted at real failures (likely grab re-detection + lift-enforcement / re-add the omitted
-    post-grab height floor as the "modification" that guarantees a lift); (3) Isaac footage per motion (after CKPT3)
-    for the visual record + keypoints. holosoma is CPU → batch runs without GPU.
+- [x] **Phase 3.5 — Multi-motion grasp-validation harness + auto-refine: 100/100 HELD.**
+  - Harness (box): `~/kevin/holosoma_adapters/grasp_check.py` (HELD = grab-detected + object lifted >0.05 output
+    + object co-located with right hand <0.15 at last frame) + `~/kevin/grasp_batch.sh` (Adapter A→holosoma→check per id).
+  - Batch over all 100 motions: **100/100 HELD, holosoma succeeded on all (no infeasibility).**
+  - **Refine = lift-aware grab (in Adapter A), no holosoma iteration needed:** grab = MAX reach-toward-object among
+    only frames FOLLOWED BY a real lift (threshold in human frame targeting >=0.06 OUTPUT lift, since holosoma scales
+    ~height/1.32). Progression: 20/21 → fix high-picks (reach plateau, argmax lands late w/ no lift: motion 6 @138→25)
+    → 99/100 → fix late-reach-re-extension w/ tiny lift (motion 25 argmax@124 lift .048 → lifting pick @49 lift ~.21)
+    → 100/100. Motion 20 stays @46 (user-preferred natural max-reach).
+  - Physics finger-closure grasp (stays held under contact) is still Phase 5; this guarantees the REFERENCE grasp.
+  - **29-DOF .pkl dataset built:** Adapter B over all 100 -> `~/kevin/DreamVLA/TrajGen/sample/Holosoma_Pick_sim2/pick_*.pkl`.
+  - TODO: Isaac footage/keypoints per motion (after CKPT3, GPU).
 - [ ] Phase 4 — PyRoki removal (CHECKPOINT 4)
 - [ ] Phase 5 — grasp synth + contact rewards (later)
 
