@@ -199,6 +199,10 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
       matters); adds `transl[:,2]+=0.035`.
     - **Grounding:** per-frame FK (pk, g1_29dof.urdf) lowest link-origin → 0 (base_pos[:,2]-=mz, mz∈[0.06,0.11]),
       replicating retarget.py `global_position[:,2]-=min_z`. Root z ~0.73–0.77.
+    - **OBJECT-GROUNDING FIX (user-reported pre-contact vibration):** the resting bottle is WORLD-FIXED pre-grab, so it
+      must NOT inherit the robot's per-frame grounding bob (`mz` swings ~4cm during the reach; only ~1.4cm post-grab).
+      Object z now gets a CONSTANT shift (`mz[grab_idx]`) through grab_idx, then per-frame `mz[t]` once attached to the hand
+      → object exactly static pre-grab (verified frame-to-frame Δ=0), continuous at grab. (Robot base still per-frame grounded.)
     - **grab_idx** = last static-object frame before the lift (=46, the reach frame). **FREEZE_FOR=10 hold**
       re-inserted at grab_idx (length-preserving shift+hold on base/quat/joints/object); verified object z flat
       f46–57 then lifts to ~1.03.

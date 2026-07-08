@@ -65,8 +65,13 @@ local = torch.stack([fk[l].get_matrix()[:, :3, 3] for l in fk], dim=1).numpy()  
 Rb = quat_wxyz_to_R(base_quat)                                                 # (F,3,3)
 world_z = (np.einsum("fij,flj->fli", Rb, local) + base_pos[:, None, :])[:, :, 2]  # (F, L)
 mz = world_z.min(axis=1)                                                       # (F,)
-base_pos[:, 2] -= mz
-obj_pos[:, 2] -= mz
+base_pos[:, 2] -= mz                                                           # robot: per-frame grounding (feet -> 0)
+# Object grounding: the resting bottle is WORLD-FIXED pre-grab, so it must NOT inherit the
+# robot's per-frame grounding bob (mz swings ~4cm during the reach). Use a CONSTANT shift while
+# resting (through grab_idx), then track the per-frame shift once it's attached to the hand.
+obj_shift = mz.copy()
+obj_shift[:grab_idx + 1] = mz[grab_idx]
+obj_pos[:, 2] -= obj_shift
 
 # --- FREEZE_FOR hold at grab_idx (lift-delay), length-preserving (retarget.py 189-195) ---
 def freeze(a):
