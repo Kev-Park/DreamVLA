@@ -97,7 +97,22 @@ if pick_point_raw is not None:
     reach = ((wrist[:, :2] - pelvis[:, :2]) * d).sum(-1)          # forward reach toward object
 else:
     reach = np.linalg.norm(wrist[:, :2] - pelvis[:, :2], axis=-1)  # fallback: horizontal reach
+# Lift-aware grab selection: since the object rests at wrist[grab] and then tracks the wrist, a valid
+# grasp needs the wrist to RISE after grab (else no lift -> "not held"). Primary = max reach toward the
+# object (natural full-extension pick), but only if a lift follows; else fall back to the ONSET of
+# near-max extension (earlier -> leaves room for the lift; fixes high-pick motions whose reach plateaus
+# and whose argmax lands late), then to the frame closest to the object.
+LIFT_MIN = 0.05
+lift_after = lambda g: float(wrist[g:, 2].max() - wrist[g, 2])
 grab_t = int(np.argmax(reach[:horizon]))
+if lift_after(grab_t) < LIFT_MIN:
+    onset = int(np.argmax(reach[:horizon] >= 0.9 * float(reach[:horizon].max())))
+    if lift_after(onset) >= LIFT_MIN:
+        grab_t = onset
+    elif pick_point_raw is not None:
+        grab_t = int(np.argmin(np.linalg.norm(wrist - pp[None, :], axis=1)))
+    else:
+        grab_t = onset
 obj = wrist.copy()
 obj[:grab_t] = wrist[grab_t]                                       # static at reach point until grabbed
 

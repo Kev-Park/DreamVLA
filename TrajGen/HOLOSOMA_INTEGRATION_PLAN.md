@@ -223,6 +223,17 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
   - **CPU VALIDATION (no GPU, dreamcontrol_51):** loaded `pick_20.pkl` via pk `g1_29dof.urdf` (motion_lib's FK method): pk joint order == JointNamesOrder(29) ✓; right hand @grab=[1.067,-0.364,0.848] vs grab_pos [1.118,-0.422,0.843] (dist 0.078 = wrist-link→hand offset) ✓; feet grounded (min-foot z=0.000) ✓; hand lifts 0.79→1.005 ✓.
   - **QUEUED (needs GPU — both GPUs pinned by nima + 2 non-my dvij procs):** CHECKPOINT 3 Isaac visual playback of the 29-DOF .pkl (place .pkl in motion_lib reference dir; run pick play script `--waist-dof 29`). Finalize exact play cmd + run when a GPU frees.
 - [ ] Phase 3 — downstream 29-DOF + reference-playback (CHECKPOINT 3) — Isaac visual pending GPU
+- [ ] **Phase 3.5 — Multi-motion grasp-validation harness + auto-refine to 100% (user-requested).**
+  - **GOAL:** across many motion IDs, auto-assess (no human) whether each synthesized reference ends with the
+    mustard HELD, and auto-refine any failures until 100% grasp (valid for controlled generation + modification).
+  - **"HELD" (reference-level, keypoint-based, CPU):** object (qpos[36:39]) at the last frame is (a) LIFTED
+    (`obj_z[end] - obj_z[grab] > ~0.05m`) and (b) CO-LOCATED with the right hand (`|obj - right_rubber_hand| < ~0.15m`),
+    and grab was actually detected (object moved). NOTE: physics finger-closure grasp (does it stay held under
+    contact) is a further layer = Phase 5; this validates the reference/attachment grasp.
+  - **Plan:** (1) batch Adapter A→holosoma→check over IDs, measure grasp% + failure modes FIRST; (2) design
+    auto-refine targeted at real failures (likely grab re-detection + lift-enforcement / re-add the omitted
+    post-grab height floor as the "modification" that guarantees a lift); (3) Isaac footage per motion (after CKPT3)
+    for the visual record + keypoints. holosoma is CPU → batch runs without GPU.
 - [ ] Phase 4 — PyRoki removal (CHECKPOINT 4)
 - [ ] Phase 5 — grasp synth + contact rewards (later)
 
