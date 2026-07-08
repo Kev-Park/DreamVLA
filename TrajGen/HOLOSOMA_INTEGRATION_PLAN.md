@@ -131,7 +131,18 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
       → matplotlib 3D skeleton + red box marker → imageio-ffmpeg MP4. Needs matplotlib + imageio-ffmpeg (installed).
     - **NOTE:** demo loops through object-pose AUGMENTATION passes after the base retarget — Ctrl-C after
       `*_original.npz` is saved; we'll disable augmentation for our single-motion use.
-- [ ] Phase 1 — Adapter A + real-motion retarget render (CHECKPOINT 1)  ← NEXT
+- [~] **Phase 1 — IN PROGRESS.**
+  - [x] **Adapter A** written: `~/kevin/holosoma_adapters/export_to_holosoma.py` (results.npy `motion`
+        (k,22,3,N) -> transpose -> rot_mat[[0,0,1],[1,0,0],[0,1,0]] Y-up→Z-up -> drop frame0 ->
+        .npz {global_joint_positions (N,22,3), height}). KEY FINDING: **OmniControl 22 joints ==
+        holosoma SMPLX_DEMO_JOINTS order exactly** → use `--data-format smplx` directly, no custom format.
+  - [x] **CHECKPOINT 1a PASSED** (robot_only): real Pick motion 20 -> `~/kevin/hs_pick_out/pick_20.npz`;
+        render https://thiskevin.com/videos/2026-07-07_2254_holosoma_CKPT1a_pick20_robotonly.mp4
+        Cmd: `robot_retarget.py --data_path ~/kevin/hs_input --task-type robot_only --task-name pick_20 --data_format smplx --task-config.object-name ground --save_dir ~/kevin/hs_pick_out`
+  - [ ] CHECKPOINT 1b (object_interaction): fabricate bottle object_poses from wrist + inject into
+        holosoma smplx loader (line ~254 defaults object_poses to identity — add "object_poses" .npz key path);
+        need mustard `.usd`->`.obj`. Then render.  ← NEXT
+  - NOTE: robot_only qpos=(F,36); object_interaction=(F,43). Both retarget/complete then loop AUGMENTATION — Ctrl-C after save.
 - [ ] Phase 1 — Adapter A + real-motion retarget render (CHECKPOINT 1)
 - [ ] Phase 2 — Adapter B (.pkl + hold/floor) + render (CHECKPOINT 2)
 - [ ] Phase 3 — downstream 29-DOF + reference-playback (CHECKPOINT 3)
