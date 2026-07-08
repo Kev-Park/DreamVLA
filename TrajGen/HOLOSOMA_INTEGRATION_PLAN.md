@@ -158,7 +158,14 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
       So instead of faking a 325-col InterMimic vector, **patched holosoma** (`examples/robot_retarget.py`, backup `.bak`):
       (1) `validate_config` allows `smplx` for object_interaction; (2) object_interaction `load_motion_data` branch
       prefers our `.npz` (`global_joint_positions` + `height` + `object_poses`) over `.pt`. Reuses the working smplx mapping + gains the interaction mesh.
-    - **object_poses fabrication (Adapter A):** bottle static at grab loc until reached (`grab_t=argmin wrist z`), then
+    - **v2 fixes (user review of 1b):** (1) **grab retimed** — grab frame now = argmin over first 140 frames of
+      |right_hand − hint pick_point| (replicates `sample/Pick_sim/retarget.py`: pick_point = first `DATA['hint']`
+      frame with right-hand z>0). For motion 20 this is frame **75** (was 23 via lowest-wrist); object now rests at the
+      true pick spot until the hand arrives. (2) **left arm frozen** — `holosoma_adapters/postprocess_freeze_larm.py`
+      overwrites the output's left-arm joints to the fixed rest pose from `Pick_sim1/refine_motions_al.py` ("Make left
+      arm non functional"): 29-DOF qpos[22:29] = [sh_pitch 0.35, sh_roll 0.16, sh_yaw 0, elbow 0.87, wrist r/p/y 0].
+      Source left arm is NOT frozen in OmniControl → the freeze is a deliberate joint-space overwrite (fold into Adapter B).
+    - **object_poses fabrication (Adapter A):** bottle static at grab loc until reached (hint-based `grab_t`), then
       rigidly tracks the right wrist (idx 21). **GOTCHA — preprocess asymmetry:** `preprocess_motion_data` scales human
       joints fully (`z-=z_min` then `*scale`) but object as `out_xy=scale*in_xy, out_z=in_z0+scale*(in_z-in_z0)` (z0 NOT
       scaled). Naively fabricating in raw frame left the object 0.14 m above the hand. Adapter A now **pre-inverts** the

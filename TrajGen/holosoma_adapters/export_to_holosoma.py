@@ -44,8 +44,19 @@ if not (1.3 < h < 2.2):
 ROBOT_HEIGHT_G1 = 1.32          # holosoma config_types/robot.py g1 robot_height; smpl_scale = ROBOT_HEIGHT/height
 L_FOOT, R_FOOT = 10, 11         # SMPLX_DEMO_JOINTS foot indices (holosoma toe_names for smplx)
 
-wrist = gj[:, R_WRIST, :].astype(np.float64)                       # (N, 3), raw human frame
-grab_t = int(np.argmin(wrist[:, 2]))                               # reach-down grab = lowest wrist
+wrist = gj[:, R_WRIST, :].astype(np.float64)                       # (N, 3), rotated Z-up frame
+# Grab frame = when the right hand is closest to the OmniControl pick-hint (replicates
+# sample/Pick_sim/retarget.py: pick_point = first hint frame with right-hand z>0; grab =
+# argmin over the first 140 frames of |right_hand - pick_point|). This lands the grab at the
+# actual reach-to-object moment, not the mid-reach lowest-wrist frame.
+hint = DATA["hint"][:, 1:][motion_idx]                             # (N, 22, 3), raw Y-up (drop frame0)
+pick_point_raw = next((np.asarray(jp[R_WRIST], np.float64) for jp in hint if jp[R_WRIST][2] > 0.0), None)
+if pick_point_raw is not None:
+    pp = rot @ pick_point_raw                                     # raw -> Z-up frame
+    horizon = min(140, wrist.shape[0])
+    grab_t = int(np.argmin(np.linalg.norm(wrist[:horizon] - pp[None, :], axis=-1)))
+else:
+    grab_t = int(np.argmin(wrist[:, 2]))                          # fallback: lowest wrist
 obj = wrist.copy()
 obj[:grab_t] = wrist[grab_t]                                       # static at grab loc until reached
 
