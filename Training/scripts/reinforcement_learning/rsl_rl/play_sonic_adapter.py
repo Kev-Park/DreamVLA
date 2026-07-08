@@ -100,6 +100,15 @@ parser.add_argument(
          "required. Use this to confirm the reference motions themselves are clean.",
 )
 parser.add_argument(
+    "--reference-pd", action="store_true", default=False,
+    help="PHYSICS reference baseline: drive the robot's native JointPositionAction PD "
+         "targets with the motion_lib reference each step (target = reference joint "
+         "angles) and let Isaac's PD actuators track it under gravity/contact. NO SONIC "
+         "encoder/decoder, NO kinematic teleport — this is holosoma-instead-of-SONIC in "
+         "the physics sim. Right fingers close during the grab-hold window. No checkpoint "
+         "required. Use to test whether the reference itself is dynamically feasible.",
+)
+parser.add_argument(
     "--ref-motions-path", type=str, default=None,
     help="Override the env's ref_motions_path (dir of reference .pkl files). Use to point "
          "reference-playback at an isolated set (e.g. the holosoma 29-DOF .pkl) without "
@@ -299,6 +308,50 @@ def _write_reference_pose(env, joint_map, device):
         robot.write_root_velocity_to_sim(torch.zeros((unw.num_envs, 6), device=device))
 
 
+def _make_reference_pd_policy(env, joint_map, device):
+    """Native-action policy that PD-tracks the motion_lib reference under physics.
+
+    The env's body action term is ``JointPositionActionCfg(scale, use_default_offset=True)``
+    so the PD target is ``default[joint] + action*scale``. Setting
+    ``action = (ref_dof - default) / scale`` makes the PD target equal the reference joint
+    angles; Isaac's SONIC-matched PD actuators then track it under gravity/contact — no
+    decoder, no teleport. This is "holosoma instead of SONIC" in the physics sim.
+
+    The reference ``dof_pos`` is returned in ``motion_lib.joint_names`` order, which is
+    exactly the body action term's ``JointNamesOrder`` (preserve_order=True) — same index,
+    no permutation. Action layout is ``[body(n_body), left_hand(1), right_hand(1)]`` (the
+    ActionsCfg field order: inherited joint_pos, then left/right binary finger terms).
+    Left fingers: open==close in the cfg, so the value is irrelevant (0). Right fingers:
+    BinaryJointAction closes when action < 0, so close during the grab-hold window.
+    """
+    unw = env.unwrapped
+    robot = unw.scene["robot"]
+    scale = float(unw.cfg.actions.joint_pos.scale)
+    default_body = robot.data.default_joint_pos[:, joint_map].clone()   # (N, n_body), JointNamesOrder
+    n_body = int(joint_map.shape[0])
+    total = int(env.num_actions)
+    if total != n_body + 2:
+        print(f"[reference-pd] WARN: action dim {total} != body {n_body} + 2 fingers; "
+              "assuming layout [body, left_hand, right_hand] — verify ActionsCfg order.")
+    print(f"[reference-pd] body DOF={n_body}, total action dim={total}, joint_pos scale={scale}")
+
+    def policy(obs):
+        with torch.inference_mode():
+            motion_times = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
+                device=device, dtype=torch.float32
+            )
+            res = unw.motion_lib.get_motion_state(unw.motion_ids, motion_times)
+            ref_dof = res["dof_pos"].to(device)                        # (N, n_body), JointNamesOrder
+            act = torch.zeros((env.num_envs, total), device=device, dtype=torch.float32)
+            act[:, :n_body] = (ref_dof - default_body) / scale
+            # right hand (index n_body+1): close (<0) during grab-hold, else open (>0)
+            is_closed = res["is_closed"].to(device).reshape(-1).float()
+            act[:, n_body + 1] = torch.where(is_closed > 0.5, -1.0, 1.0)
+            return act
+
+    return policy
+
+
 # =========================================================================
 # Main.
 # =========================================================================
@@ -338,7 +391,7 @@ def main():
     # ---- resolve checkpoint (skipped in --zero-residual / --reference-playback modes) ----
     resume_path = None
     log_dir = None
-    _no_checkpoint = args_cli.zero_residual or args_cli.reference_playback
+    _no_checkpoint = args_cli.zero_residual or args_cli.reference_playback or args_cli.reference_pd
     if not _no_checkpoint:
         log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
@@ -391,20 +444,36 @@ def main():
     for _ in range(60):
         _APP.update()
 
-    # ---- frozen encoder + decoder + adapter wrapper (same wiring as training) ----
     device = agent_cfg.device
-    print(f"[play_sonic_adapter] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
-    decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
-    print(f"[play_sonic_adapter] loading frozen SONIC encoder ONNX: {args_cli.sonic_encoder_onnx}")
-    encoder = load_frozen_encoder(args_cli.sonic_encoder_onnx, device)
-    env = TokenAdapterVecEnvWrapper(
-        env, decoder, encoder, device,
-        residual_scale=args_cli.residual_scale,
-        clip_actions=None,
-    )
+    if args_cli.reference_pd:
+        # ---- reference-PD: NO SONIC decoder/encoder. Wrap with the plain RSL-RL wrapper so
+        # the env's NATIVE JointPositionAction is what env.step applies (PD physics). ----
+        from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
+        env = RslRlVecEnvWrapper(env, clip_actions=None)
+        print("[play_sonic_adapter] REFERENCE-PD mode: native JointPositionAction PD-driven "
+              "by the motion_lib reference each step (physics tracking; no SONIC decoder, no "
+              "teleport).")
+    else:
+        # ---- frozen encoder + decoder + adapter wrapper (same wiring as training) ----
+        print(f"[play_sonic_adapter] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
+        decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
+        print(f"[play_sonic_adapter] loading frozen SONIC encoder ONNX: {args_cli.sonic_encoder_onnx}")
+        encoder = load_frozen_encoder(args_cli.sonic_encoder_onnx, device)
+        env = TokenAdapterVecEnvWrapper(
+            env, decoder, encoder, device,
+            residual_scale=args_cli.residual_scale,
+            clip_actions=None,
+        )
 
-    # ---- policy: trained adapter, zero-residual baseline, or reference playback ----
-    if args_cli.reference_playback:
+    # ---- policy: trained adapter, zero-residual baseline, reference playback, or reference-PD ----
+    if args_cli.reference_pd:
+        # Real policy is built after the warm-up (needs motion_lib + the joint map). Placeholder
+        # returns zeros (only the warm-up uses an explicit zero action, never this).
+        print("[play_sonic_adapter] REFERENCE-PD: reference→PD-target policy built after warm-up.")
+
+        def policy(obs):
+            return torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
+    elif args_cli.reference_playback:
         print("[play_sonic_adapter] REFERENCE-PLAYBACK mode: kinematic teleport to the "
               "motion_lib reference each frame (encoder/decoder/policy ignored). Robot is "
               "overwritten to the reference pose after every step → pure target motion.")
@@ -437,6 +506,8 @@ def main():
     # Open the writer AFTER the warm-up so we know the camera is ready.
     if log_dir is not None:
         video_folder = Path(log_dir) / "videos" / "play"
+    elif args_cli.reference_pd:
+        video_folder = Path("logs") / "rsl_rl" / agent_cfg.experiment_name / "reference_pd" / "videos"
     elif args_cli.reference_playback:
         video_folder = Path("logs") / "rsl_rl" / agent_cfg.experiment_name / "reference" / "videos"
     else:
@@ -454,11 +525,16 @@ def main():
 
     # Reference-playback: build the motion_lib→robot joint map once (after reset, so
     # motion_lib/motion_ids exist).
-    ref_joint_map = _build_reference_joint_map(env, device) if args_cli.reference_playback else None
+    ref_joint_map = (
+        _build_reference_joint_map(env, device)
+        if (args_cli.reference_playback or args_cli.reference_pd) else None
+    )
     if args_cli.reference_playback:
         _write_reference_pose(env, ref_joint_map, device)  # frame 0 = reference at reset
         _APP.update()
         _APP.update()
+    if args_cli.reference_pd:
+        policy = _make_reference_pd_policy(env, ref_joint_map, device)
 
     while simulation_app.is_running() and timestep < args_cli.video_length:
         start_time = time.time()
@@ -492,7 +568,9 @@ def main():
                 label = f"step {timestep}  object z: {object_z:.3f} m"
             except Exception:
                 label = f"step {timestep}"
-            if args_cli.reference_playback:
+            if args_cli.reference_pd:
+                label = "REFERENCE-PD  " + label
+            elif args_cli.reference_playback:
                 label = "REFERENCE  " + label
             elif args_cli.zero_residual:
                 label = "ZERO-SHOT  " + label
