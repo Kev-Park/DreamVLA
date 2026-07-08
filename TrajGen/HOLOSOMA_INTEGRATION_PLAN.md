@@ -222,7 +222,19 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
   - **29-DOF asset+action:** via existing `apply_29dof_waist_override` (`--waist-dof 29`; swaps to 29-DOF USD, adds waist actuator, extends body action term to 29). Its docstring "keeps obs/reward at 27" is now moot since JointNamesOrder is 29.
   - **CPU VALIDATION (no GPU, dreamcontrol_51):** loaded `pick_20.pkl` via pk `g1_29dof.urdf` (motion_lib's FK method): pk joint order == JointNamesOrder(29) ✓; right hand @grab=[1.067,-0.364,0.848] vs grab_pos [1.118,-0.422,0.843] (dist 0.078 = wrist-link→hand offset) ✓; feet grounded (min-foot z=0.000) ✓; hand lifts 0.79→1.005 ✓.
   - **QUEUED (needs GPU — both GPUs pinned by nima + 2 non-my dvij procs):** CHECKPOINT 3 Isaac visual playback of the 29-DOF .pkl (place .pkl in motion_lib reference dir; run pick play script `--waist-dof 29`). Finalize exact play cmd + run when a GPU frees.
-- [ ] Phase 3 — downstream 29-DOF + reference-playback (CHECKPOINT 3) — Isaac visual pending GPU
+- [x] **Phase 3 — downstream 29-DOF + reference-playback: CHECKPOINT 3 PASSED (Isaac).**
+  - Ran `play_sonic_adapter.py --task Isaac-Motion-Tracking-Pick-BinaryFingers-v0 --waist-dof 29 --reference-playback
+    --ref-motions-path ../TrajGen/sample/Holosoma_Pick_test --num_envs 1 --headless --video_length 300` (env
+    `dreamcontrol_51`, isaaclab.sh -p, GPU1 co-located w/ nima ~11GB free). Video: `out/pick_20_ckpt3.mp4` (300 frames).
+  - **Launch gotchas fixed:** (1) activate `dreamcontrol_51` so isaaclab.sh picks the right python (base lacks isaaclab);
+    (2) NO `--video` flag (argparse prefix-matches it to `--video_length` → error); it auto-records via cv2 VideoWriter to
+    `logs/rsl_rl/<exp>/reference/videos/<name>`; (3) **`manager_based_rl_env.py:101` built `env.pk2_robot` from
+    `g1_27dof.urdf`** while `env.joint_names`=29 → keypoint-reward FK crashed on `waist_roll_joint` → fixed to `g1_29dof.urdf`
+    (the SECOND URDF load beyond motion_lib). 29-DOF USD asset loaded fine (the flagged risk didn't bite).
+  - **NOTE for retrain (not a CKPT3 blocker):** the SONIC token-adapter PARITY diagnostic warned max|enc_pos−joint_pos|=0.87 rad
+    (worst sonic-idx 22,20,16) — reference-playback ignores the encoder/policy so it's cosmetic here, but the SONIC encoder's
+    29-DOF joint mapping likely needs checking before the actual 29-DOF retrain.
+- [ ] Phase 3 multi-motion Isaac footage over Holosoma_Pick_sim2 (in progress)
 - [x] **Phase 3.5 — Multi-motion grasp-validation harness + auto-refine: 100/100 HELD.**
   - Harness (box): `~/kevin/holosoma_adapters/grasp_check.py` (HELD = grab-detected + object lifted >0.05 output
     + object co-located with right hand <0.15 at last frame) + `~/kevin/grasp_batch.sh` (Adapter A→holosoma→check per id).
