@@ -247,8 +247,19 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
   - Physics finger-closure grasp (stays held under contact) is still Phase 5; this guarantees the REFERENCE grasp.
   - **29-DOF .pkl dataset built:** Adapter B over all 100 -> `~/kevin/DreamVLA/TrajGen/sample/Holosoma_Pick_sim2/pick_*.pkl`.
   - TODO: Isaac footage/keypoints per motion (after CKPT3, GPU).
+- [~] **Phase 4.5 — Default-SONIC diagnostic playbacks on the new holosoma refs (user-requested, in progress).**
+  Run frozen SONIC encoder/decoder under PHYSICS on the 29-DOF holosoma refs: `play_sonic_adapter.py --zero-residual
+  --waist-dof 29 --ref-motions-path <holosoma dir>` (no checkpoint; ONNX defaults in gear_sonic_deploy/policy/release).
+  WATCH: CKPT3 logged a token-adapter PARITY warning max|enc_pos-joint_pos|=0.87 rad (sonic-idx 22,20,16) — may be a
+  joint-order mismatch feeding our 29-DOF refs into the SONIC encoder (cf. gear_sonic MUJOCO-grouped vs SONIC-interleaved).
 - [ ] Phase 4 — PyRoki removal (CHECKPOINT 4)
-- [ ] Phase 5 — grasp synth + contact rewards (later)
+- [ ] **Phase 5 — grasp synth + contact rewards. DESIGN ON HOLD (user). When training: ALWAYS mustard mesh (not cuboid).**
+  Scope (Explore): grasp machinery exists (binary 7-DOF/hand fingers, physics object, object_lift height+is_closed-gated,
+  right_hand_binary_match, grab_pos/grab_idx wiring); our refs feed it (100/100 hand-at-object-lifted). MISSING = finger↔object
+  CONTACT sensing (ContactSensor only used for fall-termination) → grasp rewards are pose/height-based (policy can push, not grip).
+  Phase 5 = contact sensor on right-hand fingers + contact-gated lift + firm-grip reward (+maybe contact-triggered close) + object→mustard + retrain.
+  Files: motion_tracking_pick_env.py (rewards 383-548, fingers 689-712, object 733-749), motion_tracking_env.py (ContactSensorCfg:1180),
+  motion_tracking_interactive_base.py (object_lift 262-304, reset_object_state 112-137).
 
 ## Open items / risks
 - **Joint-order permutation** MuJoCo(29) → TrajGen(29): the top correctness risk — validate by
