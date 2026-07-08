@@ -37,7 +37,6 @@ import torch
 
 import isaaclab.utils.math as math_utils
 
-from .action_assembler import build_sonic29_to_env_perm
 from .planner_to_utm import ENCODER_SLICES, ENCODER_TOTAL_DIM
 from .token_action_wrapper import (
     N_BODY_JOINTS,
@@ -146,17 +145,9 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         self.encoder = encoder
         self.residual_scale = float(residual_scale)
 
-        # ---- reference (motion_lib) joints → SONIC-29, by NAME ----
-        # motion_lib.dof_pos is in motion_lib.joint_names order (= env JointNamesOrder; 29-DOF has
-        # waist roll/pitch at idx 13,14, NOT appended at the end). build_sonic29_to_env_perm gives
-        # ref[i] = sonic29[perm[i]], so we SCATTER the reference into SONIC-29 slots (perm). This is
-        # name-matched (consistent with the parent's _gather_sonic) and handles both 27- and 29-DOF
-        # references (a 27-DOF ref simply leaves SONIC's waist_roll/pitch slots at 0). Supersedes the
-        # old 27-hardcoded `dof[..., _inv_perm27]` gather + `_keep_idx` scatter, which mis-indexed a
-        # 29-DOF reference (treated waist as arm joints, dropped right wrist pitch/yaw).
-        ref_names = list(self.unwrapped.motion_lib.joint_names)
-        self._ref_to_sonic_perm = torch.as_tensor(
-            build_sonic29_to_env_perm(ref_names), device=self._dev, dtype=torch.long)
+        # The reference->SONIC-29 name-matched scatter perm (self._ref_to_sonic_perm) is built once
+        # in the parent (TokenActionDecoderVecEnvWrapper) and shared by both the history seeding and
+        # the encoder base-token input below, so both reference inputs use the SAME correct mapping.
 
         # Encoder input slices as (start, stop) tuples for torch column assignment.
         self._sl_pos = ENCODER_SLICES["motion_joint_positions_10frame_step5"]
