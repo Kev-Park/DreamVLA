@@ -98,7 +98,7 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             self.start_positions = torch.zeros((self.scene.num_envs, 3), device=self.device)
             self.motion_start_idx = 0
             self.joint_names = self.motion_lib.joint_names
-            urdf_path = "HumanoidVerse/humanoidverse/data/robots/g1/g1_29dof.urdf"   # 29-DOF: keypoint FK must match joint_names (waist roll/pitch)
+            urdf_path = "HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf"
             self.pk2_robot = pk2.build_chain_from_urdf(open(urdf_path).read())
             self.goal_marker = VisualizationMarkers(
                 POSITION_GOAL_MARKER_CFG.replace(prim_path="/Visuals/Command/goal_marker")

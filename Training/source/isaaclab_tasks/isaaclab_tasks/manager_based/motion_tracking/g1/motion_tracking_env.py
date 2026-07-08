@@ -919,8 +919,8 @@ def target_ref(env: ManagerBasedRLEnv, time_offset: float = 0., visualize_marker
     entire action tensor is returned.
     """
     if not hasattr(env, 'motion_lib'):
-        ref_joint_pos = torch.zeros((env.scene.num_envs, 29), device=env.device)
-        ref_joint_vel = torch.zeros((env.scene.num_envs, 29), device=env.device)
+        ref_joint_pos = torch.zeros((env.scene.num_envs, 27), device=env.device)
+        ref_joint_vel = torch.zeros((env.scene.num_envs, 27), device=env.device)
         root_pos = torch.zeros((env.scene.num_envs, 3), device=env.device)
         root_rot = torch.zeros((env.scene.num_envs, 4), device=env.device)
         global_keypts = torch.zeros((env.scene.num_envs, 39, 3), device=env.device) + env.scene.env_origins.unsqueeze(1)
@@ -929,7 +929,7 @@ def target_ref(env: ManagerBasedRLEnv, time_offset: float = 0., visualize_marker
         motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32) + time_offset
         motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
         ref_joint_pos = motion_res["dof_pos"]
-        ref_joint_vel = torch.zeros((env.scene.num_envs, 29), device=env.device)
+        ref_joint_vel = torch.zeros((env.scene.num_envs, 27), device=env.device)
         root_pos = motion_res["root_pos"]
         root_rot = motion_res["root_rot"]
         offset = motion_res["offsets"]

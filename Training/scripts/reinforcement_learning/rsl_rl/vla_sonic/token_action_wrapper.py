@@ -54,7 +54,6 @@ from .action_assembler import (
     PERM_SONIC27_TO_ENV27,
     WAIST_PITCH_SONIC_IDX,
     WAIST_ROLL_SONIC_IDX,
-    build_sonic29_to_env_perm,
 )
 
 # With BinaryFingersActionsCfg the env's action_manager owns the 1-D → 7-D finger
@@ -236,20 +235,6 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
                             device=self._dev, dtype=torch.long),
         ])
 
-        # Reference (motion_lib) joints -> SONIC-29, by NAME. motion_lib.dof_pos is in
-        # motion_lib.joint_names order (= env JointNamesOrder; the 29-DOF order has waist roll/pitch
-        # at idx 13,14, NOT appended at the end). ref[i] = sonic29[perm[i]] -> we SCATTER the ref into
-        # SONIC-29 slots. Used by _seed_history (history) AND the encoder child (base token), so BOTH
-        # inputs share one correct mapping. Handles 27- or 29-DOF refs (a 27-DOF ref leaves SONIC's
-        # waist_roll/pitch slots at 0). Replaces the 27-hardcoded `dof[..., _inv_perm27]`+`_keep_idx`.
-        try:
-            _ref_names = list(self.unwrapped.motion_lib.joint_names)
-        except AttributeError:
-            from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder
-            _ref_names = list(JointNamesOrder)
-        self._ref_to_sonic_perm = torch.as_tensor(
-            build_sonic29_to_env_perm(_ref_names), device=self._dev, dtype=torch.long)
-
         # ---- finger action slots: train.py-style 1-D binary per hand ----
         # The policy emits ONE right-hand scalar; the wrapper writes that scalar into the
         # right-hand action slot, and writes a constant positive scalar into the left-hand
@@ -340,9 +325,10 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         for i in range(N_HISTORY_FRAMES + 1):
             tk = torch.clamp(t0 - (N_HISTORY_FRAMES - i) * dt, min=0.0)
             res = unw.motion_lib.get_motion_state(mids, tk)
-            dof = res["dof_pos"]                                         # (N, n_ref) motion_lib.joint_names order
+            dof = res["dof_pos"]                                         # (N, 27) JointNamesOrder
+            sonic27 = dof.index_select(1, self._inv_perm27)               # (N, 27) SONIC-27
             sonic29 = torch.zeros(N, N_BODY_JOINTS, device=self._dev, dtype=dof.dtype)
-            sonic29.index_copy_(1, self._ref_to_sonic_perm, dof)         # name-matched scatter ref -> SONIC-29
+            sonic29.index_copy_(1, self._keep_idx, sonic27)              # waist roll/pitch stay 0
             pos.append(sonic29)
             rot.append(res["root_rot"].to(self._dev))                   # (N, 4) wxyz
         pos = torch.stack(pos, dim=1)                                    # (N, 11, 29)

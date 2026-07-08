@@ -145,9 +145,12 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         self.encoder = encoder
         self.residual_scale = float(residual_scale)
 
-        # The reference->SONIC-29 name-matched scatter perm (self._ref_to_sonic_perm) is built once
-        # in the parent (TokenActionDecoderVecEnvWrapper) and shared by both the history seeding and
-        # the encoder base-token input below, so both reference inputs use the SAME correct mapping.
+        # ---- env27 → SONIC29 bridges (inverse of the parent's SONIC→env mapping) ----
+        # Parent: env27[j] = sonic27[perm27[j]]  ⇒  sonic27[k] = env27[argsort(perm27)[k]].
+        self._inv_perm27 = torch.argsort(self._perm27)
+        # keep_idx (parent) holds the 27 SONIC-29 indices that survive the waist drop;
+        # scatter sonic27 back into a zero-filled 29 (waist_roll/pitch stay 0 — motion_lib
+        # has no waist roll/pitch reference either).
 
         # Encoder input slices as (start, stop) tuples for torch column assignment.
         self._sl_pos = ENCODER_SLICES["motion_joint_positions_10frame_step5"]
@@ -219,9 +222,10 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
             res = unw.motion_lib.get_motion_state(ids, times)
 
             # Reference joints: env27 order → SONIC-IsaacLab 29 (zeros at waist roll/pitch).
-            dof_env = res["dof_pos"].reshape(N, N_FUTURE_FRAMES, -1)                   # (N,10,n_ref) motion_lib.joint_names order
+            dof27_env = res["dof_pos"].reshape(N, N_FUTURE_FRAMES, -1)                 # (N, 10, 27)
+            sonic27 = dof27_env[..., self._inv_perm27]                                 # (N, 10, 27)
             pos29 = torch.zeros(N, N_FUTURE_FRAMES, N_BODY_JOINTS, device=self._dev)
-            pos29[..., self._ref_to_sonic_perm] = dof_env                              # name-matched scatter ref -> SONIC-29
+            pos29[..., self._keep_idx] = sonic27
 
             # Central-difference velocities over the window (np.gradient equivalent).
             vel29 = torch.zeros_like(pos29)
