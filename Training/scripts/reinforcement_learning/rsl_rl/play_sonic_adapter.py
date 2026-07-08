@@ -99,6 +99,12 @@ parser.add_argument(
          "scene/camera as policy videos, so it's directly comparable. No checkpoint "
          "required. Use this to confirm the reference motions themselves are clean.",
 )
+parser.add_argument(
+    "--ref-motions-path", type=str, default=None,
+    help="Override the env's ref_motions_path (dir of reference .pkl files). Use to point "
+         "reference-playback at an isolated set (e.g. the holosoma 29-DOF .pkl) without "
+         "disturbing the task's default reference dir.",
+)
 # append RSL-RL cli arguments (gives --checkpoint, --load_run, etc.)
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -350,6 +356,11 @@ def main():
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
         apply_29dof_waist_override(env_cfg)
+
+    # Optional: point reference-playback at an isolated .pkl set (e.g. holosoma 29-DOF).
+    if args_cli.ref_motions_path is not None:
+        env_cfg.ref_motions_path = args_cli.ref_motions_path
+        print(f"[play_sonic_adapter] ref_motions_path override -> {args_cli.ref_motions_path}")
 
     # Optional: start episodes near the grab frame to skip the foot-skating walk approach
     # (reset_joints_for_motion reads env.cfg.motion_start_pregrab_margin_s). Set on the cfg
