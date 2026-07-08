@@ -113,7 +113,25 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
 
 ## Status (update each session)
 
-- [ ] Phase 0 — holosoma cloned on box + env + demo render (CHECKPOINT 0)
+- [~] **Phase 0 — IN PROGRESS.**
+  - [x] holosoma cloned on box: `~/kevin/holosoma` (fresh, github amazon-far/holosoma).
+  - [x] env built in `/kevin`: `~/kevin/.holosoma_deps/miniconda3/envs/hsretargeting` (py3.11.15).
+        Activate: `source ~/kevin/.holosoma_deps/miniconda3/bin/activate hsretargeting`.
+        Imports OK: holosoma_retargeting(editable→fresh clone), numpy 2.3.5, cvxpy 1.9.2, mujoco 3.10.0, torch 2.12.1, trimesh/smplx/viser/yourdfpy/tyro.
+        GOTCHAS: (1) holosoma installer's `pip install -e` dep-resolver chokes on numpy==2.3.5 (transient/backtrack) — install deps separately + `pip install -e ... --no-deps --no-build-isolation`; (2) build isolation left no editable finder → use `--no-build-isolation`; (3) `source_common.sh` line1 WORKSPACE_DIR hardcoded to `$HOME/.holosoma_deps` — edited to `$HOME/kevin/.holosoma_deps`. Left the pre-existing (Feb-10, NOT in /kevin) hsretargeting env untouched.
+  - [x] **CHECKPOINT 0 PASSED** — OMOMO object_interaction demo retargeted 196 frames →
+        `~/kevin/hs_demo_out/sub3_largebox_003_original.npz`; skeleton render published:
+        https://thiskevin.com/videos/2026-07-07_2215_holosoma_CKPT0_omomo_demo.mp4
+    - **VERSION PINS REQUIRED** (else `CVXPY solve failed: infeasible` on frame 0): match the
+      known-good Feb-10 env — `cvxpy==1.8.1 mujoco==3.4.0 osqp==1.1.0 highspy==1.13.0 scipy==1.17.0`
+      (latest cvxpy 1.9.2 / mujoco 3.10 → infeasible). numpy 2.3.5 OK (intended pin).
+    - **object_interaction qpos = (F, 43)** = base(7) + 29 joints(7:36) + **object pose(36:43)** (3 trans + 4 quat wxyz). human_joints (F,52,3). fps=30.
+    - **HEADLESS RENDER:** MuJoCo EGL + osmesa both BROKEN on box (no working GL libs). Use CPU
+      skeleton render: `~/kevin/render_skel.py <npz> <out.mp4>` — mj_forward → d.xpos link positions
+      → matplotlib 3D skeleton + red box marker → imageio-ffmpeg MP4. Needs matplotlib + imageio-ffmpeg (installed).
+    - **NOTE:** demo loops through object-pose AUGMENTATION passes after the base retarget — Ctrl-C after
+      `*_original.npz` is saved; we'll disable augmentation for our single-motion use.
+- [ ] Phase 1 — Adapter A + real-motion retarget render (CHECKPOINT 1)  ← NEXT
 - [ ] Phase 1 — Adapter A + real-motion retarget render (CHECKPOINT 1)
 - [ ] Phase 2 — Adapter B (.pkl + hold/floor) + render (CHECKPOINT 2)
 - [ ] Phase 3 — downstream 29-DOF + reference-playback (CHECKPOINT 3)
