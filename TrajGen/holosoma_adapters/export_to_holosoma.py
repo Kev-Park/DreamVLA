@@ -4,6 +4,12 @@ OmniControl's 22 joints == holosoma SMPLX_DEMO_JOINTS order (same joints, same o
 output feeds holosoma's existing `--data-format smplx` directly (no custom format needed).
 rot_mat replicates sample/*/retarget.py (Y-up -> Z-up).
 
+Left arm is FROZEN on input (only the right arm grasps): the L_Shoulder/L_Elbow/L_Wrist
+keypoints are held rigid relative to the torso frame (at the most rest-like reference frame),
+so holosoma solves a BALANCED whole-body pose with a still left arm (vs. a post-hoc joint
+overwrite that would unbalance the body). Replaces the joint-space freeze in
+sample/Pick_sim1/refine_motions_al.py ("Make left arm non functional").
+
 Also fabricates `object_poses` (T,7) [qw,qx,qy,qz,x,y,z] for object_interaction mode:
 the grasped object (mustard bottle) rests at the grab location until the hand reaches it,
 then is co-located with / tracks the right wrist through the lift. Orientation is identity
@@ -16,7 +22,34 @@ Usage: python export_to_holosoma.py <motion_idx> [results.npy] [out_dir]
 """
 import numpy as np, sys, os
 
-R_WRIST = 21  # index of R_Wrist in SMPLX_DEMO_JOINTS (22-joint order)
+# SMPLX_DEMO_JOINTS (22-joint order) indices
+PELVIS, L_HIP, R_HIP, NECK = 0, 1, 2, 12
+L_SHOULDER, L_ELBOW, L_WRIST = 16, 18, 20
+R_WRIST = 21
+FREEZE_LEFT_ARM = True
+
+
+def _torso_frame(p, neck, lhip, rhip):
+    """Right-handed torso frame (cols = world axes): up = pelvis->neck, lateral = Lhip->Rhip."""
+    u = neck - p; u = u / (np.linalg.norm(u) + 1e-9)
+    rr = rhip - lhip; rr = rr - (rr @ u) * u; rr = rr / (np.linalg.norm(rr) + 1e-9)
+    f = np.cross(u, rr)
+    return np.stack([rr, f, u], axis=1)
+
+
+def freeze_left_arm(gj):
+    """Hold L_Shoulder/L_Elbow/L_Wrist rigid w.r.t. the torso frame at the most rest-like frame
+    (lowest left wrist), so the left arm moves rigidly with the torso -> still, balanced."""
+    g = gj.astype(np.float64)
+    ref = int(np.argmin(g[:, L_WRIST, 2]))
+    Rref = _torso_frame(g[ref, PELVIS], g[ref, NECK], g[ref, L_HIP], g[ref, R_HIP])
+    offs = {j: Rref.T @ (g[ref, j] - g[ref, PELVIS]) for j in (L_SHOULDER, L_ELBOW, L_WRIST)}
+    out = g.copy()
+    for t in range(g.shape[0]):
+        Rt = _torso_frame(g[t, PELVIS], g[t, NECK], g[t, L_HIP], g[t, R_HIP])
+        for j, off in offs.items():
+            out[t, j] = g[t, PELVIS] + Rt @ off
+    return out.astype(gj.dtype)
 
 motion_idx = int(sys.argv[1]) if len(sys.argv) > 1 else 20
 results = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser("~/kevin/DreamVLA/TrajGen/sample/Pick_sim/results.npy")
@@ -34,6 +67,9 @@ h = float(gj[..., 2].max() - gj[..., 2].min())                     # rough stand
 if not (1.3 < h < 2.2):
     h = 1.78
 
+if FREEZE_LEFT_ARM:
+    gj = freeze_left_arm(gj)                                        # still left arm -> balanced solve
+
 # --- fabricate object_poses from the right wrist ---
 # The object rests at the grab location until the hand reaches it, then rigidly tracks the wrist
 # (the lift). To co-locate the object with the *retargeted* right hand we must pre-invert
@@ -45,20 +81,25 @@ ROBOT_HEIGHT_G1 = 1.32          # holosoma config_types/robot.py g1 robot_height
 L_FOOT, R_FOOT = 10, 11         # SMPLX_DEMO_JOINTS foot indices (holosoma toe_names for smplx)
 
 wrist = gj[:, R_WRIST, :].astype(np.float64)                       # (N, 3), rotated Z-up frame
-# Grab frame = when the right hand is closest to the OmniControl pick-hint (replicates
-# sample/Pick_sim/retarget.py: pick_point = first hint frame with right-hand z>0; grab =
-# argmin over the first 140 frames of |right_hand - pick_point|). This lands the grab at the
-# actual reach-to-object moment, not the mid-reach lowest-wrist frame.
+pelvis = gj[:, PELVIS, :].astype(np.float64)
+# Grab frame = MAX REACH TOWARD THE OBJECT (arm fully extended to pick up) — a semantically
+# equivalent point across trajectories. reach = horizontal projection of (wrist - pelvis) onto
+# the pelvis->pick_point direction; grab = its argmax over the first 140 frames. The object then
+# rests at the reach point, so the hand grabs at full extension rather than overshooting/returning.
+# (pick_point = first OmniControl hint frame with right-hand z>0, per sample/Pick_sim/retarget.py.)
 hint = DATA["hint"][:, 1:][motion_idx]                             # (N, 22, 3), raw Y-up (drop frame0)
 pick_point_raw = next((np.asarray(jp[R_WRIST], np.float64) for jp in hint if jp[R_WRIST][2] > 0.0), None)
+horizon = min(140, wrist.shape[0])
 if pick_point_raw is not None:
     pp = rot @ pick_point_raw                                     # raw -> Z-up frame
-    horizon = min(140, wrist.shape[0])
-    grab_t = int(np.argmin(np.linalg.norm(wrist[:horizon] - pp[None, :], axis=-1)))
+    d = pp[None, :2] - pelvis[:, :2]                              # per-frame horizontal dir to object
+    d = d / (np.linalg.norm(d, axis=-1, keepdims=True) + 1e-9)
+    reach = ((wrist[:, :2] - pelvis[:, :2]) * d).sum(-1)          # forward reach toward object
 else:
-    grab_t = int(np.argmin(wrist[:, 2]))                          # fallback: lowest wrist
+    reach = np.linalg.norm(wrist[:, :2] - pelvis[:, :2], axis=-1)  # fallback: horizontal reach
+grab_t = int(np.argmax(reach[:horizon]))
 obj = wrist.copy()
-obj[:grab_t] = wrist[grab_t]                                       # static at grab loc until reached
+obj[:grab_t] = wrist[grab_t]                                       # static at reach point until grabbed
 
 scale = ROBOT_HEIGHT_G1 / h
 z_min = float(gj[:, [L_FOOT, R_FOOT], 2].min())

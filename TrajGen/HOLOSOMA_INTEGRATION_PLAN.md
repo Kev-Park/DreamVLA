@@ -158,13 +158,19 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
       So instead of faking a 325-col InterMimic vector, **patched holosoma** (`examples/robot_retarget.py`, backup `.bak`):
       (1) `validate_config` allows `smplx` for object_interaction; (2) object_interaction `load_motion_data` branch
       prefers our `.npz` (`global_joint_positions` + `height` + `object_poses`) over `.pt`. Reuses the working smplx mapping + gains the interaction mesh.
-    - **v2 fixes (user review of 1b):** (1) **grab retimed** — grab frame now = argmin over first 140 frames of
-      |right_hand − hint pick_point| (replicates `sample/Pick_sim/retarget.py`: pick_point = first `DATA['hint']`
-      frame with right-hand z>0). For motion 20 this is frame **75** (was 23 via lowest-wrist); object now rests at the
-      true pick spot until the hand arrives. (2) **left arm frozen** — `holosoma_adapters/postprocess_freeze_larm.py`
-      overwrites the output's left-arm joints to the fixed rest pose from `Pick_sim1/refine_motions_al.py` ("Make left
-      arm non functional"): 29-DOF qpos[22:29] = [sh_pitch 0.35, sh_roll 0.16, sh_yaw 0, elbow 0.87, wrist r/p/y 0].
-      Source left arm is NOT frozen in OmniControl → the freeze is a deliberate joint-space overwrite (fold into Adapter B).
+    - **v3 grab semantics (user review):** grab frame = **MAX REACH TOWARD THE OBJECT** (arm fully extended to pick up) —
+      argmax over the first 140 frames of the horizontal projection of (right_wrist − pelvis) onto the pelvis→pick_point
+      direction. This is a semantically-equivalent point across trajectories (m20→46, m0→52, m30→41; frame numbers differ,
+      the *semantic* is identical). The object rests at that reach point, so the hand grabs at full extension instead of
+      overshooting and returning. (Superseded the v2 hint-`argmin`, which gave frame 75 — visually late: the hand reached
+      max forward at ~46 then retracted to the object at ~75. Note argmin|hand−obj| = actual contact ~75, but the natural
+      *pick* reads at max extension ~46; OmniControl is geometry-blind so we place the object at the reach point.)
+    - **v3 left-arm freeze — ON INPUT (balanced):** `export_to_holosoma.py::freeze_left_arm` holds L_Shoulder/L_Elbow/L_Wrist
+      keypoints RIGID w.r.t. the torso frame (up = pelvis→neck, lateral = Lhip→Rhip) at the most rest-like frame (lowest
+      left wrist), so holosoma solves a balanced whole-body pose with a still left arm. Output left-arm joint std ≈ 0.05 rad
+      (≈3°, the balance residual) vs source ~0.3–0.5. Replaces the v2 post-hoc joint overwrite (`postprocess_freeze_larm.py`,
+      removed) which matched the old `refine_motions_al.py` values but unbalanced the body. Source left arm is NOT frozen in
+      OmniControl — the freeze is deliberate. `FREEZE_LEFT_ARM=True` toggle in Adapter A.
     - **object_poses fabrication (Adapter A):** bottle static at grab loc until reached (hint-based `grab_t`), then
       rigidly tracks the right wrist (idx 21). **GOTCHA — preprocess asymmetry:** `preprocess_motion_data` scales human
       joints fully (`z-=z_min` then `*scale`) but object as `out_xy=scale*in_xy, out_z=in_z0+scale*(in_z-in_z0)` (z0 NOT
