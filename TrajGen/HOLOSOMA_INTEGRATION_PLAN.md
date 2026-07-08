@@ -211,7 +211,18 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
       non-penetration. Flag if Training reward needs it re-added.
     - **NOTE:** joints are now 29-DOF; `motion_lib_base.py` still has a 27-DOF `joint_names` (line 280) + FK on
       `g1_27dof.urdf` → Phase 3 must switch to 29 to consume this .pkl (CKPT2 render bypasses motion_lib).
-- [ ] Phase 3 — downstream 29-DOF + reference-playback (CHECKPOINT 3)
+- [~] **Phase 3 — downstream 29-DOF: CODE DONE + CPU-VALIDATED; Isaac visual playback QUEUED (GPU).**
+  - **DECISION (user):** TRACK all 29 in reward+obs (waist roll/pitch tracked), not the decoupled 29-actuate/27-track.
+    This is an experimental obs/reward change → **old 27-DOF .pkls + 27-DOF-obs policies/checkpoints are now incompatible** (expected; full 29-DOF migration).
+  - **Edits (g1 branch):**
+    - `motion_lib_base.py`: `JointNamesOrder` 27→29 (insert waist_roll/pitch after waist_yaw); FK URDF `g1_27dof.urdf`→`g1_29dof.urdf`; `self.joint_names = list(JointNamesOrder)`.
+    - `motion_tracking_bimanual_pick_env.py`: `JOINTS_MASK` +waist_roll=1/waist_pitch=1 (tracked) → 29. `KEYPTS_MASK` unchanged (39 link-keypoints, joint-count-independent; already has waist_roll_link).
+    - `motion_tracking/g1/motion_tracking_env.py` `target_ref`: zero-fallback `ref_joint_pos`/`ref_joint_vel` 27→29 (lines ~922,923,932). Scatter (`reset_joints_for_motion`, `target_ref_slim`) already `asset.num_joints`-sized (agnostic).
+    - Obs/reward auto-adapt via the shared `JointNamesOrder` import (SceneEntityCfg joint_names, preserve_order=True).
+  - **29-DOF asset+action:** via existing `apply_29dof_waist_override` (`--waist-dof 29`; swaps to 29-DOF USD, adds waist actuator, extends body action term to 29). Its docstring "keeps obs/reward at 27" is now moot since JointNamesOrder is 29.
+  - **CPU VALIDATION (no GPU, dreamcontrol_51):** loaded `pick_20.pkl` via pk `g1_29dof.urdf` (motion_lib's FK method): pk joint order == JointNamesOrder(29) ✓; right hand @grab=[1.067,-0.364,0.848] vs grab_pos [1.118,-0.422,0.843] (dist 0.078 = wrist-link→hand offset) ✓; feet grounded (min-foot z=0.000) ✓; hand lifts 0.79→1.005 ✓.
+  - **QUEUED (needs GPU — both GPUs pinned by nima + 2 non-my dvij procs):** CHECKPOINT 3 Isaac visual playback of the 29-DOF .pkl (place .pkl in motion_lib reference dir; run pick play script `--waist-dof 29`). Finalize exact play cmd + run when a GPU frees.
+- [ ] Phase 3 — downstream 29-DOF + reference-playback (CHECKPOINT 3) — Isaac visual pending GPU
 - [ ] Phase 4 — PyRoki removal (CHECKPOINT 4)
 - [ ] Phase 5 — grasp synth + contact rewards (later)
 
