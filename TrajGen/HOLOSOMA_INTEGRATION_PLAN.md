@@ -139,12 +139,42 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
   - [x] **CHECKPOINT 1a PASSED** (robot_only): real Pick motion 20 -> `~/kevin/hs_pick_out/pick_20.npz`;
         render https://thiskevin.com/videos/2026-07-07_2254_holosoma_CKPT1a_pick20_robotonly.mp4
         Cmd: `robot_retarget.py --data_path ~/kevin/hs_input --task-type robot_only --task-name pick_20 --data_format smplx --task-config.object-name ground --save_dir ~/kevin/hs_pick_out`
-  - [ ] CHECKPOINT 1b (object_interaction): fabricate bottle object_poses from wrist + inject into
-        holosoma smplx loader (line ~254 defaults object_poses to identity — add "object_poses" .npz key path);
-        need mustard `.usd`->`.obj`. Then render.  ← NEXT
-  - NOTE: robot_only qpos=(F,36); object_interaction=(F,43). Both retarget/complete then loop AUGMENTATION — Ctrl-C after save.
-- [ ] Phase 1 — Adapter A + real-motion retarget render (CHECKPOINT 1)
-- [ ] Phase 2 — Adapter B (.pkl + hold/floor) + render (CHECKPOINT 2)
+  - [x] **CHECKPOINT 1b PASSED** (object_interaction + real Isaac YCB mustard mesh): motion 20 →
+        `~/kevin/hs_pick_out/pick_20_original.npz` (qpos (195,43)), cost 0.611→0.256.
+        Render: `~/kevin/eval_videos/pick_20_mustard_oi.mp4` (local `out/pick_20_mustard_oi.mp4`) —
+        red box = mustard bbox tracking the hand. **Non-subjective co-location check:** object↔right_rubber_hand_link
+        dist = 0.43 m pre-grab (hand away) → 0.077 m at grab (f≈23) → ~0.06 m through the lift (0.06 = wrist↔hand-link offset). Awaiting user's subjective grasp/lift review.
+        Cmd: `robot_retarget.py --task-type object_interaction --robot g1 --data-format smplx --task-name pick_20 --data-path ~/kevin/hs_input --save-dir ~/kevin/hs_pick_out --task-config.object-name mustard`
+    - **MUSTARD MESH provenance:** the DreamVLA `Training/assets/mustard_bottle.usd` is a thin wrapper that
+      only *references* the remote Isaac asset `.../Isaac/4.5/Isaac/Props/YCB/Axis_Aligned/006_mustard_bottle.usd`
+      (pxr can't resolve `https://` refs → empty local traverse). FIX: `curl` that self-contained USD to
+      `~/kevin/hs_input/006_mustard_bottle.usd`, extract with `~/kevin/holosoma_adapters/usd_to_obj.py`
+      (8377 v / 16382 f, extents [0.096,0.191,0.058] Y-up). Built holosoma object assets by mirroring `largebox`:
+      `models/mustard/mustard.obj` (Y-up→Z-up baked via R_x(+90): (x,y,z)→(x,-z,y), extents [0.096,0.058,0.191]),
+      `models/mustard/mustard.urdf`, and combined `models/g1/g1_29dof_w_mustard.xml` (adds free-jointed
+      `mustard_link` → nq 36→43 → `has_dynamic_object=True`). These live in `~/kevin/holosoma` (box-only; not in WBCBenchmark git).
+    - **object_interaction is hardwired to InterMimic .pt (52-joint SMPL-H)**, but the `(smplh,g1)` mapping only
+      uses 15 body joints (fingers ignored), and our validated CKPT1a path uses the `(smplx,g1)` 22-joint mapping.
+      So instead of faking a 325-col InterMimic vector, **patched holosoma** (`examples/robot_retarget.py`, backup `.bak`):
+      (1) `validate_config` allows `smplx` for object_interaction; (2) object_interaction `load_motion_data` branch
+      prefers our `.npz` (`global_joint_positions` + `height` + `object_poses`) over `.pt`. Reuses the working smplx mapping + gains the interaction mesh.
+    - **object_poses fabrication (Adapter A):** bottle static at grab loc until reached (`grab_t=argmin wrist z`), then
+      rigidly tracks the right wrist (idx 21). **GOTCHA — preprocess asymmetry:** `preprocess_motion_data` scales human
+      joints fully (`z-=z_min` then `*scale`) but object as `out_xy=scale*in_xy, out_z=in_z0+scale*(in_z-in_z0)` (z0 NOT
+      scaled). Naively fabricating in raw frame left the object 0.14 m above the hand. Adapter A now **pre-inverts** the
+      object z (`object_poses[:,6]=scale*A + (obj_z-obj_z0)`, `A=obj_z0-z_min`, `scale=1.32/height`) so the OUTPUT object lands on the retargeted hand.
+  - **ENV CORRECTION (important):** the standard env is **`~/kevin/.holosoma_deps/miniconda3/envs/hsretargeting`**
+    (in /kevin, mine; cvxpy 1.8.1, mujoco 3.4.0 — the required pins; has imageio_ffmpeg). Activate:
+    `source ~/kevin/.holosoma_deps/miniconda3/bin/activate hsretargeting`. There is ALSO a pre-existing
+    Feb-10 venv `~/.holosoma_deps` (cvxpy 1.7.5, mujoco 3.10.0, no imageio_ffmpeg) that imports the same
+    /kevin/holosoma clone and happens to solve our (well-conditioned) pick data without infeasibility — but it is
+    NOT the standard env; use the /kevin hsretargeting env. CKPT1b was reproduced bit-identically in both (cost 0.2563).
+  - **Render:** `~/kevin/render_skel2.py <npz> <out.mp4>` (enhanced): pipes matplotlib frames to system
+    `/usr/bin/ffmpeg` (robust, no imageio backend quirks) + draws the object as an ORIENTED BBOX (extents
+    [0.096,0.058,0.191]) instead of a point. Original `render_skel.py` uses imageio-ffmpeg (only works in the /kevin env).
+  - NOTE: robot_only qpos=(F,36); object_interaction=(F,43). augmentation defaults OFF (`RetargetingConfig.augmentation=False`) → only `*_original.npz` written, no Ctrl-C needed.
+- [x] Phase 1 — Adapter A + real-motion retarget render (CHECKPOINT 1a robot_only + 1b object_interaction) — PASSED (awaiting user's subjective review of 1b)
+- [ ] Phase 2 — Adapter B (.pkl + hold/floor) + render (CHECKPOINT 2)  ← NEXT
 - [ ] Phase 3 — downstream 29-DOF + reference-playback (CHECKPOINT 3)
 - [ ] Phase 4 — PyRoki removal (CHECKPOINT 4)
 - [ ] Phase 5 — grasp synth + contact rewards (later)
