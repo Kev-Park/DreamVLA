@@ -247,11 +247,18 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
   - Physics finger-closure grasp (stays held under contact) is still Phase 5; this guarantees the REFERENCE grasp.
   - **29-DOF .pkl dataset built:** Adapter B over all 100 -> `~/kevin/DreamVLA/TrajGen/sample/Holosoma_Pick_sim2/pick_*.pkl`.
   - TODO: Isaac footage/keypoints per motion (after CKPT3, GPU).
-- [~] **Phase 4.5 — Default-SONIC diagnostic playbacks on the new holosoma refs (user-requested, in progress).**
+- [x] **Phase 4.5 — Default-SONIC diagnostic playbacks on the new holosoma refs + FIXED a 29-DOF SONIC encoder regression.**
   Run frozen SONIC encoder/decoder under PHYSICS on the 29-DOF holosoma refs: `play_sonic_adapter.py --zero-residual
   --waist-dof 29 --ref-motions-path <holosoma dir>` (no checkpoint; ONNX defaults in gear_sonic_deploy/policy/release).
-  WATCH: CKPT3 logged a token-adapter PARITY warning max|enc_pos-joint_pos|=0.87 rad (sonic-idx 22,20,16) — may be a
-  joint-order mismatch feeding our 29-DOF refs into the SONIC encoder (cf. gear_sonic MUJOCO-grouped vs SONIC-interleaved).
+  - **REGRESSION FOUND + FIXED (my Phase-3 29-DOF change):** the SONIC token adapter fed the reference to the encoder via a
+    27-hardcoded permutation (`token_adapter_wrapper.py` `dof[..., _inv_perm27]` gather + `_keep_idx` scatter). Once
+    `motion_lib.dof_pos` became 29-DOF (JointNamesOrder, waist roll/pitch at idx 13/14), that mis-indexed the columns
+    (treated waist as arm joints, dropped right wrist pitch/yaw) → **encoder PARITY 0.87 rad, scrambled arm tracking**.
+    FIX: name-matched scatter via `build_sonic29_to_env_perm(motion_lib.joint_names)` (consistent w/ parent `_gather_sonic`;
+    works for 27- or 29-DOF refs). Decoder/action side was already 29-DOF-aware (`_perm29`, `utm_body_29_to_env_body`).
+    **Result: PARITY 0.87 → 0.0000 rad.** Videos: `out/sonic_default_pick20.mp4` (broken) vs `out/sonic_default_pick20_fixed.mp4` (fixed).
+  - This also unblocks the eventual 29-DOF SONIC retrain (encoder now consumes our refs correctly). NOTE: `--zero-residual`
+    keeps fingers OPEN + no grasp (that's Phase 5); the object is still the training cuboid.
 - [ ] Phase 4 — PyRoki removal (CHECKPOINT 4)
 - [ ] **Phase 5 — grasp synth + contact rewards. DESIGN ON HOLD (user). When training: ALWAYS mustard mesh (not cuboid).**
   Scope (Explore): grasp machinery exists (binary 7-DOF/hand fingers, physics object, object_lift height+is_closed-gated,
