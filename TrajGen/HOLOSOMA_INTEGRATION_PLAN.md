@@ -186,8 +186,27 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
     `/usr/bin/ffmpeg` (robust, no imageio backend quirks) + draws the object as an ORIENTED BBOX (extents
     [0.096,0.058,0.191]) instead of a point. Original `render_skel.py` uses imageio-ffmpeg (only works in the /kevin env).
   - NOTE: robot_only qpos=(F,36); object_interaction=(F,43). augmentation defaults OFF (`RetargetingConfig.augmentation=False`) → only `*_original.npz` written, no Ctrl-C needed.
-- [x] Phase 1 — Adapter A + real-motion retarget render (CHECKPOINT 1a robot_only + 1b object_interaction) — PASSED (awaiting user's subjective review of 1b)
-- [ ] Phase 2 — Adapter B (.pkl + hold/floor) + render (CHECKPOINT 2)  ← NEXT
+- [x] Phase 1 — Adapter A + real-motion retarget render (CHECKPOINT 1a robot_only + 1b object_interaction) — PASSED (user approved v3)
+- [x] **Phase 2 — Adapter B (.pkl + FREEZE hold) — CHECKPOINT 2 PASSED.** `holosoma_adapters/holosoma_to_pkl.py`
+      (runs in `dreamcontrol_51`: jaxlie+torch+pytorch_kinematics, NO mujoco). holosoma `pick_20_original.npz`
+      → `~/kevin/hs_pkl_out/pick_20.pkl` + `_render.npz`. Render: `out/pick_20_pkl_ckpt2.mp4`.
+    - **JOINT PERMUTATION = IDENTITY (the flagged #1 risk is resolved).** holosoma `qpos[7:36]` order ==
+      `motion_lib_base.py` `JointNamesOrder` (extended to 29) == `g1_29dof.urdf` revolute order:
+      legs L(6), legs R(6), waist(yaw,roll,pitch), arm L(7), arm R(7). So `joints = qpos[7:36]` directly.
+    - **.pkl schema produced** (matches `motion_lib_base.py`): `global_pose` (jaxlie.SE3 batched F; motion_lib
+      calls `.translation()`/`.rotation().wxyz`), `joints` (F,29 torch.float32), `global_position` (F,3),
+      `grab_pos` (3,), `grab_idx` (int). motion_lib RECOMPUTES grab_pos from `grab_idx+2`+FK (only key presence
+      matters); adds `transl[:,2]+=0.035`.
+    - **Grounding:** per-frame FK (pk, g1_29dof.urdf) lowest link-origin → 0 (base_pos[:,2]-=mz, mz∈[0.06,0.11]),
+      replicating retarget.py `global_position[:,2]-=min_z`. Root z ~0.73–0.77.
+    - **grab_idx** = last static-object frame before the lift (=46, the reach frame). **FREEZE_FOR=10 hold**
+      re-inserted at grab_idx (length-preserving shift+hold on base/quat/joints/object); verified object z flat
+      f46–57 then lifts to ~1.03.
+    - **Height-floor OMITTED:** it was a reward-reference op (`refine_motions_al.py:295`, floors right-hand ref
+      height post-grab), not a .pkl field; holosoma object_interaction already enforces object/ground
+      non-penetration. Flag if Training reward needs it re-added.
+    - **NOTE:** joints are now 29-DOF; `motion_lib_base.py` still has a 27-DOF `joint_names` (line 280) + FK on
+      `g1_27dof.urdf` → Phase 3 must switch to 29 to consume this .pkl (CKPT2 render bypasses motion_lib).
 - [ ] Phase 3 — downstream 29-DOF + reference-playback (CHECKPOINT 3)
 - [ ] Phase 4 — PyRoki removal (CHECKPOINT 4)
 - [ ] Phase 5 — grasp synth + contact rewards (later)
