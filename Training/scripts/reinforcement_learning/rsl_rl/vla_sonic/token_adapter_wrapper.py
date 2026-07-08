@@ -37,6 +37,7 @@ import torch
 
 import isaaclab.utils.math as math_utils
 
+from .action_assembler import build_sonic29_to_env_perm
 from .planner_to_utm import ENCODER_SLICES, ENCODER_TOTAL_DIM
 from .token_action_wrapper import (
     N_BODY_JOINTS,
@@ -145,12 +146,17 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         self.encoder = encoder
         self.residual_scale = float(residual_scale)
 
-        # ---- env27 → SONIC29 bridges (inverse of the parent's SONIC→env mapping) ----
-        # Parent: env27[j] = sonic27[perm27[j]]  ⇒  sonic27[k] = env27[argsort(perm27)[k]].
-        self._inv_perm27 = torch.argsort(self._perm27)
-        # keep_idx (parent) holds the 27 SONIC-29 indices that survive the waist drop;
-        # scatter sonic27 back into a zero-filled 29 (waist_roll/pitch stay 0 — motion_lib
-        # has no waist roll/pitch reference either).
+        # ---- reference (motion_lib) joints → SONIC-29, by NAME ----
+        # motion_lib.dof_pos is in motion_lib.joint_names order (= env JointNamesOrder; 29-DOF has
+        # waist roll/pitch at idx 13,14, NOT appended at the end). build_sonic29_to_env_perm gives
+        # ref[i] = sonic29[perm[i]], so we SCATTER the reference into SONIC-29 slots (perm). This is
+        # name-matched (consistent with the parent's _gather_sonic) and handles both 27- and 29-DOF
+        # references (a 27-DOF ref simply leaves SONIC's waist_roll/pitch slots at 0). Supersedes the
+        # old 27-hardcoded `dof[..., _inv_perm27]` gather + `_keep_idx` scatter, which mis-indexed a
+        # 29-DOF reference (treated waist as arm joints, dropped right wrist pitch/yaw).
+        ref_names = list(self.unwrapped.motion_lib.joint_names)
+        self._ref_to_sonic_perm = torch.as_tensor(
+            build_sonic29_to_env_perm(ref_names), device=self._dev, dtype=torch.long)
 
         # Encoder input slices as (start, stop) tuples for torch column assignment.
         self._sl_pos = ENCODER_SLICES["motion_joint_positions_10frame_step5"]
@@ -222,10 +228,9 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
             res = unw.motion_lib.get_motion_state(ids, times)
 
             # Reference joints: env27 order → SONIC-IsaacLab 29 (zeros at waist roll/pitch).
-            dof27_env = res["dof_pos"].reshape(N, N_FUTURE_FRAMES, -1)                 # (N, 10, 27)
-            sonic27 = dof27_env[..., self._inv_perm27]                                 # (N, 10, 27)
+            dof_env = res["dof_pos"].reshape(N, N_FUTURE_FRAMES, -1)                   # (N,10,n_ref) motion_lib.joint_names order
             pos29 = torch.zeros(N, N_FUTURE_FRAMES, N_BODY_JOINTS, device=self._dev)
-            pos29[..., self._keep_idx] = sonic27
+            pos29[..., self._ref_to_sonic_perm] = dof_env                              # name-matched scatter ref -> SONIC-29
 
             # Central-difference velocities over the window (np.gradient equivalent).
             vel29 = torch.zeros_like(pos29)
