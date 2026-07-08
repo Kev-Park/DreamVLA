@@ -27,6 +27,7 @@ PELVIS, L_HIP, R_HIP, NECK = 0, 1, 2, 12
 L_SHOULDER, L_ELBOW, L_WRIST = 16, 18, 20
 R_WRIST = 21
 FREEZE_LEFT_ARM = True
+ROBOT_HEIGHT_G1 = 1.32   # holosoma config_types/robot.py g1 robot_height (smpl_scale = ROBOT_HEIGHT/height)
 
 
 def _torso_frame(p, neck, lhip, rhip):
@@ -77,7 +78,6 @@ if FREEZE_LEFT_ARM:
 #   human joints: (z -= z_min) then *scale   (all axes scaled, z shifted to put feet on ground)
 #   object_poses: out_xy = scale*in_xy;  out_z = in_z0 + scale*(in_z - in_z0)  (z0 NOT scaled)
 # We choose the object INPUT so its OUTPUT equals the transformed right hand at every frame.
-ROBOT_HEIGHT_G1 = 1.32          # holosoma config_types/robot.py g1 robot_height; smpl_scale = ROBOT_HEIGHT/height
 L_FOOT, R_FOOT = 10, 11         # SMPLX_DEMO_JOINTS foot indices (holosoma toe_names for smplx)
 
 wrist = gj[:, R_WRIST, :].astype(np.float64)                       # (N, 3), rotated Z-up frame
@@ -97,22 +97,21 @@ if pick_point_raw is not None:
     reach = ((wrist[:, :2] - pelvis[:, :2]) * d).sum(-1)          # forward reach toward object
 else:
     reach = np.linalg.norm(wrist[:, :2] - pelvis[:, :2], axis=-1)  # fallback: horizontal reach
-# Lift-aware grab selection: since the object rests at wrist[grab] and then tracks the wrist, a valid
-# grasp needs the wrist to RISE after grab (else no lift -> "not held"). Primary = max reach toward the
-# object (natural full-extension pick), but only if a lift follows; else fall back to the ONSET of
-# near-max extension (earlier -> leaves room for the lift; fixes high-pick motions whose reach plateaus
-# and whose argmax lands late), then to the frame closest to the object.
-LIFT_MIN = 0.05
+# Lift-aware grab selection: the object rests at wrist[grab] then tracks the wrist, so a valid grasp
+# needs the wrist to RISE after grab (else no lift -> "not held"). Grab = MAX reach toward the object
+# among only the frames that are FOLLOWED BY A LIFT. This keeps the natural full-extension pick (motion
+# 20 @46) yet rejects late reach re-extensions with no lift after them (motion 25's argmax @124 -> the
+# real lifting pick @~48). Threshold is in the human frame but targets a >=0.06 OUTPUT lift (holosoma
+# scales the robot by ~height/1.32). If no frame has a lift, fall back to the frame closest to the object.
+lift_min_human = 0.06 * h / ROBOT_HEIGHT_G1
 lift_after = lambda g: float(wrist[g:, 2].max() - wrist[g, 2])
-grab_t = int(np.argmax(reach[:horizon]))
-if lift_after(grab_t) < LIFT_MIN:
-    onset = int(np.argmax(reach[:horizon] >= 0.9 * float(reach[:horizon].max())))
-    if lift_after(onset) >= LIFT_MIN:
-        grab_t = onset
-    elif pick_point_raw is not None:
-        grab_t = int(np.argmin(np.linalg.norm(wrist - pp[None, :], axis=1)))
-    else:
-        grab_t = onset
+lift_ok = np.array([lift_after(g) >= lift_min_human for g in range(horizon)])
+if lift_ok.any():
+    grab_t = int(np.argmax(np.where(lift_ok, reach[:horizon], -np.inf)))
+elif pick_point_raw is not None:
+    grab_t = int(np.argmin(np.linalg.norm(wrist - pp[None, :], axis=1)))
+else:
+    grab_t = int(np.argmax(reach[:horizon]))
 obj = wrist.copy()
 obj[:grab_t] = wrist[grab_t]                                       # static at reach point until grabbed
 
