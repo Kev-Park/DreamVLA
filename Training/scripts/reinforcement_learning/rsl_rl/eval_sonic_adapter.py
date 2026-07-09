@@ -74,6 +74,9 @@ parser.add_argument("--skip-start-frames", type=int, default=None,
                          "resets 10 frames later so the decoder-history seed lands on real motion.")
 parser.add_argument("--waist-dof", type=int, default=27, choices=[27, 29],
                     help="Body DOF. 29 actuates waist_roll/pitch to match SONIC training. 27 = welded.")
+parser.add_argument("--ref-motions-path", type=str, default=None,
+                    help="Override the env's ref_motions_path (dir of reference .pkl files). Point at "
+                         "the 29-DOF holosoma dataset, e.g. ../TrajGen/sample/Holosoma_Pick_29_full.")
 parser.add_argument("--start-pregrab-margin", type=float, default=None,
                     help="Start episodes this many seconds before the grab (drops prepend + walk).")
 # append RSL-RL cli args (gives --checkpoint, --load_run, etc.)
@@ -155,6 +158,11 @@ def main():
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
         apply_29dof_waist_override(env_cfg)
+
+    # Point eval at an explicit reference dataset (e.g. the 29-DOF holosoma set).
+    if args_cli.ref_motions_path is not None:
+        env_cfg.ref_motions_path = args_cli.ref_motions_path
+        print(f"[eval_sonic_adapter] ref_motions_path override -> {args_cli.ref_motions_path}")
 
     # Optional episode-start offsets (same flags as train/play).
     if args_cli.start_pregrab_margin is not None:
