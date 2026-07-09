@@ -266,6 +266,33 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         )
         print(f"[token-wrapper] env body DOF = {self._n_body_env} "
               f"({'29-DOF: waist actuated, no drop' if self._is_29dof else '27-DOF: waist roll/pitch dropped'})")
+
+        # Decoder(SONIC-29) -> env body action, NAME-MATCHED to the ACTUAL action-term joint
+        # order. CRITICAL: the body action term uses joint_names=JointNamesOrder (preserve_order
+        # =True). That constant is 29-DOF INTERLEAVED (waist_roll/pitch at idx 13,14, arms at
+        # 15..28) whenever motion_lib is 29-DOF, NOT [JointNamesOrder-27, waist_roll, waist_pitch]
+        # with waist appended at 27,28. The hand-built self._perm29 assumed the appended layout,
+        # so it mis-routed both arms + waist (16 joints) whenever the action term is interleaved
+        # -> whole-body flailing regardless of the waist reference. Building the perm by NAME from
+        # the term's real joint order is correct for 27- or 29-DOF and any Isaac-resolved order.
+        try:
+            _body_action_names = list(self.unwrapped.action_manager.get_term("joint_pos")._joint_names)
+        except Exception:
+            try:
+                _body_action_names = list(self.unwrapped.cfg.actions.joint_pos.joint_names)
+            except Exception:
+                from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder as _JNO
+                _body_action_names = list(_JNO)
+        assert len(_body_action_names) == self._n_body_env, (
+            f"action-term body joints ({len(_body_action_names)}) != env body dim "
+            f"({self._n_body_env}); order={_body_action_names}")
+        self._sonic_to_env_body = torch.as_tensor(
+            build_sonic29_to_env_perm(_body_action_names), device=self._dev, dtype=torch.long)
+        if self._is_29dof:
+            _agree = bool(torch.equal(self._sonic_to_env_body, self._perm29))
+            print(f"[token-wrapper] name-matched body perm == hand-built _perm29: {_agree} "
+                  f"{'(appended-waist layout)' if _agree else '(INTERLEAVED layout — hand _perm29 would MIS-ROUTE; using name-matched)'}")
+
         self._left_open_scalar = torch.tensor(_LEFT_HAND_OPEN_SCALAR, device=self._dev, dtype=torch.float32)
 
         # ---- batched decoder history (oldest at index 0) ----
@@ -427,11 +454,9 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
         """(N,29) SONIC body + (N,2) binary finger cmds → (N, env_action_dim) full env action."""
         N = self.num_envs
         q_target = self._default_sonic + body_29 * self._scale_sonic
-        if self._is_29dof:
-            env_body = q_target.index_select(1, self._perm29)   # 29 body, no waist drop
-        else:
-            sonic27 = q_target.index_select(1, self._keep_idx)  # drop waist roll/pitch
-            env_body = sonic27.index_select(1, self._perm27)    # 27 body
+        # Name-matched SONIC-29 -> env body action (handles 27- or 29-DOF, interleaved or appended
+        # waist; a 27-DOF action order simply never references SONIC's waist_roll/pitch slots).
+        env_body = q_target.index_select(1, self._sonic_to_env_body)
         act = torch.empty(N, self._env_action_dim, device=self._dev, dtype=env_body.dtype)
         act[:, : self._n_body_env] = env_body
         act[:, self._n_body_env : self._n_body_env + ENV_FINGER_SLOTS] = finger_cmds
