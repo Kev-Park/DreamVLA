@@ -89,6 +89,11 @@ parser.add_argument(
          "27 = legacy welded-waist asset.",
 )
 parser.add_argument(
+    "--ref-motions-path", type=str, default=None,
+    help="Override the env's ref_motions_path (dir of reference .pkl files). Point at the "
+         "29-DOF holosoma dataset, e.g. ../TrajGen/sample/Holosoma_Pick_29_full.",
+)
+parser.add_argument(
     "--tracking-scale", type=float, default=1.0,
     help="Multiplier on the reference-tracking reward weights (joint/keypts/position/"
          "orientation tracking). Default 1.0 = full tracking reward retained, so the "
@@ -323,6 +328,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
         apply_29dof_waist_override(env_cfg)
+
+    # Point training at an explicit reference dataset (e.g. the 29-DOF holosoma set).
+    if args_cli.ref_motions_path is not None:
+        env_cfg.ref_motions_path = args_cli.ref_motions_path
+        print(f"[train_sonic_adapter] ref_motions_path override -> {args_cli.ref_motions_path}")
 
     # Optional: skip the foot-skating walk approach by starting episodes near the grab.
     if args_cli.start_pregrab_margin is not None:
