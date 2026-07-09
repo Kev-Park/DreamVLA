@@ -238,6 +238,8 @@ JOINTS_MASK = [
     0, # right_ankle_pitch_joint
     0, # right_ankle_roll_joint
     1, # waist_yaw_joint
+    1, # waist_roll_joint
+    1, # waist_pitch_joint
     1, # left_shoulder_pitch_joint
     1, # left_shoulder_roll_joint
     1, # left_shoulder_yaw_joint
