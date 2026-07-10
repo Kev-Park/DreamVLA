@@ -127,7 +127,7 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
       (latest cvxpy 1.9.2 / mujoco 3.10 → infeasible). numpy 2.3.5 OK (intended pin).
     - **object_interaction qpos = (F, 43)** = base(7) + 29 joints(7:36) + **object pose(36:43)** (3 trans + 4 quat wxyz). human_joints (F,52,3). fps=30.
     - **HEADLESS RENDER:** MuJoCo EGL + osmesa both BROKEN on box (no working GL libs). Use CPU
-      skeleton render: `~/kevin/render_skel.py <npz> <out.mp4>` — mj_forward → d.xpos link positions
+      skeleton render: `~/kevin/scripts/render_skel.py <npz> <out.mp4>` — mj_forward → d.xpos link positions
       → matplotlib 3D skeleton + red box marker → imageio-ffmpeg MP4. Needs matplotlib + imageio-ffmpeg (installed).
     - **NOTE:** demo loops through object-pose AUGMENTATION passes after the base retarget — Ctrl-C after
       `*_original.npz` is saved; we'll disable augmentation for our single-motion use.
@@ -182,7 +182,7 @@ holosoma object_interaction  (mustard bottle mesh, CPU: cvxpy+MuJoCo)  ->  .npz 
     Feb-10 venv `~/.holosoma_deps` (cvxpy 1.7.5, mujoco 3.10.0, no imageio_ffmpeg) that imports the same
     /kevin/holosoma clone and happens to solve our (well-conditioned) pick data without infeasibility — but it is
     NOT the standard env; use the /kevin hsretargeting env. CKPT1b was reproduced bit-identically in both (cost 0.2563).
-  - **Render:** `~/kevin/render_skel2.py <npz> <out.mp4>` (enhanced): pipes matplotlib frames to system
+  - **Render:** `~/kevin/scripts/render_skel2.py <npz> <out.mp4>` (enhanced): pipes matplotlib frames to system
     `/usr/bin/ffmpeg` (robust, no imageio backend quirks) + draws the object as an ORIENTED BBOX (extents
     [0.096,0.058,0.191]) instead of a point. Original `render_skel.py` uses imageio-ffmpeg (only works in the /kevin env).
   - NOTE: robot_only qpos=(F,36); object_interaction=(F,43). augmentation defaults OFF (`RetargetingConfig.augmentation=False`) → only `*_original.npz` written, no Ctrl-C needed.

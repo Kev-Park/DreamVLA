@@ -32,7 +32,8 @@ import pytorch_kinematics as pk
 PAUSE, INTERP, FREEZE_FOR = 10, 10, 10
 DOF = int(os.environ.get("HS_PKL_DOF", "29"))
 assert DOF in (27, 29), f"HS_PKL_DOF must be 27 or 29, got {DOF}"
-_ROBOTS = os.path.expanduser("~/kevin/DreamVLA/Training/HumanoidVerse/humanoidverse/data/robots/g1")
+_ROBOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "..", "Training", "HumanoidVerse", "humanoidverse", "data", "robots", "g1")
 URDF = os.path.join(_ROBOTS, f"g1_{DOF}dof.urdf")
 
 # refine_motions_al.py init_joint_angles (frozen-left-arm pose). 27-DOF base; the 29-DOF

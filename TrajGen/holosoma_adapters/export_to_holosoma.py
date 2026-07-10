@@ -53,7 +53,8 @@ def freeze_left_arm(gj):
     return out.astype(gj.dtype)
 
 motion_idx = int(sys.argv[1]) if len(sys.argv) > 1 else 20
-results = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser("~/kevin/DreamVLA/TrajGen/sample/Pick_sim/results.npy")
+results = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "sample", "Pick_sim", "results.npy")
 out_dir = sys.argv[3] if len(sys.argv) > 3 else os.path.expanduser("~/kevin/hs_input")
 os.makedirs(out_dir, exist_ok=True)
 
