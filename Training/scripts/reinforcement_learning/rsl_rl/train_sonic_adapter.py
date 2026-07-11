@@ -306,8 +306,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         _ap0 = getattr(env_cfg.rewards, "tracking_anchor_pos", None)
         if _ap0 is not None:
             _ap0.params["eps"] = 0.0                              # no root deadband (exact tracking)
-        print("[train_sonic_adapter] TRACKING-ONLY: SONIC-matched pure tracking — 5 tracking terms "
-              "(all-ones full-fidelity mask — every FK link incl. right arm, no deadband); all task + joint-deviation rewards zeroed.")
+        print(f"[train_sonic_adapter] TRACKING-ONLY: SONIC-matched pure tracking — 5 tracking terms "
+              f"(all-ones full-fidelity mask = {sum(_full_mask)}/{len(_full_mask)} FK links ON incl. right arm, no deadband); "
+              f"all task + joint-deviation rewards zeroed.")
 
     # One-line effective-config banner for run identification — grep 'EFFECTIVE CONFIG' in the log.
     def _w(n):
