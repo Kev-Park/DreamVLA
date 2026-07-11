@@ -102,6 +102,13 @@ parser.add_argument(
          "alone does NOT hold the base motion, so the policy collapses to standing.",
 )
 parser.add_argument(
+    "--tracking-only", action="store_true", default=False,
+    help="PURE motion-tracking run matching SONIC's tracking rewards: keeps ONLY the "
+         "gear_sonic tracking terms (anchor pos/ori 0.5/0.5, relative-body pos/ori 1.0/1.0 "
+         "tracking ALL links incl. right arm via the full KEYPTS_MASK, body_linvel 1.0), "
+         "removes the root deadband, and ZEROS every task reward (object_lift, wrist aim, "
+         "right-arm/hand-precise, finger) and joint-deviation. Overrides the weight flags.")
+parser.add_argument(
     "--wrist-weight", type=float, default=None,
     help="Override target_orientation_error (wrist level+point) weight — a PENALTY, pass "
          "negative (e.g. -1.5). Default None = use the env cfg value.")
@@ -271,13 +278,43 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         else:
             print(f"[train_sonic_adapter] WARN: rewards.{term_name} not found; weight override ignored")
 
+    # --tracking-only: pure SONIC-matched motion tracking. Applied LAST so it wins over the weight
+    # flags. Keeps only the 5 gear_sonic tracking terms (full-link mask, no root deadband) and
+    # zeros every task + joint-deviation reward. Structural reward variant, kept behind a flag.
+    if args_cli.tracking_only:
+        from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking_pick_env import KEYPTS_MASK
+        _keep = {"tracking_anchor_pos": 0.5, "tracking_anchor_ori": 0.5,
+                 "tracking_relative_body_pos": 1.0, "tracking_relative_body_ori": 1.0,
+                 "tracking_body_linvel": 1.0}
+        _zero = ("object_lift", "target_orientation_error", "tracking_right_arm_pos",
+                 "tracking_hand_precise", "tracking_right_arm_ori",
+                 "right_hand_state_target_reward_val", "joint_deviation_ref")
+        for n, w in _keep.items():
+            t = getattr(env_cfg.rewards, n, None)
+            if t is not None:
+                t.weight = float(w)
+        for n in _zero:
+            t = getattr(env_cfg.rewards, n, None)
+            if t is not None:
+                t.weight = 0.0
+        for n in ("tracking_relative_body_pos", "tracking_relative_body_ori"):
+            t = getattr(env_cfg.rewards, n, None)
+            if t is not None:
+                t.params["keypts_mask"] = KEYPTS_MASK            # full-link mask (incl. right arm)
+        _ap0 = getattr(env_cfg.rewards, "tracking_anchor_pos", None)
+        if _ap0 is not None:
+            _ap0.params["eps"] = 0.0                              # no root deadband (exact tracking)
+        print("[train_sonic_adapter] TRACKING-ONLY: SONIC-matched pure tracking — 5 tracking terms "
+              "(full-link KEYPTS_MASK, no deadband); all task + joint-deviation rewards zeroed.")
+
     # One-line effective-config banner for run identification — grep 'EFFECTIVE CONFIG' in the log.
     def _w(n):
         t = getattr(env_cfg.rewards, n, None)
         return t.weight if t is not None else None
     _ap = getattr(env_cfg.rewards, "tracking_anchor_pos", None)
     _eps = _ap.params.get("eps") if _ap is not None else None
-    print(f"[train_sonic_adapter] EFFECTIVE CONFIG: residual_scale={args_cli.residual_scale} "
+    print(f"[train_sonic_adapter] EFFECTIVE CONFIG: tracking_only={args_cli.tracking_only} "
+          f"residual_scale={args_cli.residual_scale} "
           f"tracking_scale={ts} wrist={_w('target_orientation_error')} lift={_w('object_lift')} "
           f"body_pos={_w('tracking_relative_body_pos')} body_ori={_w('tracking_relative_body_ori')} "
           f"arm_pos={_w('tracking_right_arm_pos')} hand_pos={_w('tracking_hand_precise')} deadband_eps={_eps}")
