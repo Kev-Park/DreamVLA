@@ -105,7 +105,8 @@ parser.add_argument(
     "--tracking-only", action="store_true", default=False,
     help="PURE motion-tracking run matching SONIC's tracking rewards: keeps ONLY the "
          "gear_sonic tracking terms (anchor pos/ori 0.5/0.5, relative-body pos/ori 1.0/1.0 "
-         "tracking ALL links incl. right arm via the full KEYPTS_MASK, body_linvel 1.0), "
+         "tracking EVERY FK link incl. the right arm via an all-ones full-fidelity mask "
+         "(overrides the grasp KEYPTS_MASK which zeroed right_wrist_yaw/right_rubber_hand/ankles), body_linvel 1.0), "
          "removes the root deadband, and ZEROS every task reward (object_lift, wrist aim, "
          "right-arm/hand-precise, finger) and joint-deviation. Overrides the weight flags.")
 parser.add_argument(
@@ -297,15 +298,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             t = getattr(env_cfg.rewards, n, None)
             if t is not None:
                 t.weight = 0.0
-        for n in ("tracking_relative_body_pos", "tracking_relative_body_ori"):
-            t = getattr(env_cfg.rewards, n, None)
-            if t is not None:
-                t.params["keypts_mask"] = KEYPTS_MASK            # full-link mask (incl. right arm)
+        _full_mask = [1] * len(KEYPTS_MASK)                      # track EVERY FK link (whole-body fidelity):
+        for n in ("tracking_relative_body_pos", "tracking_relative_body_ori"):  # unmasks right_wrist_yaw(37) +
+            t = getattr(env_cfg.rewards, n, None)                # right_rubber_hand(38) (grasp-task exclusions)
+            if t is not None:                                    # and the ankle_pitch links — all valid via URDF FK
+                t.params["keypts_mask"] = _full_mask
         _ap0 = getattr(env_cfg.rewards, "tracking_anchor_pos", None)
         if _ap0 is not None:
             _ap0.params["eps"] = 0.0                              # no root deadband (exact tracking)
         print("[train_sonic_adapter] TRACKING-ONLY: SONIC-matched pure tracking — 5 tracking terms "
-              "(full-link KEYPTS_MASK, no deadband); all task + joint-deviation rewards zeroed.")
+              "(all-ones full-fidelity mask — every FK link incl. right arm, no deadband); all task + joint-deviation rewards zeroed.")
 
     # One-line effective-config banner for run identification — grep 'EFFECTIVE CONFIG' in the log.
     def _w(n):
