@@ -124,8 +124,9 @@ def refine_right_arm_table(joints, base_pos, base_quat, grab_idx, chain):
         d = _t.minimum(_t.relu(p[:, 0] - x_edge), _t.relu(z_table - p[:, 2]))
         return (d * d).sum()
 
-    last = 0.0
-    for _ in range(REFINE_STEPS):
+    _verbose = os.environ.get("HS_REFINE_VERBOSE", "0") == "1"
+    last = 0.0; _tab0 = 0.0; _grad0 = 0.0; _ran = 0
+    for _step in range(REFINE_STEPS):
         opt.zero_grad()
         j = jt.clone(); j[:, _RARM] = arm
         fk = chain.forward_kinematics(j)
@@ -134,18 +135,24 @@ def refine_right_arm_table(joints, base_pos, base_quat, grab_idx, chain):
         tip_root = hp + _t.einsum("fij,j->fi", hr, tip_local)
         tip_w = _t.einsum("fij,fj->fi", R, tip_root) + bp              # fingertip world
         orig_w = _t.einsum("fij,fj->fi", R, hp) + bp                   # hand-origin world
-        cost = REFINE_W_TABLE * (_pen(tip_w, grab_idx) + _pen(orig_w, grab_idx))
+        _tab = _pen(tip_w, grab_idx) + _pen(orig_w, grab_idx)
+        cost = REFINE_W_TABLE * _tab
         cost = cost + REFINE_W_REG * ((arm - arm0) ** 2).sum(dim=1).mean()
         if grab_idx < F:                                               # post-grab hand-height floor
             cost = cost + REFINE_W_FLOOR * (_t.relu(z_table - tip_w[grab_idx:, 2]) ** 2).mean()
-        cost.backward(); opt.step(); last = float(cost.item())
+        cost.backward(); _gn = float(arm.grad.norm()) if arm.grad is not None else -1.0
+        opt.step(); last = float(cost.item()); _ran = _step + 1
+        if _step == 0:
+            _tab0 = float(_tab.item()); _grad0 = _gn
+        if _verbose and (_step in (0, 1, 10, 50, 200, 500, 1000) or _step == REFINE_STEPS - 1):
+            print(f"[refine-arm]   step {_step:4d}  cost={last:.5f}  table_pen={float(_tab.item()):.5f}  |grad|={_gn:.5f}")
         if last < 1e-4:
             break
     out = joints.copy()
     out[:, _RARM] = arm.detach().numpy()
     max_move = float(np.abs(out[:, _RARM] - joints[:, _RARM]).max())
-    print(f"[refine-arm] x_edge={x_edge:.3f} z_table={z_table} steps<= {REFINE_STEPS} "
-          f"final_cost={last:.4f} max_arm_move={max_move:.3f} rad")
+    print(f"[refine-arm] x_edge={x_edge:.3f} z_table={z_table} ran {_ran}/{REFINE_STEPS} steps "
+          f"init_table_pen={_tab0:.5f} init|grad|={_grad0:.5f} final_cost={last:.4f} max_arm_move={max_move:.3f} rad")
     return out
 
 
