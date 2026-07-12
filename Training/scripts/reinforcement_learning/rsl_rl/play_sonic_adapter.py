@@ -109,6 +109,15 @@ parser.add_argument(
          "required. Use to test whether the reference itself is dynamically feasible.",
 )
 parser.add_argument(
+    "--overlay-ref", action="store_true", default=False,
+    help="Draw the tracked REFERENCE motion as an overlay on top of the (physics) residual "
+         "playback: 39 spheres at the reference link world positions, updated every frame "
+         "from motion_lib. Right-arm links (idx>=31: right_shoulder..right_wrist_yaw + "
+         "right_rubber_hand) are RED, the rest GREEN, so right-arm tracking error is legible. "
+         "Where the policy tracks well a sphere sits on the robot's link; a sphere floating "
+         "off a link is tracking error. Render-only viz — does not touch the policy/obs/physics.",
+)
+parser.add_argument(
     "--ref-motions-path", type=str, default=None,
     help="Override the env's ref_motions_path (dir of reference .pkl files). Use to point "
          "reference-playback at an isolated set (e.g. the holosoma 29-DOF .pkl) without "
@@ -143,6 +152,8 @@ import isaaclab.utils.math as math_utils
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.sensors import CameraCfg
 from isaaclab.sim import PinholeCameraCfg
+import isaaclab.sim as sim_utils
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg
 
@@ -221,6 +232,59 @@ def _read_camera_rgb(env, key: str):
     if rgb.dtype != torch.uint8:
         rgb = rgb.clamp(0.0, 255.0).to(torch.uint8)
     return rgb.cpu().numpy()
+
+
+# =========================================================================
+# Reference-motion overlay markers (--overlay-ref).
+# 39 spheres at the reference link world positions (motion_lib.global_keypts),
+# updated every frame. Right-arm links (idx>=31) are RED, the rest GREEN, so the
+# right-arm links we un-masked for full-fidelity tracking are legible against the
+# physically-simulated robot. Pure viz — never reads/writes the policy/obs/physics.
+# =========================================================================
+
+# Reference keypoint order matches get_keypts / KEYPTS_MASK (URDF FK link order, 39 links).
+# idx>=31 == the right arm (right_shoulder_pitch..right_wrist_yaw + right_rubber_hand); this is
+# exactly the KEYPTS_MASK_NO_RARM cutoff (`m if i<31 else 0`) used in the tracking rewards.
+_N_KEYPTS = 39
+_RARM_START_IDX = 31
+
+
+def _make_ref_overlay_markers():
+    """Create the VisualizationMarkers: a green sphere prototype (body) + a red one (right arm)."""
+    cfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/ref_keypts",
+        markers={
+            "body": sim_utils.SphereCfg(
+                radius=0.028,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.9, 0.15)),
+            ),
+            "rarm": sim_utils.SphereCfg(
+                radius=0.032,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.95, 0.1, 0.1)),
+            ),
+        },
+    )
+    markers = VisualizationMarkers(cfg)
+    # env 0 only (num_envs=1 for a clean video). Per-keypoint prototype index: right arm -> red.
+    marker_indices = [1 if i >= _RARM_START_IDX else 0 for i in range(_N_KEYPTS)]
+    return markers, marker_indices
+
+
+def _update_ref_overlay_markers(env, markers, marker_indices, device):
+    """Place the spheres at this step's reference link world positions."""
+    unw = env.unwrapped
+    with torch.inference_mode():
+        motion_times = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
+            device=device, dtype=torch.float32
+        )
+        res = unw.motion_lib.get_motion_state(unw.motion_ids, motion_times)
+        # global_keypts are env-local; + env_origins -> world (same convention as the rewards).
+        gk = res["global_keypts"].to(device) + unw.scene.env_origins.unsqueeze(1)   # (N, 39, 3)
+    translations = gk[0]                                                             # env 0 -> (39, 3)
+    markers.visualize(
+        translations=translations,
+        marker_indices=torch.tensor(marker_indices, device=device, dtype=torch.long),
+    )
 
 
 class VideoWriter:
@@ -536,6 +600,13 @@ def main():
     if args_cli.reference_pd:
         policy = _make_reference_pd_policy(env, ref_joint_map, device)
 
+    # Reference-overlay markers (created once, after reset so motion_lib/motion_ids exist).
+    ref_markers, ref_marker_indices = _make_ref_overlay_markers() if args_cli.overlay_ref else (None, None)
+    if args_cli.overlay_ref:
+        _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)  # frame 0
+        print(f"[overlay-ref] {_N_KEYPTS} reference-keypoint spheres enabled "
+              f"(idx>={_RARM_START_IDX} right arm = RED, rest = GREEN)")
+
     while simulation_app.is_running() and timestep < args_cli.video_length:
         start_time = time.time()
 
@@ -548,6 +619,11 @@ def main():
         # the step, so the displayed motion is the kinematic target (physics discarded).
         if args_cli.reference_playback:
             _write_reference_pose(env, ref_joint_map, device)
+
+        # 1c. reference overlay: move the spheres to THIS step's reference link positions
+        # (before the render flush so they appear in this frame).
+        if args_cli.overlay_ref:
+            _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
 
         # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
         _APP.update()
@@ -574,6 +650,8 @@ def main():
                 label = "REFERENCE  " + label
             elif args_cli.zero_residual:
                 label = "ZERO-SHOT  " + label
+            if args_cli.overlay_ref:
+                label = label + "  [ref overlay: R-arm red]"
             writer.write(_overlay(frame, label))
 
         timestep += 1
