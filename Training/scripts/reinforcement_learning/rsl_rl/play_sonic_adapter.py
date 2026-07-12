@@ -631,15 +631,25 @@ def main():
 
         # frame diagnostic: resolve robot/object/table world frames + confirm object placement.
         if timestep in (0, 40, 80):
-            try:
-                _uw = env.unwrapped
-                _rp = [round(float(v), 2) for v in (_uw.scene["robot"].data.root_pos_w[0] - _uw.scene.env_origins[0]).tolist()]
-                _op = [round(float(v), 2) for v in (_uw.scene["object"].data.root_pos_w[0] - _uw.scene.env_origins[0]).tolist()]
-                _hb = _uw.scene["robot"].find_bodies("right_rubber_hand")[0]
-                _hp = [round(float(v), 2) for v in (_uw.scene["robot"].data.body_pos_w[0, _hb[0]] - _uw.scene.env_origins[0]).tolist()] if _hb else None
-                print(f"[frame-diag t={timestep}] robot_root(env-local)={_rp}  right_hand={_hp}  object={_op}  (kitchen box @ x=2.55)")
-            except Exception as _e:
-                print(f"[frame-diag t={timestep}] {_e}")
+            _uw = env.unwrapped
+            _o = _uw.scene.env_origins[0]
+            def _loc(a):
+                try: return [round(float(v), 2) for v in (a - _o).tolist()]
+                except Exception: return None
+            _rp = _loc(_uw.scene["robot"].data.root_pos_w[0])
+            _op = _loc(_uw.scene["object"].data.root_pos_w[0])
+            _hp = None
+            for _nm in ("right_rubber_hand", "right_rubber_hand_link", "right_wrist_yaw_link"):
+                try:
+                    _hb = _uw.scene["robot"].find_bodies(_nm)[0]
+                    if _hb: _hp = _loc(_uw.scene["robot"].data.body_pos_w[0, _hb[0]]); break
+                except Exception: pass
+            _kp = None
+            try: _kp = _loc(_uw.scene["kitchen"].data.root_pos_w[0])
+            except Exception:
+                try: _kp = list(getattr(_uw.scene["kitchen"].cfg.init_state, "pos", None))
+                except Exception: pass
+            print(f"[frame-diag t={timestep}] robot_root={_rp}  right_hand={_hp}  object={_op}  kitchen={_kp}")
 
         # 3. read + write the frame
         frame = _read_camera_rgb(env, "camera")
