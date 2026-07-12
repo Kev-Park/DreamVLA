@@ -575,7 +575,12 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     wrist_keypts = torch.bmm(pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z_setup
     grab_pos = wrist_keypts[grab_idx].clone()
     grab_pos[0] += WRIST_TO_COLLISION                      # x_edge basis (table edge)
-    capsule_obs_pos = torch.tensor(np.asarray(grab_pos_obj), dtype=torch.float32).to(DEVICE)  # object
+    # Wrist TARGET = the reference wrist's OWN grab position (grounded frame), where the
+    # holosoma-retargeted hand actually grasps the object. NOT the raw grab_pos_obj: that is
+    # ungrounded (z off by the per-frame grounding shift) and is the object CENTRE, ~0.1-0.15 m
+    # forward of the wrist link -> driving the wrist to it over-reaches to a visibly-wrong target.
+    # The reference already grasps the true (relocated) object, so its wrist point is object-correct.
+    capsule_obs_pos = wrist_keypts[grab_idx].clone()
     ref_dists = torch.norm(wrist_keypts[1:] - wrist_keypts[:-1], dim=1)
 
     joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone())
