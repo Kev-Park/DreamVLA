@@ -177,10 +177,19 @@ base_pos[:, 2] -= mz
 # --- freeze left arm across ALL frames (refine parity) ---
 joints = freeze_left_arm(joints)
 
-# --- arm-only table-collision refine (right arm out of the table during the pre-grab reach) ---
+# --- arm table-collision refine (right arm out of the table during the pre-grab reach) ---
 # Runs on the grounded core motion, before the grab-hold/lead-in so grab_idx is the core index.
+# HS_REFINE_MODE=al (default): full augmented-Lagrangian refine (refine_al_29 = ported
+# refine_motions_al.py: swept-quad table, tip/wrist speed-accel-jerk, hard DOF speed limits,
+# laziness, outward-swing approach shaping) -> smooth reaches, no fast punch-through.
+# HS_REFINE_MODE=simple: the lightweight per-frame penetration refine (refine_right_arm_table).
 if REFINE_ARM and 0 < grab_idx < F:
-    joints = refine_right_arm_table(joints, base_pos, base_quat, grab_idx, chain)
+    _mode = os.environ.get("HS_REFINE_MODE", "al")
+    if _mode == "al":
+        import refine_al_29
+        joints = refine_al_29.refine_arm(joints, base_pos, base_quat, obj_pos[grab_idx], grab_idx, fps=20.0)
+    else:
+        joints = refine_right_arm_table(joints, base_pos, base_quat, grab_idx, chain)
 
 # --- FREEZE_FOR grab hold (length-preserving) ---
 def freeze_hold(a):
