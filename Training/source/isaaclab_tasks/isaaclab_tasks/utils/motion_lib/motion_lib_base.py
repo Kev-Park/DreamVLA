@@ -296,8 +296,20 @@ class MotionLibBase():
             
             if 'grab_pos' in motion_file_data or 'grab_pos_real' in motion_file_data:
                 idx_shift = 2
-                self.grab_pos.append(self.global_keypts[-1][motion_file_data['grab_idx']+idx_shift,-2, :].clone())
-                self.grab_pos[-1] += self.calc_grab_pos_offset(self.quats[-1],self.dof_pos[-1], self.joint_names, pk2_robot, motion_file_data['grab_idx']+idx_shift)
+                if motion_file_data.get('grab_pos_is_object', False):
+                    # Holosoma refs: the stored grab_pos IS the true object position (the bottle
+                    # the hand was retargeted to grasp). Use its XY directly -- frame-consistent
+                    # with global_keypts (grounding shifts only z) -- instead of the
+                    # wrist_yaw + 0.12*x + 0.07*y offset heuristic, which was calibrated for the
+                    # old refs' wrist pose and mis-places the object ~10-16 cm laterally for the
+                    # holosoma grasp pose. Keep the wrist-keypoint z (the env overrides object z).
+                    gp = self.global_keypts[-1][motion_file_data['grab_idx']+idx_shift, -2, :].clone()
+                    obj_xy = to_torch(np.array(motion_file_data['grab_pos']))
+                    gp[0] = obj_xy[0]; gp[1] = obj_xy[1]
+                    self.grab_pos.append(gp)
+                else:
+                    self.grab_pos.append(self.global_keypts[-1][motion_file_data['grab_idx']+idx_shift,-2, :].clone())
+                    self.grab_pos[-1] += self.calc_grab_pos_offset(self.quats[-1],self.dof_pos[-1], self.joint_names, pk2_robot, motion_file_data['grab_idx']+idx_shift)
             elif 'squat_pos' in motion_file_data or 'squat_pos_real' in motion_file_data:
                 idx_shift = 0
                 # import pdb; pdb.set_trace()

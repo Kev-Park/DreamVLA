@@ -204,9 +204,12 @@ grab_idx += PAUSE + INTERP
 # --- .pkl (DOF-DOF, OLD format) ---
 global_pose = jaxlie.SE3.from_rotation_and_translation(jaxlie.SO3(jnp.array(base_quat)), jnp.array(base_pos))
 grab_pos = torch.tensor(obj_pos[max(0, grab_idx - PAUSE - INTERP)], dtype=torch.float32)
+# grab_pos IS the true holosoma object position (the bottle the hand was retargeted to grasp),
+# so motion_lib can use its xy directly instead of the wrist_yaw+fixed-offset heuristic (which
+# mis-places the object ~10-16 cm laterally for holosoma wrist poses). Flagged for motion_lib.
 pkl = {"global_pose": global_pose, "joints": torch.tensor(joints, dtype=torch.float32),
        "global_position": torch.tensor(base_pos, dtype=torch.float32),
-       "grab_pos": grab_pos, "grab_idx": grab_idx}
+       "grab_pos": grab_pos, "grab_idx": grab_idx, "grab_pos_is_object": True}
 with open(out_base + ".pkl", "wb") as f:
     pickle.dump(pkl, f)
 _wr = np.linalg.norm(joints[:, 13]) if DOF == 29 else 0.0
