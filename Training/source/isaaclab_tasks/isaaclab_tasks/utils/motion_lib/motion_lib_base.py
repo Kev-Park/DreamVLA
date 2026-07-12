@@ -368,7 +368,18 @@ class MotionLibBase():
                 idx_shift = 0
             self.switch_idxs.append(to_torch(np.array(motion_file_data['grab_idx']+idx_shift)).clone())
             
+            # Per-object spawn/scene alignment. `offset` is added to BOTH the robot spawn root and
+            # the object placement (root_pos + global_keypts + object), so the whole reference
+            # translates rigidly to land the object at a fixed target. Tracking is robot-local, so
+            # this only changes where the motion lands in the world, not the reference shape.
+            # X: align the object to x=2.1 for all refs (existing).
             offset[0] = 2.1 - self.grab_pos[-1][0]
+            if motion_file_data.get('grab_pos_is_object', False):
+                # Holosoma pick refs: also align Y (the pick branch left offset[1]=0, so the object
+                # landed at the raw per-motion y = -0.05..+0.45, off-center). Center it at y=0 so the
+                # object always lands at (2.1, 0). Completes the per-object spawn shift in xy; the
+                # object location itself is tracked via grab_pos, from which this offset is derived.
+                offset[1] = 0.0 - self.grab_pos[-1][1]
             self._motion_dt.append(1./20.)
             
             if 'grab_pos_real' in motion_file_data:
