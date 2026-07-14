@@ -200,19 +200,24 @@ def freeze_hold(a):
 base_pos = freeze_hold(base_pos); base_quat = freeze_hold(base_quat); joints = freeze_hold(joints)
 
 # --- prepend PAUSE + INTERP start lead-in (refine parity) ---
-a = np.linspace(0.0, 1.0, INTERP)[:, None]
-j_lead = np.concatenate([np.tile(INIT, (PAUSE, 1)), INIT[None] * (1 - a) + joints[0][None] * a], axis=0)
-joints = np.concatenate([j_lead, joints], axis=0)
-tr_lead = np.tile(base_pos[0], (PAUSE + INTERP, 1))                 # hold root during lead-in
-base_pos = np.concatenate([tr_lead, base_pos], axis=0)
-q_lead = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (PAUSE + INTERP, 1))   # identity during PAUSE
-q_lead[PAUSE:PAUSE + INTERP] = slerp(np.array([1.0, 0.0, 0.0, 0.0]), base_quat[0], np.linspace(0, 1, INTERP))
-base_quat = np.concatenate([q_lead, base_quat], axis=0)
-grab_idx += PAUSE + INTERP
+# HS_NO_LEADIN=1 omits the 20-frame default-pose lead-in entirely: the .pkl starts at the motion's
+# own frame 0 and grab_idx stays the core index. Render/train these with --skip-start-frames 0.
+NO_LEADIN = os.environ.get("HS_NO_LEADIN", "0") == "1"
+_lead = 0 if NO_LEADIN else (PAUSE + INTERP)
+if not NO_LEADIN:
+    a = np.linspace(0.0, 1.0, INTERP)[:, None]
+    j_lead = np.concatenate([np.tile(INIT, (PAUSE, 1)), INIT[None] * (1 - a) + joints[0][None] * a], axis=0)
+    joints = np.concatenate([j_lead, joints], axis=0)
+    tr_lead = np.tile(base_pos[0], (PAUSE + INTERP, 1))                 # hold root during lead-in
+    base_pos = np.concatenate([tr_lead, base_pos], axis=0)
+    q_lead = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (PAUSE + INTERP, 1))   # identity during PAUSE
+    q_lead[PAUSE:PAUSE + INTERP] = slerp(np.array([1.0, 0.0, 0.0, 0.0]), base_quat[0], np.linspace(0, 1, INTERP))
+    base_quat = np.concatenate([q_lead, base_quat], axis=0)
+    grab_idx += PAUSE + INTERP
 
 # --- .pkl (DOF-DOF, OLD format) ---
 global_pose = jaxlie.SE3.from_rotation_and_translation(jaxlie.SO3(jnp.array(base_quat)), jnp.array(base_pos))
-grab_pos = torch.tensor(obj_pos[max(0, grab_idx - PAUSE - INTERP)], dtype=torch.float32)
+grab_pos = torch.tensor(obj_pos[max(0, grab_idx - _lead)], dtype=torch.float32)
 # grab_pos IS the true holosoma object position (the bottle the hand was retargeted to grasp),
 # so motion_lib can use its xy directly instead of the wrist_yaw+fixed-offset heuristic (which
 # mis-places the object ~10-16 cm laterally for holosoma wrist poses). Flagged for motion_lib.
