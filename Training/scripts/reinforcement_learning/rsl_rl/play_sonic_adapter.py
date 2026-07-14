@@ -109,15 +109,11 @@ parser.add_argument(
          "required. Use to test whether the reference itself is dynamically feasible.",
 )
 parser.add_argument(
-    "--no-angle-term", action="store_true", default=False,
-    help="RENDER-ONLY: disable the torso_angle_below_threshold (>=60deg tilt) termination so a "
-         "dynamic rollout isn't reset early. Does NOT affect training/eval (edits only this run's cfg).")
-parser.add_argument(
-    "--no-height-term", action="store_true", default=False,
-    help="RENDER-ONLY: disable the torso_below_threshold (root z<=0.3) termination.")
-parser.add_argument(
-    "--no-contact-term", action="store_true", default=False,
-    help="RENDER-ONLY: disable the base_contact (illegal_contact) termination.")
+    "--keep-terms", action="store_true", default=False,
+    help="RENDER-ONLY escape hatch: keep the env's terminations. By DEFAULT this playback script "
+         "disables ALL terminations so a rollout is never reset mid-clip (tilt/height/contact/"
+         "time_out). Training (train_sonic_adapter.py) and eval (eval_sonic_adapter.py) are "
+         "unaffected — they use their own cfgs and always keep terminations.")
 parser.add_argument(
     "--overlay-ref", action="store_true", default=False,
     help="Draw the tracked REFERENCE motion as an overlay on top of the (physics) residual "
@@ -506,15 +502,19 @@ def main():
     # RENDER-ONLY: drop the torso-angle (>=60deg tilt) termination so a dynamic rollout isn't cut
     # short by an early reset (lets the full base drift play out). Only edits THIS run's cfg;
     # training/eval terminations are untouched.
-    for _flag, _term in ((args_cli.no_angle_term, "torso_angle_below_threshold"),
-                         (args_cli.no_height_term, "torso_below_threshold"),
-                         (args_cli.no_contact_term, "base_contact")):
-        if _flag:
-            if getattr(env_cfg.terminations, _term, None) is not None:
-                setattr(env_cfg.terminations, _term, None)
-                print(f"[play_sonic_adapter] RENDER-ONLY: {_term} termination DISABLED")
-            else:
-                print(f"[play_sonic_adapter] --no-*-term: {_term} not found on cfg")
+    # RENDER-ONLY DEFAULT: never reset a playback mid-clip. This is a render/visualization script,
+    # so unless --keep-terms is passed, disable EVERY termination term (tilt, root-height,
+    # base_contact, time_out, ...) so the full rollout plays out. Only edits THIS run's cfg;
+    # train_sonic_adapter.py / eval_sonic_adapter.py have their own cfgs and keep terminations.
+    if not args_cli.keep_terms:
+        _disabled = []
+        for _name in list(vars(env_cfg.terminations).keys()):
+            if not _name.startswith("_") and getattr(env_cfg.terminations, _name) is not None:
+                setattr(env_cfg.terminations, _name, None)
+                _disabled.append(_name)
+        print(f"[play_sonic_adapter] RENDER-ONLY: terminations disabled (no mid-clip reset): {_disabled}")
+    else:
+        print("[play_sonic_adapter] --keep-terms: env terminations kept")
 
     # eval-style camera + viewer setup
     env_cfg.viewer.eye = (1.0, -2.0, 2.0)
