@@ -109,6 +109,10 @@ parser.add_argument(
          "required. Use to test whether the reference itself is dynamically feasible.",
 )
 parser.add_argument(
+    "--no-angle-term", action="store_true", default=False,
+    help="RENDER-ONLY: disable the torso_angle_below_threshold (>=60deg tilt) termination so a "
+         "dynamic rollout isn't reset early. Does NOT affect training/eval (edits only this run's cfg).")
+parser.add_argument(
     "--overlay-ref", action="store_true", default=False,
     help="Draw the tracked REFERENCE motion as an overlay on top of the (physics) residual "
          "playback: 39 spheres at the reference link world positions, updated every frame "
@@ -492,6 +496,16 @@ def main():
         env_cfg.motion_skip_start_frames = args_cli.skip_start_frames + 10
         print(f"[play_sonic_adapter] skip_start_frames = {args_cli.skip_start_frames} "
               f"(+10 history warmup -> env resets at frame {args_cli.skip_start_frames + 10})")
+
+    # RENDER-ONLY: drop the torso-angle (>=60deg tilt) termination so a dynamic rollout isn't cut
+    # short by an early reset (lets the full base drift play out). Only edits THIS run's cfg;
+    # training/eval terminations are untouched.
+    if args_cli.no_angle_term:
+        if getattr(env_cfg.terminations, "torso_angle_below_threshold", None) is not None:
+            env_cfg.terminations.torso_angle_below_threshold = None
+            print("[play_sonic_adapter] RENDER-ONLY: torso_angle_below_threshold termination DISABLED")
+        else:
+            print("[play_sonic_adapter] --no-angle-term: no torso_angle_below_threshold term found")
 
     # eval-style camera + viewer setup
     env_cfg.viewer.eye = (1.0, -2.0, 2.0)
