@@ -113,6 +113,12 @@ parser.add_argument(
     help="RENDER-ONLY: disable the torso_angle_below_threshold (>=60deg tilt) termination so a "
          "dynamic rollout isn't reset early. Does NOT affect training/eval (edits only this run's cfg).")
 parser.add_argument(
+    "--no-height-term", action="store_true", default=False,
+    help="RENDER-ONLY: disable the torso_below_threshold (root z<=0.3) termination.")
+parser.add_argument(
+    "--no-contact-term", action="store_true", default=False,
+    help="RENDER-ONLY: disable the base_contact (illegal_contact) termination.")
+parser.add_argument(
     "--overlay-ref", action="store_true", default=False,
     help="Draw the tracked REFERENCE motion as an overlay on top of the (physics) residual "
          "playback: 39 spheres at the reference link world positions, updated every frame "
@@ -500,12 +506,15 @@ def main():
     # RENDER-ONLY: drop the torso-angle (>=60deg tilt) termination so a dynamic rollout isn't cut
     # short by an early reset (lets the full base drift play out). Only edits THIS run's cfg;
     # training/eval terminations are untouched.
-    if args_cli.no_angle_term:
-        if getattr(env_cfg.terminations, "torso_angle_below_threshold", None) is not None:
-            env_cfg.terminations.torso_angle_below_threshold = None
-            print("[play_sonic_adapter] RENDER-ONLY: torso_angle_below_threshold termination DISABLED")
-        else:
-            print("[play_sonic_adapter] --no-angle-term: no torso_angle_below_threshold term found")
+    for _flag, _term in ((args_cli.no_angle_term, "torso_angle_below_threshold"),
+                         (args_cli.no_height_term, "torso_below_threshold"),
+                         (args_cli.no_contact_term, "base_contact")):
+        if _flag:
+            if getattr(env_cfg.terminations, _term, None) is not None:
+                setattr(env_cfg.terminations, _term, None)
+                print(f"[play_sonic_adapter] RENDER-ONLY: {_term} termination DISABLED")
+            else:
+                print(f"[play_sonic_adapter] --no-*-term: {_term} not found on cfg")
 
     # eval-style camera + viewer setup
     env_cfg.viewer.eye = (1.0, -2.0, 2.0)
