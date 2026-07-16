@@ -167,3 +167,8 @@ contact-loss termination needs; #3 residual-transform tests last.)
   - #5 contact uses the existing all-body contact sensor's net force on right_hand_.* (NOT object-filtered) — a
     dedicated object-filtered ContactSensor would sharpen it. #6a ref-deviation is ROOT-based (proxy for full-body).
   - object_contact reward and contact_loss termination assume the finger links report contact force via contact_forces.
+  - **eval success metric:** REWORK drops object_lift, which was the only writer of `env.n_successes` (eval's
+    "Episodes with any lift"). eval_sonic_adapter needs a REWORK success path (object tracks obj_traj / stays grasped).
+  - **object reset z:** REWORK spawns the object at the reference object z (grounded holosoma ~0.86), NOT the sim
+    table-top-derived 0.90. If the sim table (top 0.8) and reference object z disagree, the object may float/penetrate
+    at spawn — the #4 render (yellow marker vs hand) will show whether the reference object sits correctly.

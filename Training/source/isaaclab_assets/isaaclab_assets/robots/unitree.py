@@ -438,7 +438,11 @@ G1_CFG = ArticulationCfg(
 
 
 G1_MINIMAL_CFG = G1_CFG.copy()
-G1_MINIMAL_CFG.spawn.usd_path = "HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof_with_hands_min_collisions_flat_white.usd"
+# 29-DOF G1 (waist roll/pitch tracked) — required by the SONIC 29-DOF pipeline (JointNamesOrder=29,
+# reset_robot_joints, obs/rewards, SONIC encoder/decoder, refine g1_29dof.urdf). The 27-DOF USD lacks
+# waist_roll/pitch joints, so reset_robot_joints fails to resolve them and the env cannot build. This
+# is the exact USD the validated sweep used; it had drifted to 27-DOF as an uncommitted local edit.
+G1_MINIMAL_CFG.spawn.usd_path = "HumanoidVerse/humanoidverse/data/robots/g1/g1_29dof_with_hands_min_collisions_flat_white.usd"
 """Configuration for the Unitree G1 Humanoid robot with fewer collision meshes.
 
 This configuration removes most collision meshes to speed up simulation.
