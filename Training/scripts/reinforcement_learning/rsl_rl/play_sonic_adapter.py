@@ -124,6 +124,13 @@ parser.add_argument(
          "off a link is tracking error. Render-only viz — does not touch the policy/obs/physics.",
 )
 parser.add_argument(
+    "--overlay-obj-candidates", action="store_true", default=False,
+    help="For the #4 object-reference diagnostic: draw two object-reference candidate markers per "
+         "frame — (i) YELLOW = holosoma object_poses trajectory (needs a .pkl with `object_poses`), "
+         "(ii) CYAN = right-hand FK (right_rubber_hand). Judge which sits on the hand through the "
+         "grasp. Render-only viz; pairs well with --overlay-ref.",
+)
+parser.add_argument(
     "--ref-motions-path", type=str, default=None,
     help="Override the env's ref_motions_path (dir of reference .pkl files). Use to point "
          "reference-playback at an isolated set (e.g. the holosoma 29-DOF .pkl) without "
@@ -290,6 +297,52 @@ def _update_ref_overlay_markers(env, markers, marker_indices, device):
     markers.visualize(
         translations=translations,
         marker_indices=torch.tensor(marker_indices, device=device, dtype=torch.long),
+    )
+
+
+# =========================================================================
+# Object-reference candidate overlay (--overlay-obj-candidates), for the #4
+# "object-as-hand reference" diagnostic. Draws TWO markers per frame so the
+# candidate object-reference trajectories can be judged against the ref hand:
+#   (i)  YELLOW  = holosoma object_poses trajectory (motion_lib.object_poses).
+#   (ii) CYAN    = right-hand FK (global_keypts[-1] = right_rubber_hand).
+# Pure viz. Requires a .pkl carrying `object_poses` (Adapter B, current gen).
+# =========================================================================
+def _make_obj_candidate_markers():
+    cfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/obj_candidates",
+        markers={
+            "holosoma": sim_utils.SphereCfg(
+                radius=0.045,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.85, 0.0)),   # yellow = (i)
+            ),
+            "rhand_fk": sim_utils.SphereCfg(
+                radius=0.038,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.9, 1.0)),    # cyan  = (ii)
+            ),
+        },
+    )
+    return VisualizationMarkers(cfg)
+
+
+def _update_obj_candidate_markers(env, markers, device):
+    """Place the two object-reference candidates at this step (env 0)."""
+    unw = env.unwrapped
+    with torch.inference_mode():
+        motion_times = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
+            device=device, dtype=torch.float32
+        )
+        res = unw.motion_lib.get_motion_state(unw.motion_ids, motion_times)
+        origin = unw.scene.env_origins                                              # (N, 3)
+        # (i) holosoma object trajectory (offset already applied in get_motion_state) -> world.
+        obj_i = res["object_poses"][:, :3].to(device) + origin                      # (N, 3)
+        # (ii) right-hand FK: last keypoint = right_rubber_hand.
+        gk = res["global_keypts"].to(device) + origin.unsqueeze(1)                  # (N, 39, 3)
+        obj_ii = gk[:, -1, :]                                                       # (N, 3)
+    translations = torch.stack([obj_i[0], obj_ii[0]], dim=0)                        # (2, 3)
+    markers.visualize(
+        translations=translations,
+        marker_indices=torch.tensor([0, 1], device=device, dtype=torch.long),
     )
 
 
@@ -630,6 +683,13 @@ def main():
         print(f"[overlay-ref] {_N_KEYPTS} reference-keypoint spheres enabled "
               f"(idx>={_RARM_START_IDX} right arm = RED, rest = GREEN)")
 
+    # Object-reference candidate markers (#4 diagnostic).
+    obj_cand_markers = _make_obj_candidate_markers() if args_cli.overlay_obj_candidates else None
+    if args_cli.overlay_obj_candidates:
+        _update_obj_candidate_markers(env, obj_cand_markers, device)  # frame 0
+        print("[overlay-obj-candidates] (i) holosoma object_poses = YELLOW, "
+              "(ii) right-hand FK = CYAN")
+
     while simulation_app.is_running() and timestep < args_cli.video_length:
         start_time = time.time()
 
@@ -647,6 +707,8 @@ def main():
         # (before the render flush so they appear in this frame).
         if args_cli.overlay_ref:
             _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
+        if args_cli.overlay_obj_candidates:
+            _update_obj_candidate_markers(env, obj_cand_markers, device)
 
         # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
         _APP.update()

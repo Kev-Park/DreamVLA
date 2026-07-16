@@ -205,6 +205,14 @@ class MotionLibBase():
         return_dict["grab_pos"] = self.grab_pos[motion_ids].clone()
         return_dict["offsets"] = self.offsets[motion_ids].clone()
         return_dict["is_closed"] = is_closed
+        if self.object_poses is not None:
+            op0 = self.object_poses[motion_ids, f0l, :]
+            op1 = self.object_poses[motion_ids, f1l, :]
+            op_pos = (1.0 - blend) * op0[:, :3] + blend * op1[:, :3]
+            op_quat = slerp(op0[:, 3:7], op1[:, 3:7], blend)
+            if self.offsets is not None:
+                op_pos = op_pos + self.offsets[motion_ids]   # same rigid spawn shift as root_pos/global_keypts
+            return_dict["object_poses"] = torch.cat([op_pos, op_quat], dim=-1)   # (N,7)
         return return_dict
 
     def get_keypts(self, joint_angles, joint_names, pk2_robot):
@@ -277,6 +285,7 @@ class MotionLibBase():
         self.grab_pos = []
         self.offsets = []
         self.switch_idxs = []
+        self.object_poses = []   # per-motion full object trajectory (F,7 = pos+quat); None if any motion lacks it
         urdf_path = "HumanoidVerse/humanoidverse/data/robots/g1/g1_29dof.urdf"
         pk2_robot = pk2.build_chain_from_urdf(open(urdf_path).read())
         self.joint_names = list(JointNamesOrder)   # 29-DOF (waist roll/pitch tracked); keeps FK + reference in sync
@@ -292,6 +301,12 @@ class MotionLibBase():
 
             self.local_keypts.append(self.get_keypts(self.dof_pos[-1], self.joint_names, pk2_robot)[:])
             self.global_keypts.append(self.transform_keypts(self.local_keypts[-1], self.quats[-1], self.transl[-1]))
+            if self.object_poses is not None and 'object_poses' in motion_file_data:
+                op = to_torch(np.array(motion_file_data['object_poses'])[:200]).clone()   # (F,7) grounded/aligned to ref
+                op[:, 2] += 0.035   # match the +0.035 root lift applied to transl (keeps object in the ref frame)
+                self.object_poses.append(op)
+            else:
+                self.object_poses = None   # a motion without object_poses disables the whole tensor
             idx_shift = 15
             
             if 'grab_pos' in motion_file_data or 'grab_pos_real' in motion_file_data:
@@ -414,6 +429,8 @@ class MotionLibBase():
         self.switch_idxs = torch.tensor(self.switch_idxs).to(self._device).float()
         self.offsets = torch.stack(self.offsets, dim=0).to(self._device).float()
         self.grab_pos = torch.stack(self.grab_pos, dim=0).to(self._device).float()
+        if self.object_poses is not None:
+            self.object_poses = torch.stack(self.object_poses, dim=0).to(self._device).float()   # (M,F,7)
         self.local_keypts = torch.stack(self.local_keypts, dim=0).to(self._device).float()
         self.global_keypts = torch.stack(self.global_keypts, dim=0).to(self._device).float()
         self.transl = torch.stack(self.transl, dim=0).to(self._device).float()

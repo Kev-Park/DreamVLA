@@ -162,6 +162,7 @@ F = q.shape[0]
 base_pos = q[:, 0:3].copy(); base_quat = q[:, 3:7].copy()
 joints = q[:, 7:36][:, KEEP].copy()                               # (F,DOF) JointNamesOrder
 obj_pos = q[:, 36:39].copy()
+obj_quat = q[:, 39:43].copy()                                    # (F,4) wxyz object orientation
 
 # grab onset = last static-object frame before the lift
 moved = np.linalg.norm(obj_pos - obj_pos[0][None], axis=1)
@@ -173,6 +174,7 @@ fk = chain.forward_kinematics(torch.tensor(joints, dtype=torch.float32))
 local = torch.stack([fk[l].get_matrix()[:, :3, 3] for l in fk], dim=1).numpy()   # (F,L,3)
 mz = (np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local) + base_pos[:, None, :])[:, :, 2].min(axis=1)
 base_pos[:, 2] -= mz
+obj_pos[:, 2] -= mz   # ground the object with the robot (same per-frame shift) so the hand<->object geometry is preserved
 
 # --- freeze left arm across ALL frames (refine parity) ---
 joints = freeze_left_arm(joints)
@@ -198,6 +200,7 @@ def freeze_hold(a):
         a[grab_idx:grab_idx + FREEZE_FOR] = a[grab_idx]
     return a
 base_pos = freeze_hold(base_pos); base_quat = freeze_hold(base_quat); joints = freeze_hold(joints)
+obj_pos = freeze_hold(obj_pos); obj_quat = freeze_hold(obj_quat)   # keep the object aligned with the grab-hold
 
 # --- prepend PAUSE + INTERP start lead-in (refine parity) ---
 # HS_NO_LEADIN=1 omits the 20-frame default-pose lead-in entirely: the .pkl starts at the motion's
@@ -213,6 +216,8 @@ if not NO_LEADIN:
     q_lead = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (PAUSE + INTERP, 1))   # identity during PAUSE
     q_lead[PAUSE:PAUSE + INTERP] = slerp(np.array([1.0, 0.0, 0.0, 0.0]), base_quat[0], np.linspace(0, 1, INTERP))
     base_quat = np.concatenate([q_lead, base_quat], axis=0)
+    obj_pos = np.concatenate([np.tile(obj_pos[0], (PAUSE + INTERP, 1)), obj_pos], axis=0)    # object sits still during lead-in
+    obj_quat = np.concatenate([np.tile(obj_quat[0], (PAUSE + INTERP, 1)), obj_quat], axis=0)
     grab_idx += PAUSE + INTERP
 
 # --- .pkl (DOF-DOF, OLD format) ---
@@ -221,9 +226,13 @@ grab_pos = torch.tensor(obj_pos[max(0, grab_idx - _lead)], dtype=torch.float32)
 # grab_pos IS the true holosoma object position (the bottle the hand was retargeted to grasp),
 # so motion_lib can use its xy directly instead of the wrist_yaw+fixed-offset heuristic (which
 # mis-places the object ~10-16 cm laterally for holosoma wrist poses). Flagged for motion_lib.
+# Full object trajectory (F',7 = pos(3)+quat(4)), grounded + freeze-held + lead-in-aligned to the ref robot.
+# Candidate (i) for the object-reference-tracking reward (holosoma object_poses directly); motion_lib loads it.
+object_poses = np.concatenate([obj_pos, obj_quat], axis=1).astype(np.float32)
 pkl = {"global_pose": global_pose, "joints": torch.tensor(joints, dtype=torch.float32),
        "global_position": torch.tensor(base_pos, dtype=torch.float32),
-       "grab_pos": grab_pos, "grab_idx": grab_idx, "grab_pos_is_object": True}
+       "grab_pos": grab_pos, "grab_idx": grab_idx, "grab_pos_is_object": True,
+       "object_poses": torch.tensor(object_poses, dtype=torch.float32)}
 with open(out_base + ".pkl", "wb") as f:
     pickle.dump(pkl, f)
 _wr = np.linalg.norm(joints[:, 13]) if DOF == 29 else 0.0
