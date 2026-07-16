@@ -68,6 +68,11 @@ parser.add_argument(
     help="Residual bound — MUST match the value used by train_sonic_adapter.py.",
 )
 parser.add_argument(
+    "--residual-transform", type=str, default="additive",
+    choices=["additive", "multiplicative", "unclamped"],
+    help="Token residual transform — MUST match train_sonic_adapter.py for this checkpoint.",
+)
+parser.add_argument(
     "--zero-residual", action="store_true", default=False,
     help="Ignore the policy and play with residual=0 (+finger open): pure zero-shot "
          "frozen-SONIC playback of the reference motion. No checkpoint required.",
@@ -602,6 +607,7 @@ def main():
         env = TokenAdapterVecEnvWrapper(
             env, decoder, encoder, device,
             residual_scale=args_cli.residual_scale,
+            residual_transform=args_cli.residual_transform,
             clip_actions=None,
         )
 

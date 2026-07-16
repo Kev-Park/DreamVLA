@@ -152,4 +152,18 @@ contact-loss termination needs; #3 residual-transform tests last.)
 - [x] rs040 re-run cancelled; this plan created.
 - [x] Sweep trainings finished (rs035/rs040/rs045 all exit 0); rs045 eval = 0.95% / 61.7% lift-frac. Superseded by this rework.
 - [x] All 3 ResMimic/residual/frame investigations folded in + paper reconciliation (contact reward exists).
-- [~] #4 diagnostic render being built (object_poses in pkl + overlay flag). Nothing in the reward path built yet.
+- [x] #4 diagnostic render infra built (object_poses in pkl + `--overlay-obj-candidates`); 4 objtest pkls regen'd; render baking.
+- [x] **IMPLEMENTED (gated `HS_REWORK=1`, default OFF => old config byte-identical), pending USER REVIEW + smoke test:**
+  - #3 residual transform (`--residual-transform additive|multiplicative|unclamped`) — wrapper + train/eval/play.
+  - #2 equal whole-body tracking (KEYPTS_MASK_ALL, base SONIC weights).
+  - #4 object_tracking_reward (source holosoma|hand_fk) replaces object_lift; object reset onto ref trajectory.
+  - #5 object_contact_reward `c_hat*exp(-lam/f)` (reuses existing all-body contact_forces sensor on right_hand_.*) replaces wrist-pointing.
+  - #6 root_deviation + object_deviation + contact_loss(>10f) terminations + smaller height backstop (0.2); dropped tilt + base_contact.
+  - #7 object_state_obs (current pose+vel) + object_ref_obs (obj_traj now + t+0.2) in the single policy obs group (actor+critic).
+  - Tunables via env: HS_REWORK_CONTACT_LAMBDA / _CONTACT_LOSS_FRAMES / _REF_DEV_TAU / _OBJ_DEV_TAU / _HEIGHT_BACKSTOP.
+- [ ] PENDING before training: (a) user reviews code + the #4 render to pick obj_traj source (i vs ii) & confirm object-on-hand;
+      (b) REWORK env-build smoke test; (c) regen the FULL filt dataset with HS_NO_LEADIN=1 + object_poses; (d) decoder-warmup decision (#1).
+- Notes / v1 simplifications to revisit in iteration:
+  - #5 contact uses the existing all-body contact sensor's net force on right_hand_.* (NOT object-filtered) — a
+    dedicated object-filtered ContactSensor would sharpen it. #6a ref-deviation is ROOT-based (proxy for full-body).
+  - object_contact reward and contact_loss termination assume the finger links report contact force via contact_forces.

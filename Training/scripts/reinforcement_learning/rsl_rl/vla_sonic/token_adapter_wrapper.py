@@ -139,11 +139,21 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
     what it is correcting.
     """
 
-    def __init__(self, env, decoder, encoder, device, *, residual_scale: float = 0.3, clip_actions=None):
+    def __init__(self, env, decoder, encoder, device, *, residual_scale: float = 0.3,
+                 residual_transform: str = "additive", clip_actions=None):
         super().__init__(env, decoder, device, clip_actions=clip_actions)
 
         self.encoder = encoder
         self.residual_scale = float(residual_scale)
+        # How the policy latent transforms the frozen base TOKEN before the FSQ snap.
+        # The token is naturally grid-bounded by the snap in _decode_body_29, so all three
+        # modes are safe (they never push the decoder off the codebook). See REWARD_REWORK_PLAN #3.
+        #   "additive"       : body = base + residual_scale * tanh(latent)   (anchor to base; current default)
+        #   "multiplicative" : body = base * (1 + residual_scale * tanh(latent))  (in-family gate; per-dim factor
+        #                       in [1-scale, 1+scale]; note near-zero base dims move little)
+        #   "unclamped"      : body = base + latent   (raw additive on token; no anchor, relies on the FSQ snap)
+        assert residual_transform in ("additive", "multiplicative", "unclamped"), residual_transform
+        self.residual_transform = residual_transform
 
         # The reference->SONIC-29 name-matched scatter perm (self._ref_to_sonic_perm) is built once
         # in the parent (TokenActionDecoderVecEnvWrapper) and shared by both the history seeding and
@@ -166,6 +176,7 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         self._update_base_token()
         print(
             f"[token-adapter] frozen-encoder residual adapter ready: residual_scale={self.residual_scale}, "
+            f"residual_transform={self.residual_transform}, "
             f"base_token appended to obs (+{TOKEN_TOTAL_DIM} dims), policy action = "
             f"{TOKEN_TOTAL_DIM} residual + 1 finger scalar"
         )
@@ -309,10 +320,16 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
 
     def step(self, latent: torch.Tensor):
         latent = latent.to(self._dev)
-        # Residual composition: hard tanh bound keeps the token within
-        # residual_scale of the frozen base — structural anti-forgetting anchor.
-        residual = self.residual_scale * torch.tanh(latent[:, :TOKEN_TOTAL_DIM])
-        body = self._base_token + residual
+        # Residual composition on the TOKEN (FSQ snap in _decode_body_29 re-bounds it either way).
+        z = latent[:, :TOKEN_TOTAL_DIM]
+        if self.residual_transform == "additive":
+            # hard tanh bound keeps the token within residual_scale of the frozen base — anchor.
+            body = self._base_token + self.residual_scale * torch.tanh(z)
+        elif self.residual_transform == "multiplicative":
+            # in-family per-dimension gate: factor in [1-scale, 1+scale] around the base token.
+            body = self._base_token * (1.0 + self.residual_scale * torch.tanh(z))
+        else:  # "unclamped": raw additive on the token, no anchor (safe due to the FSQ snap).
+            body = self._base_token + z
         composed = torch.cat([body, latent[:, TOKEN_TOTAL_DIM:]], dim=1)
 
         obs, rew, dones, extras = super().step(composed)

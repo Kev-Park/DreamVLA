@@ -9,6 +9,7 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, lower_body_keypt_vel_tracking
 import numpy as np
+import os
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
@@ -224,6 +225,26 @@ TRACKING = True
 TASK_SPARSE = True
 TASK_DENSE = False
 
+# =========================================================================
+# REWORK (env-gated): the reward/termination/obs/contact rework of REWARD_REWORK_PLAN.md.
+# HS_REWORK=1 switches the pick task from the current hand-tuned grasp reward stack to:
+#   #2 equal whole-body tracking (all-ones mask, base SONIC weights),
+#   #4 object-as-hand reference tracking (replaces object_lift),
+#   #5 ResMimic contact reward + right-hand ContactSensor (replaces wrist-pointing),
+#   #6 ref-deviation + object-deviation + contact-loss>10f terminations + a smaller height backstop,
+#   #7 privileged object pose + reference obj_traj in obs.
+# Default OFF => the existing tuned config is byte-identical. Kept as a clean separate spec so it's
+# reviewable and revertible before/after training. See REWARD_REWORK_PLAN.md.
+# =========================================================================
+REWORK = os.environ.get("HS_REWORK", "0") == "1"
+
+# ResMimic contact reward / contact-loss termination knobs (#5/#6). Tunable; see plan.
+REWORK_CONTACT_LAMBDA = float(os.environ.get("HS_REWORK_CONTACT_LAMBDA", "5.0"))   # r^c = c_hat * exp(-lambda / f)
+REWORK_CONTACT_LOSS_FRAMES = int(os.environ.get("HS_REWORK_CONTACT_LOSS_FRAMES", "10"))  # loss-of-contact termination window
+REWORK_REF_DEV_TAU = float(os.environ.get("HS_REWORK_REF_DEV_TAU", "0.5"))         # whole-body tracking-error termination (m, mean-keypt)
+REWORK_OBJ_DEV_TAU = float(os.environ.get("HS_REWORK_OBJ_DEV_TAU", "0.3"))         # object-tracking deviation termination (m)
+REWORK_HEIGHT_BACKSTOP = float(os.environ.get("HS_REWORK_HEIGHT_BACKSTOP", "0.2")) # smaller root-height backstop (<0.3)
+
 JOINTS_MASK = [
     1, # left_hip_pitch_joint
     1, # left_hip_roll_joint
@@ -313,8 +334,33 @@ KEYPTS_MASK_NO_RARM = [m if i < 31 else 0 for i, m in enumerate(KEYPTS_MASK)]
 # it guides the reach but never vetoes the grasp.
 KEYPTS_MASK_RARM_ONLY = [m if i >= 31 else 0 for i, m in enumerate(KEYPTS_MASK)]
 
+# #2 equal whole-body tracking: track ALL 39 FK links equally (right arm included), no grasp-driven
+# masking. All-ones so the relative body pos/ori terms cover the full body incl. the task arm/hand.
+KEYPTS_MASK_ALL = [1 for _ in KEYPTS_MASK]
+
 
         
+def reset_object_state_rework(env: ManagerBasedRLEnv, env_ids: torch.Tensor,
+                              offset=[0.0, 0.0], height: float = 1.0):
+    """#4 object reset onto the reference object trajectory (so object-tracking starts consistent).
+    Places the object at the reference object_poses at each env's start_motion_time (world frame),
+    instead of forcing z=height. Falls back to the base reset if object_poses is unavailable."""
+    if not hasattr(env, "start_motion_times") or getattr(env.motion_lib, "object_poses", None) is None:
+        return reset_object_state(env, env_ids, offset=offset, height=height)
+    motion_times = env.start_motion_times[env_ids]
+    motion_ids = env.motion_ids[env_ids]
+    motion_res = env.motion_lib.get_motion_state(motion_ids, motion_times)
+    ref = motion_res["object_poses"]                                             # (M,7) env-local, offset-applied
+    object: RigidObject = env.scene["object"]
+    object_pos = ref[:, :3] + env.scene.env_origins[env_ids]                     # -> world
+    object_pos[:, 0] += offset[0]
+    object_pos[:, 1] += offset[1]
+    object_quat = ref[:, 3:7]
+    velocities = torch.zeros((env.scene.num_envs, 6), device=env.device)[env_ids]
+    object.write_root_pose_to_sim(torch.cat([object_pos, object_quat], dim=-1), env_ids=env_ids)
+    object.write_root_velocity_to_sim(velocities, env_ids=env_ids)
+
+
 @configclass
 class EventCfg(EventCfgBase):
     """Configuration for events."""
@@ -330,8 +376,10 @@ class EventCfg(EventCfgBase):
     )
 
 
+    # #4: under REWORK, spawn the object ON the reference object trajectory (object-tracking start
+    # is consistent); otherwise the original fixed-height reset.
     reset_object = EventTerm(
-        func=reset_object_state,
+        func=(reset_object_state_rework if REWORK else reset_object_state),
         params={
             "height": 1.0,
             "offset": [0.0, 0.0],
@@ -379,11 +427,123 @@ def target_orientation_error(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg =
     return torch.abs(level_angle) + torch.abs(point_angle) * point_mask
 
 
+# =========================================================================
+# REWORK (#4/#5/#6) reward + termination helpers (ResMimic-style). All read
+# motion_lib.get_motion_state, which under the regenerated dataset returns
+# "object_poses" (N,7 = pos+quat, offset-applied, env-local) — the reference
+# object trajectory (candidate (i)). Candidate (ii) = right-hand FK is
+# global_keypts[:, -1, :] (right_rubber_hand). See REWARD_REWORK_PLAN.md.
+# =========================================================================
+def _rework_motion_res(env):
+    """(motion_res, ok) at the current motion time; ok=False if motion_lib absent."""
+    if not hasattr(env, "motion_lib"):
+        return None, False
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32)
+    return env.motion_lib.get_motion_state(env.motion_ids, motion_times), True
+
+
+def object_tracking_reward(env: ManagerBasedRLEnv, source: str = "holosoma",
+                           pos_std: float = 0.1, ori_std: float = 0.5) -> torch.Tensor:
+    """#4 ResMimic-style object-as-hand reference tracking (replaces object_lift).
+
+    Rewards the SIM object for tracking a reference object trajectory (glued to the hand
+    in the reference), so a held object that follows the reference IS the grasp signal.
+    source="holosoma": track motion_lib object_poses (pos+ori). source="hand_fk": track the
+    reference right-hand FK position (global_keypts[-1], pos only). NOT contact-gated (ResMimic
+    object reward is always active). exp kernel in (0,1]."""
+    obj: RigidObject = env.scene["object"]
+    n = obj.data.root_pos_w.shape[0]
+    motion_res, ok = _rework_motion_res(env)
+    if not ok:
+        return torch.zeros(n, device=env.device)
+    obj_pos = obj.data.root_pos_w - env.scene.env_origins                       # (N,3) env-local
+    if source == "hand_fk":
+        ref_pos = motion_res["global_keypts"][:, -1, :]                          # right_rubber_hand, env-local
+        d2 = torch.sum((obj_pos - ref_pos) ** 2, dim=1)
+        return torch.exp(-d2 / (pos_std * pos_std))
+    # holosoma object_poses (guard datasets without it)
+    if "object_poses" not in motion_res:
+        return torch.zeros(n, device=env.device)
+    ref = motion_res["object_poses"]                                             # (N,7) env-local, offset-applied
+    d2 = torch.sum((obj_pos - ref[:, :3]) ** 2, dim=1)
+    pos_r = torch.exp(-d2 / (pos_std * pos_std))
+    angle = math_utils.quat_error_magnitude(obj.data.root_quat_w, ref[:, 3:7])
+    ori_r = torch.exp(-(angle ** 2) / (ori_std * ori_std))
+    return pos_r * ori_r
+
+
+def _right_hand_contact_force(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Total contact-force magnitude on the right-hand finger links (N,). Uses the existing
+    contact_forces sensor (net force = contact vs anything; during the grasp/lift the fingers
+    contact the object). A dedicated object-filtered sensor could sharpen this later."""
+    sensor = env.scene.sensors[sensor_cfg.name]
+    forces = sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]                 # (N,K,3)
+    return torch.norm(forces, dim=-1).sum(dim=1)                                 # (N,)
+
+
+def object_contact_reward(env: ManagerBasedRLEnv,
+                          sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["right_hand_.*"]),
+                          lam: float = 5.0) -> torch.Tensor:
+    """#5 ResMimic contact reward r^c = c_hat * exp(-lam / f). c_hat = oracle reference contact
+    (is_closed, the post-grab hold phase where the hand SHOULD be holding the object); f = measured
+    right-hand contact force. 0 with no contact, -> 1 as the grip presses. Replaces wrist-pointing."""
+    motion_res, ok = _rework_motion_res(env)
+    n = env.scene.num_envs
+    if not ok:
+        return torch.zeros(n, device=env.device)
+    c_hat = motion_res["is_closed"].float()
+    f = _right_hand_contact_force(env, sensor_cfg)
+    return c_hat * torch.exp(-lam / (f + 1e-3))
+
+
+def root_deviation_termination(env: ManagerBasedRLEnv, tau: float = 0.5) -> torch.Tensor:
+    """#6a reference-motion deviation: terminate when the robot root has drifted > tau (m) from the
+    reference root position. Practical whole-body-deviation proxy (root anchors the whole pose)."""
+    robot: Articulation = env.scene["robot"]
+    motion_res, ok = _rework_motion_res(env)
+    if not ok:
+        return torch.zeros(env.scene.num_envs, dtype=torch.bool, device=env.device)
+    root_pos = robot.data.root_pos_w - env.scene.env_origins
+    err = torch.norm(root_pos - motion_res["root_pos"], dim=1)
+    return err > tau
+
+
+def object_deviation_termination(env: ManagerBasedRLEnv, tau: float = 0.3) -> torch.Tensor:
+    """#6b object-tracking deviation: terminate when the sim object is > tau (m) from the reference
+    object trajectory (ResMimic object-far). Also fires on grasp-loss (object drifts off the hand)."""
+    obj: RigidObject = env.scene["object"]
+    motion_res, ok = _rework_motion_res(env)
+    if not ok or "object_poses" not in motion_res:
+        return torch.zeros(env.scene.num_envs, dtype=torch.bool, device=env.device)
+    obj_pos = obj.data.root_pos_w - env.scene.env_origins
+    err = torch.norm(obj_pos - motion_res["object_poses"][:, :3], dim=1)
+    return err > tau
+
+
+def contact_loss_termination(env: ManagerBasedRLEnv,
+                             sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["right_hand_.*"]),
+                             frames: int = 10, force_thresh: float = 1.0) -> torch.Tensor:
+    """#6c ResMimic loss-of-contact: terminate when the reference REQUIRES contact (is_closed) but the
+    measured right-hand contact force is absent for > `frames` consecutive steps."""
+    motion_res, ok = _rework_motion_res(env)
+    n = env.scene.num_envs
+    if not ok:
+        return torch.zeros(n, dtype=torch.bool, device=env.device)
+    c_hat = motion_res["is_closed"].bool()
+    f = _right_hand_contact_force(env, sensor_cfg)
+    required_but_absent = c_hat & (f <= force_thresh)
+    if not hasattr(env, "contact_loss_steps") or env.contact_loss_steps.shape[0] != n:
+        env.contact_loss_steps = torch.zeros(n, device=env.device)
+    env.contact_loss_steps = (env.contact_loss_steps + 1.0) * required_but_absent.float()
+    return env.contact_loss_steps > float(frames)
+
+
 @configclass
 class G1Rewards(G1RewardsBase):
     """Reward terms for the MDP."""
 
-    if TRACKING:
+    if TRACKING and not REWORK:
         # ---- SONIC / holosoma-matched whole-body tracking (exp Gaussian kernels) ----
         # Replaces the previous raw-L1/L2 penalties (joint_deviation_ref, keypts_deviation_ref,
         # position/orientation_tracking_error). Weights + stds copied verbatim from
@@ -512,7 +672,7 @@ class G1Rewards(G1RewardsBase):
                           # enforced every step; pointing gated off when on top of the target.
 
 
-    if TASK_DENSE:
+    if TASK_DENSE and not REWORK:
         lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=0.0)
         ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
         flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
@@ -524,7 +684,7 @@ class G1Rewards(G1RewardsBase):
             weight=0.3)
     
     
-    if TASK_SPARSE:
+    if TASK_SPARSE and not REWORK:
         # Continuous saturating-exp, hold-accumulating lift reward (replaces dead-zoned object_above_threshold).
         # Object rests at z=0.9; a successful grasp peaks at ~0.976 (~7.6 cm reachable).
         #   * SATURATING EXP from rest: 1-exp(-(z-0.90)/tau), tau=0.03 -> 0 at rest, ~0.81 at the
@@ -546,21 +706,69 @@ class G1Rewards(G1RewardsBase):
                           # the wrist term is back to -1.0. Still upright-gated (2x of ~0 when tipped = ~0).
             params={"rest_z": 0.90, "success_z": 0.95, "tau": 0.03, "hold_rate": 0.02, "hold_cap": 50.0}
         )
+
+    if REWORK:
+        # ===================== REWARD REWORK (#2 equal tracking / #4 object / #5 contact) =====================
+        # #2 EQUAL whole-body tracking — base SONIC weights, ALL-ONES mask (right arm tracked equally),
+        # no root deadband. Drops the grasp-driven right-arm masking + per-limb/wrist/hand-precise terms.
+        tracking_anchor_pos = RewTerm(func=anchor_pos_tracking_exp, weight=0.5,
+            params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.3, "eps": 0.0})
+        tracking_anchor_ori = RewTerm(func=anchor_ori_tracking_exp, weight=0.5,
+            params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.4})
+        tracking_relative_body_pos = RewTerm(func=relative_keypts_tracking_exp, weight=1.0,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                    "std": 0.3, "keypts_mask": KEYPTS_MASK_ALL})
+        tracking_relative_body_ori = RewTerm(func=relative_body_ori_tracking_exp, weight=1.0,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                    "std": 0.4, "keypts_mask": KEYPTS_MASK_ALL})
+        tracking_body_linvel = RewTerm(func=lower_body_keypt_vel_tracking, weight=1.0,
+            params={"asset_cfg": SceneEntityCfg("robot",
+                        body_names=["left_knee_link", "left_ankle_roll_link", "right_knee_link", "right_ankle_roll_link"],
+                        preserve_order=True), "sigma": 1.0})
+        # finger open/close tracking retained (grasp actuation signal; NOT the wrist-pointing penalty).
+        right_hand_state_target_reward_val = RewTerm(func=right_hand_state_target_reward, weight=0.3)
+        # #4 object-as-hand reference tracking — REPLACES object_lift. Tracks the sim object to the
+        # holosoma reference object trajectory (glued to the hand in the reference). Weight/std initial;
+        # user to tune. Set source="hand_fk" to instead track the reference right-hand FK.
+        object_tracking = RewTerm(func=object_tracking_reward, weight=8.0,
+            params={"source": "holosoma", "pos_std": 0.1, "ori_std": 0.5})
+        # #5 ResMimic contact reward — REPLACES target_orientation_error (wrist pointing). c_hat*exp(-lam/f).
+        object_contact = RewTerm(func=object_contact_reward, weight=2.0,
+            params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_hand_.*"]),
+                    "lam": REWORK_CONTACT_LAMBDA})
+
 @configclass
 class TerminationsCfg(TerminationsCfgBase):
     """Termination terms for the MDP."""
 
-    if TRACKING :
+    if TRACKING and not REWORK:
         base_contact = DoneTerm(
             func=mdp.illegal_contact,
             params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["pelvis","torso_link","waist_yaw_link","waist_roll_link","left_shoulder_pitch_link","right_shoulder_pitch_link",
                                                     ]), "threshold": 1.0},
         )
-    torso_below_threshold = DoneTerm(
-        func=root_below_threshold, params={"thres": 0.3})
-    torso_angle_below_threshold = DoneTerm(
-        func=root_angle_below_threshold, params={"thres": 0.5})
-    
+    if not REWORK:
+        torso_below_threshold = DoneTerm(
+            func=root_below_threshold, params={"thres": 0.3})
+        torso_angle_below_threshold = DoneTerm(
+            func=root_angle_below_threshold, params={"thres": 0.5})
+
+    if REWORK:
+        # ===================== TERMINATION REWORK (#6) =====================
+        # Drop fall-based tilt-angle + base-contact. Keep a SMALLER root-height backstop as a safety
+        # (triggered too often at 0.3). Add reference-deviation, object-deviation, contact-loss.
+        torso_below_threshold = DoneTerm(
+            func=root_below_threshold, params={"thres": REWORK_HEIGHT_BACKSTOP})
+        ref_deviation = DoneTerm(
+            func=root_deviation_termination, params={"tau": REWORK_REF_DEV_TAU})
+        object_deviation = DoneTerm(
+            func=object_deviation_termination, params={"tau": REWORK_OBJ_DEV_TAU})
+        contact_loss = DoneTerm(
+            func=contact_loss_termination,
+            params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_hand_.*"]),
+                    "frames": REWORK_CONTACT_LOSS_FRAMES, "force_thresh": 1.0})
+
+
     
 def target_orientation(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
@@ -622,6 +830,29 @@ def rigid_body_mass(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEnt
     return masses.to(env.device)
 
 
+def object_state_obs(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """#7 privileged CURRENT object state: env-local pose (pos+quat) + world lin/ang velocity. (N,13)."""
+    obj: RigidObject = env.scene["object"]
+    pos = obj.data.root_pos_w - env.scene.env_origins
+    quat = obj.data.root_quat_w
+    return torch.cat([pos, quat, obj.data.root_lin_vel_w, obj.data.root_ang_vel_w], dim=-1)
+
+
+def object_ref_obs(env: ManagerBasedRLEnv, time_offset: float = 0.0) -> torch.Tensor:
+    """#7 reference object TARGET pose (obj_traj) at current+time_offset, env-local. (N,7). Identity
+    fallback when motion_lib / object_poses unavailable."""
+    n = env.scene.num_envs
+    fallback = torch.zeros((n, 7), device=env.device); fallback[:, 3] = 1.0
+    if not hasattr(env, "motion_lib") or getattr(env.motion_lib, "object_poses", None) is None:
+        return fallback
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32) + time_offset
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    if "object_poses" not in motion_res:
+        return fallback
+    return motion_res["object_poses"]
+
+
 @configclass
 class ObservationsCfg:
     """Observation specifications for the MDP."""
@@ -675,7 +906,14 @@ class ObservationsCfg:
         rel_pose_object_w_link_val = ObsTerm(func=rel_pose_object_w_link, params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])})
         right_hand_pose_val = ObsTerm(func=hand_pose, params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"])})
         object_mass = ObsTerm(func=rigid_body_mass, params={"asset_cfg": SceneEntityCfg("object")})
-        
+
+        if REWORK:
+            # #7 privileged object state (current pose+vel) + reference object target (obj_traj) now + t+0.2s.
+            # Single policy obs group => available to BOTH actor and critic (symmetric), per plan.
+            object_state = ObsTerm(func=object_state_obs)
+            object_ref_now = ObsTerm(func=object_ref_obs, params={"time_offset": 0.0})
+            object_ref_next = ObsTerm(func=object_ref_obs, params={"time_offset": 0.2})
+
         def __post_init__(self):
             self.enable_corruption = False # improves real world robustness
             self.concatenate_terms = True

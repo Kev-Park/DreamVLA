@@ -71,6 +71,14 @@ parser.add_argument(
          "correction while structurally anchoring behavior to the frozen SONIC base.",
 )
 parser.add_argument(
+    "--residual-transform", type=str, default="additive",
+    choices=["additive", "multiplicative", "unclamped"],
+    help="How the policy latent transforms the frozen base TOKEN (the FSQ snap re-bounds it "
+         "either way, so all are safe). additive = base + scale*tanh(z) (anchor, current). "
+         "multiplicative = base*(1+scale*tanh(z)) (in-family per-dim gate). unclamped = base+z "
+         "(no anchor). REWARD_REWORK_PLAN #3 test set.",
+)
+parser.add_argument(
     "--start-pregrab-margin", type=float, default=None,
     help="Seconds before each motion's grab frame to start episodes at, dropping BOTH the "
          "prepend slide and the walk. Default None = full motion. Isolates the grasp.",
@@ -422,6 +430,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = TokenAdapterVecEnvWrapper(
         env, decoder, encoder, device,
         residual_scale=args_cli.residual_scale,
+        residual_transform=args_cli.residual_transform,
         clip_actions=None,
     )
 
