@@ -161,8 +161,16 @@ contact-loss termination needs; #3 residual-transform tests last.)
   - #6 root_deviation + object_deviation + contact_loss(>10f) terminations + smaller height backstop (0.2); dropped tilt + base_contact.
   - #7 object_state_obs (current pose+vel) + object_ref_obs (obj_traj now + t+0.2) in the single policy obs group (actor+critic).
   - Tunables via env: HS_REWORK_CONTACT_LAMBDA / _CONTACT_LOSS_FRAMES / _REF_DEV_TAU / _OBJ_DEV_TAU / _HEIGHT_BACKSTOP.
+- [x] **REWORK smoke test PASSED** (HS_REWORK=1, 2 iters, EXIT 0): env builds with the 29-DOF robot,
+      object_tracking reward positive (0.079->0.107), object_contact registered (=0.0 early — see note).
+      Also fixed a build-blocker: G1_MINIMAL_CFG had drifted to the 27-DOF USD (env couldn't build at all);
+      restored to g1_29dof_with_hands_min_collisions_flat_white.usd (commit 48493a1).
+- [x] #4 diagnostic render delivered: out/obj_cand_s0.mp4 (motion pick_0). YELLOW=holosoma object_poses,
+      CYAN=right-hand FK. Awaiting user visual judgement of (i) vs (ii).
 - [ ] PENDING before training: (a) user reviews code + the #4 render to pick obj_traj source (i vs ii) & confirm object-on-hand;
-      (b) REWORK env-build smoke test; (c) regen the FULL filt dataset with HS_NO_LEADIN=1 + object_poses; (d) decoder-warmup decision (#1).
+      (b) regen the FULL filt dataset with HS_NO_LEADIN=1 + object_poses; (c) eval success-metric REWORK path; (d) decoder-warmup decision (#1).
+      WATCH: object_contact stayed 0.0 in the 2-iter smoke (base policy, few post-grab contacts) — verify it fires once a real
+      run reaches the grasp; if it stays 0, the right_hand_.* contact-force read / finger-object contact needs a closer look.
 - Notes / v1 simplifications to revisit in iteration:
   - #5 contact uses the existing all-body contact sensor's net force on right_hand_.* (NOT object-filtered) — a
     dedicated object-filtered ContactSensor would sharpen it. #6a ref-deviation is ROOT-based (proxy for full-body).
