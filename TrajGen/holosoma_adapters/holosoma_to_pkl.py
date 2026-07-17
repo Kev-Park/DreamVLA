@@ -174,7 +174,11 @@ fk = chain.forward_kinematics(torch.tensor(joints, dtype=torch.float32))
 local = torch.stack([fk[l].get_matrix()[:, :3, 3] for l in fk], dim=1).numpy()   # (F,L,3)
 mz = (np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local) + base_pos[:, None, :])[:, :, 2].min(axis=1)
 base_pos[:, 2] -= mz
-obj_pos[:, 2] -= mz   # ground the object with the robot (same per-frame shift) so the hand<->object geometry is preserved
+# Ground the object by a CONSTANT shift (the robot's grounding at the grab frame), NOT the per-frame mz.
+# mz swings a few cm as the robot walks (swing/stance foot), so a per-frame shift made the object bob
+# vertically even while it should rest still on the table. A constant shift keeps the object stable and
+# aligned to the grasp-frame floor. (obj_pos is otherwise ~static pre-grab, then lifts post-grab.)
+obj_pos[:, 2] -= mz[grab_idx]
 
 # --- freeze left arm across ALL frames (refine parity) ---
 joints = freeze_left_arm(joints)
