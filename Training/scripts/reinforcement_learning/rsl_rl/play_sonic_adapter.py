@@ -130,10 +130,15 @@ parser.add_argument(
 )
 parser.add_argument(
     "--overlay-obj-candidates", action="store_true", default=False,
-    help="For the #4 object-reference diagnostic: draw two object-reference candidate markers per "
-         "frame — (i) YELLOW = holosoma object_poses trajectory (needs a .pkl with `object_poses`), "
-         "(ii) CYAN = right-hand FK (right_rubber_hand). Judge which sits on the hand through the "
-         "grasp. Render-only viz; pairs well with --overlay-ref.",
+    help="For the #4 object-reference diagnostic: draw two markers per frame — CYAN = right-hand FK "
+         "palm (right_rubber_hand projected forward by --hand-fk-forward toward the grasp point), "
+         "YELLOW = synthesized object ref (object rest until grasp, then tracks the palm). Render-only viz.",
+)
+parser.add_argument(
+    "--hand-fk-forward", type=float, default=1.5,
+    help="Forward projection factor for the CYAN palm marker: palm = hand + f*(hand - wrist) along the "
+         "wrist->hand axis (right_rubber_hand's origin sits at the wrist/palm-base). Larger = further toward "
+         "the fingertips/grasp point. Also drives the post-grasp YELLOW synthesized object ref.",
 )
 parser.add_argument(
     "--ref-motions-path", type=str, default=None,
@@ -307,10 +312,15 @@ def _update_ref_overlay_markers(env, markers, marker_indices, device):
 
 # =========================================================================
 # Object-reference candidate overlay (--overlay-obj-candidates), for the #4
-# "object-as-hand reference" diagnostic. Draws TWO markers per frame so the
-# candidate object-reference trajectories can be judged against the ref hand:
-#   (i)  YELLOW  = holosoma object_poses trajectory (motion_lib.object_poses).
-#   (ii) CYAN    = right-hand FK (global_keypts[-1] = right_rubber_hand).
+# "object-as-hand reference" diagnostic. Draws TWO markers per frame:
+#   CYAN   = right-hand FK PALM = global_keypts[-1] (right_rubber_hand, at the
+#            wrist/palm-base) projected forward by --hand-fk-forward along the
+#            wrist->hand axis (global_keypts[-1] - global_keypts[-2]) to reach
+#            the grasp point rather than the wrist.
+#   YELLOW = SYNTHESIZED object reference: static at the holosoma object rest
+#            position until the grasp (is_closed), then tracks the CYAN palm — so
+#            it locks onto the hand the moment the arm settles, not when the raw
+#            object lift becomes visible (which lagged).
 # Pure viz. Requires a .pkl carrying `object_poses` (Adapter B, current gen).
 # =========================================================================
 def _make_obj_candidate_markers():
@@ -330,8 +340,11 @@ def _make_obj_candidate_markers():
     return VisualizationMarkers(cfg)
 
 
-def _update_obj_candidate_markers(env, markers, device):
-    """Place the two object-reference candidates at this step (env 0)."""
+def _update_obj_candidate_markers(env, markers, device, hand_fwd: float = 1.5):
+    """Place the two object-reference candidates at this step (env 0).
+
+    CYAN palm = right_rubber_hand FK projected forward by `hand_fwd` along the
+    wrist->hand axis. YELLOW = object rest until grasp (is_closed), then the palm."""
     unw = env.unwrapped
     with torch.inference_mode():
         motion_times = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
@@ -339,12 +352,15 @@ def _update_obj_candidate_markers(env, markers, device):
         )
         res = unw.motion_lib.get_motion_state(unw.motion_ids, motion_times)
         origin = unw.scene.env_origins                                              # (N, 3)
-        # (i) holosoma object trajectory (offset already applied in get_motion_state) -> world.
-        obj_i = res["object_poses"][:, :3].to(device) + origin                      # (N, 3)
-        # (ii) right-hand FK: last keypoint = right_rubber_hand.
         gk = res["global_keypts"].to(device) + origin.unsqueeze(1)                  # (N, 39, 3)
-        obj_ii = gk[:, -1, :]                                                       # (N, 3)
-    translations = torch.stack([obj_i[0], obj_ii[0]], dim=0)                        # (2, 3)
+        hand = gk[:, -1, :]                                                         # right_rubber_hand (wrist/palm-base)
+        wrist = gk[:, -2, :]                                                        # right_wrist_yaw
+        palm = hand + hand_fwd * (hand - wrist)                                     # forward-projected grasp point (CYAN)
+        obj_rest = res["object_poses"][:, :3].to(device) + origin                  # holosoma object (static pre-grab)
+        is_closed = res["is_closed"].to(device).float().unsqueeze(-1)              # (N, 1); 1 = post-grasp
+        # SYNTHESIZED object ref (YELLOW): rest until grasp, then track the palm.
+        obj_synth = torch.where(is_closed > 0.5, palm, obj_rest)                    # (N, 3)
+    translations = torch.stack([obj_synth[0], palm[0]], dim=0)                      # (2, 3): [YELLOW, CYAN]
     markers.visualize(
         translations=translations,
         marker_indices=torch.tensor([0, 1], device=device, dtype=torch.long),
@@ -692,9 +708,9 @@ def main():
     # Object-reference candidate markers (#4 diagnostic).
     obj_cand_markers = _make_obj_candidate_markers() if args_cli.overlay_obj_candidates else None
     if args_cli.overlay_obj_candidates:
-        _update_obj_candidate_markers(env, obj_cand_markers, device)  # frame 0
-        print("[overlay-obj-candidates] (i) holosoma object_poses = YELLOW, "
-              "(ii) right-hand FK = CYAN")
+        _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)  # frame 0
+        print(f"[overlay-obj-candidates] YELLOW = synthesized object ref (rest->palm), "
+              f"CYAN = hand-FK palm (forward={args_cli.hand_fk_forward})")
 
     while simulation_app.is_running() and timestep < args_cli.video_length:
         start_time = time.time()
@@ -714,7 +730,7 @@ def main():
         if args_cli.overlay_ref:
             _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
         if args_cli.overlay_obj_candidates:
-            _update_obj_candidate_markers(env, obj_cand_markers, device)
+            _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)
 
         # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
         _APP.update()
