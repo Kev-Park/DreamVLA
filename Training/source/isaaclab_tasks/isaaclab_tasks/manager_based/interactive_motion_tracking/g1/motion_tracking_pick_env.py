@@ -247,6 +247,10 @@ REWORK_HEIGHT_BACKSTOP = float(os.environ.get("HS_REWORK_HEIGHT_BACKSTOP", "0.2"
 # Forward-projection factor for the grasp PALM (= render CYAN, = refine_al_29 HAND_FWD). The synthesized
 # object reference tracks this palm post-grasp. MUST match refine_al_29.HAND_FWD baked into the dataset.
 REWORK_HAND_FWD = float(os.environ.get("HS_REWORK_HAND_FWD", "1.5"))
+# Contact reward (#5) + contact-loss termination (#6c) gate. Default ON, but they depend on the
+# right-hand contact sensor actually reporting finger<->object force. Set HS_REWORK_CONTACT=0 to
+# disable both if the sensor reads ~0 (else contact_loss spuriously terminates the grasp).
+REWORK_CONTACT = os.environ.get("HS_REWORK_CONTACT", "1") == "1"
 
 JOINTS_MASK = [
     1, # left_hip_pitch_joint
@@ -746,9 +750,11 @@ class G1Rewards(G1RewardsBase):
         object_tracking = RewTerm(func=object_tracking_reward, weight=8.0,
             params={"pos_std": 0.1, "ori_std": 0.5})
         # #5 ResMimic contact reward — REPLACES target_orientation_error (wrist pointing). c_hat*exp(-lam/f).
-        object_contact = RewTerm(func=object_contact_reward, weight=2.0,
-            params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_hand_.*"]),
-                    "lam": REWORK_CONTACT_LAMBDA})
+        # Gated: disabled when HS_REWORK_CONTACT=0 (right-hand contact sensor unreliable).
+        if REWORK_CONTACT:
+            object_contact = RewTerm(func=object_contact_reward, weight=2.0,
+                params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_hand_.*"]),
+                        "lam": REWORK_CONTACT_LAMBDA})
 
 @configclass
 class TerminationsCfg(TerminationsCfgBase):
@@ -776,10 +782,11 @@ class TerminationsCfg(TerminationsCfgBase):
             func=root_deviation_termination, params={"tau": REWORK_REF_DEV_TAU})
         object_deviation = DoneTerm(
             func=object_deviation_termination, params={"tau": REWORK_OBJ_DEV_TAU})
-        contact_loss = DoneTerm(
-            func=contact_loss_termination,
-            params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_hand_.*"]),
-                    "frames": REWORK_CONTACT_LOSS_FRAMES, "force_thresh": 1.0})
+        if REWORK_CONTACT:
+            contact_loss = DoneTerm(
+                func=contact_loss_termination,
+                params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_hand_.*"]),
+                        "frames": REWORK_CONTACT_LOSS_FRAMES, "force_thresh": 1.0})
 
 
     
