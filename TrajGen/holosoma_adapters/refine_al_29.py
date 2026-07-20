@@ -37,6 +37,11 @@ VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
 HAND_TIP_OFFSET = 0.15
+# Forward-projection factor for the GRASP PALM target: palm = rubber_hand + HAND_FWD*(rubber_hand - wrist_yaw).
+# The AL loop drives THIS palm point (not the wrist) to the object, so the palm — the grasp point the
+# render draws as CYAN and the synthesized object ref tracks — lands on the object at grasp (no teleport).
+# MUST match play_sonic_adapter.py --hand-fk-forward (default 1.5) for the render/reward to align.
+HAND_FWD = 1.5
 TIP_TO_TABLE_EDGE_TAPER_START_DIST = 0.05
 TIP_SPEED_WINDOW = 50
 SAVE_DIR = "../Pick_sim2/"
@@ -83,6 +88,7 @@ _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
 _last_cost_terms: dict[str, torch.Tensor] | None = None
+palm_target:       torch.Tensor | None = None   # world-frame object target the PALM is driven to (set by refine_arm)
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
                  lambda_table: torch.Tensor | None = None,
@@ -317,6 +323,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # Hand joint origin in world frame — forms the other edge of the swept quad
             transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
 
+            # Forward-projected PALM (grasp point) in world frame, same formula as the render's CYAN:
+            # palm = rubber_hand + HAND_FWD * (rubber_hand - wrist_yaw). Driven to the object below.
+            _wy_root = fk_results["right_wrist_yaw_link"].get_matrix()[:, :3, 3]
+            _wy_world = torch.bmm(_wy_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
+            palm_world = transformed_hand_orig + HAND_FWD * (transformed_hand_orig - _wy_world)
+
             # INTER-APPROACH COSTS
 
             # [ABS] Hard torso-vs-arm collision (AL, rho_other schedule).
@@ -493,19 +505,23 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
                 taper_start = max(taper_end - 10, 1)
 
-                # Constrain wrist-to-grab only after distance-maximization starts to taper off.
+                # Constrain PALM-to-object only after distance-maximization starts to taper off.
                 # Taper begins at taper_start, so activate from the next frame onward.
                 distance_max_taper_start_frame = taper_start
-                if '_pending_wrist_grab_world' in locals():
-                    wrist_grab_start = max(grab_idx - 25, distance_max_taper_start_frame + 1)
-                    wrist_grab_end = min(grab_idx + 20, _pending_wrist_grab_world.shape[0])
-                    if wrist_grab_end > wrist_grab_start:
-                        wrist_to_grab = _pending_wrist_grab_world[wrist_grab_start:wrist_grab_end] - capsule_obs_pos.unsqueeze(0)
-                        wrist_to_grab_norm = torch.norm(wrist_to_grab, dim=1)
-                        wrist_grab_charb = WRIST_GRAB_CHARB_WEIGHT * (
-                            torch.sqrt(wrist_to_grab_norm ** 2 + WRIST_GRAB_CHARB_EPS ** 2) - WRIST_GRAB_CHARB_EPS
+                # Drive the forward-projected PALM (grasp point = render CYAN) to the object target, so
+                # the palm lands ON the object at grasp (the wrist ends up behind). Replaces the old
+                # wrist-to-grab cost — that aligned the WRIST, leaving the palm overshooting the object,
+                # so the synthesized object ref teleported forward to the palm at the switch.
+                if palm_target is not None:
+                    palm_grab_start = max(grab_idx - 25, distance_max_taper_start_frame + 1)
+                    palm_grab_end = min(grab_idx + 20, palm_world.shape[0])
+                    if palm_grab_end > palm_grab_start:
+                        palm_to_grab = palm_world[palm_grab_start:palm_grab_end] - palm_target.unsqueeze(0)
+                        palm_to_grab_norm = torch.norm(palm_to_grab, dim=1)
+                        palm_grab_charb = WRIST_GRAB_CHARB_WEIGHT * (
+                            torch.sqrt(palm_to_grab_norm ** 2 + WRIST_GRAB_CHARB_EPS ** 2) - WRIST_GRAB_CHARB_EPS
                         )
-                        cost2[wrist_grab_start:wrist_grab_end] += wrist_grab_charb
+                        cost2[palm_grab_start:palm_grab_end] += palm_grab_charb
 
                 taper = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
                 taper_mask = frame_ids >= float(taper_start)
@@ -552,7 +568,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     """
     global target_joint_angles, active_joint_names, inactive_joint_ids, joint_names
     global fk_results_ref, grab_idx, grab_pos, capsule_obs_pos, ref_dists, traj_fps_hz
-    global active_joint_ids, init_joint_angles
+    global active_joint_ids, init_joint_angles, palm_target
 
     joint_names = JOINT_NAMES_29
     init_joint_angles = INIT_29
@@ -582,6 +598,13 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     # The reference already grasps the true (relocated) object, so its wrist point is object-correct.
     capsule_obs_pos = wrist_keypts[grab_idx].clone()
     ref_dists = torch.norm(wrist_keypts[1:] - wrist_keypts[:-1], dim=1)
+
+    # PALM target = the grounded holosoma object at grab (grab_pos_obj), in the FK world frame (+0.035
+    # root lift, matching trans_with_z / motion_lib's object_poses). The AL loop drives the forward-
+    # projected palm to THIS, so the palm (render CYAN, = the synthesized object ref post-grasp) lands
+    # on the object. capsule_obs_pos (ref wrist) still shapes the pre-grab approach direction.
+    palm_target = torch.tensor(np.asarray(grab_pos_obj), dtype=torch.float32, device=DEVICE) \
+        + torch.tensor([0., 0., 0.035], device=DEVICE)
 
     joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone())
 
