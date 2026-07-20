@@ -238,6 +238,17 @@ def main():
     completed_episodes_with_any_lift = 0
     termination_counts = {"time_out": 0, "other": 0}
 
+    # ---- REWORK success metric: object HELD near the synthesized object ref during the grasp ----
+    # (the height-based lift metric is miscalibrated under REWORK — the object rests at the grounded
+    # reference height, not 0.90). "held" = sim object within HELD_TOL of the synth ref (rest->palm)
+    # while is_closed. An episode succeeds if it held for a fraction of the closed phase >= HELD_FRAC.
+    REWORK = os.environ.get("HS_REWORK", "0") == "1"
+    HELD_TOL = float(os.environ.get("HS_EVAL_HELD_TOL", "0.10"))   # m
+    HELD_FRAC = float(os.environ.get("HS_EVAL_HELD_FRAC", "0.5"))  # fraction of closed phase
+    HAND_FWD = float(os.environ.get("HS_REWORK_HAND_FWD", "1.5"))
+    per_env_held_steps = torch.zeros(num_envs, device=device, dtype=torch.long)
+    completed_held = 0
+
     just_reset_mask = torch.ones(num_envs, device=device, dtype=torch.bool)
 
     obs_out = env.get_observations()
@@ -263,11 +274,21 @@ def main():
         is_closed = motion_res["is_closed"].bool()
         lifted = (bottle_z > lift_thres) & is_closed
 
+        held = torch.zeros(num_envs, device=device, dtype=torch.bool)
+        if REWORK and "object_poses" in motion_res:
+            gk = motion_res["global_keypts"]                                         # (N,39,3) env-local
+            palm = gk[:, -1, :] + HAND_FWD * (gk[:, -1, :] - gk[:, -2, :])            # forward-projected palm
+            rest = motion_res["object_poses"][:, :3]
+            synth_ref = torch.where(is_closed.unsqueeze(-1), palm, rest)             # (N,3) env-local
+            obj_local = env.unwrapped.scene["object"].data.root_pos_w - env.unwrapped.scene.env_origins
+            held = (torch.norm(obj_local - synth_ref, dim=1) < HELD_TOL) & is_closed
+
         valid = ~just_reset_mask
         if valid.any():
             per_env_had_any_lift |= lifted & valid
             per_env_closed_steps += (is_closed & valid).long()
             per_env_lift_steps += (lifted & valid).long()
+            per_env_held_steps += (held & valid).long()
 
         dones_bool = dones.bool() if dones.dtype != torch.bool else dones
         if dones_bool.any():
@@ -286,6 +307,11 @@ def main():
                     if cs > 0:
                         sum_lift_fraction_over_lifted_episodes += ls / cs
                         completed_episodes_with_any_lift += 1
+                if REWORK:
+                    cs = int(per_env_closed_steps[idx].item())
+                    hs = int(per_env_held_steps[idx].item())
+                    if cs > 0 and (hs / cs) >= HELD_FRAC:
+                        completed_held += 1
                 if k < len(time_out_mask) and bool(time_out_mask[k].item()):
                     termination_counts["time_out"] += 1
                 else:
@@ -294,6 +320,7 @@ def main():
             per_env_had_any_lift[done_idxs] = False
             per_env_closed_steps[done_idxs] = 0
             per_env_lift_steps[done_idxs] = 0
+            per_env_held_steps[done_idxs] = 0
 
         just_reset_mask = dones_bool
         step_count += 1
@@ -335,6 +362,12 @@ def main():
     print(f"  Mean lift fraction          {100*mean_lift_fraction:.2f}%")
     print(f"    (over episodes with lift; closed_phase_lift_steps / closed_phase_steps)")
     print(f"  Cumulative lift-steps       {n_succ_total:.0f}")
+    if REWORK:
+        held_rate = completed_held / max(completed_episodes, 1)
+        print(f"")
+        print(f"  [REWORK] Object HELD success: {completed_held} / {completed_episodes} "
+              f"= {100*held_rate:.2f}%")
+        print(f"    (object within {HELD_TOL} m of the synth obj ref for >= {HELD_FRAC:.0%} of the closed phase)")
     print(f"    (env.n_successes.sum() — uses the env reward's height_thres)")
     print(f"")
     print(f"  Termination breakdown (of completed episodes):")
