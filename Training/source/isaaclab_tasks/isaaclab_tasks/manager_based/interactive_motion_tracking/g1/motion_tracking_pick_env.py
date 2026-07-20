@@ -244,6 +244,9 @@ REWORK_CONTACT_LOSS_FRAMES = int(os.environ.get("HS_REWORK_CONTACT_LOSS_FRAMES",
 REWORK_REF_DEV_TAU = float(os.environ.get("HS_REWORK_REF_DEV_TAU", "0.5"))         # whole-body tracking-error termination (m, mean-keypt)
 REWORK_OBJ_DEV_TAU = float(os.environ.get("HS_REWORK_OBJ_DEV_TAU", "0.3"))         # object-tracking deviation termination (m)
 REWORK_HEIGHT_BACKSTOP = float(os.environ.get("HS_REWORK_HEIGHT_BACKSTOP", "0.2")) # smaller root-height backstop (<0.3)
+# Forward-projection factor for the grasp PALM (= render CYAN, = refine_al_29 HAND_FWD). The synthesized
+# object reference tracks this palm post-grasp. MUST match refine_al_29.HAND_FWD baked into the dataset.
+REWORK_HAND_FWD = float(os.environ.get("HS_REWORK_HAND_FWD", "1.5"))
 
 JOINTS_MASK = [
     1, # left_hip_pitch_joint
@@ -443,32 +446,39 @@ def _rework_motion_res(env):
     return env.motion_lib.get_motion_state(env.motion_ids, motion_times), True
 
 
-def object_tracking_reward(env: ManagerBasedRLEnv, source: str = "holosoma",
-                           pos_std: float = 0.1, ori_std: float = 0.5) -> torch.Tensor:
+def _synth_object_ref_pos(motion_res, hand_fwd: float = REWORK_HAND_FWD):
+    """Synthesized object-reference POSITION (N,3), env-local — the exact reference the approved #4
+    render draws as YELLOW: static at the holosoma object rest until the grasp (is_closed), then the
+    forward-projected PALM = global_keypts[-1] + hand_fwd*(global_keypts[-1] - global_keypts[-2])
+    (= render CYAN, = where refine_al_29 drives the palm). Returns None if fields are missing."""
+    if "object_poses" not in motion_res:
+        return None
+    gk = motion_res["global_keypts"]                                             # (N,39,3) env-local
+    palm = gk[:, -1, :] + hand_fwd * (gk[:, -1, :] - gk[:, -2, :])               # forward-projected grasp point
+    rest = motion_res["object_poses"][:, :3]                                     # object rest (static pre-grab)
+    is_closed = motion_res["is_closed"].float().unsqueeze(-1)                    # (N,1) 1 = post-grasp
+    return torch.where(is_closed > 0.5, palm, rest)
+
+
+def object_tracking_reward(env: ManagerBasedRLEnv, pos_std: float = 0.1, ori_std: float = 0.5) -> torch.Tensor:
     """#4 ResMimic-style object-as-hand reference tracking (replaces object_lift).
 
-    Rewards the SIM object for tracking a reference object trajectory (glued to the hand
-    in the reference), so a held object that follows the reference IS the grasp signal.
-    source="holosoma": track motion_lib object_poses (pos+ori). source="hand_fk": track the
-    reference right-hand FK position (global_keypts[-1], pos only). NOT contact-gated (ResMimic
-    object reward is always active). exp kernel in (0,1]."""
+    Rewards the SIM object for tracking the SYNTHESIZED object reference (rest until grasp, then the
+    forward-projected palm), so a held object that follows the hand IS the grasp signal. NOT contact-
+    gated (ResMimic object reward is always active). exp kernel in (0,1]."""
     obj: RigidObject = env.scene["object"]
     n = obj.data.root_pos_w.shape[0]
     motion_res, ok = _rework_motion_res(env)
     if not ok:
         return torch.zeros(n, device=env.device)
-    obj_pos = obj.data.root_pos_w - env.scene.env_origins                       # (N,3) env-local
-    if source == "hand_fk":
-        ref_pos = motion_res["global_keypts"][:, -1, :]                          # right_rubber_hand, env-local
-        d2 = torch.sum((obj_pos - ref_pos) ** 2, dim=1)
-        return torch.exp(-d2 / (pos_std * pos_std))
-    # holosoma object_poses (guard datasets without it)
-    if "object_poses" not in motion_res:
+    ref_pos = _synth_object_ref_pos(motion_res)
+    if ref_pos is None:
         return torch.zeros(n, device=env.device)
-    ref = motion_res["object_poses"]                                             # (N,7) env-local, offset-applied
-    d2 = torch.sum((obj_pos - ref[:, :3]) ** 2, dim=1)
+    obj_pos = obj.data.root_pos_w - env.scene.env_origins                       # (N,3) env-local
+    d2 = torch.sum((obj_pos - ref_pos) ** 2, dim=1)
     pos_r = torch.exp(-d2 / (pos_std * pos_std))
-    angle = math_utils.quat_error_magnitude(obj.data.root_quat_w, ref[:, 3:7])
+    # Orientation: track the holosoma object orientation (lenient std); the pos term carries the grasp.
+    angle = math_utils.quat_error_magnitude(obj.data.root_quat_w, motion_res["object_poses"][:, 3:7])
     ori_r = torch.exp(-(angle ** 2) / (ori_std * ori_std))
     return pos_r * ori_r
 
@@ -514,10 +524,13 @@ def object_deviation_termination(env: ManagerBasedRLEnv, tau: float = 0.3) -> to
     object trajectory (ResMimic object-far). Also fires on grasp-loss (object drifts off the hand)."""
     obj: RigidObject = env.scene["object"]
     motion_res, ok = _rework_motion_res(env)
-    if not ok or "object_poses" not in motion_res:
+    if not ok:
+        return torch.zeros(env.scene.num_envs, dtype=torch.bool, device=env.device)
+    ref_pos = _synth_object_ref_pos(motion_res)
+    if ref_pos is None:
         return torch.zeros(env.scene.num_envs, dtype=torch.bool, device=env.device)
     obj_pos = obj.data.root_pos_w - env.scene.env_origins
-    err = torch.norm(obj_pos - motion_res["object_poses"][:, :3], dim=1)
+    err = torch.norm(obj_pos - ref_pos, dim=1)
     return err > tau
 
 
@@ -731,7 +744,7 @@ class G1Rewards(G1RewardsBase):
         # holosoma reference object trajectory (glued to the hand in the reference). Weight/std initial;
         # user to tune. Set source="hand_fk" to instead track the reference right-hand FK.
         object_tracking = RewTerm(func=object_tracking_reward, weight=8.0,
-            params={"source": "holosoma", "pos_std": 0.1, "ori_std": 0.5})
+            params={"pos_std": 0.1, "ori_std": 0.5})
         # #5 ResMimic contact reward — REPLACES target_orientation_error (wrist pointing). c_hat*exp(-lam/f).
         object_contact = RewTerm(func=object_contact_reward, weight=2.0,
             params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_hand_.*"]),
@@ -839,8 +852,8 @@ def object_state_obs(env: ManagerBasedRLEnv) -> torch.Tensor:
 
 
 def object_ref_obs(env: ManagerBasedRLEnv, time_offset: float = 0.0) -> torch.Tensor:
-    """#7 reference object TARGET pose (obj_traj) at current+time_offset, env-local. (N,7). Identity
-    fallback when motion_lib / object_poses unavailable."""
+    """#7 SYNTHESIZED object TARGET pose (the reference the reward tracks) at current+time_offset,
+    env-local. (N,7) = pos (rest->palm) + object orientation. Identity fallback when unavailable."""
     n = env.scene.num_envs
     fallback = torch.zeros((n, 7), device=env.device); fallback[:, 3] = 1.0
     if not hasattr(env, "motion_lib") or getattr(env.motion_lib, "object_poses", None) is None:
@@ -848,9 +861,10 @@ def object_ref_obs(env: ManagerBasedRLEnv, time_offset: float = 0.0) -> torch.Te
     motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
         device=env.device, dtype=torch.float32) + time_offset
     motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
-    if "object_poses" not in motion_res:
+    ref_pos = _synth_object_ref_pos(motion_res)
+    if ref_pos is None:
         return fallback
-    return motion_res["object_poses"]
+    return torch.cat([ref_pos, motion_res["object_poses"][:, 3:7]], dim=-1)      # synth pos + object ori
 
 
 @configclass
