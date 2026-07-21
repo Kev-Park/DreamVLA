@@ -187,7 +187,21 @@ def main():
         elif args_cli.path:
             resume_path = args_cli.path
         else:
-            resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+            # Auto-pick the newest TIMESTAMPED run dir that actually has checkpoints. The default
+            # get_checkpoint_path globs load_run=".*" and sorts alphabetically, so non-training dirs
+            # like `zero_shot`/`reference` (which sort after `2026-*` and have no model_*.pt) shadow
+            # the real run and crash. Prefer the most-recently-modified `20*/` dir with a model_*.pt.
+            import glob as _glob
+            _runs = sorted(
+                (d for d in _glob.glob(os.path.join(log_root_path, "20*"))
+                 if os.path.isdir(d) and _glob.glob(os.path.join(d, "model_*.pt"))),
+                key=os.path.getmtime,
+            )
+            if _runs:
+                resume_path = get_checkpoint_path(log_root_path, os.path.basename(_runs[-1]), agent_cfg.load_checkpoint)
+                print(f"[eval_sonic_adapter] auto-selected newest run with checkpoints: {os.path.basename(_runs[-1])}")
+            else:
+                resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     env = gym.make(args_cli.task, cfg=env_cfg)
     print(f"[env] action_space (pre-wrapper) = {env.action_space}")
