@@ -148,6 +148,20 @@ Revised build order: **#1 -> #2 -> #4 -> #7 -> #5 -> #6 -> #3.**
 (#4 provides obj_traj that #7 obs + #6 object-deviation termination consume; #5 adds the ContactSensor #6's
 contact-loss termination needs; #3 residual-transform tests last.)
 
+## FIRST FULL REWORK RUN — result (2026-07-21)
+Trained 5000 iters (biped, 1024 envs, residual 0.35 additive, HS_REWORK=1 HS_REWORK_CONTACT=0,
+ref/obj dev tau 0.8/0.5, rework60 no-lead-in dataset). Checkpoint 2026-07-20_10-22-08/model_4999.pt.
+- Training healthy: mean reward -4.9 -> ~51, object_tracking reward saturated ~2.2.
+- Eval (2000 eps): **REWORK Object-HELD = 5.1%** (object within 0.1m of synth ref >=50% of closed phase).
+  Old height any-lift = 0.25% (miscalibrated under REWORK). Terminations: 62% time_out, 38% other.
+- **Diagnosis:** high tracking-reward but low hold-success => object_tracking is earned mostly PRE-grasp
+  (sim object at rest trivially matches the static ref). Candidate fixes for next iter:
+  (a) weight/emphasize the POST-grasp (is_closed) portion of object_tracking, or split into a separate
+  post-grasp hold term; (b) re-enable a working contact signal so the grasp is actually rewarded/required
+  (fix the right-hand contact sensor reading ~0); (c) revisit residual scale / add the finger-close incentive.
+- Infra fixes landed this run: G1 29-DOF USD; num_envs 1024 (was 8192, 8x slower); biped >> bluesclues for
+  CPU-bound FK; eval auto-picks newest timestamped run dir (zero_shot/reference no longer shadow it).
+
 ## Status
 - [x] rs040 re-run cancelled; this plan created.
 - [x] Sweep trainings finished (rs035/rs040/rs045 all exit 0); rs045 eval = 0.95% / 61.7% lift-frac. Superseded by this rework.
