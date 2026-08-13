@@ -55,6 +55,14 @@ DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))                      
 GATE_END_SLACK = float(os.environ.get("HS_GATE_END_SLACK", "0.05"))              # gate line ends this far PAST the object (m)
 LEVEL_LEAD = int(os.environ.get("HS_LEVEL_LEAD", "1000"))                    # level-hand term starts this many frames before grab
 LEVEL_W = float(os.environ.get("HS_LEVEL_W", "150.0"))                      # level-hand orientation weight (soft)
+# HARD levelness constraint (AL): (1 - up_z) <= LEVEL_HARD_EPS within the approach window
+# [grab - LEVEL_HARD_LEAD, grab]. eps is 1 - cos(tilt): 0.03 ~= 14 deg max tilt. Enforced via the
+# same dual/rho machinery as the table constraint, so a tilted high hover (m66: level fell to 0.45
+# under the 150-weight soft term) becomes INFEASIBLE rather than merely expensive. Post-grab stays
+# soft-only (the raw carry can be kinematically awkward; hard-constraining it can make AL diverge).
+LEVEL_HARD_EPS = float(os.environ.get("HS_LEVEL_HARD_EPS", "0.03"))
+LEVEL_HARD_LEAD = int(os.environ.get("HS_LEVEL_HARD_LEAD", "60"))
+LEVEL_CONSTRAINT_TOL = 1e-3
 POINT_W = float(os.environ.get("HS_POINT_W", "30.0"))                      # palm-pointing orientation weight (soft)
 TORSO_CYLINDER_RADIUS = 0.125
 WRIST_TORSO_SEGMENT_RADIUS = 0.03
@@ -96,6 +104,7 @@ AL_INNER_ITERS    = 300       # Adam steps per outer iteration
 _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
+_last_g_level:     torch.Tensor | None = None
 _last_cost_terms: dict[str, torch.Tensor] | None = None
 palm_target:       torch.Tensor | None = None   # world-frame object target the PALM is driven to (set by refine_arm)
 palm_target_traj:  torch.Tensor | None = None   # (F,3) per-frame palm target: static grab point pre-grab, object trajectory post-grab
@@ -104,9 +113,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                  lambda_table: torch.Tensor | None = None,
                  lambda_wrist: torch.Tensor | None = None,
                  lambda_dof_speed: torch.Tensor | None = None,
+                 lambda_level: torch.Tensor | None = None,
                  rho_al: float = AL_RHO_INIT,
                  rho_al_table: float | None = None):
-    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_cost_terms
+    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_g_level, _last_cost_terms
 
     n_frames = joint_angles.shape[0]
     inv_n_frames = 1.0 / float(n_frames)
@@ -401,6 +411,18 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 _xaxis = rot_mat[orient_start:, :, 0]                  # hand local x (fingertip axis) in world
                 cost2[orient_start:] += POINT_W * (1.0 - (_xaxis * _pstar).sum(dim=1))
 
+            # [ABS] HARD levelness (AL): (1 - up_z) <= LEVEL_HARD_EPS over the approach window
+            # [grab - LEVEL_HARD_LEAD, grab]. Makes a tilted approach/hover INFEASIBLE (the soft
+            # LEVEL_W term keeps gradient pressure toward perfectly flat inside the eps band).
+            g_level_full = torch.zeros(rot_mat.shape[0], device=DEVICE, dtype=joint_angles.dtype)
+            _hard_s = max(grab_idx - LEVEL_HARD_LEAD, 0)
+            _hard_e = min(grab_idx + 1, rot_mat.shape[0])
+            if _hard_e > _hard_s:
+                g_level_full[_hard_s:_hard_e] = torch.relu(
+                    (1.0 - rot_mat[_hard_s:_hard_e, 2, 2]) - LEVEL_HARD_EPS)
+            _last_g_level = g_level_full.detach()
+            cost2 += al_penalty(g_level_full, lam_vec=lambda_level)
+
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
                 """Combined per-frame AL constraint g_t >= 0, shape (gi,).
@@ -530,14 +552,19 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 frame_ids = frame_pre
                 distance_max_taper_start_frame = taper_start
                 if palm_target is not None:
-                    # Charb at full weight from release start (linear half-window ramp avoids a
-                    # gradient step). The moving gate line no longer opposes it at the target.
+                    # Charb weight slaved to the SAME quadratic schedule as the moving gate line
+                    # (_sline): attractor pressure grows exactly as fast as the line travels. The
+                    # previous linear HALF-window ramp hit full weight while the line had only
+                    # moved ~25% -> full attractor vs near-stationary 3000-gate -> the tip pierced
+                    # the line ~3 cm and the wrist yawed (the m50/m7 dart-flick, probe frames
+                    # 79-82 / 42-45). With matched schedules the pressure/barrier ratio is constant
+                    # through the release, so the equilibrium rides the line with no transient.
                     palm_grab_start = max(distance_max_taper_start_frame + 1, 1)
                     palm_grab_end = palm_world.shape[0]
                     if palm_grab_end > palm_grab_start:
                         _fr = torch.arange(palm_grab_start, palm_grab_end, device=DEVICE, dtype=torch.float32)
                         _den = float(max(taper_end - taper_start, 1))
-                        _s = torch.clamp((_fr - float(taper_start)) / (0.5 * _den), 0.0, 1.0)
+                        _s = torch.clamp((_fr - float(taper_start)) / _den, 0.0, 1.0) ** 2
                         _tg = (palm_target_traj[palm_grab_start:palm_grab_end]
                                if palm_target_traj is not None else palm_target.unsqueeze(0))
                         palm_to_grab = palm_world[palm_grab_start:palm_grab_end] - _tg
@@ -646,6 +673,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     lambda_table = torch.zeros(joint_angles.shape[0], device=DEVICE)
     lambda_wrist = torch.zeros(joint_angles.shape[0], device=DEVICE)
     lambda_dof_speed = torch.zeros((joint_angles.shape[0] - 1) * joint_angles.shape[1], device=DEVICE)
+    lambda_level = torch.zeros(joint_angles.shape[0], device=DEVICE)
     rho_al = AL_RHO_INIT
     rho_al_table = AL_RHO_INIT_TABLE
     converged = False
@@ -656,12 +684,14 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
             optimizer.zero_grad()
             cost = compute_cost(joint_angles, trans, quats,
                                 lambda_table=lambda_table, lambda_wrist=lambda_wrist,
-                                lambda_dof_speed=lambda_dof_speed, rho_al=rho_al, rho_al_table=rho_al_table)
+                                lambda_dof_speed=lambda_dof_speed, lambda_level=lambda_level,
+                                rho_al=rho_al, rho_al_table=rho_al_table)
             cost.backward()
             optimizer.step()
         g_curr = _last_g_t
         g_curr_wrist = _last_g_cap_wrist
         g_curr_dof_speed = _last_g_dof_speed
+        g_curr_level = _last_g_level
         if g_curr is None:
             break
         with torch.no_grad():
@@ -670,12 +700,16 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
                 lambda_wrist = torch.clamp(lambda_wrist + rho_al * g_curr_wrist, min=0.0)
             if g_curr_dof_speed is not None:
                 lambda_dof_speed = torch.clamp(lambda_dof_speed + rho_al * g_curr_dof_speed, min=0.0)
+            if g_curr_level is not None:
+                lambda_level = torch.clamp(lambda_level + rho_al * g_curr_level, min=0.0)
         max_viol = float(g_curr.max())
         max_viol_dof = float(g_curr_dof_speed.max()) if g_curr_dof_speed is not None else 0.0
+        max_viol_level = float(g_curr_level.max()) if g_curr_level is not None else 0.0
         if verbose:
             print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m dof_speed={max_viol_dof:.2e}rad/s "
-                  f"rho_table={rho_al_table:.1e} cost={float(cost):.4f}")
-        if max_viol < TABLE_CONSTRAINT_TOL and max_viol_dof < DOF_SPEED_CONSTRAINT_TOL:
+                  f"level={max_viol_level:.2e} rho_table={rho_al_table:.1e} cost={float(cost):.4f}")
+        if (max_viol < TABLE_CONSTRAINT_TOL and max_viol_dof < DOF_SPEED_CONSTRAINT_TOL
+                and max_viol_level < LEVEL_CONSTRAINT_TOL):
             converged = True
             break
         rho_al_table = min(rho_al_table * AL_RHO_GROWTH_TABLE, AL_RHO_MAX)
@@ -685,6 +719,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     out[:, active_joint_ids] = joint_angles.detach()
     max_move = float((out[:, active_joint_ids] - target_joint_angles[:, active_joint_ids]).abs().max())
     fv = float(g_curr.max()) if g_curr is not None else -1.0
+    fvl = float(_last_g_level.max()) if _last_g_level is not None else -1.0
     print(f"[refine-al] grab_idx={grab_idx} AL {'converged' if converged else 'maxiter'} "
-          f"final_table_viol={fv:.2e}m max_arm_move={max_move:.3f}rad")
+          f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} max_arm_move={max_move:.3f}rad")
     return out.detach().cpu().numpy()
