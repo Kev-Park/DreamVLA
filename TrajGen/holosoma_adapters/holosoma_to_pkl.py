@@ -193,7 +193,7 @@ if REFINE_ARM and 0 < grab_idx < F:
     _mode = os.environ.get("HS_REFINE_MODE", "al")
     if _mode == "al":
         import refine_al_29
-        joints = refine_al_29.refine_arm(joints, base_pos, base_quat, obj_pos[grab_idx], grab_idx, fps=20.0)
+        joints = refine_al_29.refine_arm(joints, base_pos, base_quat, obj_pos[grab_idx], grab_idx, fps=20.0, obj_traj=obj_pos)
     else:
         joints = refine_right_arm_table(joints, base_pos, base_quat, grab_idx, chain)
 

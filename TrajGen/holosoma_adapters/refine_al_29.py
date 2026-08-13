@@ -47,14 +47,23 @@ TIP_SPEED_WINDOW = 50
 SAVE_DIR = "../Pick_sim2/"
 TRAJ_FPS_DEFAULT = 20.0
 APPROACH_SPOOF_LEFT_X = 0.24
+APPROACH_GATE_CLEARANCE = float(os.environ.get("HS_APPROACH_GATE_CLEARANCE", "0.15"))  # gate placed this far RIGHT of the object (m)
+APPROACH_TAPER_LEAD = int(os.environ.get("HS_APPROACH_TAPER_LEAD", "8"))    # gate held until this many frames before grab
+APPROACH_TAPER_WINDOW = int(os.environ.get("HS_APPROACH_TAPER_WINDOW", "20"))  # frames over which the gate releases (was hardcoded 10)
+APPROACH_Z_CLEARANCE = float(os.environ.get("HS_APPROACH_Z_CLEARANCE", "-0.03"))  # z-gate: allowed height above object center (m)
+DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))                      # downward-velocity penalty weight (pre-grab)
+GATE_END_SLACK = float(os.environ.get("HS_GATE_END_SLACK", "0.05"))              # gate line ends this far PAST the object (m)
+LEVEL_LEAD = int(os.environ.get("HS_LEVEL_LEAD", "1000"))                    # level-hand term starts this many frames before grab
+LEVEL_W = float(os.environ.get("HS_LEVEL_W", "150.0"))                      # level-hand orientation weight (soft)
+POINT_W = float(os.environ.get("HS_POINT_W", "30.0"))                      # palm-pointing orientation weight (soft)
 TORSO_CYLINDER_RADIUS = 0.125
 WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 TORSO_COLLISIONS_ENABLED = False
-HAND_APPROACH_SOFT_WEIGHT = 3000.0 # distance bias
+HAND_APPROACH_SOFT_WEIGHT = float(os.environ.get("HS_HAND_APPROACH_W", "3000.0")) # rightward-gate bias
 
-WRIST_GRAB_CHARB_WEIGHT = 1.0 # wrist-to-grab Charbonnier distance (final approach)
+WRIST_GRAB_CHARB_WEIGHT = float(os.environ.get("HS_CHARB_W", "30.0")) # palm-to-object Charbonnier weight (final approach + hold)
 WRIST_GRAB_CHARB_EPS =2e-3 # meters, smooth near-zero Charbonnier epsilon
 
 # Right-arm hard speed limits (rad/s)
@@ -89,6 +98,7 @@ _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
 _last_cost_terms: dict[str, torch.Tensor] | None = None
 palm_target:       torch.Tensor | None = None   # world-frame object target the PALM is driven to (set by refine_arm)
+palm_target_traj:  torch.Tensor | None = None   # (F,3) per-frame palm target: static grab point pre-grab, object trajectory post-grab
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
                  lambda_table: torch.Tensor | None = None,
@@ -306,7 +316,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             _pending_wrist_grab_world = transformed_keypts
 
 
-            cost2[grab_idx:] += torch.norm(transformed_keypts[grab_idx:] - transformed_keypts_ref[grab_idx:], dim=1, p=2) # penalize distance from reference after grab
+            # Post-grab raw-wrist tracking DEMOTED to height-only: the raw retarget's wrist path is
+            # often inside-lying (left of the object) and was dragging the arm inside after grab.
+            # Lateral position is now owned by the palm-on-object Charbonnier; keep only a weak z
+            # guide so the arm doesn't sag.
+            _pg_w = float(os.environ.get("HS_POSTGRAB_WRIST_W", "0.3"))
+            cost2[grab_idx:] += _pg_w * torch.abs(transformed_keypts[grab_idx:, 2] - transformed_keypts_ref[grab_idx:, 2])
 
         elif i == 38: # right hand link (red dot in viser)
             rot_mat = tf.get_matrix()[:,:3,:3]
@@ -367,18 +382,24 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # Hand neutral orientation penalty: quadratic deviation from neutral straight hand pose
             # from grab_idx-20 onwards (palm vertical, pointing straight outward)
-            hand_neutral_start = max(grab_idx - 20, 0)
-            if hand_neutral_start < rot_mat.shape[0]:
-                # Define neutral hand orientation: identity rotation in world frame (hand axes aligned with world axes)
-                hand_rot_neutral = torch.eye(3, device=DEVICE, dtype=rot_mat.dtype).unsqueeze(0).expand(rot_mat.shape[0], -1, -1)
-                
-                # Compute rotation difference as Frobenius norm: ||R - R_neutral||_F
-                rot_diff = rot_mat[hand_neutral_start:] - hand_rot_neutral[hand_neutral_start:]
-                rot_dev = torch.norm(rot_diff, p='fro', dim=(1, 2))  # Frobenius norm per frame
-                
-                # Quadratic penalty starting from hand_neutral_start
-                hand_neutral_cost = 30.0 * rot_dev ** 2
-                cost2[hand_neutral_start:] += hand_neutral_cost
+            # UNIFIED ORIENTATION objective -- LEVEL + POINTING, one window, applied together.
+            #   LEVEL:    up-axis vertical (2 tilt DOF)  -> object held level
+            #   POINTING: fingertip axis (local x) aimed horizontally at the object target (1 azimuth DOF)
+            # Together they pin all 3 rotational DOF with a smooth target that rotates continuously as
+            # the hand sweeps -- no azimuth slack for smoothing to fill, no onset transition. Direction
+            # uses the HAND ORIGIN (stays ~0.2 m behind the palm target even at grasp -> never degenerate).
+            orient_start = max(grab_idx - LEVEL_LEAD, 0)
+            if orient_start < rot_mat.shape[0]:
+                up_z = rot_mat[orient_start:, 2, 2]                    # world-z component of hand local z
+                cost2[orient_start:] += LEVEL_W * (1.0 - up_z)         # = 1 - cos(tilt)
+                _F = transformed_hand_orig.shape[0]
+                _tg_o = (palm_target_traj[orient_start:_F]
+                         if palm_target_traj is not None else palm_target.unsqueeze(0).expand(_F - orient_start, 3))
+                _dvec = _tg_o - transformed_hand_orig[orient_start:]
+                _dvec = torch.cat([_dvec[:, :2], torch.zeros_like(_dvec[:, 2:3])], dim=1)   # horizontal projection
+                _pstar = _dvec / torch.norm(_dvec, dim=1, keepdim=True).clamp(min=1e-6)
+                _xaxis = rot_mat[orient_start:, :, 0]                  # hand local x (fingertip axis) in world
+                cost2[orient_start:] += POINT_W * (1.0 - (_xaxis * _pstar).sum(dim=1))
 
             # table collision with anti-tunneling costs (test later - can remove g_point?)
             def table_collision_cost(pts, orig_pts, gi):
@@ -478,65 +499,61 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             tip_dyn_contrib += torch.sum(tip_jerk_term) * inv_n_frames
 
 
-            # [SOFT] Hand-tip approach shaping in XY:
-            # Penalize only movements that reduce distance to spoofed capsule location,
-            # with the capsule shifted in +Y (90° clockwise from prior -X shift in XY plane).
-            spoof_capsule_xy = capsule_obs_pos[:2].clone()
-            spoof_capsule_xy[1] += APPROACH_SPOOF_LEFT_X
-            tip_xy_dist = torch.norm(transformed_tip[:grab_idx, :2] - spoof_capsule_xy.unsqueeze(0), dim=1)  # (G,)
-            dist_decrease = torch.relu(tip_xy_dist[:-1] - tip_xy_dist[1:])  # (G-1,), only when moving closer
-            approach_pen = dist_decrease ** 2
+            # [SOFT] Hand-tip approach shaping -- TWO-AXIS gate with a MOVING RELEASE LINE.
+            # Sweep phase: gate lines sit a clearance RIGHT of the object (y) and AT grasp height (z),
+            # full weight -> low right corridor. Release: instead of decaying the gate weight against
+            # the charb (a 100:1 weight crossover whose equilibrium jumps ~93% through the window ->
+            # park-then-rush), the gate LINES themselves travel to the object over the release window,
+            # ending GATE_END_SLACK past it. The equilibrium (= line position) moves continuously, so
+            # the hand walks in at line speed (~clearance/window), bounded by construction.
+            _obj_y = palm_target[1] if palm_target is not None else capsule_obs_pos[1]
+            _obj_z = palm_target[2] if palm_target is not None else capsule_obs_pos[2]
+            _n_pre = grab_idx - 1
+            taper_end = max(min(grab_idx - APPROACH_TAPER_LEAD, _n_pre), 1)
+            taper_start = max(taper_end - APPROACH_TAPER_WINDOW, 1)
+            frame_pre = torch.arange(1, grab_idx, device=DEVICE, dtype=joint_angles.dtype)
+            _sline = torch.clamp((frame_pre - float(taper_start)) / float(max(taper_end - taper_start, 1)),
+                                 0.0, 1.0) ** 2
+            y_clear_t = (1.0 - _sline) * APPROACH_GATE_CLEARANCE + _sline * (-GATE_END_SLACK)
+            z_clear_t = (1.0 - _sline) * APPROACH_Z_CLEARANCE + _sline * GATE_END_SLACK
+            y_gate_t = _obj_y - y_clear_t                                   # moving Y line -> ends slack LEFT of obj
+            z_gate_t = _obj_z + z_clear_t                                   # moving Z line -> ends slack ABOVE obj
+            hand_y = transformed_tip[1:grab_idx, 1]                         # (G-1,) tip lateral pos
+            hand_z = transformed_tip[1:grab_idx, 2]                         # (G-1,) tip height
+            approach_pen = torch.relu(hand_y - y_gate_t) ** 2 + torch.relu(hand_z - z_gate_t) ** 2
+            # DOWNWARD-VELOCITY penalty (untapered, pre-grab): early gradual descent cheapest.
+            _dz = transformed_tip[1:grab_idx, 2] - transformed_tip[:grab_idx - 1, 2]
+            cost2[1:grab_idx] += DOWNVEL_W * torch.relu(-_dz) ** 2
 
             n_trans = approach_pen.shape[0]
             if n_trans > 0:
-                frame_ids = torch.arange(1, n_trans + 1, device=DEVICE, dtype=joint_angles.dtype)  # destination frames
-                z_table = offset_z
-                x_edge = grab_pos[0] + offset_x
-                tip_above_mask = transformed_tip[:grab_idx, 2] >= z_table
-                tip_past_table_edge_mask = transformed_tip[:grab_idx, 0] >= x_edge
-                taper_start_mask = tip_above_mask & tip_past_table_edge_mask
-                above_idx = torch.nonzero(taper_start_mask, as_tuple=False)
-
-                if above_idx.numel() > 0:
-                    taper_end = int(above_idx[0].item())
-                else:
-                    taper_end = max(grab_idx - 10, 1)
-                taper_end = max(min(taper_end, n_trans), 1)
-
-                taper_start = max(taper_end - 10, 1)
-
-                # Constrain PALM-to-object only after distance-maximization starts to taper off.
-                # Taper begins at taper_start, so activate from the next frame onward.
+                frame_ids = frame_pre
                 distance_max_taper_start_frame = taper_start
-                # Drive the forward-projected PALM (grasp point = render CYAN) to the object target, so
-                # the palm lands ON the object at grasp (the wrist ends up behind). Replaces the old
-                # wrist-to-grab cost — that aligned the WRIST, leaving the palm overshooting the object,
-                # so the synthesized object ref teleported forward to the palm at the switch.
                 if palm_target is not None:
-                    palm_grab_start = max(grab_idx - 25, distance_max_taper_start_frame + 1)
-                    palm_grab_end = min(grab_idx + 20, palm_world.shape[0])
+                    # Charb at full weight from release start (linear half-window ramp avoids a
+                    # gradient step). The moving gate line no longer opposes it at the target.
+                    palm_grab_start = max(distance_max_taper_start_frame + 1, 1)
+                    palm_grab_end = palm_world.shape[0]
                     if palm_grab_end > palm_grab_start:
-                        palm_to_grab = palm_world[palm_grab_start:palm_grab_end] - palm_target.unsqueeze(0)
+                        _fr = torch.arange(palm_grab_start, palm_grab_end, device=DEVICE, dtype=torch.float32)
+                        _den = float(max(taper_end - taper_start, 1))
+                        _s = torch.clamp((_fr - float(taper_start)) / (0.5 * _den), 0.0, 1.0)
+                        _tg = (palm_target_traj[palm_grab_start:palm_grab_end]
+                               if palm_target_traj is not None else palm_target.unsqueeze(0))
+                        palm_to_grab = palm_world[palm_grab_start:palm_grab_end] - _tg
                         palm_to_grab_norm = torch.norm(palm_to_grab, dim=1)
-                        palm_grab_charb = WRIST_GRAB_CHARB_WEIGHT * (
+                        palm_grab_charb = _s * WRIST_GRAB_CHARB_WEIGHT * (
                             torch.sqrt(palm_to_grab_norm ** 2 + WRIST_GRAB_CHARB_EPS ** 2) - WRIST_GRAB_CHARB_EPS
                         )
                         cost2[palm_grab_start:palm_grab_end] += palm_grab_charb
 
-                taper = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
-                taper_mask = frame_ids >= float(taper_start)
-                taper_denom = max(taper_end - taper_start, 1)
-                taper_linear = torch.clamp((float(taper_end) - frame_ids[taper_mask]) / float(taper_denom), min=0.0, max=1.0)
-                taper[taper_mask] = taper_linear ** 2
-
-                # Smoothly ramp in from trajectory start up to (grab_idx - 40),
-                # then keep full strength until the existing taper-out window.
+                # Ramp in from trajectory start (unchanged). NO weight taper -- the LINE moves instead.
                 ramp_end = max(min(grab_idx - 40, n_trans), 1)
                 pre_ramp = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
                 pre_mask = frame_ids <= float(ramp_end)
                 pre_ramp[pre_mask] = (frame_ids[pre_mask] / float(ramp_end)) ** 2
 
-                approach_term = HAND_APPROACH_SOFT_WEIGHT * pre_ramp * taper * approach_pen
+                approach_term = HAND_APPROACH_SOFT_WEIGHT * pre_ramp * approach_pen
                 cost2[1:grab_idx] += approach_term
                 approach_soft_contrib += torch.sum(approach_term) * inv_n_frames
         else:
@@ -558,7 +575,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     return total_cost
 
 
-def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0, verbose=False):
+def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0, verbose=False, obj_traj=None):
     """AL right-arm refinement on the CORE motion (before Adapter B's grab-hold/lead-in).
 
     joints (F,29) JointNamesOrder-29, base_pos (F,3), base_quat (F,4 wxyz), grab_pos_obj (3,)
@@ -568,7 +585,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     """
     global target_joint_angles, active_joint_names, inactive_joint_ids, joint_names
     global fk_results_ref, grab_idx, grab_pos, capsule_obs_pos, ref_dists, traj_fps_hz
-    global active_joint_ids, init_joint_angles, palm_target
+    global active_joint_ids, init_joint_angles, palm_target, palm_target_traj
 
     joint_names = JOINT_NAMES_29
     init_joint_angles = INIT_29
@@ -596,15 +613,32 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     # ungrounded (z off by the per-frame grounding shift) and is the object CENTRE, ~0.1-0.15 m
     # forward of the wrist link -> driving the wrist to it over-reaches to a visibly-wrong target.
     # The reference already grasps the true (relocated) object, so its wrist point is object-correct.
-    capsule_obs_pos = wrist_keypts[grab_idx].clone()
     ref_dists = torch.norm(wrist_keypts[1:] - wrist_keypts[:-1], dim=1)
 
     # PALM target = the grounded holosoma object at grab (grab_pos_obj), in the FK world frame (+0.035
     # root lift, matching trans_with_z / motion_lib's object_poses). The AL loop drives the forward-
     # projected palm to THIS, so the palm (render CYAN, = the synthesized object ref post-grasp) lands
-    # on the object. capsule_obs_pos (ref wrist) still shapes the pre-grab approach direction.
+    # on the object.
     palm_target = torch.tensor(np.asarray(grab_pos_obj), dtype=torch.float32, device=DEVICE) \
         + torch.tensor([0., 0., 0.035], device=DEVICE)
+    # Per-frame palm target: static grab point before grab; the MOVING object trajectory after
+    # (so the full-window charb holds the palm ON the object through the lift/carry instead of
+    # pinning the arm at the pickup point).
+    if obj_traj is not None:
+        _ot = torch.tensor(np.asarray(obj_traj), dtype=torch.float32, device=DEVICE) \
+            + torch.tensor([0., 0., 0.035], device=DEVICE)
+        palm_target_traj = palm_target.unsqueeze(0).repeat(target_joint_angles.shape[0], 1)
+        _n = min(_ot.shape[0], palm_target_traj.shape[0])
+        if grab_idx < _n:
+            palm_target_traj[grab_idx:_n] = _ot[grab_idx:_n]
+    else:
+        palm_target_traj = None
+
+    # Approach-avoid anchor = the HAND grasp point (the grounded object the palm is driven to), NOT the
+    # reference WRIST. The 'swing away first, then taper in' shaping now repels the HAND from where it
+    # will actually grasp, instead of from the wrist keypoint (which sat ~0.1-0.15 m short of the
+    # object). Same spoof shift / taper / weight as before -- only the anchored point changes.
+    capsule_obs_pos = palm_target.clone()
 
     joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone())
 

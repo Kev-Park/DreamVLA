@@ -105,6 +105,7 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym
 import os
+import math
 import time
 import torch
 
@@ -262,8 +263,28 @@ def main():
     HAND_FWD = float(os.environ.get("HS_REWORK_HAND_FWD", "1.5"))
     per_env_held_steps = torch.zeros(num_envs, device=device, dtype=torch.long)
     completed_held = 0
+    # ---- failure classification (touched / toppled) ----
+    TOUCH_TOL = float(os.environ.get('HS_EVAL_TOUCH_TOL', '0.12'))   # m: robot hand within this of object = touched
+    TOUCH_OFFX = float(os.environ.get('HS_EVAL_TOUCH_OFFX', '0.12')) # m: wrist->grasp forward projection
+    TOPPLE_DEG = float(os.environ.get('HS_EVAL_TOPPLE_DEG', '45.0')) # object up-axis tilt beyond this = toppled
+    _TOPPLE_COS = math.cos(math.radians(TOPPLE_DEG))
+    per_env_touched = torch.zeros(num_envs, device=device, dtype=torch.bool)
+    per_env_toppled = torch.zeros(num_envs, device=device, dtype=torch.bool)
+    completed_touched = 0; completed_toppled = 0; completed_touched_not_held = 0; completed_never_touched = 0
+    try:
+        _hand_bid = env.unwrapped.scene['robot'].find_bodies('right_wrist_yaw_link')[0][0]
+    except Exception:
+        _hand_bid = None
 
     just_reset_mask = torch.ones(num_envs, device=device, dtype=torch.bool)
+    # ---- per-clip (per motion_id) attribution ----
+    _NM = int(env.unwrapped.total_motions)
+    per_env_motion_id = env.unwrapped.motion_ids.clone()
+    m_ep = torch.zeros(_NM, dtype=torch.long)
+    m_top = torch.zeros(_NM, dtype=torch.long)
+    m_touch = torch.zeros(_NM, dtype=torch.long)
+    m_held = torch.zeros(_NM, dtype=torch.long)
+    m_never = torch.zeros(_NM, dtype=torch.long)
 
     obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
@@ -274,6 +295,7 @@ def main():
     step_count = 0
 
     while completed_episodes < target_episodes and step_count < max_steps:
+        per_env_motion_id.copy_(env.unwrapped.motion_ids)
         with torch.inference_mode():
             actions = policy(obs).clone()
             obs, _, dones, extras = env.step(actions)
@@ -297,12 +319,27 @@ def main():
             obj_local = env.unwrapped.scene["object"].data.root_pos_w - env.unwrapped.scene.env_origins
             held = (torch.norm(obj_local - synth_ref, dim=1) < HELD_TOL) & is_closed
 
+        # ---- touched / toppled (per-step) ----
+        obj_pos_w = env.unwrapped.scene['object'].data.root_pos_w - env.unwrapped.scene.env_origins
+        oq = env.unwrapped.scene['object'].data.root_quat_w                       # wxyz
+        up_z = 1.0 - 2.0 * (oq[:, 1] ** 2 + oq[:, 2] ** 2)                          # object up-axis z-component
+        toppled_now = up_z < _TOPPLE_COS
+        touched_now = torch.zeros(num_envs, device=device, dtype=torch.bool)
+        if _hand_bid is not None:
+            robot = env.unwrapped.scene['robot']
+            hq = robot.data.body_quat_w[:, _hand_bid, :]                            # wxyz
+            wv, xv, yv, zv = hq[:, 0], hq[:, 1], hq[:, 2], hq[:, 3]
+            ax = torch.stack([1 - 2*(yv*yv+zv*zv), 2*(xv*yv+wv*zv), 2*(xv*zv-wv*yv)], dim=1)  # hand world x-axis
+            palm = (robot.data.body_pos_w[:, _hand_bid, :] - env.unwrapped.scene.env_origins) + ax * TOUCH_OFFX
+            touched_now = torch.norm(palm - obj_pos_w, dim=1) < TOUCH_TOL
         valid = ~just_reset_mask
         if valid.any():
             per_env_had_any_lift |= lifted & valid
             per_env_closed_steps += (is_closed & valid).long()
             per_env_lift_steps += (lifted & valid).long()
             per_env_held_steps += (held & valid).long()
+            per_env_touched |= touched_now & valid
+            per_env_toppled |= toppled_now & valid
 
         dones_bool = dones.bool() if dones.dtype != torch.bool else dones
         if dones_bool.any():
@@ -326,6 +363,21 @@ def main():
                     hs = int(per_env_held_steps[idx].item())
                     if cs > 0 and (hs / cs) >= HELD_FRAC:
                         completed_held += 1
+                _touched = bool(per_env_touched[idx].item())
+                _toppled = bool(per_env_toppled[idx].item())
+                _held_ok = REWORK and int(per_env_closed_steps[idx].item()) > 0 and (int(per_env_held_steps[idx].item()) / max(int(per_env_closed_steps[idx].item()),1)) >= HELD_FRAC
+                if _touched: completed_touched += 1
+                if _toppled: completed_toppled += 1
+                if not _held_ok:
+                    if _touched: completed_touched_not_held += 1
+                    else: completed_never_touched += 1
+                _mid = int(per_env_motion_id[idx].item())
+                if 0 <= _mid < _NM:
+                    m_ep[_mid] += 1
+                    if _toppled: m_top[_mid] += 1
+                    if _touched: m_touch[_mid] += 1
+                    if _held_ok: m_held[_mid] += 1
+                    if (not _held_ok) and (not _touched): m_never[_mid] += 1
                 if k < len(time_out_mask) and bool(time_out_mask[k].item()):
                     termination_counts["time_out"] += 1
                 else:
@@ -335,6 +387,8 @@ def main():
             per_env_closed_steps[done_idxs] = 0
             per_env_lift_steps[done_idxs] = 0
             per_env_held_steps[done_idxs] = 0
+            per_env_touched[done_idxs] = False
+            per_env_toppled[done_idxs] = False
 
         just_reset_mask = dones_bool
         step_count += 1
@@ -382,6 +436,14 @@ def main():
         print(f"  [REWORK] Object HELD success: {completed_held} / {completed_episodes} "
               f"= {100*held_rate:.2f}%")
         print(f"    (object within {HELD_TOL} m of the synth obj ref for >= {HELD_FRAC:.0%} of the closed phase)")
+        ce = max(completed_episodes, 1)
+        print(f"")
+        print(f"  Failure/outcome classification:")
+        print(f"    Object touched:           {completed_touched} / {completed_episodes} = {100*completed_touched/ce:.2f}%  (hand reached < {TOUCH_TOL} m)")
+        print(f"    -> HELD (success):        {completed_held} = {100*completed_held/ce:.2f}%")
+        print(f"    -> touched, not held:     {completed_touched_not_held} = {100*completed_touched_not_held/ce:.2f}%")
+        print(f"    Never touched object:     {completed_never_touched} = {100*completed_never_touched/ce:.2f}%")
+        print(f"    Object toppled:           {completed_toppled} / {completed_episodes} = {100*completed_toppled/ce:.2f}%  (tilt > {TOPPLE_DEG:.0f} deg)")
     print(f"    (env.n_successes.sum() — uses the env reward's height_thres)")
     print(f"")
     print(f"  Termination breakdown (of completed episodes):")
@@ -389,6 +451,42 @@ def main():
         if v > 0:
             print(f"    {k:30s} {v}  ({100*v/max(completed_episodes,1):.1f}%)")
     print("=" * 60)
+
+    # ---- per-clip ranking ----
+    try:
+        ml = env.unwrapped.motion_lib
+        files = None
+        for _a in ('_motion_files', 'motion_files', '_motion_data_load'):
+            _v = getattr(ml, _a, None)
+            if _v is not None and len(_v) == _NM:
+                files = [str(x).split('/')[-1] for x in _v]; break
+    except Exception:
+        files = None
+    rows = []
+    for i in range(_NM):
+        ep = int(m_ep[i].item())
+        if ep == 0:
+            continue
+        top = int(m_top[i].item()); hel = int(m_held[i].item())
+        tou = int(m_touch[i].item()); nev = int(m_never[i].item())
+        rows.append((i, ep, 100.0*top/ep, 100.0*hel/ep, 100.0*tou/ep, 100.0*nev/ep,
+                     files[i] if files else ''))
+    # rank: worst first by topple%, then by low held%
+    rows.sort(key=lambda r: (-r[2], r[3]))
+    hdr = '  motion_id  ep   topple%  held%  touch%  never%  file'
+    lines = ['PER-CLIP OUTCOME RANKING (worst topple first)', hdr]
+    for (i, ep, tp, hl, tc, nv, fn) in rows:
+        lines.append('  %8d %4d  %6.1f  %5.1f  %6.1f  %6.1f  %s' % (i, ep, tp, hl, tc, nv, fn))
+    out = '\n'.join(lines)
+    print('\n' + out)
+    open('/tmp/_perclip_eval.txt', 'w').write(out + '\n')
+    # compact machine-readable: worst-by-topple and worst-by-not-held (top 8 each)
+    by_top = [r[0] for r in rows if r[1] >= 5][:8]
+    by_nh = [r[0] for r in sorted(rows, key=lambda r: (r[3], -r[2])) if r[1] >= 5][:8]
+    print('WORST_BY_TOPPLE=' + ','.join(map(str, by_top)))
+    print('WORST_BY_NOTHELD=' + ','.join(map(str, by_nh)))
+    open('/tmp/_perclip_worst.txt', 'w').write('WORST_BY_TOPPLE=%s\nWORST_BY_NOTHELD=%s\n' % (
+        ','.join(map(str, by_top)), ','.join(map(str, by_nh))))
 
     env.close()
 

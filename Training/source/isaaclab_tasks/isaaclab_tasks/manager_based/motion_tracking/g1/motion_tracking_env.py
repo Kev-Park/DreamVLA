@@ -770,6 +770,34 @@ def lower_body_keypt_vel_tracking(
     return torch.exp(-err / sigma**2)
 
 
+_FULL_BODY_NAMES = ["pelvis","left_hip_pitch_link","left_hip_roll_link","left_hip_yaw_link","left_knee_link","left_ankle_roll_link","right_hip_pitch_link","right_hip_roll_link","right_hip_yaw_link","right_knee_link","right_ankle_roll_link","waist_yaw_link","waist_roll_link","torso_link","left_shoulder_pitch_link","left_shoulder_roll_link","left_shoulder_yaw_link","left_elbow_link","left_wrist_roll_link","left_wrist_pitch_link","right_shoulder_pitch_link","right_shoulder_roll_link","right_shoulder_yaw_link","right_elbow_link","right_wrist_roll_link","right_wrist_pitch_link"]
+_FULL_BODY_KEYPT_IDXS = [0,2,3,4,5,7,8,9,10,11,13,14,15,16,23,24,25,26,27,28,31,32,33,34,35,36]
+
+def body_linvel_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=_FULL_BODY_NAMES, preserve_order=True), keypt_idxs=None, std: float = 1.0) -> torch.Tensor:
+    """SONIC body_linvel: exp(-mean_sq(robot body lin vel - ref keypt lin vel)/std^2), world frame.
+    Reference velocities from motion_lib.global_keypts_vel (stored, FD at load). Full-body set."""
+    idxs = _FULL_BODY_KEYPT_IDXS if keypt_idxs is None else keypt_idxs
+    asset: Articulation = env.scene[asset_cfg.name]
+    robot_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :]
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
+    res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    ref_vel = res["global_keypts_vel"][:, idxs, :]
+    err = torch.sum(torch.square(robot_vel - ref_vel), dim=-1).mean(dim=-1)
+    return torch.exp(-err / (std * std))
+
+def body_angvel_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=_FULL_BODY_NAMES, preserve_order=True), keypt_idxs=None, std: float = 3.14) -> torch.Tensor:
+    """SONIC body_angvel: exp(-mean_sq(robot body ang vel - ref body ang vel)/std^2), world frame.
+    Reference from motion_lib.body_ang_vel (stored, FD of FK link rotations at load)."""
+    idxs = _FULL_BODY_KEYPT_IDXS if keypt_idxs is None else keypt_idxs
+    asset: Articulation = env.scene[asset_cfg.name]
+    robot_av = asset.data.body_ang_vel_w[:, asset_cfg.body_ids, :]
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
+    res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    ref_av = res["body_ang_vel"][:, idxs, :]
+    err = torch.sum(torch.square(robot_av - ref_av), dim=-1).mean(dim=-1)
+    return torch.exp(-err / (std * std))
+
+
 def feet_air_time(
     env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, threshold: float
 ) -> torch.Tensor:

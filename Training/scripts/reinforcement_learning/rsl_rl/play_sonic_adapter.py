@@ -52,6 +52,8 @@ parser.add_argument("--seed", type=int, default=0,
 parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-Pick-BinaryFingers-v0", help="Name of the task.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--name", type=str, default="sonic_adapter_play.mp4", help="Output video file name.")
+parser.add_argument("--force-motion-id", type=int, default=-1,
+                    help="Force this motion_id for every reset (>=0) to render one specific clip.")
 parser.add_argument("--path", type=str, default=None, help="Explicit checkpoint path (overrides auto-discovery).")
 parser.add_argument(
     "--sonic-decoder-onnx", type=str,
@@ -140,6 +142,11 @@ parser.add_argument(
          "wrist->hand axis (right_rubber_hand's origin sits at the wrist/palm-base). Larger = further toward "
          "the fingertips/grasp point. Also drives the post-grasp YELLOW synthesized object ref.",
 )
+parser.add_argument(
+    "--overlay-contact", action="store_true", default=False,
+    help="Overlay a GRIP indicator that flips GREEN=CLOSED when the reference contact flag "
+         "is_closed (frame > grab_idx) trips, RED=open before it. Use with --reference-playback "
+         "to check the synthesized switch lines up with the true grip start.")
 parser.add_argument(
     "--ref-motions-path", type=str, default=None,
     help="Override the env's ref_motions_path (dir of reference .pkl files). Use to point "
@@ -402,6 +409,15 @@ def _overlay(frame_rgb, label: str):
     return frame_rgb
 
 
+def _overlay_contact(frame_rgb, is_closed):
+    import cv2
+    txt = "GRIP: CLOSED (contact required)" if is_closed else "GRIP: open (no contact)"
+    col = (0, 220, 0) if is_closed else (235, 0, 0)   # RGB: green / red (frame array is RGB)
+    for c, t in (((0, 0, 0), 6), (col, 2)):
+        cv2.putText(frame_rgb, txt, (24, 104), cv2.FONT_HERSHEY_SIMPLEX, 1.1, c, t, cv2.LINE_AA)
+    return frame_rgb
+
+
 def _build_reference_joint_map(env, device):
     """Map motion_lib's 27 reference joints → robot articulation joint indices.
 
@@ -596,6 +612,9 @@ def main():
     _inject_cameras(env_cfg)
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
+    if getattr(args_cli, "force_motion_id", -1) >= 0:
+        env.unwrapped._forced_motion_id = int(args_cli.force_motion_id)
+        print(f"[play_sonic_adapter] FORCED motion_id = {args_cli.force_motion_id}")
     print(f"[env] action_space (pre-wrapper) = {env.action_space}")
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
@@ -781,6 +800,12 @@ def main():
                 label = "ZERO-SHOT  " + label
             if args_cli.overlay_ref:
                 label = label + "  [ref overlay: R-arm red]"
+            if args_cli.overlay_contact:
+                _uwc = env.unwrapped
+                _mtc = _uwc.episode_length_buf * _uwc.step_dt + _uwc.start_motion_times.clone().detach().to(device=_uwc.device, dtype=torch.float32)
+                _resc = _uwc.motion_lib.get_motion_state(_uwc.motion_ids, _mtc)
+                _icc = bool(_resc["is_closed"].reshape(-1)[0].item() > 0.5)
+                frame = _overlay_contact(frame, _icc)
             writer.write(_overlay(frame, label))
 
         timestep += 1

@@ -181,7 +181,13 @@ class MotionLibBase():
         global_keypts0 = self.global_keypts[motion_ids, f0l, :, :]
         global_keypts1 = self.global_keypts[motion_ids, f1l, :, :]
 
-        is_closed = (f0l > self.switch_idxs[motion_ids])
+        _lead = getattr(self, "_contact_lead", None)
+        if _lead is None:
+            import os
+            _lead = int(os.environ.get("HS_REWORK_CONTACT_LEAD", "0")); self._contact_lead = _lead
+        # HS_REWORK_CONTACT_LEAD trips contact this many frames EARLIER (toward the reach/push
+        # completion at grab_idx) than the default switch_idxs = grab_idx + idx_shift.
+        is_closed = (f0l > (self.switch_idxs[motion_ids] - _lead))
 
         blend = blend.unsqueeze(-1)
 
@@ -202,6 +208,14 @@ class MotionLibBase():
         return_dict["dof_pos"] = dof_pos.clone()
         return_dict["local_keypts"] = local_keypts.clone()
         return_dict["global_keypts"] = global_keypts.clone()
+        if hasattr(self, "global_keypts_vel"):
+            gkv0 = self.global_keypts_vel[motion_ids, f0l, :, :]
+            gkv1 = self.global_keypts_vel[motion_ids, f1l, :, :]
+            return_dict["global_keypts_vel"] = ((1.0 - blend_exp) * gkv0 + blend_exp * gkv1).clone()
+        if hasattr(self, "body_ang_vel"):
+            bav0 = self.body_ang_vel[motion_ids, f0l, :, :]
+            bav1 = self.body_ang_vel[motion_ids, f1l, :, :]
+            return_dict["body_ang_vel"] = ((1.0 - blend_exp) * bav0 + blend_exp * bav1).clone()
         return_dict["grab_pos"] = self.grab_pos[motion_ids].clone()
         return_dict["offsets"] = self.offsets[motion_ids].clone()
         return_dict["is_closed"] = is_closed
@@ -214,6 +228,22 @@ class MotionLibBase():
                 op_pos = op_pos + self.offsets[motion_ids]   # same rigid spawn shift as root_pos/global_keypts
             return_dict["object_poses"] = torch.cat([op_pos, op_quat], dim=-1)   # (N,7)
         return return_dict
+
+    def get_link_rots(self, joint_angles, joint_names, pk2_robot):
+        q_dict = {name: joint_angles[:, i] for i, name in enumerate(joint_names)}
+        tf_dict = pk2_robot.forward_kinematics(q_dict)
+        rots = torch.zeros((len(joint_angles), len(tf_dict), 3, 3))
+        for cntr, name in enumerate(tf_dict.keys()):
+            rots[:, cntr, :, :] = tf_dict[name].get_matrix()[:, :3, :3]
+        return rots
+
+    def _matrix_to_axisangle(self, R):
+        tr = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
+        cos = torch.clamp((tr - 1.0) * 0.5, -1.0, 1.0)
+        angle = torch.acos(cos).unsqueeze(-1)
+        axis = torch.stack([R[..., 2, 1] - R[..., 1, 2], R[..., 0, 2] - R[..., 2, 0], R[..., 1, 0] - R[..., 0, 1]], dim=-1)
+        denom = torch.clamp(2.0 * torch.sin(angle), min=1e-6)
+        return axis / denom * angle
 
     def get_keypts(self, joint_angles, joint_names, pk2_robot):
     
@@ -285,6 +315,7 @@ class MotionLibBase():
         self.grab_pos = []
         self.offsets = []
         self.switch_idxs = []
+        self.body_ang_vel = []   # per-motion world body angular velocity (F,K,3), FD of FK link rots
         self.object_poses = []   # per-motion full object trajectory (F,7 = pos+quat); None if any motion lacks it
         urdf_path = "HumanoidVerse/humanoidverse/data/robots/g1/g1_29dof.urdf"
         pk2_robot = pk2.build_chain_from_urdf(open(urdf_path).read())
@@ -426,6 +457,15 @@ class MotionLibBase():
             motion_num_frames = len(self.transl[-1])
             self._motion_lengths.append(motion_num_frames * self._motion_dt[-1])
             self._motion_num_frames.append(motion_num_frames)
+            _Rlink = self.get_link_rots(self.dof_pos[-1], self.joint_names, pk2_robot)
+            _Rroot = quaternion_to_matrix(self.quats[-1])
+            _Rworld = torch.matmul(_Rroot.unsqueeze(1), _Rlink)
+            _av = torch.zeros((_Rworld.shape[0], _Rworld.shape[1], 3))
+            if _Rworld.shape[0] >= 2:
+                _Rrel = torch.matmul(_Rworld[1:], _Rworld[:-1].transpose(-1, -2))
+                _av[:-1] = self._matrix_to_axisangle(_Rrel) / self._motion_dt[-1]
+                _av[-1] = _av[-2]
+            self.body_ang_vel.append(_av)
         self.switch_idxs = torch.tensor(self.switch_idxs).to(self._device).float()
         self.offsets = torch.stack(self.offsets, dim=0).to(self._device).float()
         self.grab_pos = torch.stack(self.grab_pos, dim=0).to(self._device).float()
@@ -433,12 +473,25 @@ class MotionLibBase():
             self.object_poses = torch.stack(self.object_poses, dim=0).to(self._device).float()   # (M,F,7)
         self.local_keypts = torch.stack(self.local_keypts, dim=0).to(self._device).float()
         self.global_keypts = torch.stack(self.global_keypts, dim=0).to(self._device).float()
+        self.body_ang_vel = torch.stack(self.body_ang_vel, dim=0).to(self._device).float()
         self.transl = torch.stack(self.transl, dim=0).to(self._device).float()
         self.quats = torch.stack(self.quats, dim=0).to(self._device).float()
         self.dof_pos = torch.stack(self.dof_pos, dim=0).to(self._device).float()
         self._motion_lengths = torch.tensor(self._motion_lengths, device=self._device, dtype=torch.float32)
         self._motion_num_frames = torch.tensor(self._motion_num_frames, device=self._device, dtype=torch.int32)
         self._motion_dt = torch.tensor(self._motion_dt, device=self._device, dtype=torch.float32)
+        # --- SONIC-format body LINEAR velocity, finite-differenced from the refined stored
+        # frames (motion_lib is position-only; no dataset regeneration needed). Central diff
+        # along the frame axis, one-sided at the ends. Offset-invariant (offset is constant/motion).
+        _gk = self.global_keypts                                   # (M,F,K,3)
+        _dt4 = self._motion_dt.view(-1, 1, 1, 1)                   # (M,1,1,1)
+        _dt3 = self._motion_dt.view(-1, 1, 1)                     # (M,1,1)
+        _vel = torch.zeros_like(_gk)
+        if _gk.shape[1] >= 3:
+            _vel[:, 1:-1] = (_gk[:, 2:] - _gk[:, :-2]) / (2.0 * _dt4)
+            _vel[:, 0]    = (_gk[:, 1]  - _gk[:, 0])   / _dt3
+            _vel[:, -1]   = (_gk[:, -1] - _gk[:, -2])  / _dt3
+        self.global_keypts_vel = _vel                             # (M,F,K,3) world lin vel per keypoint
         self._num_motions = len(self._motion_data_list)
         print(f"Loaded {self._num_motions} motions finally!")
         # import pdb; pdb.set_trace()

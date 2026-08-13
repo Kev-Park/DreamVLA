@@ -52,7 +52,7 @@ def apply_29dof_waist_override(env_cfg, *, usd_path: str | None = None) -> list[
 
     # 1. Swap to the 29-DOF + hands USD (derive from the 27-DOF filename if not given).
     cur = getattr(robot.spawn, "usd_path", "") or ""
-    new = usd_path or (cur.replace(_USD_27, _USD_29) if _USD_27 in cur else None)
+    new = usd_path or (cur.replace(_USD_27, _USD_29) if _USD_27 in cur else (cur if _USD_29 in cur else None))
     if not new:
         raise ValueError(
             f"could not derive the 29-DOF USD from spawn.usd_path={cur!r}; "
