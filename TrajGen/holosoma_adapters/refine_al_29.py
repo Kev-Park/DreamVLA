@@ -567,28 +567,29 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             n_trans = approach_pen.shape[0]
             if n_trans > 0:
                 frame_ids = frame_pre
+                # ONE clip-start ramp, shared by push AND pull, completing exactly when the walls
+                # start moving (taper_start) -- so the hand is fully pressed at the 3-wall corner
+                # at ride start. C2 smootherstep (no onset kink).
+                ramp_end = max(min(grab_idx - 40, taper_start, n_trans), 1)
+                pre_ramp = _smooth01(frame_ids / float(ramp_end))
                 if palm_target is not None:
-                    # PULL = Gaussian well, W*R*(1 - exp(-d^2/R^2)), whole trajectory, NO weight
-                    # schedule. Its gradient W*(2d/R)*exp(-d^2/R^2) is distance-gated by shape:
-                    #   ~0 beyond ~1.7R (walk phase unaffected -- no early arm reach),
-                    #   peak ~0.86W at d = R/sqrt(2) ~= the wall-corner distance (full pressure
-                    #   exactly where the hand parks -> pressed on the walls before they move),
-                    #   -> 0 linearly at contact (built-in soft dock; replaces the Charbonnier knee).
-                    # Replaces the scheduled Charbonnier: pull strength never changes over time, so
-                    # no departure lag / travel compression exists (the v12 residual bump).
+                    # PULL = saturating spring (Charbonnier, knee PULL_RADIUS): force
+                    # W*d/sqrt(d^2+R^2) is MONOTONE in d -> stiffness >= 0 everywhere, so the
+                    # snap-through of the v13 Gaussian well (force DECAYED beyond R/sqrt2 =
+                    # negative stiffness; the 3-wall corner at d~0.38 sat on that rim -> 3.7-3.9
+                    # m/s rim->corner captures on m50/m66) is impossible by construction. Near-
+                    # linear below R gives the same soft dock. The weight shares pre_ramp (above):
+                    # the "get ready" arm extension spreads smoothly over the walk, reaching full
+                    # press exactly at ride start -> no departure lag (v12) and no snap (v13).
                     _tg = (palm_target_traj[1:]
                            if palm_target_traj is not None else palm_target.unsqueeze(0))
                     palm_to_grab = palm_world[1:] - _tg
                     d = torch.norm(palm_to_grab, dim=1)
-                    well = WRIST_GRAB_CHARB_WEIGHT * PULL_RADIUS * (
-                        1.0 - torch.exp(-(d / PULL_RADIUS) ** 2))
-                    cost2[1:] += well
-
-                # Ramp in from trajectory start (unchanged). NO weight taper -- the LINE moves instead.
-                ramp_end = max(min(grab_idx - 40, n_trans), 1)
-                pre_ramp = torch.ones(n_trans, device=DEVICE, dtype=joint_angles.dtype)
-                pre_mask = frame_ids <= float(ramp_end)
-                pre_ramp[pre_mask] = (frame_ids[pre_mask] / float(ramp_end)) ** 2
+                    spring = WRIST_GRAB_CHARB_WEIGHT * (
+                        torch.sqrt(d * d + PULL_RADIUS * PULL_RADIUS) - PULL_RADIUS)
+                    pull_ramp = torch.ones(d.shape[0], device=DEVICE, dtype=joint_angles.dtype)
+                    pull_ramp[:n_trans] = pre_ramp                      # pre-grab: ramp; grab on: full
+                    cost2[1:] += pull_ramp * spring
 
                 approach_term = HAND_APPROACH_SOFT_WEIGHT * pre_ramp * approach_pen
                 cost2[1:grab_idx] += approach_term
