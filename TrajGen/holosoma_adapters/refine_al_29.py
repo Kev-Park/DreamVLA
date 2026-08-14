@@ -48,8 +48,10 @@ SAVE_DIR = "../Pick_sim2/"
 TRAJ_FPS_DEFAULT = 20.0
 APPROACH_SPOOF_LEFT_X = 0.24
 APPROACH_GATE_CLEARANCE = float(os.environ.get("HS_APPROACH_GATE_CLEARANCE", "0.15"))  # gate placed this far RIGHT of the object (m)
+APPROACH_X_STANDOFF = float(os.environ.get("HS_APPROACH_X_STANDOFF", "0.35"))  # x-gate: forward standoff behind the object (m)
 APPROACH_TAPER_LEAD = int(os.environ.get("HS_APPROACH_TAPER_LEAD", "8"))    # gate held until this many frames before grab
-APPROACH_TAPER_WINDOW = int(os.environ.get("HS_APPROACH_TAPER_WINDOW", "20"))  # frames over which the gate releases (was hardcoded 10)
+APPROACH_TAPER_WINDOW = int(os.environ.get("HS_APPROACH_TAPER_WINDOW", "35"))  # frames over which the gate releases (35 validated in gate12)
+PULL_RADIUS = float(os.environ.get("HS_PULL_RADIUS", "0.35"))               # Gaussian-well pull radius (m): no pull beyond ~1.7R, soft dock at 0
 APPROACH_Z_CLEARANCE = float(os.environ.get("HS_APPROACH_Z_CLEARANCE", "-0.03"))  # z-gate: allowed height above object center (m)
 DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))                      # downward-velocity penalty weight (pre-grab)
 GATE_END_SLACK = float(os.environ.get("HS_GATE_END_SLACK", "0.05"))              # gate line ends this far PAST the object (m)
@@ -72,10 +74,7 @@ TORSO_COLLISIONS_ENABLED = False
 HAND_APPROACH_SOFT_WEIGHT = float(os.environ.get("HS_HAND_APPROACH_W", "3000.0")) # rightward-gate bias
 
 WRIST_GRAB_CHARB_WEIGHT = float(os.environ.get("HS_CHARB_W", "30.0")) # palm-to-object Charbonnier weight (final approach + hold)
-# Charbonnier knee (m): pull is L1 (constant force) beyond eps, QUADRATIC (force ~ distance) inside.
-# eps is the DECELERATION ZONE on arrival — 2e-3 gave a force cliff 2 mm from the target (constant-
-# speed approach, dead stop = the m7 lunge-stop). 0.05 fades the force over the last 5 cm -> soft landing.
-WRIST_GRAB_CHARB_EPS = float(os.environ.get("HS_CHARB_EPS", "0.05"))
+# (Charbonnier knee removed in v13 — the Gaussian-well pull's quadratic basin IS the landing zone.)
 
 
 def _smooth01(u):
@@ -533,13 +532,15 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             tip_dyn_contrib += torch.sum(tip_jerk_term) * inv_n_frames
 
 
-            # [SOFT] Hand-tip approach shaping -- TWO-AXIS gate with a MOVING RELEASE LINE.
-            # Sweep phase: gate lines sit a clearance RIGHT of the object (y) and AT grasp height (z),
-            # full weight -> low right corridor. Release: instead of decaying the gate weight against
-            # the charb (a 100:1 weight crossover whose equilibrium jumps ~93% through the window ->
-            # park-then-rush), the gate LINES themselves travel to the object over the release window,
-            # ending GATE_END_SLACK past it. The equilibrium (= line position) moves continuously, so
-            # the hand walks in at line speed (~clearance/window), bounded by construction.
+            # [SOFT] Hand-tip approach shaping -- THREE-AXIS gate with MOVING RELEASE LINES.
+            # PUSH/PULL BLEND (v13): the walls are the ONLY time-varying element. All three axes
+            # (x forward standoff, y lateral clearance, z height) are walled, so the walls fully
+            # meter the path; the pull (Gaussian well below) is constant-strength and distance-
+            # gated by its own shape, NEVER time-scheduled. The hand parks pressed against the
+            # 3-wall corner under steady pull, then rides the corner as it travels to the object:
+            # hand velocity == wall velocity (C2 smootherstep) by construction -- no departure
+            # lag, no travel compression, no bump.
+            _obj_x = palm_target[0] if palm_target is not None else capsule_obs_pos[0]
             _obj_y = palm_target[1] if palm_target is not None else capsule_obs_pos[1]
             _obj_z = palm_target[2] if palm_target is not None else capsule_obs_pos[2]
             _n_pre = grab_idx - 1
@@ -547,13 +548,18 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             taper_start = max(taper_end - APPROACH_TAPER_WINDOW, 1)
             frame_pre = torch.arange(1, grab_idx, device=DEVICE, dtype=joint_angles.dtype)
             _sline = _smooth01((frame_pre - float(taper_start)) / float(max(taper_end - taper_start, 1)))
+            x_clear_t = (1.0 - _sline) * APPROACH_X_STANDOFF + _sline * (-GATE_END_SLACK)
             y_clear_t = (1.0 - _sline) * APPROACH_GATE_CLEARANCE + _sline * (-GATE_END_SLACK)
             z_clear_t = (1.0 - _sline) * APPROACH_Z_CLEARANCE + _sline * GATE_END_SLACK
+            x_gate_t = _obj_x - x_clear_t                                   # moving X line -> ends slack PAST obj
             y_gate_t = _obj_y - y_clear_t                                   # moving Y line -> ends slack LEFT of obj
             z_gate_t = _obj_z + z_clear_t                                   # moving Z line -> ends slack ABOVE obj
+            hand_x = transformed_tip[1:grab_idx, 0]                         # (G-1,) tip forward pos
             hand_y = transformed_tip[1:grab_idx, 1]                         # (G-1,) tip lateral pos
             hand_z = transformed_tip[1:grab_idx, 2]                         # (G-1,) tip height
-            approach_pen = torch.relu(hand_y - y_gate_t) ** 2 + torch.relu(hand_z - z_gate_t) ** 2
+            approach_pen = (torch.relu(hand_x - x_gate_t) ** 2
+                            + torch.relu(hand_y - y_gate_t) ** 2
+                            + torch.relu(hand_z - z_gate_t) ** 2)
             # DOWNWARD-VELOCITY penalty (untapered, pre-grab): early gradual descent cheapest.
             _dz = transformed_tip[1:grab_idx, 2] - transformed_tip[:grab_idx - 1, 2]
             cost2[1:grab_idx] += DOWNVEL_W * torch.relu(-_dz) ** 2
@@ -561,29 +567,22 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             n_trans = approach_pen.shape[0]
             if n_trans > 0:
                 frame_ids = frame_pre
-                distance_max_taper_start_frame = taper_start
                 if palm_target is not None:
-                    # Charb weight slaved to the SAME quadratic schedule as the moving gate line
-                    # (_sline): attractor pressure grows exactly as fast as the line travels. The
-                    # previous linear HALF-window ramp hit full weight while the line had only
-                    # moved ~25% -> full attractor vs near-stationary 3000-gate -> the tip pierced
-                    # the line ~3 cm and the wrist yawed (the m50/m7 dart-flick, probe frames
-                    # 79-82 / 42-45). With matched schedules the pressure/barrier ratio is constant
-                    # through the release, so the equilibrium rides the line with no transient.
-                    palm_grab_start = max(distance_max_taper_start_frame + 1, 1)
-                    palm_grab_end = palm_world.shape[0]
-                    if palm_grab_end > palm_grab_start:
-                        _fr = torch.arange(palm_grab_start, palm_grab_end, device=DEVICE, dtype=torch.float32)
-                        _den = float(max(taper_end - taper_start, 1))
-                        _s = _smooth01((_fr - float(taper_start)) / _den)   # same C2 schedule as the line
-                        _tg = (palm_target_traj[palm_grab_start:palm_grab_end]
-                               if palm_target_traj is not None else palm_target.unsqueeze(0))
-                        palm_to_grab = palm_world[palm_grab_start:palm_grab_end] - _tg
-                        palm_to_grab_norm = torch.norm(palm_to_grab, dim=1)
-                        palm_grab_charb = _s * WRIST_GRAB_CHARB_WEIGHT * (
-                            torch.sqrt(palm_to_grab_norm ** 2 + WRIST_GRAB_CHARB_EPS ** 2) - WRIST_GRAB_CHARB_EPS
-                        )
-                        cost2[palm_grab_start:palm_grab_end] += palm_grab_charb
+                    # PULL = Gaussian well, W*R*(1 - exp(-d^2/R^2)), whole trajectory, NO weight
+                    # schedule. Its gradient W*(2d/R)*exp(-d^2/R^2) is distance-gated by shape:
+                    #   ~0 beyond ~1.7R (walk phase unaffected -- no early arm reach),
+                    #   peak ~0.86W at d = R/sqrt(2) ~= the wall-corner distance (full pressure
+                    #   exactly where the hand parks -> pressed on the walls before they move),
+                    #   -> 0 linearly at contact (built-in soft dock; replaces the Charbonnier knee).
+                    # Replaces the scheduled Charbonnier: pull strength never changes over time, so
+                    # no departure lag / travel compression exists (the v12 residual bump).
+                    _tg = (palm_target_traj[1:]
+                           if palm_target_traj is not None else palm_target.unsqueeze(0))
+                    palm_to_grab = palm_world[1:] - _tg
+                    d = torch.norm(palm_to_grab, dim=1)
+                    well = WRIST_GRAB_CHARB_WEIGHT * PULL_RADIUS * (
+                        1.0 - torch.exp(-(d / PULL_RADIUS) ** 2))
+                    cost2[1:] += well
 
                 # Ramp in from trajectory start (unchanged). NO weight taper -- the LINE moves instead.
                 ramp_end = max(min(grab_idx - 40, n_trans), 1)
