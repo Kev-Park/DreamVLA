@@ -72,7 +72,19 @@ TORSO_COLLISIONS_ENABLED = False
 HAND_APPROACH_SOFT_WEIGHT = float(os.environ.get("HS_HAND_APPROACH_W", "3000.0")) # rightward-gate bias
 
 WRIST_GRAB_CHARB_WEIGHT = float(os.environ.get("HS_CHARB_W", "30.0")) # palm-to-object Charbonnier weight (final approach + hold)
-WRIST_GRAB_CHARB_EPS =2e-3 # meters, smooth near-zero Charbonnier epsilon
+# Charbonnier knee (m): pull is L1 (constant force) beyond eps, QUADRATIC (force ~ distance) inside.
+# eps is the DECELERATION ZONE on arrival — 2e-3 gave a force cliff 2 mm from the target (constant-
+# speed approach, dead stop = the m7 lunge-stop). 0.05 fades the force over the last 5 cm -> soft landing.
+WRIST_GRAB_CHARB_EPS = float(os.environ.get("HS_CHARB_EPS", "0.05"))
+
+
+def _smooth01(u):
+    """C2 smootherstep 6u^5-15u^4+10u^3 on clamp(u,0,1): zero SLOPE at both ends. The previous
+    clamp(u)^2 schedule was smooth at onset but had max slope AT the end-clamp -> the gate line
+    (and charb weight) moved fastest at the instant it halted (te), a velocity discontinuity the
+    hand inherited (m50 bump ~step 200 = te; m7 twitch at step 100 = te exactly)."""
+    u = torch.clamp(u, 0.0, 1.0)
+    return u * u * u * (u * (6.0 * u - 15.0) + 10.0)
 
 # Right-arm hard speed limits (rad/s)
 RIGHT_ARM_SPEED_LIMITS = {
@@ -534,8 +546,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             taper_end = max(min(grab_idx - APPROACH_TAPER_LEAD, _n_pre), 1)
             taper_start = max(taper_end - APPROACH_TAPER_WINDOW, 1)
             frame_pre = torch.arange(1, grab_idx, device=DEVICE, dtype=joint_angles.dtype)
-            _sline = torch.clamp((frame_pre - float(taper_start)) / float(max(taper_end - taper_start, 1)),
-                                 0.0, 1.0) ** 2
+            _sline = _smooth01((frame_pre - float(taper_start)) / float(max(taper_end - taper_start, 1)))
             y_clear_t = (1.0 - _sline) * APPROACH_GATE_CLEARANCE + _sline * (-GATE_END_SLACK)
             z_clear_t = (1.0 - _sline) * APPROACH_Z_CLEARANCE + _sline * GATE_END_SLACK
             y_gate_t = _obj_y - y_clear_t                                   # moving Y line -> ends slack LEFT of obj
@@ -564,7 +575,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     if palm_grab_end > palm_grab_start:
                         _fr = torch.arange(palm_grab_start, palm_grab_end, device=DEVICE, dtype=torch.float32)
                         _den = float(max(taper_end - taper_start, 1))
-                        _s = torch.clamp((_fr - float(taper_start)) / _den, 0.0, 1.0) ** 2
+                        _s = _smooth01((_fr - float(taper_start)) / _den)   # same C2 schedule as the line
                         _tg = (palm_target_traj[palm_grab_start:palm_grab_end]
                                if palm_target_traj is not None else palm_target.unsqueeze(0))
                         palm_to_grab = palm_world[palm_grab_start:palm_grab_end] - _tg
