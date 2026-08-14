@@ -48,7 +48,12 @@ SAVE_DIR = "../Pick_sim2/"
 TRAJ_FPS_DEFAULT = 20.0
 APPROACH_SPOOF_LEFT_X = 0.24
 APPROACH_GATE_CLEARANCE = float(os.environ.get("HS_APPROACH_GATE_CLEARANCE", "0.15"))  # gate placed this far RIGHT of the object (m)
-APPROACH_X_STANDOFF = float(os.environ.get("HS_APPROACH_X_STANDOFF", "0.35"))  # x-gate: forward standoff behind the object (m)
+# x-gate DISABLED by default (0): a world-fixed forward wall parks the hand behind the table edge
+# at low z (z-wall demands z<=obj-3cm, but the table constraint forbids that forward of the edge),
+# making corridor entry a narrow vault the optimizer solves as a 1-frame 3.2-3.7 m/s teleport
+# (m50 f68 / m66 f39 in v13 AND v14 -- force-law independent). With the pull at full strength
+# before the walls move (shared ramp), x-travel spreads over the walk instead; y/z walls meter the rest.
+APPROACH_X_STANDOFF = float(os.environ.get("HS_APPROACH_X_STANDOFF", "0"))  # >0 re-enables the x-gate
 APPROACH_TAPER_LEAD = int(os.environ.get("HS_APPROACH_TAPER_LEAD", "8"))    # gate held until this many frames before grab
 APPROACH_TAPER_WINDOW = int(os.environ.get("HS_APPROACH_TAPER_WINDOW", "35"))  # frames over which the gate releases (35 validated in gate12)
 PULL_RADIUS = float(os.environ.get("HS_PULL_RADIUS", "0.35"))               # Gaussian-well pull radius (m): no pull beyond ~1.7R, soft dock at 0
@@ -557,9 +562,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             hand_x = transformed_tip[1:grab_idx, 0]                         # (G-1,) tip forward pos
             hand_y = transformed_tip[1:grab_idx, 1]                         # (G-1,) tip lateral pos
             hand_z = transformed_tip[1:grab_idx, 2]                         # (G-1,) tip height
-            approach_pen = (torch.relu(hand_x - x_gate_t) ** 2
-                            + torch.relu(hand_y - y_gate_t) ** 2
+            approach_pen = (torch.relu(hand_y - y_gate_t) ** 2
                             + torch.relu(hand_z - z_gate_t) ** 2)
+            if APPROACH_X_STANDOFF > 0:
+                approach_pen = approach_pen + torch.relu(hand_x - x_gate_t) ** 2
             # DOWNWARD-VELOCITY penalty (untapered, pre-grab): early gradual descent cheapest.
             _dz = transformed_tip[1:grab_idx, 2] - transformed_tip[:grab_idx - 1, 2]
             cost2[1:grab_idx] += DOWNVEL_W * torch.relu(-_dz) ** 2
