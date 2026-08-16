@@ -881,6 +881,24 @@ class G1Rewards(G1RewardsBase):
         tracking_body_angvel = RewTerm(func=body_angvel_tracking_exp, weight=1.0,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=_FULL_BODY_NAMES, preserve_order=True),
                     "keypt_idxs": _FULL_BODY_KEYPT_IDXS, "std": 3.14})
+        # ============= NATIVE SONIC REGULARIZATION (gear_sonic rewards/tracking/base.yaml) =============
+        # The frozen base was trained under these three penalty terms; without them the residual can
+        # inject jerky actions, ride joint limits, and brush the scene at zero cost. Native weights
+        # verbatim. (Tracking terms incl. body lin/angvel were already ported above.)
+        action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
+        joint_limit = RewTerm(func=mdp.joint_pos_limits, weight=-10.0,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])})
+        # Native body_names regex + the dex-hand FINGER links additionally whitelisted: the fingers
+        # MUST contact the object (native SONIC trained a rubber-hand G1 with no object, so its
+        # regex predates articulated fingers).
+        undesired_contacts = RewTerm(func=mdp.undesired_contacts, weight=-0.1,
+            params={"sensor_cfg": SceneEntityCfg("contact_forces",
+                        body_names=["^(?!left_ankle_roll_link$)(?!right_ankle_roll_link$)"
+                                    "(?!left_wrist_yaw_link$)(?!right_wrist_yaw_link$)"
+                                    "(?!left_elbow_link$)(?!right_elbow_link$)"
+                                    "(?!left_rubber_hand$)(?!right_rubber_hand$)"
+                                    "(?!left_hand_)(?!right_hand_).+$"]),
+                    "threshold": 1.0})
         # finger open/close tracking retained (grasp actuation signal; NOT the wrist-pointing penalty).
         right_hand_state_target_reward_val = RewTerm(func=right_hand_state_target_reward, weight=0.3)
         # #4 object-as-hand reference tracking — REPLACES object_lift. Tracks the sim object to the
