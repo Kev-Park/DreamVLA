@@ -113,14 +113,20 @@ def _smooth01(u):
     return u * u * u * (u * (6.0 * u - 15.0) + 10.0)
 
 # Right-arm hard speed limits (rad/s)
+# Actuator no-load maxima (37/22 rad/s) capped to a GRACEFUL reference speed. The caps are hard
+# AL constraints, so lowering them re-times fast reconfigurations instead of just penalizing them:
+# v16's limit-pinned wrist executed a near-instant yaw FLIP (15.9-16.7 rad/s, legal under 22) when
+# the pointing target became reachable from the other side of the joint-limit boundary -- the one
+# boundary the task-space schedule doesn't cover. At ~6 rad/s the flip must spread over >=15 frames.
+ARM_SPEED_CAP = float(os.environ.get("HS_ARM_SPEED_CAP", "6.0"))
 RIGHT_ARM_SPEED_LIMITS = {
-    "right_shoulder_pitch_joint": 37.0,
-    "right_shoulder_roll_joint": 37.0,
-    "right_shoulder_yaw_joint": 37.0,
-    "right_elbow_joint": 37.0,
-    "right_wrist_roll_joint": 37.0,
-    "right_wrist_pitch_joint": 22.0,
-    "right_wrist_yaw_joint": 22.0,
+    "right_shoulder_pitch_joint": min(37.0, ARM_SPEED_CAP),
+    "right_shoulder_roll_joint": min(37.0, ARM_SPEED_CAP),
+    "right_shoulder_yaw_joint": min(37.0, ARM_SPEED_CAP),
+    "right_elbow_joint": min(37.0, ARM_SPEED_CAP),
+    "right_wrist_roll_joint": min(37.0, ARM_SPEED_CAP),
+    "right_wrist_pitch_joint": min(22.0, ARM_SPEED_CAP),
+    "right_wrist_yaw_joint": min(22.0, ARM_SPEED_CAP),
 }
 
 DOF_SPEED_CONSTRAINT_TOL = 1e-3  # rad/s
