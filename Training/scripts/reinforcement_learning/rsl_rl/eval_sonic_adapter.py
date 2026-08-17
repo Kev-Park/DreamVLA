@@ -286,6 +286,36 @@ def main():
     m_held = torch.zeros(_NM, dtype=torch.long)
     m_never = torch.zeros(_NM, dtype=torch.long)
 
+    # ---- HS_EVAL_FAILCLASS=1: per-episode failure taxonomy ----
+    # Classifies every episode into ONE mode (priority order) so the failure distribution can
+    # arbitrate "fix references" vs "change rewards":
+    #   HELD                 success (existing criterion)
+    #   KNOCKED_PRE_REACH    object toppled BEFORE the palm ever got within TOUCH_TOL
+    #                        (wrist/forearm/body knock — approach-geometry failure)
+    #   KNOCKDOWN_ON_ARRIVAL toppled within KNOCK_WIN steps of first palm contact
+    #   DROPPED_LATE         toppled well after arrival (hold/carry failure)
+    #   ROOT_AHEAD / ROOT_OFF at grab time the root was > ROOT_TOL off the reference root
+    #                        (ahead = stumbled/overshot forward) and the hand never reached
+    #                        (locomotion failure — root off-location puts the arm off-position)
+    #   ARM_OFF              root ON location at grab, hand still never reached (arm/reach failure)
+    #   EARLY_END            episode ended before the grab phase was ever entered
+    #   TOUCHED_NOT_HELD     reached, nothing toppled, still not held (grasp-actuation ceiling)
+    FAILCLASS = os.environ.get("HS_EVAL_FAILCLASS", "0") == "1"
+    ROOT_TOL = float(os.environ.get("HS_EVAL_ROOT_TOL", "0.25"))    # m, xy root error at grab
+    ROOT_AHEAD_X = float(os.environ.get("HS_EVAL_ROOT_AHEAD_X", "0.15"))  # m, forward overshoot split
+    KNOCK_WIN = int(os.environ.get("HS_EVAL_KNOCK_WIN", "25"))      # steps (~0.5 s) after first touch
+    _CLASSES = ["HELD", "KNOCKED_PRE_REACH", "KNOCKDOWN_ON_ARRIVAL", "DROPPED_LATE",
+                "ROOT_AHEAD", "ROOT_OFF", "ARM_OFF", "EARLY_END", "TOUCHED_NOT_HELD"]
+    fc_counts = {c: 0 for c in _CLASSES}
+    fc_root_err_sum = {c: 0.0 for c in _CLASSES}
+    m_class = torch.zeros(_NM, len(_CLASSES), dtype=torch.long)
+    per_env_steps = torch.zeros(num_envs, device=device, dtype=torch.long)
+    per_env_first_touch = torch.full((num_envs,), -1, device=device, dtype=torch.long)
+    per_env_first_topple = torch.full((num_envs,), -1, device=device, dtype=torch.long)
+    per_env_grab_step = torch.full((num_envs,), -1, device=device, dtype=torch.long)
+    per_env_root_err_grab = torch.full((num_envs,), -1.0, device=device)
+    per_env_root_fwd_grab = torch.zeros(num_envs, device=device)
+
     obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
 
@@ -340,6 +370,19 @@ def main():
             per_env_held_steps += (held & valid).long()
             per_env_touched |= touched_now & valid
             per_env_toppled |= toppled_now & valid
+            if FAILCLASS:
+                per_env_steps += valid.long()
+                _new_touch = touched_now & valid & (per_env_first_touch < 0)
+                per_env_first_touch[_new_touch] = per_env_steps[_new_touch]
+                _new_topple = toppled_now & valid & (per_env_first_topple < 0)
+                per_env_first_topple[_new_topple] = per_env_steps[_new_topple]
+                _cross = is_closed & valid & (per_env_grab_step < 0)
+                if _cross.any():
+                    per_env_grab_step[_cross] = per_env_steps[_cross]
+                    _rt = env.unwrapped.scene["robot"].data.root_pos_w - env.unwrapped.scene.env_origins
+                    _rr = motion_res["root_pos"]
+                    per_env_root_err_grab[_cross] = torch.norm((_rt - _rr)[_cross, :2], dim=1)
+                    per_env_root_fwd_grab[_cross] = (_rt - _rr)[_cross, 0]
 
         dones_bool = dones.bool() if dones.dtype != torch.bool else dones
         if dones_bool.any():
@@ -378,6 +421,34 @@ def main():
                     if _touched: m_touch[_mid] += 1
                     if _held_ok: m_held[_mid] += 1
                     if (not _held_ok) and (not _touched): m_never[_mid] += 1
+                if FAILCLASS:
+                    _ft = int(per_env_first_touch[idx].item())
+                    _fp = int(per_env_first_topple[idx].item())
+                    _gs = int(per_env_grab_step[idx].item())
+                    _re = float(per_env_root_err_grab[idx].item())
+                    _fw = float(per_env_root_fwd_grab[idx].item())
+                    if _held_ok:
+                        _cls = "HELD"
+                    elif _toppled and (_ft < 0 or _fp < _ft):
+                        _cls = "KNOCKED_PRE_REACH"
+                    elif _toppled and _fp <= _ft + KNOCK_WIN:
+                        _cls = "KNOCKDOWN_ON_ARRIVAL"
+                    elif _toppled:
+                        _cls = "DROPPED_LATE"
+                    elif _ft < 0:
+                        if _gs < 0:
+                            _cls = "EARLY_END"
+                        elif _re > ROOT_TOL:
+                            _cls = "ROOT_AHEAD" if _fw > ROOT_AHEAD_X else "ROOT_OFF"
+                        else:
+                            _cls = "ARM_OFF"
+                    else:
+                        _cls = "TOUCHED_NOT_HELD"
+                    fc_counts[_cls] += 1
+                    if _re >= 0:
+                        fc_root_err_sum[_cls] += _re
+                    if 0 <= _mid < _NM:
+                        m_class[_mid, _CLASSES.index(_cls)] += 1
                 if k < len(time_out_mask) and bool(time_out_mask[k].item()):
                     termination_counts["time_out"] += 1
                 else:
@@ -389,6 +460,13 @@ def main():
             per_env_held_steps[done_idxs] = 0
             per_env_touched[done_idxs] = False
             per_env_toppled[done_idxs] = False
+            if FAILCLASS:
+                per_env_steps[done_idxs] = 0
+                per_env_first_touch[done_idxs] = -1
+                per_env_first_topple[done_idxs] = -1
+                per_env_grab_step[done_idxs] = -1
+                per_env_root_err_grab[done_idxs] = -1.0
+                per_env_root_fwd_grab[done_idxs] = 0.0
 
         just_reset_mask = dones_bool
         step_count += 1
@@ -445,6 +523,27 @@ def main():
         print(f"    Never touched object:     {completed_never_touched} = {100*completed_never_touched/ce:.2f}%")
         print(f"    Object toppled:           {completed_toppled} / {completed_episodes} = {100*completed_toppled/ce:.2f}%  (tilt > {TOPPLE_DEG:.0f} deg)")
     print(f"    (env.n_successes.sum() — uses the env reward's height_thres)")
+    if FAILCLASS:
+        print(f"")
+        print(f"  [FAILCLASS] per-episode failure taxonomy (root_tol={ROOT_TOL} m, knock_win={KNOCK_WIN} steps):")
+        for c in _CLASSES:
+            n = fc_counts[c]
+            if n == 0:
+                continue
+            mre = fc_root_err_sum[c] / n if n else 0.0
+            print(f"    {c:22s} {n:5d}  ({100*n/max(completed_episodes,1):5.2f}%)   mean_root_err@grab={mre:.3f} m")
+        print(f"    per-motion dominant failure (top 12 by episode count):")
+        _order = torch.argsort(m_ep, descending=True)[:12]
+        for _i in _order.tolist():
+            if m_ep[_i] == 0:
+                continue
+            _dom = int(m_class[_i].argmax())
+            _fn = ""
+            try:
+                _fn = os.path.basename(env.unwrapped.motion_lib._motion_data_load[_i])
+            except Exception:
+                pass
+            print(f"      motion {_i:3d} {_fn:14s} eps={int(m_ep[_i]):3d}  dominant={_CLASSES[_dom]:22s} ({int(m_class[_i,_dom])})")
     print(f"")
     print(f"  Termination breakdown (of completed episodes):")
     for k, v in termination_counts.items():
