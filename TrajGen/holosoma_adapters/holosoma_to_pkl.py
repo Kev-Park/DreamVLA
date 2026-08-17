@@ -164,6 +164,21 @@ joints = q[:, 7:36][:, KEEP].copy()                               # (F,DOF) Join
 obj_pos = q[:, 36:39].copy()
 obj_quat = q[:, 39:43].copy()                                    # (F,4) wxyz object orientation
 
+# Clamp the RAW (non-refined) joints to the 0.9 soft position limits (training's
+# soft_joint_pos_limit_factor). The raw retarget exceeds them on ~86% of frames (knees ~0.15 rad,
+# waist ~0.05) — physically borderline references that the training-side joint_limit penalty (-10)
+# would otherwise punish the policy for tracking. The RIGHT ARM columns are clamped by the AL
+# refine's hard constraint instead (position-limit-aware optimization preserves the palm-on-object
+# geometry; a post-hoc clamp there would break it), so they are excluded here when the refine runs.
+if DOF == 29:
+    import refine_al_29 as _r29
+    _lo, _hi = _r29.soft_limits_for(_r29.JOINT_NAMES_29)
+    _lo = _lo.cpu().numpy(); _hi = _hi.cpu().numpy()
+    _rarm_cols = set(range(22, 29)) if (os.environ.get("HS_REFINE_ARM", "1") == "1") else set()
+    for _c in range(29):
+        if _c not in _rarm_cols:
+            joints[:, _c] = np.clip(joints[:, _c], _lo[_c], _hi[_c])
+
 # grab onset = last static-object frame before the lift
 moved = np.linalg.norm(obj_pos - obj_pos[0][None], axis=1)
 grab_idx = int(max(0, np.argmax(moved > 1e-4) - 1))

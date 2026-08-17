@@ -25,6 +25,28 @@ urdf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          '..', '..', 'Training', 'HumanoidVerse', 'humanoidverse', 'data', 'robots', 'g1', 'g1_29dof.urdf')
 chain = pk.build_chain_from_urdf(open(urdf_path, 'rb').read()).to(dtype=torch.float32, device=DEVICE)
 
+# Per-joint SOFT position limits from the URDF: hard [lower, upper] scaled about the midpoint by
+# JLIM_FACTOR (matches IsaacLab soft_joint_pos_limit_factor=0.9 used in training). Audit of the
+# gate15 dataset found 85.7% of frames violating these (right_wrist_yaw up to 1.02 rad past the
+# soft limit = past the HARD stop), because nothing in the pipeline ever constrained positions.
+import re as _re
+JLIM_FACTOR = float(os.environ.get("HS_JLIM_FACTOR", "0.9"))
+_JLIMS = {}
+for _m in _re.finditer(r"<joint name=\"([A-Za-z_0-9]+)\"[^>]*type=\"revolute\">(.*?)</joint>",
+                       open(urdf_path).read(), _re.S):
+    _lm = _re.search(r"<limit[^>]*lower=\"([-\d.eE]+)\"[^>]*upper=\"([-\d.eE]+)\"", _m.group(2))
+    if _lm:
+        _lo, _hi = float(_lm.group(1)), float(_lm.group(2))
+        _mid, _half = (_lo + _hi) / 2.0, (_hi - _lo) / 2.0 * JLIM_FACTOR
+        _JLIMS[_m.group(1)] = (_mid - _half, _mid + _half)
+
+
+def soft_limits_for(names):
+    """(lo, hi) tensors for the given joint names, soft-scaled. Raises on a missing joint."""
+    lo = torch.tensor([_JLIMS[n][0] for n in names], dtype=torch.float32, device=DEVICE)
+    hi = torch.tensor([_JLIMS[n][1] for n in names], dtype=torch.float32, device=DEVICE)
+    return lo, hi
+
 # 29-DOF joint config (JointNamesOrder-29: waist_roll/pitch at 13,14; right arm 22-28 optimized).
 JOINT_NAMES_29 = ['left_hip_pitch_joint','left_hip_roll_joint','left_hip_yaw_joint','left_knee_joint','left_ankle_pitch_joint','left_ankle_roll_joint','right_hip_pitch_joint','right_hip_roll_joint','right_hip_yaw_joint','right_knee_joint','right_ankle_pitch_joint','right_ankle_roll_joint','waist_yaw_joint','waist_roll_joint','waist_pitch_joint','left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_roll_joint','left_wrist_pitch_joint','left_wrist_yaw_joint','right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_roll_joint','right_wrist_pitch_joint','right_wrist_yaw_joint']
 INIT_29 = [-0.2, 0., 0., 0.42, -0.23, 0., -0.2, 0., 0., 0.42, -0.23, 0., 0., 0., 0., 0.35, 0.16, 0., 0.87, 0., 0., 0., 0.35, -0.16, 0., 0.87, 0., 0., 0.]
@@ -121,7 +143,11 @@ _last_g_t:         torch.Tensor | None = None
 _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
 _last_g_level:     torch.Tensor | None = None
+_last_g_jlim:      torch.Tensor | None = None
 _last_cost_terms: dict[str, torch.Tensor] | None = None
+jlim_lo: torch.Tensor | None = None   # (7,) soft lower limits of the ACTIVE (right-arm) joints
+jlim_hi: torch.Tensor | None = None   # (7,) soft upper limits
+JLIM_CONSTRAINT_TOL = 1e-3            # rad
 palm_target:       torch.Tensor | None = None   # world-frame object target the PALM is driven to (set by refine_arm)
 palm_target_traj:  torch.Tensor | None = None   # (F,3) per-frame palm target: static grab point pre-grab, object trajectory post-grab
 
@@ -130,9 +156,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                  lambda_wrist: torch.Tensor | None = None,
                  lambda_dof_speed: torch.Tensor | None = None,
                  lambda_level: torch.Tensor | None = None,
+                 lambda_jlim: torch.Tensor | None = None,
                  rho_al: float = AL_RHO_INIT,
                  rho_al_table: float | None = None):
-    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_g_level, _last_cost_terms
+    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_g_level, _last_g_jlim, _last_cost_terms
 
     n_frames = joint_angles.shape[0]
     inv_n_frames = 1.0 / float(n_frames)
@@ -194,6 +221,20 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     g_dof_speed_flat = g_dof_speed.reshape(-1)
     _last_g_dof_speed = g_dof_speed_flat.detach()
     dof_speed_hard_cost = torch.mean(al_penalty(g_dof_speed_flat, lam_vec=lambda_dof_speed))
+
+    # [ABS] Right-arm SOFT JOINT-POSITION LIMITS (0.9x hard, = training's soft_joint_pos_limit_factor),
+    # enforced via AL. The orientation/palm objectives previously drove wrist angles past even the
+    # HARD stops (audit: right_wrist_yaw up to 1.02 rad beyond soft on 85.7% of gate15 frames) --
+    # physically unreachable references that also made the training-side joint_limit penalty fight
+    # tracking. g >= 0 per (frame, joint), same dual/rho machinery as the speed constraint.
+    if jlim_lo is not None:
+        g_jlim = (torch.relu(joint_angles - jlim_hi.unsqueeze(0))
+                  + torch.relu(jlim_lo.unsqueeze(0) - joint_angles)).reshape(-1)
+        _last_g_jlim = g_jlim.detach()
+        jlim_hard_cost = torch.mean(al_penalty(g_jlim, lam_vec=lambda_jlim))
+    else:
+        _last_g_jlim = None
+        jlim_hard_cost = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
     
     # Forward kinematics to get link positions
     q_dict = {name: joint_angles[:, i] for i, name in enumerate( active_joint_names ) }
@@ -604,7 +645,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             continue
 
     mean_cost2 = torch.mean(cost2)
-    total_cost = l2_cost + mean_cost2 + dof_speed_hard_cost
+    total_cost = l2_cost + mean_cost2 + dof_speed_hard_cost + jlim_hard_cost
     _last_cost_terms = {
         "total": total_cost.detach(),
         "l2": l2_cost.detach(),
@@ -629,13 +670,14 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     """
     global target_joint_angles, active_joint_names, inactive_joint_ids, joint_names
     global fk_results_ref, grab_idx, grab_pos, capsule_obs_pos, ref_dists, traj_fps_hz
-    global active_joint_ids, init_joint_angles, palm_target, palm_target_traj
+    global active_joint_ids, init_joint_angles, palm_target, palm_target_traj, jlim_lo, jlim_hi
 
     joint_names = JOINT_NAMES_29
     init_joint_angles = INIT_29
     inactive_joint_names = INACTIVE_29
     active_joint_ids = [i for i, n in enumerate(joint_names) if n not in inactive_joint_names]
     active_joint_names = [n for n in joint_names if n not in inactive_joint_names]
+    jlim_lo, jlim_hi = soft_limits_for(active_joint_names)   # hard AL soft-limit constraint bounds
     inactive_joint_ids = [i for i, n in enumerate(joint_names) if n in inactive_joint_names]
 
     target_joint_angles = torch.tensor(np.asarray(joints), dtype=torch.float32).to(DEVICE)
@@ -691,6 +733,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     lambda_wrist = torch.zeros(joint_angles.shape[0], device=DEVICE)
     lambda_dof_speed = torch.zeros((joint_angles.shape[0] - 1) * joint_angles.shape[1], device=DEVICE)
     lambda_level = torch.zeros(joint_angles.shape[0], device=DEVICE)
+    lambda_jlim = torch.zeros(joint_angles.shape[0] * joint_angles.shape[1], device=DEVICE)
     rho_al = AL_RHO_INIT
     rho_al_table = AL_RHO_INIT_TABLE
     converged = False
@@ -702,6 +745,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
             cost = compute_cost(joint_angles, trans, quats,
                                 lambda_table=lambda_table, lambda_wrist=lambda_wrist,
                                 lambda_dof_speed=lambda_dof_speed, lambda_level=lambda_level,
+                                lambda_jlim=lambda_jlim,
                                 rho_al=rho_al, rho_al_table=rho_al_table)
             cost.backward()
             optimizer.step()
@@ -709,6 +753,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
         g_curr_wrist = _last_g_cap_wrist
         g_curr_dof_speed = _last_g_dof_speed
         g_curr_level = _last_g_level
+        g_curr_jlim = _last_g_jlim
         if g_curr is None:
             break
         with torch.no_grad():
@@ -719,14 +764,17 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
                 lambda_dof_speed = torch.clamp(lambda_dof_speed + rho_al * g_curr_dof_speed, min=0.0)
             if g_curr_level is not None:
                 lambda_level = torch.clamp(lambda_level + rho_al * g_curr_level, min=0.0)
+            if g_curr_jlim is not None:
+                lambda_jlim = torch.clamp(lambda_jlim + rho_al * g_curr_jlim, min=0.0)
         max_viol = float(g_curr.max())
         max_viol_dof = float(g_curr_dof_speed.max()) if g_curr_dof_speed is not None else 0.0
         max_viol_level = float(g_curr_level.max()) if g_curr_level is not None else 0.0
+        max_viol_jlim = float(g_curr_jlim.max()) if g_curr_jlim is not None else 0.0
         if verbose:
             print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m dof_speed={max_viol_dof:.2e}rad/s "
                   f"level={max_viol_level:.2e} rho_table={rho_al_table:.1e} cost={float(cost):.4f}")
         if (max_viol < TABLE_CONSTRAINT_TOL and max_viol_dof < DOF_SPEED_CONSTRAINT_TOL
-                and max_viol_level < LEVEL_CONSTRAINT_TOL):
+                and max_viol_level < LEVEL_CONSTRAINT_TOL and max_viol_jlim < JLIM_CONSTRAINT_TOL):
             converged = True
             break
         rho_al_table = min(rho_al_table * AL_RHO_GROWTH_TABLE, AL_RHO_MAX)
@@ -738,5 +786,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     fv = float(g_curr.max()) if g_curr is not None else -1.0
     fvl = float(_last_g_level.max()) if _last_g_level is not None else -1.0
     print(f"[refine-al] grab_idx={grab_idx} AL {'converged' if converged else 'maxiter'} "
-          f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} max_arm_move={max_move:.3f}rad")
+          f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} "
+          f"final_jlim_viol={float(_last_g_jlim.max()) if _last_g_jlim is not None else -1.0:.2e}rad "
+          f"max_arm_move={max_move:.3f}rad")
     return out.detach().cpu().numpy()
