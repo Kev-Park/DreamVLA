@@ -93,6 +93,7 @@ LEVEL_HARD_EPS = float(os.environ.get("HS_LEVEL_HARD_EPS", "0.03"))
 LEVEL_HARD_LEAD = int(os.environ.get("HS_LEVEL_HARD_LEAD", "60"))
 LEVEL_CONSTRAINT_TOL = 1e-3
 POINT_W = float(os.environ.get("HS_POINT_W", "30.0"))                      # palm-pointing orientation weight (soft)
+POINT_FIXED = os.environ.get("HS_POINT_FIXED", "1") == "1"                   # Option A: constant per-clip azimuth target
 TORSO_CYLINDER_RADIUS = 0.125
 WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
@@ -155,6 +156,7 @@ jlim_lo: torch.Tensor | None = None   # (7,) soft lower limits of the ACTIVE (ri
 jlim_hi: torch.Tensor | None = None   # (7,) soft upper limits
 JLIM_CONSTRAINT_TOL = 1e-3            # rad
 palm_target:       torch.Tensor | None = None   # world-frame object target the PALM is driven to (set by refine_arm)
+point_fixed_dir:   torch.Tensor | None = None   # (3,) constant horizontal pointing direction (Option A; set by refine_arm)
 palm_target_traj:  torch.Tensor | None = None   # (F,3) per-frame palm target: static grab point pre-grab, object trajectory post-grab
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
@@ -465,14 +467,25 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             if orient_start < rot_mat.shape[0]:
                 up_z = rot_mat[orient_start:, 2, 2]                    # world-z component of hand local z
                 cost2[orient_start:] += LEVEL_W * (1.0 - up_z)         # = 1 - cos(tilt)
-                _F = transformed_hand_orig.shape[0]
-                _tg_o = (palm_target_traj[orient_start:_F]
-                         if palm_target_traj is not None else palm_target.unsqueeze(0).expand(_F - orient_start, 3))
-                _dvec = _tg_o - transformed_hand_orig[orient_start:]
-                _dvec = torch.cat([_dvec[:, :2], torch.zeros_like(_dvec[:, 2:3])], dim=1)   # horizontal projection
-                _pstar = _dvec / torch.norm(_dvec, dim=1, keepdim=True).clamp(min=1e-6)
                 _xaxis = rot_mat[orient_start:, :, 0]                  # hand local x (fingertip axis) in world
-                cost2[orient_start:] += POINT_W * (1.0 - (_xaxis * _pstar).sum(dim=1))
+                if POINT_FIXED and point_fixed_dir is not None:
+                    # OPTION A: CONSTANT per-clip azimuth (bearing from the RAW reference hand at
+                    # release-start to the object; set in refine_arm). A ROTATING pointing target was
+                    # the driver of wrist branch transits: level fixes only 2 rotational DOF, and as
+                    # the demanded azimuth swung through the sweep, the wrist's two joint-space
+                    # realizations swapped cost order -> park-at-limit + late ~2rad unwind (m5/m35
+                    # jolt) or mid-sweep branch flipping (m42 oscillation). A constant target cannot
+                    # drive a transit. Constant by construction: computed from the raw reference, not
+                    # the optimized variables.
+                    cost2[orient_start:] += POINT_W * (1.0 - (_xaxis * point_fixed_dir.unsqueeze(0)).sum(dim=1))
+                else:
+                    _F = transformed_hand_orig.shape[0]
+                    _tg_o = (palm_target_traj[orient_start:_F]
+                             if palm_target_traj is not None else palm_target.unsqueeze(0).expand(_F - orient_start, 3))
+                    _dvec = _tg_o - transformed_hand_orig[orient_start:]
+                    _dvec = torch.cat([_dvec[:, :2], torch.zeros_like(_dvec[:, 2:3])], dim=1)   # horizontal projection
+                    _pstar = _dvec / torch.norm(_dvec, dim=1, keepdim=True).clamp(min=1e-6)
+                    cost2[orient_start:] += POINT_W * (1.0 - (_xaxis * _pstar).sum(dim=1))
 
             # [ABS] HARD levelness (AL): (1 - up_z) <= LEVEL_HARD_EPS over the approach window
             # [grab - LEVEL_HARD_LEAD, grab]. Makes a tilted approach/hover INFEASIBLE (the soft
@@ -725,6 +738,14 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
             palm_target_traj[grab_idx:_n] = _ot[grab_idx:_n]
     else:
         palm_target_traj = None
+
+    # OPTION A fixed pointing azimuth: horizontal bearing from the RAW reference wrist at
+    # release-start (taper_start) to the object target. Raw reference => constant, no feedback.
+    global point_fixed_dir
+    _ts = max(max(min(grab_idx - APPROACH_TAPER_LEAD, grab_idx - 1), 1) - APPROACH_TAPER_WINDOW, 1)
+    _pf = palm_target - wrist_keypts[_ts]
+    _pf = torch.tensor([float(_pf[0]), float(_pf[1]), 0.0], device=DEVICE)
+    point_fixed_dir = _pf / _pf.norm().clamp(min=1e-6)
 
     # Approach-avoid anchor = the HAND grasp point (the grounded object the palm is driven to), NOT the
     # reference WRIST. The 'swing away first, then taper in' shaping now repels the HAND from where it
