@@ -98,7 +98,13 @@ POINT_FIXED = os.environ.get("HS_POINT_FIXED", "1") == "1"                   # O
 # prior merely selects WHICH joint-space realization of the one constant orientation to use --
 # breaking the residual two-branch ambiguity (m66 yaw oscillation, m5 spike survived A alone).
 # An order of magnitude below POINT_W so it never outvotes genuine orientation demands.
-WRIST_NEUTRAL_W = float(os.environ.get("HS_WRIST_NEUTRAL_W", "4.0"))
+WRIST_NEUTRAL_W = float(os.environ.get("HS_WRIST_NEUTRAL_W", "0"))   # SOFT prior OFF: whole-clip pull-to-zero
+# distorted the reach equilibrium (palm@grab 1-8cm -> 4-11cm; m35 regressed to JOLT+OSC+PALM).
+# Option B-HARD instead: AL band constraint |wrist yaw|,|roll| <= WRIST_BAND over the PRE-GRAB
+# window. Zero gradient inside the band (no equilibrium distortion); infeasible only in the
+# wind-up territory (failures lived at 1.3-1.5 rad; band 0.9).
+WRIST_BAND = float(os.environ.get("HS_WRIST_BAND", "0.9"))
+WBAND_CONSTRAINT_TOL = 1e-3
 TORSO_CYLINDER_RADIUS = 0.125
 WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
@@ -156,6 +162,7 @@ _last_g_cap_wrist: torch.Tensor | None = None
 _last_g_dof_speed: torch.Tensor | None = None
 _last_g_level:     torch.Tensor | None = None
 _last_g_jlim:      torch.Tensor | None = None
+_last_g_wband:     torch.Tensor | None = None
 _last_cost_terms: dict[str, torch.Tensor] | None = None
 jlim_lo: torch.Tensor | None = None   # (7,) soft lower limits of the ACTIVE (right-arm) joints
 jlim_hi: torch.Tensor | None = None   # (7,) soft upper limits
@@ -170,9 +177,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                  lambda_dof_speed: torch.Tensor | None = None,
                  lambda_level: torch.Tensor | None = None,
                  lambda_jlim: torch.Tensor | None = None,
+                 lambda_wband: torch.Tensor | None = None,
                  rho_al: float = AL_RHO_INIT,
                  rho_al_table: float | None = None):
-    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_g_level, _last_g_jlim, _last_cost_terms
+    global _last_g_t, _last_g_cap_wrist, _last_g_dof_speed, _last_g_level, _last_g_jlim, _last_g_wband, _last_cost_terms
 
     n_frames = joint_angles.shape[0]
     inv_n_frames = 1.0 / float(n_frames)
@@ -240,6 +248,17 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     # HARD stops (audit: right_wrist_yaw up to 1.02 rad beyond soft on 85.7% of gate15 frames) --
     # physically unreachable references that also made the training-side joint_limit penalty fight
     # tracking. g >= 0 per (frame, joint), same dual/rho machinery as the speed constraint.
+    if WRIST_BAND > 0:
+        # [ABS] Option B-HARD: wrist yaw (col 6) / roll (col 4) neutral band, PRE-GRAB only.
+        _wb = (torch.relu(joint_angles[:grab_idx, 6].abs() - WRIST_BAND)
+               + torch.relu(joint_angles[:grab_idx, 4].abs() - WRIST_BAND))
+        g_wband = _wb.reshape(-1)
+        _last_g_wband = g_wband.detach()
+        wband_hard_cost = torch.mean(al_penalty(g_wband, lam_vec=lambda_wband))
+    else:
+        _last_g_wband = None
+        wband_hard_cost = torch.tensor(0.0, device=joint_angles.device, dtype=joint_angles.dtype)
+
     if jlim_lo is not None:
         g_jlim = (torch.relu(joint_angles - jlim_hi.unsqueeze(0))
                   + torch.relu(jlim_lo.unsqueeze(0) - joint_angles)).reshape(-1)
@@ -672,7 +691,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             continue
 
     mean_cost2 = torch.mean(cost2)
-    total_cost = l2_cost + mean_cost2 + dof_speed_hard_cost + jlim_hard_cost
+    total_cost = l2_cost + mean_cost2 + dof_speed_hard_cost + jlim_hard_cost + wband_hard_cost
     _last_cost_terms = {
         "total": total_cost.detach(),
         "l2": l2_cost.detach(),
@@ -769,6 +788,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     lambda_dof_speed = torch.zeros((joint_angles.shape[0] - 1) * joint_angles.shape[1], device=DEVICE)
     lambda_level = torch.zeros(joint_angles.shape[0], device=DEVICE)
     lambda_jlim = torch.zeros(joint_angles.shape[0] * joint_angles.shape[1], device=DEVICE)
+    lambda_wband = torch.zeros(joint_angles.shape[0], device=DEVICE)
     rho_al = AL_RHO_INIT
     rho_al_table = AL_RHO_INIT_TABLE
     converged = False
@@ -780,7 +800,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
             cost = compute_cost(joint_angles, trans, quats,
                                 lambda_table=lambda_table, lambda_wrist=lambda_wrist,
                                 lambda_dof_speed=lambda_dof_speed, lambda_level=lambda_level,
-                                lambda_jlim=lambda_jlim,
+                                lambda_jlim=lambda_jlim, lambda_wband=lambda_wband,
                                 rho_al=rho_al, rho_al_table=rho_al_table)
             cost.backward()
             optimizer.step()
@@ -789,6 +809,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
         g_curr_dof_speed = _last_g_dof_speed
         g_curr_level = _last_g_level
         g_curr_jlim = _last_g_jlim
+        g_curr_wband = _last_g_wband
         if g_curr is None:
             break
         with torch.no_grad():
@@ -801,15 +822,20 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
                 lambda_level = torch.clamp(lambda_level + rho_al * g_curr_level, min=0.0)
             if g_curr_jlim is not None:
                 lambda_jlim = torch.clamp(lambda_jlim + rho_al * g_curr_jlim, min=0.0)
+            if g_curr_wband is not None:
+                lambda_wband[:g_curr_wband.shape[0]] = torch.clamp(
+                    lambda_wband[:g_curr_wband.shape[0]] + rho_al * g_curr_wband, min=0.0)
         max_viol = float(g_curr.max())
         max_viol_dof = float(g_curr_dof_speed.max()) if g_curr_dof_speed is not None else 0.0
         max_viol_level = float(g_curr_level.max()) if g_curr_level is not None else 0.0
         max_viol_jlim = float(g_curr_jlim.max()) if g_curr_jlim is not None else 0.0
+        max_viol_wband = float(g_curr_wband.max()) if g_curr_wband is not None else 0.0
         if verbose:
             print(f"[AL outer={outer_iter:02d}] table={max_viol:.2e}m dof_speed={max_viol_dof:.2e}rad/s "
                   f"level={max_viol_level:.2e} rho_table={rho_al_table:.1e} cost={float(cost):.4f}")
         if (max_viol < TABLE_CONSTRAINT_TOL and max_viol_dof < DOF_SPEED_CONSTRAINT_TOL
-                and max_viol_level < LEVEL_CONSTRAINT_TOL and max_viol_jlim < JLIM_CONSTRAINT_TOL):
+                and max_viol_level < LEVEL_CONSTRAINT_TOL and max_viol_jlim < JLIM_CONSTRAINT_TOL
+                and max_viol_wband < WBAND_CONSTRAINT_TOL):
             converged = True
             break
         rho_al_table = min(rho_al_table * AL_RHO_GROWTH_TABLE, AL_RHO_MAX)
