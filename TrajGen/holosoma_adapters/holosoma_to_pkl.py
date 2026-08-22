@@ -195,6 +195,21 @@ base_pos[:, 2] -= mz
 # aligned to the grasp-frame floor. (obj_pos is otherwise ~static pre-grab, then lifts post-grab.)
 obj_pos[:, 2] -= mz[grab_idx]
 
+# RE-TABLE normalization (HS_RETABLE=0 disables): pin each clip's object REST height to the sim
+# scene's physical rest. The generated source scenes imply varying table heights; our sim table is
+# fixed (top 0.8 -> object rests at 0.90 env = 0.865 in this frame, motion_lib adds +0.035).
+# 16/60 clips had the reference object resting BELOW the sim table surface (raw z 0.64-0.78) ->
+# permanent object-deviation baseline + palm/grab target inside the table volume (unreachable by
+# the refine's table constraint): those clips never-touched 58% / held 6.8% vs 21% held for
+# in-range clips. Shift the WHOLE object z channel (rest and carry equally) BEFORE the refine so
+# grab_pos_obj / palm targets inherit the corrected height and the arm re-solves the reach.
+if os.environ.get("HS_RETABLE", "1") == "1":
+    _rest_lo = max(grab_idx - 30, 0)
+    _rest_z = float(np.median(obj_pos[_rest_lo:grab_idx, 2])) if grab_idx > _rest_lo else float(obj_pos[grab_idx, 2])
+    _retable_dz = 0.865 - _rest_z
+    obj_pos[:, 2] += _retable_dz
+    print(f"[retable] object rest z {_rest_z:.3f} -> 0.865 (dz {_retable_dz:+.3f})")
+
 # --- freeze left arm across ALL frames (refine parity) ---
 joints = freeze_left_arm(joints)
 
