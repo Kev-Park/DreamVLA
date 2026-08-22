@@ -94,6 +94,11 @@ LEVEL_HARD_LEAD = int(os.environ.get("HS_LEVEL_HARD_LEAD", "60"))
 LEVEL_CONSTRAINT_TOL = 1e-3
 POINT_W = float(os.environ.get("HS_POINT_W", "30.0"))                      # palm-pointing orientation weight (soft)
 POINT_FIXED = os.environ.get("HS_POINT_FIXED", "1") == "1"                   # Option A: constant per-clip azimuth target
+# Option B: wrist-neutral tie-breaker. With the azimuth target now FIXED (Option A), this small
+# prior merely selects WHICH joint-space realization of the one constant orientation to use --
+# breaking the residual two-branch ambiguity (m66 yaw oscillation, m5 spike survived A alone).
+# An order of magnitude below POINT_W so it never outvotes genuine orientation demands.
+WRIST_NEUTRAL_W = float(os.environ.get("HS_WRIST_NEUTRAL_W", "4.0"))
 TORSO_CYLINDER_RADIUS = 0.125
 WRIST_TORSO_SEGMENT_RADIUS = 0.03
 HAND_TORSO_SEGMENT_RADIUS = 0.04
@@ -486,6 +491,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     _dvec = torch.cat([_dvec[:, :2], torch.zeros_like(_dvec[:, 2:3])], dim=1)   # horizontal projection
                     _pstar = _dvec / torch.norm(_dvec, dim=1, keepdim=True).clamp(min=1e-6)
                     cost2[orient_start:] += POINT_W * (1.0 - (_xaxis * _pstar).sum(dim=1))
+            # Option B soft prior: active-joint cols 4 = right_wrist_roll, 6 = right_wrist_yaw.
+            if WRIST_NEUTRAL_W > 0:
+                cost2 += WRIST_NEUTRAL_W * (joint_angles[:, 4] ** 2 + joint_angles[:, 6] ** 2)
 
             # [ABS] HARD levelness (AL): (1 - up_z) <= LEVEL_HARD_EPS over the approach window
             # [grab - LEVEL_HARD_LEAD, grab]. Makes a tilted approach/hover INFEASIBLE (the soft
