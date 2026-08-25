@@ -204,11 +204,14 @@ obj_pos[:, 2] -= mz[grab_idx]
 # in-range clips. Shift the WHOLE object z channel (rest and carry equally) BEFORE the refine so
 # grab_pos_obj / palm targets inherit the corrected height and the arm re-solves the reach.
 if os.environ.get("HS_RETABLE", "1") == "1":
+    # HS_RETABLE_Z: rest target in THIS frame (env rest z - 0.035). Default 0.865 = the cuboid's
+    # 0.90 env rest; re-pin when the manipuland changes (e.g. mustard bottle settles differently).
+    _retable_target = float(os.environ.get("HS_RETABLE_Z", "0.865"))
     _rest_lo = max(grab_idx - 30, 0)
     _rest_z = float(np.median(obj_pos[_rest_lo:grab_idx, 2])) if grab_idx > _rest_lo else float(obj_pos[grab_idx, 2])
-    _retable_dz = 0.865 - _rest_z
+    _retable_dz = _retable_target - _rest_z
     obj_pos[:, 2] += _retable_dz
-    print(f"[retable] object rest z {_rest_z:.3f} -> 0.865 (dz {_retable_dz:+.3f})")
+    print(f"[retable] object rest z {_rest_z:.3f} -> {_retable_target:.3f} (dz {_retable_dz:+.3f})")
 
 # --- freeze left arm across ALL frames (refine parity) ---
 joints = freeze_left_arm(joints)
