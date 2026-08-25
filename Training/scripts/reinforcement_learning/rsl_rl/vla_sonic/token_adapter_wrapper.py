@@ -151,8 +151,13 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         #   "additive"       : body = base + residual_scale * tanh(latent)   (anchor to base; current default)
         #   "multiplicative" : body = base * (1 + residual_scale * tanh(latent))  (in-family gate; per-dim factor
         #                       in [1-scale, 1+scale]; note near-zero base dims move little)
+        #   "multiplicative_free" : body = base * (1 + residual_scale * latent)  (UNCLIPPED per-dim scale
+        #                       factor; no tanh, only residual_scale gains down the raw latent. Relies on
+        #                       the FSQ snap's clamp for hard bounding. AdapterActorCritic zero-inits the
+        #                       actor head, so the factor starts at exactly 1.0 (pure base passthrough).
+        #                       Same caveat as "multiplicative": near-zero base dims move little.)
         #   "unclamped"      : body = base + latent   (raw additive on token; no anchor, relies on the FSQ snap)
-        assert residual_transform in ("additive", "multiplicative", "unclamped"), residual_transform
+        assert residual_transform in ("additive", "multiplicative", "multiplicative_free", "unclamped"), residual_transform
         self.residual_transform = residual_transform
 
         # The reference->SONIC-29 name-matched scatter perm (self._ref_to_sonic_perm) is built once
@@ -328,6 +333,10 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         elif self.residual_transform == "multiplicative":
             # in-family per-dimension gate: factor in [1-scale, 1+scale] around the base token.
             body = self._base_token * (1.0 + self.residual_scale * torch.tanh(z))
+        elif self.residual_transform == "multiplicative_free":
+            # unclipped per-dim scale factor (1 + scale*z); zero-init head => exactly 1.0 at start.
+            # No tanh: the FSQ snap's clamp is the only hard bound.
+            body = self._base_token * (1.0 + self.residual_scale * z)
         else:  # "unclamped": raw additive on the token, no anchor (safe due to the FSQ snap).
             body = self._base_token + z
         composed = torch.cat([body, latent[:, TOKEN_TOTAL_DIM:]], dim=1)

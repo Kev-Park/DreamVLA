@@ -257,6 +257,11 @@ REWORK_HEIGHT_BACKSTOP = float(os.environ.get("HS_REWORK_HEIGHT_BACKSTOP", "0.2"
 REWORK_HAND_FWD = float(os.environ.get("HS_REWORK_HAND_FWD", "1.5"))
 REWORK_OBJ_W = float(os.environ.get("HS_REWORK_OBJ_W", "2.0"))  # #4 object_tracking weight (env-tunable; 2.0 matches ResMimic)
 REWORK_HYBRID_RARM = os.environ.get("HS_REWORK_HYBRID_RARM", "0") == "1"  # #3 LadderMan hybrid: relax right-arm tracking so the task limb can deviate
+# GLOBAL (world-frame) whole-body keypoint tracking instead of the SONIC-native root-relative term.
+# The relative term is drift-invariant by construction (keypoints rotated into the robot root frame),
+# so root drift is only resisted by the gentle anchor_pos kernel; this flag makes every body keypoint
+# pay for drift at the global level, giving the residual a dense anti-drift gradient.
+REWORK_GLOBAL_TRACK = os.environ.get("HS_REWORK_GLOBAL_TRACK", "0") == "1"
 REWORK_RARM_W = float(os.environ.get("HS_REWORK_RARM_W", "0.5"))  # right-arm relative-tracking weight when hybrid on (LadderMan omega/2)
 REWORK_OBJ_GATE = os.environ.get("HS_REWORK_OBJ_GATE", "0") == "1"  # #2 gate object reward by reference contact (is_closed): c_hat*r + (1-c_hat)
 REWORK_CONTACT_POS = os.environ.get("HS_REWORK_CONTACT_POS", "0") == "1"  # LadderMan position contact reward + pos contact-loss termination
@@ -860,9 +865,20 @@ class G1Rewards(G1RewardsBase):
         # limb can deviate. Body terms drop to NO_RARM (full weight); a SEPARATE right-arm term re-adds
         # the arm at reduced weight (LadderMan omega/2). Separate terms also stop the arm error from
         # saturating the whole-body mean-then-exp kernel. Default off => MASK_ALL (unchanged).
-        tracking_relative_body_pos = RewTerm(func=relative_keypts_tracking_exp, weight=1.0,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
-                    "std": 0.3, "keypts_mask": (KEYPTS_MASK_NO_RARM if REWORK_HYBRID_RARM else KEYPTS_MASK_ALL)})
+        if REWORK_GLOBAL_TRACK:
+            # HS_REWORK_GLOBAL_TRACK=1: whole-body keypoints tracked in the WORLD (env-local) frame,
+            # same kernel/weight/std as the relative term it replaces. Every keypoint now carries the
+            # root-drift error, so drift is penalized ~26x more densely than anchor_pos alone. Uses the
+            # full-body set regardless of HYBRID_RARM (the arm error is dominated by reach anyway).
+            # Orientation stays relative below: body rotations are near-invariant to a translation
+            # drift, and heading error is already owned by anchor_ori.
+            tracking_global_body_pos = RewTerm(func=global_keypts_tracking_exp, weight=1.0,
+                params={"asset_cfg": SceneEntityCfg("robot", body_names=_FULL_BODY_NAMES, preserve_order=True),
+                        "std": 0.3, "keypt_idxs": _FULL_BODY_KEYPT_IDXS})
+        else:
+            tracking_relative_body_pos = RewTerm(func=relative_keypts_tracking_exp, weight=1.0,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                        "std": 0.3, "keypts_mask": (KEYPTS_MASK_NO_RARM if REWORK_HYBRID_RARM else KEYPTS_MASK_ALL)})
         tracking_relative_body_ori = RewTerm(func=relative_body_ori_tracking_exp, weight=1.0,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
                     "std": 0.4, "keypts_mask": (KEYPTS_MASK_NO_RARM if REWORK_HYBRID_RARM else KEYPTS_MASK_ALL)})
@@ -1483,6 +1499,24 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.robot.actuators = _build_sonic_matched_actuators()
+        # Manipuland: mustard bottle USD by DEFAULT (the object holosoma retargeted the references
+        # around; realistic collision geometry). HS_OBJ=cuboid reverts to the legacy 5x5x20cm blue
+        # cuboid for reproducing pre-mustard checkpoints/evals. CAVEATS vs the cuboid: (1) UsdFileCfg
+        # has no physics_material field, so friction comes from mustard_bottle.usd (not the cuboid's
+        # 1.2/1.2 grip); (2) the rest height on the 0.8 table top depends on the bottle's collision
+        # mesh, not the cuboid's exact 0.9 — VALIDATE the settled object z in sim and re-pin the
+        # TrajGen re-table target (holosoma_to_pkl.py) if it differs from 0.900.
+        if os.environ.get("HS_OBJ", "mustard") != "cuboid":
+            self.scene.object = RigidObjectCfg(
+                prim_path="{ENV_REGEX_NS}/Object",
+                init_state=RigidObjectCfg.InitialStateCfg(pos=[0.35, 0.40, 1.0413], rot=[1, 0, 0, 0]),
+                spawn=sim_utils.UsdFileCfg(
+                    usd_path="assets/mustard_bottle.usd",
+                    scale=(1.0, 1.0, 1.5),
+                    mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+                ),
+            )
+            print("[G1PickBinaryFingers] object = mustard_bottle.usd (HS_OBJ=cuboid reverts to legacy cuboid)")
         # Swap the right-hand reward to the binary-match version (uses action_manager.action
         # directly; no PD-tracking lag, no sharpness parameter, dense {0,1} signal).
         self.rewards.right_hand_state_target_reward_val.func = right_hand_binary_match_reward

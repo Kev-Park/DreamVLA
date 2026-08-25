@@ -71,7 +71,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--residual-transform", type=str, default="additive",
-    choices=["additive", "multiplicative", "unclamped"],
+    choices=["additive", "multiplicative", "multiplicative_free", "unclamped"],
     help="Token residual transform — MUST match train_sonic_adapter.py for this checkpoint.",
 )
 parser.add_argument(

@@ -72,11 +72,12 @@ parser.add_argument(
 )
 parser.add_argument(
     "--residual-transform", type=str, default="additive",
-    choices=["additive", "multiplicative", "unclamped"],
+    choices=["additive", "multiplicative", "multiplicative_free", "unclamped"],
     help="How the policy latent transforms the frozen base TOKEN (the FSQ snap re-bounds it "
          "either way, so all are safe). additive = base + scale*tanh(z) (anchor, current). "
-         "multiplicative = base*(1+scale*tanh(z)) (in-family per-dim gate). unclamped = base+z "
-         "(no anchor). REWARD_REWORK_PLAN #3 test set.",
+         "multiplicative = base*(1+scale*tanh(z)) (in-family per-dim gate). multiplicative_free = "
+         "base*(1+scale*z) (UNCLIPPED per-dim scale factor; zero-init head starts it at exactly 1.0; "
+         "use --residual-scale 0.1). unclamped = base+z (no anchor). REWARD_REWORK_PLAN #3 test set.",
 )
 parser.add_argument(
     "--start-pregrab-margin", type=float, default=None,
