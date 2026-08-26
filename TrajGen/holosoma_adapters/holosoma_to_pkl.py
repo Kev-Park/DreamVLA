@@ -29,7 +29,11 @@ import numpy as np, torch, sys, os, pickle
 import jaxlie, jax.numpy as jnp
 import pytorch_kinematics as pk
 
-PAUSE, INTERP, FREEZE_FOR = 10, 10, 10
+PAUSE, INTERP = 10, 10
+# Grab hold, inherited from the legacy retarget.py pipeline (Pick_sim FREEZE_FOR=10): freeze
+# robot+object for this many frames at grab_idx (length-preserving) so the physical robot has
+# dwell to close the binary hand before the carry starts. HS_FREEZE_FOR=0 omits the hold.
+FREEZE_FOR = int(os.environ.get("HS_FREEZE_FOR", "10"))
 DOF = int(os.environ.get("HS_PKL_DOF", "29"))
 assert DOF in (27, 29), f"HS_PKL_DOF must be 27 or 29, got {DOF}"
 _ROBOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -232,7 +236,7 @@ if REFINE_ARM and 0 < grab_idx < F:
 
 # --- FREEZE_FOR grab hold (length-preserving) ---
 def freeze_hold(a):
-    if 0 < grab_idx < F - FREEZE_FOR:
+    if FREEZE_FOR > 0 and 0 < grab_idx < F - FREEZE_FOR:
         a[grab_idx + FREEZE_FOR:] = a[grab_idx:F - FREEZE_FOR]
         a[grab_idx:grab_idx + FREEZE_FOR] = a[grab_idx]
     return a
