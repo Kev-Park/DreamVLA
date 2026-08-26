@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
 import numpy as np
 import os
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -262,6 +262,10 @@ REWORK_HYBRID_RARM = os.environ.get("HS_REWORK_HYBRID_RARM", "0") == "1"  # #3 L
 # so root drift is only resisted by the gentle anchor_pos kernel; this flag makes every body keypoint
 # pay for drift at the global level, giving the residual a dense anti-drift gradient.
 REWORK_GLOBAL_TRACK = os.environ.get("HS_REWORK_GLOBAL_TRACK", "0") == "1"
+# Companion flag: also track per-link ORIENTATIONS in the world frame (root rotation composed in),
+# so root heading/tilt drift is priced per link. Separate flag so mult010glob/mult010nh (which
+# trained with GLOBAL_TRACK=1 + relative ori) stay exactly reproducible from their env vars.
+REWORK_GLOBAL_ORI = os.environ.get("HS_REWORK_GLOBAL_ORI", "0") == "1"
 REWORK_RARM_W = float(os.environ.get("HS_REWORK_RARM_W", "0.5"))  # right-arm relative-tracking weight when hybrid on (LadderMan omega/2)
 REWORK_OBJ_GATE = os.environ.get("HS_REWORK_OBJ_GATE", "0") == "1"  # #2 gate object reward by reference contact (is_closed): c_hat*r + (1-c_hat)
 REWORK_CONTACT_POS = os.environ.get("HS_REWORK_CONTACT_POS", "0") == "1"  # LadderMan position contact reward + pos contact-loss termination
@@ -879,9 +883,16 @@ class G1Rewards(G1RewardsBase):
             tracking_relative_body_pos = RewTerm(func=relative_keypts_tracking_exp, weight=1.0,
                 params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
                         "std": 0.3, "keypts_mask": (KEYPTS_MASK_NO_RARM if REWORK_HYBRID_RARM else KEYPTS_MASK_ALL)})
-        tracking_relative_body_ori = RewTerm(func=relative_body_ori_tracking_exp, weight=1.0,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
-                    "std": 0.4, "keypts_mask": (KEYPTS_MASK_NO_RARM if REWORK_HYBRID_RARM else KEYPTS_MASK_ALL)})
+        if REWORK_GLOBAL_ORI:
+            # HS_REWORK_GLOBAL_ORI=1: per-link orientations in the WORLD frame (root rotation
+            # composed into both sides) — angular-drift analog of tracking_global_body_pos.
+            tracking_global_body_ori = RewTerm(func=global_body_ori_tracking_exp, weight=1.0,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                        "std": 0.4, "keypts_mask": (KEYPTS_MASK_NO_RARM if REWORK_HYBRID_RARM else KEYPTS_MASK_ALL)})
+        else:
+            tracking_relative_body_ori = RewTerm(func=relative_body_ori_tracking_exp, weight=1.0,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                        "std": 0.4, "keypts_mask": (KEYPTS_MASK_NO_RARM if REWORK_HYBRID_RARM else KEYPTS_MASK_ALL)})
         if REWORK_HYBRID_RARM:
             tracking_rarm_pos = RewTerm(func=relative_keypts_tracking_exp, weight=REWORK_RARM_W,
                 params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),

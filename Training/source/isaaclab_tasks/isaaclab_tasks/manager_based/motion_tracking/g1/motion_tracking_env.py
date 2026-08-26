@@ -443,6 +443,29 @@ def global_keypts_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg
     return torch.exp(-sq_err.mean(dim=1) / (std * std))
 
 
+def global_body_ori_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.4, keypts_mask: List = KEYPTS_MASK) -> torch.Tensor:
+    """WORLD-frame per-link orientation tracking — the angular analog of
+    global_keypts_tracking_exp. Same FK link set and mask machinery as
+    relative_body_ori_tracking_exp, but each side's link rotation is pre-composed with its
+    OWN root rotation (robot: physics root_quat_w; reference: motion_lib root_rot), so the
+    per-link geodesic error INCLUDES root heading/tilt drift instead of cancelling it.
+    exp(-mean angle^2 / std^2) over the masked links."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
+    motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
+    joints_robot = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    R_robot = get_link_rotations(joints_robot, env.joint_names, env.pk2_robot)            # (N, K, 3, 3) root-frame
+    R_ref = get_link_rotations(motion_res["dof_pos"], env.joint_names, env.pk2_robot)     # (N, K, 3, 3) root-frame
+    Rw_robot = torch.matmul(math_utils.matrix_from_quat(asset.data.root_quat_w).unsqueeze(1), R_robot)   # world
+    Rw_ref = torch.matmul(math_utils.matrix_from_quat(motion_res["root_rot"]).unsqueeze(1), R_ref)       # world
+    R_rel = torch.matmul(Rw_ref.transpose(-1, -2), Rw_robot)                              # (N, K, 3, 3)
+    trace = R_rel[..., 0, 0] + R_rel[..., 1, 1] + R_rel[..., 2, 2]                        # (N, K)
+    angle = torch.acos(torch.clamp((trace - 1.0) / 2.0, -1.0, 1.0))                       # (N, K) geodesic
+    mask = torch.tensor(keypts_mask, device=env.device, dtype=torch.float32)             # (K,)
+    mean_sq = (angle ** 2 * mask.unsqueeze(0)).sum(dim=1) / mask.sum().clamp(min=1.0)     # (N,)
+    return torch.exp(-mean_sq / (std * std))
+
+
 def relative_body_ori_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.4, keypts_mask: List = KEYPTS_MASK) -> torch.Tensor:
     """SONIC relative_body_ori: per-link ORIENTATION error between the robot and the reference,
     each as FK link rotations in its OWN root frame (root-relative, heading-invariant), scored
