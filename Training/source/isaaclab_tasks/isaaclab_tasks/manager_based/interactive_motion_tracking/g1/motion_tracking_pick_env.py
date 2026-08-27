@@ -858,6 +858,14 @@ class G1Rewards(G1RewardsBase):
         )
 
     if REWORK:
+        # HS_REWORK_NO_FEET_SHAPING=1: drop the two inherited gait-shaping terms that conflict with
+        # SONIC-faithful tracking — feet_parallel_to_ground (-1.0) penalizes the non-flat ankle
+        # orientations the ori-tracking term rewards during swing (heel-strike/toe-off), and
+        # feet_slide (-0.1) taxes the corrective stepping the anchor term asks for. Neither exists
+        # in native SONIC. Leaves alive/termination and the (negligible) torque/acc terms in place.
+        if os.environ.get("HS_REWORK_NO_FEET_SHAPING", "0") == "1":
+            feet_slide = None
+            feet_parallel_to_ground = None
         # ===================== REWARD REWORK (#2 equal tracking / #4 object / #5 contact) =====================
         # #2 EQUAL whole-body tracking — base SONIC weights, ALL-ONES mask (right arm tracked equally),
         # no root deadband. Drops the grasp-driven right-arm masking + per-limb/wrist/hand-precise terms.
