@@ -676,6 +676,9 @@ def object_deviation_termination(env: ManagerBasedRLEnv, tau: float = 0.3, ori_t
         # ResMimic object-far: single MESH point-cloud distance threshold (position + orientation).
         return _object_pc_dist(env, motion_res, obj_pos, ref_pos) > REWORK_OBJ_PC_DEV_TAU
     err = torch.norm(obj_pos - ref_pos, dim=1)
+    if "object_poses" not in motion_res:
+        # Legacy pkls: no reference object orientation — position-only deviation.
+        return err > tau
     ang = math_utils.quat_error_magnitude(obj.data.root_quat_w, motion_res["object_poses"][:, 3:7])
     return (err > tau) | (ang > ori_tau)
 
