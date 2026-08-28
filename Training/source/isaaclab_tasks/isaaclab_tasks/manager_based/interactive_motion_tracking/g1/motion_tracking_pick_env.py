@@ -482,11 +482,16 @@ def _synth_object_ref_pos(motion_res, hand_fwd: float = REWORK_HAND_FWD):
     render draws as YELLOW: static at the holosoma object rest until the grasp (is_closed), then the
     forward-projected PALM = global_keypts[-1] + hand_fwd*(global_keypts[-1] - global_keypts[-2])
     (= render CYAN, = where refine_al_29 drives the palm). Returns None if fields are missing."""
-    if "object_poses" not in motion_res:
-        return None
     gk = motion_res["global_keypts"]                                             # (N,39,3) env-local
     palm = gk[:, -1, :] + hand_fwd * (gk[:, -1, :] - gk[:, -2, :])               # forward-projected grasp point
-    rest = motion_res["object_poses"][:, :3]                                     # object rest (static pre-grab)
+    if "object_poses" in motion_res:
+        rest = motion_res["object_poses"][:, :3]                                 # object rest (static pre-grab)
+    elif motion_res.get("grab_pos") is not None:
+        # Legacy pkls (original DreamControl motions) carry no object trajectory; their static
+        # grab_pos (wrist-offset heuristic, env-local after +offsets) IS the object rest.
+        rest = motion_res["grab_pos"] + motion_res["offsets"]
+    else:
+        return None
     is_closed = motion_res["is_closed"].float().unsqueeze(-1)                    # (N,1) 1 = post-grasp
     return torch.where(is_closed > 0.5, palm, rest)
 
@@ -555,9 +560,13 @@ def object_tracking_reward(env: ManagerBasedRLEnv, pos_std: float = 0.1, ori_std
     else:
         d2 = torch.sum((obj_pos - ref_pos) ** 2, dim=1)
         pos_r = torch.exp(-d2 / (pos_std * pos_std))
-        angle = math_utils.quat_error_magnitude(obj.data.root_quat_w, motion_res["object_poses"][:, 3:7])
-        ori_r = torch.exp(-(angle ** 2) / (ori_std * ori_std))
-        r = pos_r * ori_r
+        if "object_poses" in motion_res:
+            angle = math_utils.quat_error_magnitude(obj.data.root_quat_w, motion_res["object_poses"][:, 3:7])
+            ori_r = torch.exp(-(angle ** 2) / (ori_std * ori_std))
+            r = pos_r * ori_r
+        else:
+            # Legacy pkls: no reference object orientation — position-only tracking.
+            r = pos_r
     if REWORK_OBJ_GATE:
         # LadderMan-style contact gating: only require object tracking when the reference says
         # contact is required (is_closed = post-grab hold phase); free (=1) otherwise so the
