@@ -962,6 +962,19 @@ class G1Rewards(G1RewardsBase):
             object_contact_pos = RewTerm(func=object_contact_pos_reward, weight=REWORK_CONTACT_POS_W,
                 params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"]),
                         "std": REWORK_CONTACT_POS_STD, "offset_x": REWORK_CONTACT_POS_OFFX})
+        # HS_REWORK_SONIC_ONLY=1: strip everything that is NOT in gear_sonic's native reward set
+        # (rewards/tracking/base.yaml = 6 tracking terms + action_rate/joint_limit/undesired_contacts).
+        # Drops the pick-task rewards AND the inherited survival/shaping terms. Combine with
+        # HS_REWORK_CONTACT=0 HS_REWORK_CONTACT_POS=0 so the conditional contact terms don't exist.
+        if os.environ.get("HS_REWORK_SONIC_ONLY", "0") == "1":
+            object_tracking = None
+            right_hand_state_target_reward_val = None
+            alive_reward = None
+            termination_penalty = None
+            dof_torques_l2 = None
+            dof_acc_l2 = None
+            feet_slide = None
+            feet_parallel_to_ground = None
 
 @configclass
 class TerminationsCfg(TerminationsCfgBase):
@@ -1547,7 +1560,9 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
             print("[G1PickBinaryFingers] object = mustard_bottle.usd (HS_OBJ=cuboid reverts to legacy cuboid)")
         # Swap the right-hand reward to the binary-match version (uses action_manager.action
         # directly; no PD-tracking lag, no sharpness parameter, dense {0,1} signal).
-        self.rewards.right_hand_state_target_reward_val.func = right_hand_binary_match_reward
+        # (Term is None under HS_REWORK_SONIC_ONLY=1 — nothing to swap then.)
+        if self.rewards.right_hand_state_target_reward_val is not None:
+            self.rewards.right_hand_state_target_reward_val.func = right_hand_binary_match_reward
         legs = self.scene.robot.actuators["legs"]
         print(f"[SONIC-gains] legs.stiffness = {legs.stiffness}")
         print(f"[SONIC-gains] legs.damping   = {legs.damping}")
