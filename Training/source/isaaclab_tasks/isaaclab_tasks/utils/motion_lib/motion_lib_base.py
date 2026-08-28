@@ -329,6 +329,13 @@ class MotionLibBase():
             
             self.quats.append(to_torch(np.array(motion_file_data['global_pose'].rotation().wxyz))[:200].clone())
             self.dof_pos.append(to_torch(np.array(motion_file_data['joints'])[:200]).clone())
+            if self.dof_pos[-1].shape[1] == 27 and len(self.joint_names) == 29:
+                # Legacy 27-DOF pkl (welded waist, original DreamControl motions): insert zero
+                # waist_roll/waist_pitch columns at JointNamesOrder-29 indices 13/14 so FK and the
+                # reference stay 29-DOF consistent — identical to the pre-holosoma zero-filled-waist
+                # behavior the encoder ran with before the 29-DOF upgrade.
+                _d = self.dof_pos[-1]
+                self.dof_pos[-1] = torch.cat([_d[:, :13], _d.new_zeros(_d.shape[0], 2), _d[:, 13:]], dim=1)
 
             self.local_keypts.append(self.get_keypts(self.dof_pos[-1], self.joint_names, pk2_robot)[:])
             self.global_keypts.append(self.transform_keypts(self.local_keypts[-1], self.quats[-1], self.transl[-1]))
