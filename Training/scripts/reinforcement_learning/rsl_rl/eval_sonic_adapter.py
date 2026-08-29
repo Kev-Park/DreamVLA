@@ -341,10 +341,17 @@ def main():
         lifted = (bottle_z > lift_thres) & is_closed
 
         held = torch.zeros(num_envs, device=device, dtype=torch.bool)
-        if REWORK and "object_poses" in motion_res:
+        if REWORK:
             gk = motion_res["global_keypts"]                                         # (N,39,3) env-local
             palm = gk[:, -1, :] + HAND_FWD * (gk[:, -1, :] - gk[:, -2, :])            # forward-projected palm
-            rest = motion_res["object_poses"][:, :3]
+            if "object_poses" in motion_res:
+                rest = motion_res["object_poses"][:, :3]
+            else:
+                # Legacy pkls (original DreamControl motions) carry no object trajectory; the
+                # static grab_pos(+offsets) IS the object rest. Matches the reward-side fallback
+                # in motion_tracking_pick_env._synth_object_ref_pos — without this the whole
+                # branch was skipped and HELD was structurally 0 for every episode.
+                rest = motion_res["grab_pos"] + motion_res["offsets"]
             synth_ref = torch.where(is_closed.unsqueeze(-1), palm, rest)             # (N,3) env-local
             obj_local = env.unwrapped.scene["object"].data.root_pos_w - env.unwrapped.scene.env_origins
             held = (torch.norm(obj_local - synth_ref, dim=1) < HELD_TOL) & is_closed
