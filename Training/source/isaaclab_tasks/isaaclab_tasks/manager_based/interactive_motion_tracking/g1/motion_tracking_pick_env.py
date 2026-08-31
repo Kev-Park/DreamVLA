@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, hoi_relative_body_pos_tracking_exp, hoi_relative_body_ori_tracking_exp, HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
 import numpy as np
 import os
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -1564,7 +1564,7 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
         # Swap the right-hand reward to the binary-match version (uses action_manager.action
         # directly; no PD-tracking lag, no sharpness parameter, dense {0,1} signal).
         # (Term is None under HS_REWORK_SONIC_ONLY=1 — nothing to swap then.)
-        if self.rewards.right_hand_state_target_reward_val is not None:
+        if getattr(self.rewards, "right_hand_state_target_reward_val", None) is not None:
             self.rewards.right_hand_state_target_reward_val.func = right_hand_binary_match_reward
         legs = self.scene.robot.actuators["legs"]
         print(f"[SONIC-gains] legs.stiffness = {legs.stiffness}")
@@ -1742,3 +1742,90 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
               "1280x960 (4:3, crisp); manipuland swapped to mustard bottle (grasp physics now "
               "from the bottle USD, not the trained cuboid); table-0.9 + SONIC gains inherited; "
               "green box + ground plane + glass bottle hidden; red grab marker disabled")
+
+
+# =============================================================================
+# MOTION-TRACKING-ONLY env (open_drawer_260617 reward spec)
+# =============================================================================
+# Pure motion tracking: no table, no object, no task rewards, no task terminations.
+# Used for (a) montage renders of reference-vs-policy tracking in a clean scene and
+# (b) residual training against the 6-term HOI reward set.
+
+@configclass
+class MotionTrackRewardsCfg:
+    """The six HOI motion-tracking rewards. Nothing else — no object, contact, finger,
+    regularizer, survival or gait-shaping terms. Max weighted sum = 15.0/step."""
+
+    tracking_anchor_pos = RewTerm(
+        func=anchor_pos_tracking_exp, weight=4.0,
+        params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.3, "eps": 0.0})
+    tracking_anchor_ori = RewTerm(
+        func=anchor_ori_tracking_exp, weight=3.0,
+        params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.4})
+    # Reset-aligned, NON-advancing targets (spec's "Important Implementation Detail").
+    tracking_relative_body_pos = RewTerm(
+        func=hoi_relative_body_pos_tracking_exp, weight=1.0,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=HOI_BODY_NAMES, preserve_order=True),
+                "std": 0.3, "keypt_idxs": HOI_BODY_KEYPT_IDXS})
+    tracking_relative_body_ori = RewTerm(
+        func=hoi_relative_body_ori_tracking_exp, weight=5.0,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=HOI_BODY_NAMES, preserve_order=True),
+                "std": 0.4, "keypt_idxs": HOI_BODY_KEYPT_IDXS})
+    tracking_body_linvel = RewTerm(
+        func=body_linvel_tracking_exp, weight=1.0,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=HOI_BODY_NAMES, preserve_order=True),
+                "keypt_idxs": HOI_BODY_KEYPT_IDXS, "std": 1.0})
+    tracking_body_angvel = RewTerm(
+        func=body_angvel_tracking_exp, weight=1.0,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=HOI_BODY_NAMES, preserve_order=True),
+                "keypt_idxs": HOI_BODY_KEYPT_IDXS, "std": 3.14})
+
+
+@configclass
+class MotionTrackTerminationsCfg:
+    """GENERIC terminations only: episode timeout + fall detection.
+
+    Deliberately excludes every task/tracking-specific termination (object deviation,
+    contact loss, reference deviation). HS_MOTIONTRACK_REF_DEV=<tau> re-enables the
+    reference-deviation termination if a run needs it.
+    """
+
+    time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    torso_below_threshold = DoneTerm(func=root_below_threshold, params={"thres": 0.3})
+    torso_angle_below_threshold = DoneTerm(func=root_angle_below_threshold, params={"thres": 0.5})
+    if os.environ.get("HS_MOTIONTRACK_REF_DEV", "") != "":
+        ref_deviation = DoneTerm(
+            func=root_deviation_termination,
+            params={"tau": float(os.environ.get("HS_MOTIONTRACK_REF_DEV", "0.5"))})
+
+
+@configclass
+class G1MotionTrackEnvCfg(G1PickBinaryFingersEnvCfg):
+    """Clean motion-tracking env: G1 + ground plane only, 6 tracking rewards.
+
+    Inherits the SONIC-matched actuators, 29-DOF articulation, binary-finger action
+    layout and camera setup from G1PickBinaryFingersEnvCfg, then strips the table, the
+    manipuland, and every object-dependent event/observation/reward/termination.
+    """
+
+    rewards: MotionTrackRewardsCfg = MotionTrackRewardsCfg()
+    terminations: MotionTrackTerminationsCfg = MotionTrackTerminationsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # --- clean scene: drop the collision table and the manipuland ---
+        self.scene.kitchen = None
+        self.scene.object = None
+        if hasattr(self.scene, "kitchen_visual"):
+            self.scene.kitchen_visual = None
+        # --- drop object-dependent events ---
+        for _ev in ("add_object_mass", "reset_object"):
+            if getattr(self.events, _ev, None) is not None:
+                setattr(self.events, _ev, None)
+        # --- drop object-dependent observations (they index scene["object"]) ---
+        for _ob in ("rel_pose_object", "rel_pose_object_w_link_val", "object_mass",
+                    "object_state", "object_ref_now", "object_ref_next"):
+            if getattr(self.observations.policy, _ob, None) is not None:
+                setattr(self.observations.policy, _ob, None)
+        print("[G1MotionTrack] clean scene (no table/object); rewards = 6 HOI tracking terms; "
+              "terminations = time_out + fall only")

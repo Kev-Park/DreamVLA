@@ -1260,3 +1260,129 @@ class G1MotionTrackingEnvCfg(ManagerBasedRLEnvCfg):
         self.episode_length_s = 10.0
         self.sim.dt = 0.005
         
+
+
+# =============================================================================
+# HOI motion-tracking reward set (open_drawer_260617 spec)
+# =============================================================================
+# Six-term pure motion-tracking reward. B = 14 tracked bodies; hand/gripper links
+# are deliberately excluded. Used by G1MotionTrackEnvCfg (no object, no table).
+HOI_BODY_NAMES = [
+    "pelvis",
+    "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link",
+    "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link",
+    "torso_link",
+    "left_shoulder_roll_link", "left_elbow_link", "left_wrist_yaw_link",
+    "right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link",
+]
+# Same 14 bodies as indices into motion_lib's 39 FK keypoints. Order MUST match
+# HOI_BODY_NAMES (asset_cfg.body_ids is resolved with preserve_order=True).
+HOI_BODY_KEYPT_IDXS = [0, 3, 5, 7, 9, 11, 13, 16, 24, 26, 29, 32, 34, 37]
+
+
+def _hoi_aligned_ref(env: ManagerBasedRLEnv, keypt_idxs):
+    """Reset-aligned reference body pos/quat in world (env-local) frame, cached per episode.
+
+    Per the spec, these targets are built ONCE when the motion is assigned / the env is
+    reset and are NOT advanced as reference time moves on:
+
+        dq       = heading(q_sim_anchor  (x)  q_ref_anchor^-1)          # yaw only
+        p_align  = [p_sim_anchor_x, p_sim_anchor_y, p_ref_anchor_z]
+        p~_i     = p_align + R(dq) (p_ref_i - p_ref_anchor)
+        q~_i     = dq (x) q_ref_i
+
+    The cache key is (motion_id, start_motion_time); a reset rewrites at least one of
+    those, so rows refresh automatically without depending on reset-event ordering.
+    """
+    n = env.num_envs
+    B = len(keypt_idxs)
+    dev = env.device
+    mid = env.motion_ids
+    st = env.start_motion_times.clone().detach().to(device=dev, dtype=torch.float32)
+    key = torch.stack([mid.to(torch.float32), st], dim=1)                      # (N,2)
+
+    cache = getattr(env, "_hoi_ref_cache", None)
+    if cache is None or cache["pos"].shape[1] != B or cache["pos"].shape[0] != n:
+        cache = {
+            "key": torch.full((n, 2), float("nan"), device=dev),
+            "pos": torch.zeros(n, B, 3, device=dev),
+            "quat": torch.zeros(n, B, 4, device=dev),
+        }
+        env._hoi_ref_cache = cache
+    stale = (cache["key"] != key).any(dim=1)
+
+    if bool(stale.any()):
+        idx = torch.where(stale)[0]
+        m = idx.shape[0]
+        res = env.motion_lib.get_motion_state(mid[idx], st[idx])
+        ref_root_pos = res["root_pos"]                                          # (M,3) env-local
+        ref_root_quat = res["root_rot"]                                         # (M,4) wxyz
+        ref_kpts = res["global_keypts"][:, keypt_idxs, :]                       # (M,B,3) env-local
+        # reference link orientations in world: R_root . R_link(dof)
+        R_link = get_link_rotations(res["dof_pos"], env.joint_names, env.pk2_robot)
+        R_link = R_link[:, keypt_idxs].reshape(-1, 3, 3)                        # (M*B,3,3)
+        q_link = math_utils.quat_from_matrix(R_link).reshape(m, B, 4)
+        q_ref_w = math_utils.quat_mul(
+            ref_root_quat.unsqueeze(1).expand(-1, B, -1).reshape(-1, 4),
+            q_link.reshape(-1, 4),
+        )                                                                       # (M*B,4)
+
+        asset: Articulation = env.scene["robot"]
+        sim_root_pos = asset.data.root_pos_w[idx] - env.scene.env_origins[idx]
+        sim_root_quat = asset.data.root_quat_w[idx]
+
+        # yaw-only alignment rotation
+        dq = math_utils.yaw_quat(
+            math_utils.quat_mul(sim_root_quat, math_utils.quat_conjugate(ref_root_quat))
+        )                                                                       # (M,4)
+        p_align = torch.stack(
+            [sim_root_pos[:, 0], sim_root_pos[:, 1], ref_root_pos[:, 2]], dim=1
+        )                                                                       # (M,3)
+        rel = (ref_kpts - ref_root_pos.unsqueeze(1)).reshape(-1, 3)             # (M*B,3)
+        dq_rep = dq.unsqueeze(1).expand(-1, B, -1).reshape(-1, 4)               # (M*B,4)
+
+        cache["pos"][idx] = p_align.unsqueeze(1) + math_utils.quat_apply(dq_rep, rel).reshape(m, B, 3)
+        cache["quat"][idx] = math_utils.quat_mul(dq_rep, q_ref_w).reshape(m, B, 4)
+        cache["key"][idx] = key[idx]
+
+    return cache["pos"], cache["quat"]
+
+
+def hoi_relative_body_pos_tracking_exp(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=HOI_BODY_NAMES, preserve_order=True),
+    std: float = 0.3,
+    keypt_idxs=None,
+) -> torch.Tensor:
+    """exp(-mean_i ||p~_ref_i - p_sim_i||^2 / std^2) over the 14 tracked bodies.
+
+    p~_ref is the RESET-ALIGNED (cached, non-advancing) reference — see _hoi_aligned_ref.
+    """
+    idxs = HOI_BODY_KEYPT_IDXS if keypt_idxs is None else keypt_idxs
+    p_ref, _ = _hoi_aligned_ref(env, idxs)
+    asset: Articulation = env.scene[asset_cfg.name]
+    p_sim = asset.data.body_pos_w[:, asset_cfg.body_ids, :] - env.scene.env_origins.unsqueeze(1)
+    err = torch.sum(torch.square(p_ref - p_sim), dim=-1).mean(dim=-1)
+    return torch.exp(-err / (std * std))
+
+
+def hoi_relative_body_ori_tracking_exp(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=HOI_BODY_NAMES, preserve_order=True),
+    std: float = 0.4,
+    keypt_idxs=None,
+) -> torch.Tensor:
+    """exp(-mean_i theta(q~_ref_i, q_sim_i)^2 / std^2) over the 14 tracked bodies.
+
+    q~_ref is the RESET-ALIGNED (cached, non-advancing) reference — see _hoi_aligned_ref.
+    """
+    idxs = HOI_BODY_KEYPT_IDXS if keypt_idxs is None else keypt_idxs
+    _, q_ref = _hoi_aligned_ref(env, idxs)
+    asset: Articulation = env.scene[asset_cfg.name]
+    q_sim = asset.data.body_quat_w[:, asset_cfg.body_ids, :]                    # (N,B,4) wxyz
+    n, B = q_sim.shape[0], q_sim.shape[1]
+    ang = math_utils.quat_error_magnitude(
+        q_ref.reshape(-1, 4), q_sim.reshape(-1, 4)
+    ).reshape(n, B)
+    err = torch.square(ang).mean(dim=-1)
+    return torch.exp(-err / (std * std))
