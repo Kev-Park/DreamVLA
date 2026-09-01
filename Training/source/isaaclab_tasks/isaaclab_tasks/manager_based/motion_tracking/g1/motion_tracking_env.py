@@ -1386,3 +1386,91 @@ def hoi_relative_body_ori_tracking_exp(
     ).reshape(n, B)
     err = torch.square(ang).mean(dim=-1)
     return torch.exp(-err / (std * std))
+
+
+# =============================================================================
+# HOI motion-tracking TERMINATIONS (open_drawer_260617 spec)
+# =============================================================================
+# End-effector subset used by the body-height termination, expressed as positions
+# WITHIN HOI_BODY_NAMES so it reuses the same reset-aligned cache as the rewards.
+HOI_EE_BODY_NAMES = [
+    "left_ankle_roll_link", "right_ankle_roll_link",
+    "left_wrist_yaw_link", "right_wrist_yaw_link",
+]
+HOI_EE_LOCAL_IDXS = [3, 6, 10, 13]   # indices of the above inside HOI_BODY_NAMES
+
+
+def _hoi_motion_times(env: ManagerBasedRLEnv) -> torch.Tensor:
+    return env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32
+    )
+
+
+def exceeded_anchor_height(
+    env: ManagerBasedRLEnv,
+    threshold: float = 0.25,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """|p_ref_pelvis_z(t) - p_sim_pelvis_z(t)| > threshold.
+
+    Despite the upstream term name (anchor_pos) this checks pelvis Z ONLY — not X/Y.
+    Time-varying reference (advances with the motion). Failure termination.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    res = env.motion_lib.get_motion_state(env.motion_ids, _hoi_motion_times(env))
+    sim_z = asset.data.root_pos_w[:, 2] - env.scene.env_origins[:, 2]
+    return (res["root_pos"][:, 2] - sim_z).abs() > threshold
+
+
+def exceeded_anchor_ori(
+    env: ManagerBasedRLEnv,
+    threshold: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """theta(q_ref_pelvis(t), q_sim_pelvis(t))^2 > threshold  (threshold in rad^2).
+
+    Full pelvis orientation incl. heading. threshold=1 => theta > 1 rad ~= 57.3 deg.
+    Time-varying reference. Failure termination.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    res = env.motion_lib.get_motion_state(env.motion_ids, _hoi_motion_times(env))
+    ang = math_utils.quat_error_magnitude(res["root_rot"], asset.data.root_quat_w)
+    return (ang ** 2) > threshold
+
+
+def exceeded_body_height(
+    env: ManagerBasedRLEnv,
+    threshold: float = 0.25,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=HOI_EE_BODY_NAMES, preserve_order=True),
+    local_idxs=None,
+) -> torch.Tensor:
+    """OR_i |p~_ref_i_z - p_sim_i_z(t)| > threshold over the ankle/wrist bodies.
+
+    Z ONLY. The reference is the RESET-ALIGNED cached target (same cache the relative
+    body rewards use), NOT the advancing reference. Failure termination.
+    """
+    idxs = HOI_EE_LOCAL_IDXS if local_idxs is None else local_idxs
+    p_ref, _ = _hoi_aligned_ref(env, HOI_BODY_KEYPT_IDXS)
+    ref_z = p_ref[:, idxs, 2]                                                   # (N,4)
+    asset: Articulation = env.scene[asset_cfg.name]
+    sim_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2] - env.scene.env_origins[:, 2:3]
+    return ((ref_z - sim_z).abs() > threshold).any(dim=1)
+
+
+def tracking_time_out(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Reference-motion timeout: the episode ends when the motion itself runs out.
+
+    Upstream: elapsed_steps + start_steps + 1 >= total_steps. Our reference is 20 fps
+    while control is 50 Hz, so the faithful translation is in TIME rather than frames:
+
+        (episode_length_buf + 1) * step_dt + start_motion_times >= motion_length
+
+    Marked time_out=True (normal end of episode, not a failure). Replaces the flat
+    episode_length_s cap, so episodes no longer run past the reference into the
+    clamped/frozen final frame.
+    """
+    t_next = (env.episode_length_buf + 1) * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32
+    )
+    total = env.motion_lib._motion_lengths[env.motion_ids]
+    return t_next >= total

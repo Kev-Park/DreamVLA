@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, hoi_relative_body_pos_tracking_exp, hoi_relative_body_ori_tracking_exp, HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, hoi_relative_body_pos_tracking_exp, hoi_relative_body_ori_tracking_exp, HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS, exceeded_anchor_height, exceeded_anchor_ori, exceeded_body_height, tracking_time_out, HOI_EE_BODY_NAMES, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
 import numpy as np
 import os
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -1783,20 +1783,29 @@ class MotionTrackRewardsCfg:
 
 @configclass
 class MotionTrackTerminationsCfg:
-    """GENERIC terminations only: episode timeout + fall detection.
+    """The four open_drawer_260617 tracking terminations. An episode ends when ANY is true.
 
-    Deliberately excludes every task/tracking-specific termination (object deviation,
-    contact loss, reference deviation). HS_MOTIONTRACK_REF_DEV=<tau> re-enables the
-    reference-deviation termination if a run needs it.
+    1. anchor_pos      |ref pelvis z - sim pelvis z| > 0.25 m          (failure)
+    2. anchor_ori_full theta(ref pelvis quat, sim pelvis quat)^2 > 1   (failure, ~57.3 deg)
+    3. ee_body_pos     any ankle/wrist |aligned ref z - sim z| > 0.25  (failure)
+    4. time_out        reference motion exhausted                     (NOT a failure)
+
+    The drawer-joint termination from the source config has no analogue here (no
+    articulated object in this env) and is omitted. No fall/height backstop is added:
+    condition 1 already catches a fallen pelvis.
     """
 
-    time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    torso_below_threshold = DoneTerm(func=root_below_threshold, params={"thres": 0.3})
-    torso_angle_below_threshold = DoneTerm(func=root_angle_below_threshold, params={"thres": 0.5})
-    if os.environ.get("HS_MOTIONTRACK_REF_DEV", "") != "":
-        ref_deviation = DoneTerm(
-            func=root_deviation_termination,
-            params={"tau": float(os.environ.get("HS_MOTIONTRACK_REF_DEV", "0.5"))})
+    anchor_pos = DoneTerm(
+        func=exceeded_anchor_height,
+        params={"threshold": 0.25, "asset_cfg": SceneEntityCfg("robot")})
+    anchor_ori_full = DoneTerm(
+        func=exceeded_anchor_ori,
+        params={"threshold": 1.0, "asset_cfg": SceneEntityCfg("robot")})
+    ee_body_pos = DoneTerm(
+        func=exceeded_body_height,
+        params={"threshold": 0.25,
+                "asset_cfg": SceneEntityCfg("robot", body_names=HOI_EE_BODY_NAMES, preserve_order=True)})
+    time_out = DoneTerm(func=tracking_time_out, time_out=True)
 
 
 @configclass
