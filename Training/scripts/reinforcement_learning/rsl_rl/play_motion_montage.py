@@ -41,6 +41,10 @@ parser.add_argument("--seed", type=int, default=0,
 parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-MotionOnly-v0", help="Name of the task.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--name", type=str, default="sonic_adapter_play.mp4", help="Output video file name.")
+parser.add_argument("--render-height", type=int, default=960,
+                    help="Third-person camera height px (montages default to 960 for speed; the single-clip renderer uses 1920).")
+parser.add_argument("--render-width", type=int, default=1280,
+                    help="Third-person camera width px.")
 parser.add_argument("--num-motions", type=int, default=20,
                     help="How many motions to sample and stitch into the montage.")
 parser.add_argument("--motion-seed", type=int, default=0,
@@ -224,7 +228,7 @@ def _inject_cameras(env_cfg) -> None:
             focal_length=18.1476, focus_distance=400.0,
             horizontal_aperture=20.955, clipping_range=(0.1, 10000.0),
         ),
-        data_types=["rgb"], height=1920, width=2560,
+        data_types=["rgb"], height=int(args_cli.render_height), width=int(args_cli.render_width),
         offset=CameraCfg.OffsetCfg(
             pos=(-1.03 + 2.1 - 0.034, 4.05 - 0.9, 1.31),
             rot=rot_quat, convention="opengl",
