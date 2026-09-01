@@ -748,12 +748,17 @@ def main():
     for _seg_i, _mid in enumerate(_mlist):
         # switch the env onto this motion and reset onto its first frame
         env.unwrapped._forced_motion_id = int(_mid)
-        obs_out = env.reset()
-        obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
-        if args_cli.reference_playback:
-            _write_reference_pose(env, ref_joint_map, device)
-        if args_cli.overlay_ref:
-            _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
+        # NOTE: must run under inference_mode. The stepped frames above populate the
+        # articulation buffers with inference tensors, and reset writes root poses to
+        # sim in-place -- doing that outside inference_mode raises
+        # "Inplace update to inference tensor outside InferenceMode".
+        with torch.inference_mode():
+            obs_out = env.reset()
+            obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
+            if args_cli.reference_playback:
+                _write_reference_pose(env, ref_joint_map, device)
+            if args_cli.overlay_ref:
+                _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
         _APP.update()
         _APP.update()
         print(f"[montage] segment {_seg_i + 1}/{len(_mlist)}: motion_id={_mid}")
