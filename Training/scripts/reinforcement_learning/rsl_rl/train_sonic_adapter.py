@@ -60,6 +60,11 @@ parser.add_argument(
     help="Path to the frozen SONIC decoder ONNX (model_decoder.onnx).",
 )
 parser.add_argument(
+    "--sonic-pt", type=str, default=None,
+    help="Directory of a native SONIC .pt checkpoint (groot-era). Overrides the ONNX "
+         "encoder/decoder: 640-D g1 encoder input + heading-normalized anchor.",
+)
+parser.add_argument(
     "--sonic-encoder-onnx", type=str,
     default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
     help="Path to the frozen SONIC encoder ONNX (model_encoder.onnx).",
@@ -421,10 +426,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # ---- load BOTH frozen SONIC modules and wrap the env ----
     device = agent_cfg.device
-    print(f"[train_sonic_adapter] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
-    decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
-    print(f"[train_sonic_adapter] loading frozen SONIC encoder ONNX: {args_cli.sonic_encoder_onnx}")
-    encoder = load_frozen_encoder(args_cli.sonic_encoder_onnx, device)  # batch-dim-patched loader
+    if args_cli.sonic_pt:
+        from vla_sonic.sonic_pt import load_sonic_pt
+        print(f"[train_sonic_adapter] loading native SONIC .pt: {args_cli.sonic_pt}")
+        encoder, decoder = load_sonic_pt(args_cli.sonic_pt, device)
+    else:
+        print(f"[train_sonic_adapter] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
+        decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
+        print(f"[train_sonic_adapter] loading frozen SONIC encoder ONNX: {args_cli.sonic_encoder_onnx}")
+        encoder = load_frozen_encoder(args_cli.sonic_encoder_onnx, device)  # batch-dim-patched loader
     # clip_actions=None on purpose: the residual is tanh-bounded in the wrapper and the
     # body token is FSQ-bounded downstream — an outer clamp on (base + residual) could
     # clip the FROZEN BASE's contribution, which must never be distorted.
@@ -433,6 +443,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         residual_scale=args_cli.residual_scale,
         residual_transform=args_cli.residual_transform,
         clip_actions=None,
+        pt_mode=bool(args_cli.sonic_pt),
     )
 
     # create runner from rsl-rl
