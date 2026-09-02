@@ -39,6 +39,8 @@ import isaaclab.utils.math as math_utils
 
 from .planner_to_utm import ENCODER_SLICES, ENCODER_TOTAL_DIM
 from .token_action_wrapper import (
+    FSQ_MAX_NUM_TOKENS,
+    FSQ_NUM_LEVELS,
     N_BODY_JOINTS,
     TOKEN_TOTAL_DIM,
     TokenActionDecoderVecEnvWrapper,
@@ -140,9 +142,14 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
     """
 
     def __init__(self, env, decoder, encoder, device, *, residual_scale: float = 0.3,
-                 residual_transform: str = "additive", clip_actions=None):
+                 residual_transform: str = "additive", clip_actions=None,
+                 pt_mode: bool = False):
         super().__init__(env, decoder, device, clip_actions=clip_actions)
 
+        # pt_mode: native groot-era .pt checkpoint. The g1 encoder takes a 640-D
+        # per-frame-interleaved input and the anchor is HEADING-normalized (yaw-only),
+        # vs the v1.0 release ONNX which takes 1762-D flat slots with a body-frame anchor.
+        self.pt_mode = bool(pt_mode)
         self.encoder = encoder
         self.residual_scale = float(residual_scale)
         # How the policy latent transforms the frozen base TOKEN before the FSQ snap.
@@ -248,21 +255,43 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
             # Per-frame anchor rot6d: (R_robot_now)^-1 · R_ref_root(t+k·0.1), row-major
             # flatten of the first two matrix COLUMNS (eval: _R_rel_k[:, :2].flatten("C")).
             robot_quat = unw.scene["robot"].data.root_quat_w                            # (N, 4) wxyz
+            if self.pt_mode:
+                # HEADING-normalized anchor: canonicalize by the robot's yaw only, so the
+                # robot's own pitch/roll no longer rotate the reference target.
+                # (gear_sonic commands.py::root_rot_dif_heading_multi_future)
+                robot_quat = math_utils.yaw_quat(robot_quat)
             robot_quat_rep = robot_quat.repeat_interleave(N_FUTURE_FRAMES, dim=0)       # (N*10, 4)
             ref_quat = res["root_rot"]                                                  # (N*10, 4) wxyz
             rel = math_utils.quat_mul(math_utils.quat_conjugate(robot_quat_rep), ref_quat)
             mat = math_utils.matrix_from_quat(rel)                                      # (N*10, 3, 3)
             rot6d = mat[:, :, :2].reshape(N, N_FUTURE_FRAMES, 6)                        # row-major ✓
 
-            # Assemble the (N, 1762) encoder input. G1 mode id = 0 → mode slot stays zero.
-            buf = torch.zeros(N, ENCODER_TOTAL_DIM, device=self._dev, dtype=torch.float32)
-            buf[:, self._sl_pos] = pos29.reshape(N, -1)
-            buf[:, self._sl_vel] = vel29.reshape(N, -1)
-            buf[:, self._sl_anchor] = rot6d.reshape(N, -1)
+            if self.pt_mode:
+                # (N, 640): command_multi_future = cat([all 10 pos frames, all 10 vel
+                # frames]) -> reshape (N,10,58); anchor -> (N,10,6); cat on the feature
+                # dim, then flatten. The temporal split is nominal (slot k is NOT frame
+                # k's pos+vel) but reproduces gear_sonic exactly -- see sonic_pt.py.
+                cmd = torch.cat([pos29.reshape(N, -1), vel29.reshape(N, -1)], dim=1)     # (N,580)
+                cmd_nf = cmd.view(N, N_FUTURE_FRAMES, -1)                                # (N,10,58)
+                anc_nf = rot6d.reshape(N, -1).view(N, N_FUTURE_FRAMES, -1)               # (N,10,6)
+                buf = torch.cat([cmd_nf, anc_nf], dim=-1).reshape(N, -1)                 # (N,640)
+            else:
+                # Assemble the (N, 1762) encoder input. G1 mode id = 0 → mode slot stays zero.
+                buf = torch.zeros(N, ENCODER_TOTAL_DIM, device=self._dev, dtype=torch.float32)
+                buf[:, self._sl_pos] = pos29.reshape(N, -1)
+                buf[:, self._sl_vel] = vel29.reshape(N, -1)
+                buf[:, self._sl_anchor] = rot6d.reshape(N, -1)
 
             out = self.encoder(buf)
             if isinstance(out, (tuple, list)):
                 out = out[0]
+            if self.pt_mode:
+                # The release ONNX bakes FSQ into the graph, so its output is already on
+                # the codebook grid. The raw .pt MLP does NOT -- the quantizer is a
+                # separate module in gear_sonic -- so quantize here to land the base token
+                # on the same grid the decoder was trained against.
+                out = out.reshape(N, FSQ_MAX_NUM_TOKENS, FSQ_NUM_LEVELS)
+                out, _ = self.fsq(out)
             self._base_token = out.reshape(N, TOKEN_TOTAL_DIM).to(torch.float32)
 
             # ---- one-shot self-parity diagnostic (env 0, first call) ----

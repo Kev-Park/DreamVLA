@@ -41,6 +41,9 @@ parser.add_argument("--seed", type=int, default=0,
 parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-MotionOnly-v0", help="Name of the task.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--name", type=str, default="sonic_adapter_play.mp4", help="Output video file name.")
+parser.add_argument("--sonic-pt", type=str, default=None,
+                    help="Directory of a native SONIC .pt checkpoint (groot-era). Overrides the "
+                         "ONNX encoder/decoder: 640-D g1 encoder input + heading-normalized anchor.")
 parser.add_argument("--render-height", type=int, default=960,
                     help="Third-person camera height px (montages default to 960 for speed; the single-clip renderer uses 1920).")
 parser.add_argument("--render-width", type=int, default=1280,
@@ -637,15 +640,22 @@ def main():
     else:
         # ---- frozen encoder + decoder + adapter wrapper (same wiring as training) ----
         print(f"[play_sonic_adapter] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
-        decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
+        encoder_pt = decoder_pt = None
+        if args_cli.sonic_pt:
+            from vla_sonic.sonic_pt import load_sonic_pt
+            encoder_pt, decoder_pt = load_sonic_pt(args_cli.sonic_pt, device)
+            decoder = decoder_pt
+        else:
+            decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
         print(f"[play_sonic_adapter] loading frozen SONIC encoder ONNX: {args_cli.sonic_encoder_onnx}")
-        encoder = load_frozen_encoder(args_cli.sonic_encoder_onnx, device)
+        encoder = encoder_pt if args_cli.sonic_pt else load_frozen_encoder(args_cli.sonic_encoder_onnx, device)
         env = TokenAdapterVecEnvWrapper(
             env, decoder, encoder, device,
             residual_scale=args_cli.residual_scale,
             residual_transform=args_cli.residual_transform,
             clip_actions=None,
-        )
+        pt_mode=bool(args_cli.sonic_pt),
+    )
 
     # ---- policy: trained adapter, zero-residual baseline, reference playback, or reference-PD ----
     if args_cli.reference_pd:
