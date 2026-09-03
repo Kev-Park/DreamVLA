@@ -1838,3 +1838,46 @@ class G1MotionTrackEnvCfg(G1PickBinaryFingersEnvCfg):
                 setattr(self.observations.policy, _ob, None)
         print("[G1MotionTrack] clean scene (no table/object); rewards = 6 HOI tracking terms; "
               "terminations = time_out + fall only")
+
+
+# =============================================================================
+# PICK + HOI env: HOI tracking rewards/terminations PLUS the pick task rewards
+# =============================================================================
+# Same 6 HOI tracking terms and 4 HOI terminations as G1MotionTrackEnvCfg, but the
+# table + manipuland are kept and the object/contact/finger task rewards are re-added.
+# Used to test whether the HOI reward+termination spec also improves the pick task.
+
+@configclass
+class PickHOIRewardsCfg(MotionTrackRewardsCfg):
+    """6 HOI tracking rewards + the pick-task rewards (object, contact, finger)."""
+
+    # finger open/close tracking (swapped to the binary-match variant by the parent env)
+    right_hand_state_target_reward_val = RewTerm(func=right_hand_state_target_reward, weight=0.3)
+    # object-as-reference tracking (point-cloud form under HS_REWORK_OBJ_PC=1),
+    # contact-gated by the reference is_closed flag when HS_REWORK_OBJ_GATE=1.
+    object_tracking = RewTerm(func=object_tracking_reward, weight=REWORK_OBJ_W,
+        params={"pos_std": 0.1, "ori_std": 0.5})
+    # LadderMan position-based contact reward (the force sensor reads ~0, so this
+    # replaces the force-based term): keep the palm on the object while is_closed.
+    object_contact_pos = RewTerm(func=object_contact_pos_reward, weight=REWORK_CONTACT_POS_W,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"]),
+                "std": REWORK_CONTACT_POS_STD, "offset_x": REWORK_CONTACT_POS_OFFX})
+
+
+@configclass
+class G1PickHOIEnvCfg(G1PickBinaryFingersEnvCfg):
+    """Pick scene (table + manipuland) with the HOI reward/termination spec + task rewards.
+
+    Inherits the full pick scene, SONIC-matched actuators, binary fingers and object
+    events/observations from G1PickBinaryFingersEnvCfg; replaces only the reward and
+    termination sets. Run with HS_REWORK=1 so the object spawns on the reference object
+    trajectory (reset_object_state_rework) and the privileged object observations exist.
+    """
+
+    rewards: PickHOIRewardsCfg = PickHOIRewardsCfg()
+    terminations: MotionTrackTerminationsCfg = MotionTrackTerminationsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        print("[G1PickHOI] pick scene retained; rewards = 6 HOI tracking + object/contact/finger; "
+              "terminations = 4 HOI (pelvis z, pelvis ori, ankle/wrist z, ref timeout)")
