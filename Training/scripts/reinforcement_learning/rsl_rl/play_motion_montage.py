@@ -41,6 +41,15 @@ parser.add_argument("--seed", type=int, default=0,
 parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-MotionOnly-v0", help="Name of the task.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--name", type=str, default="sonic_adapter_play.mp4", help="Output video file name.")
+parser.add_argument("--camera-track", action="store_true", default=False,
+                    help="Aim the third-person camera at the robot at the start of each segment "
+                         "(uses Camera.set_world_poses_from_view). Needed for motion sets whose "
+                         "root sits away from the hard-coded kitchen camera pose, e.g. Pick_real2 "
+                         "which is stationary at the origin.")
+parser.add_argument("--camera-offset", type=str, default="2.6,2.6,1.4",
+                    help="Camera eye offset from the robot root (x,y,z, metres) when --camera-track.")
+parser.add_argument("--camera-look-z", type=float, default=0.9,
+                    help="Height above the robot root xy that the camera looks at when --camera-track.")
 parser.add_argument("--sonic-pt", type=str, default=None,
                     help="Directory of a native SONIC .pt checkpoint (groot-era). Overrides the "
                          "ONNX encoder/decoder: 640-D g1 encoder input + heading-normalized anchor.")
@@ -269,6 +278,24 @@ def _read_camera_rgb(env, key: str):
 
 
 # =========================================================================
+def _aim_camera_at_robot(env, device):
+    """Point the third-person camera at the robot's current root.
+
+    The default camera pose is baked for the pick scene (kitchen at x~2.1). Motion sets
+    that live elsewhere -- Pick_real2 is stationary at the origin -- fall outside that
+    frame. Re-aim from the live root each segment so the robot is always centred.
+    """
+    unw = env.unwrapped
+    cam = unw.scene["camera"]
+    root = unw.scene["robot"].data.root_pos_w[:1, :].clone()          # (1,3) world
+    off = torch.tensor([[float(v) for v in args_cli.camera_offset.split(",")]],
+                       device=root.device, dtype=root.dtype)
+    eye = root + off
+    target = root.clone()
+    target[:, 2] = float(args_cli.camera_look_z)
+    cam.set_world_poses_from_view(eye, target)
+
+
 # Reference-motion overlay markers (--overlay-ref).
 # 39 spheres at the reference link world positions (motion_lib.global_keypts),
 # updated every frame. Right-arm links (idx>=31) are RED, the rest GREEN, so the
@@ -769,6 +796,8 @@ def main():
                 _write_reference_pose(env, ref_joint_map, device)
             if args_cli.overlay_ref:
                 _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
+            if args_cli.camera_track:
+                _aim_camera_at_robot(env, device)
         _APP.update()
         _APP.update()
         print(f"[montage] segment {_seg_i + 1}/{len(_mlist)}: motion_id={_mid}")
