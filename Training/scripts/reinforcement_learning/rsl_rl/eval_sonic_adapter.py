@@ -57,6 +57,8 @@ parser.add_argument("--path", type=str, default=None,
 parser.add_argument("--sonic-decoder-onnx", type=str,
                     default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
                     help="Path to the frozen SONIC decoder ONNX (must match training).")
+parser.add_argument("--sonic-pt", type=str, default=None,
+                    help="Directory of a native SONIC .pt checkpoint (groot-era); overrides ONNX.")
 parser.add_argument("--sonic-encoder-onnx", type=str,
                     default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
                     help="Path to the frozen SONIC encoder ONNX (must match training).")
@@ -212,14 +214,20 @@ def main():
     # ---- frozen encoder + decoder + adapter wrapper (same wiring as training) ----
     device = agent_cfg.device
     print(f"[eval_sonic_adapter] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
-    decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
+    if args_cli.sonic_pt:
+        from vla_sonic.sonic_pt import load_sonic_pt
+        encoder_pt, decoder_pt = load_sonic_pt(args_cli.sonic_pt, device)
+        decoder = decoder_pt
+    else:
+        decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
     print(f"[eval_sonic_adapter] loading frozen SONIC encoder ONNX: {args_cli.sonic_encoder_onnx}")
-    encoder = load_frozen_encoder(args_cli.sonic_encoder_onnx, device)
+    encoder = encoder_pt if args_cli.sonic_pt else load_frozen_encoder(args_cli.sonic_encoder_onnx, device)
     env = TokenAdapterVecEnvWrapper(
         env, decoder, encoder, device,
         residual_scale=args_cli.residual_scale,
         residual_transform=args_cli.residual_transform,
         clip_actions=None,
+        pt_mode=bool(args_cli.sonic_pt),
     )
 
     # ---- initialize env.n_successes (gated on existence in object_above_threshold) ----
@@ -275,6 +283,17 @@ def main():
         _hand_bid = env.unwrapped.scene['robot'].find_bodies('right_wrist_yaw_link')[0][0]
     except Exception:
         _hand_bid = None
+    # Motion-tracking-only envs (Isaac-Motion-Tracking-MotionOnly-v0) have NO manipuland.
+    # Every object-based metric (lift / held / touched / toppled and the FAILCLASS classes
+    # built on them) is undefined there; we still report terminations + root error.
+    try:
+        _ = env.unwrapped.scene["object"]
+        HAS_OBJECT = True
+    except Exception:
+        HAS_OBJECT = False
+    if not HAS_OBJECT:
+        print("  [eval] no manipuland in this env -> object metrics skipped; "
+              "reporting termination breakdown + root tracking error only")
 
     just_reset_mask = torch.ones(num_envs, device=device, dtype=torch.bool)
     # ---- per-clip (per motion_id) attribution ----
@@ -331,7 +350,8 @@ def main():
             obs, _, dones, extras = env.step(actions)
 
         # Read bottle z + is_closed AFTER step.
-        bottle_z = env.unwrapped.scene["object"].data.root_pos_w[:, 2]
+        bottle_z = (env.unwrapped.scene["object"].data.root_pos_w[:, 2] if HAS_OBJECT
+                    else torch.zeros(num_envs, device=device))
         motion_times = (
             env.unwrapped.episode_length_buf * env.unwrapped.step_dt
             + env.unwrapped.start_motion_times.clone().detach().to(device=device, dtype=torch.float32)
@@ -341,7 +361,7 @@ def main():
         lifted = (bottle_z > lift_thres) & is_closed
 
         held = torch.zeros(num_envs, device=device, dtype=torch.bool)
-        if REWORK:
+        if REWORK and HAS_OBJECT:
             gk = motion_res["global_keypts"]                                         # (N,39,3) env-local
             palm = gk[:, -1, :] + HAND_FWD * (gk[:, -1, :] - gk[:, -2, :])            # forward-projected palm
             if "object_poses" in motion_res:
@@ -357,12 +377,14 @@ def main():
             held = (torch.norm(obj_local - synth_ref, dim=1) < HELD_TOL) & is_closed
 
         # ---- touched / toppled (per-step) ----
-        obj_pos_w = env.unwrapped.scene['object'].data.root_pos_w - env.unwrapped.scene.env_origins
-        oq = env.unwrapped.scene['object'].data.root_quat_w                       # wxyz
-        up_z = 1.0 - 2.0 * (oq[:, 1] ** 2 + oq[:, 2] ** 2)                          # object up-axis z-component
-        toppled_now = up_z < _TOPPLE_COS
+        toppled_now = torch.zeros(num_envs, device=device, dtype=torch.bool)
         touched_now = torch.zeros(num_envs, device=device, dtype=torch.bool)
-        if _hand_bid is not None:
+        if HAS_OBJECT:
+            obj_pos_w = env.unwrapped.scene['object'].data.root_pos_w - env.unwrapped.scene.env_origins
+            oq = env.unwrapped.scene['object'].data.root_quat_w                   # wxyz
+            up_z = 1.0 - 2.0 * (oq[:, 1] ** 2 + oq[:, 2] ** 2)                      # object up-axis z
+            toppled_now = up_z < _TOPPLE_COS
+        if HAS_OBJECT and _hand_bid is not None:
             robot = env.unwrapped.scene['robot']
             hq = robot.data.body_quat_w[:, _hand_bid, :]                            # wxyz
             wv, xv, yv, zv = hq[:, 0], hq[:, 1], hq[:, 2], hq[:, 3]
