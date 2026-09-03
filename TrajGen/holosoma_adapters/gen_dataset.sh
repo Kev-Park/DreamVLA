@@ -4,6 +4,12 @@
 # CPU) -> Adapter B with AL refine (dreamcontrol_51, GPU <gpu>) -> <out_dir>/pick_<id>.pkl.
 # Launch several of these pinned to different GPUs to parallelize the full filtered dataset.
 gpu=$1; out=$2; shift 2
+# Optional overrides (default = holosoma defaults, byte-identical to the original pipeline):
+#   HS_FOOT_STICK_TOL : --retargeter.foot-sticking-tolerance (default 1e-3). LOWER = stricter
+#                       per-frame XY window; foot sticking is relative to the previous frame,
+#                       so a tighter window slows accumulated drift over a clip.
+#   HS_NPZ_DIR        : holosoma --save-dir (default ~/kevin/hs_pick_out). Point elsewhere to
+#                       avoid clobbering the retarget output an existing dataset was built from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HS=~/kevin/holosoma/src/holosoma_retargeting/holosoma_retargeting
 HS_ACT=""
@@ -13,10 +19,12 @@ done
 mkdir -p "$out"
 for id in "$@"; do
   ( source "$HS_ACT" hsretargeting; python "$SCRIPT_DIR/export_to_holosoma.py" "$id" ) > /tmp/_gd_A_$id.log 2>&1 || { echo "$id ADAPTERA_FAIL"; continue; }
-  OUT=~/kevin/hs_pick_out/pick_${id}_original.npz; rm -f "$OUT"
+  NPZ_DIR=${HS_NPZ_DIR:-~/kevin/hs_pick_out}
+  NPZ_DIR=$(eval echo "$NPZ_DIR"); mkdir -p "$NPZ_DIR"
+  OUT=$NPZ_DIR/pick_${id}_original.npz; rm -f "$OUT"
   ( source "$HS_ACT" hsretargeting; cd "$HS"; timeout 400 python examples/robot_retarget.py \
       --task-type object_interaction --robot g1 --data-format smplx --task-name "pick_$id" \
-      --data-path ~/kevin/hs_input --save-dir ~/kevin/hs_pick_out --task-config.object-name mustard \
+      --data-path ~/kevin/hs_input --save-dir "$NPZ_DIR" --task-config.object-name mustard       ${HS_FOOT_STICK_TOL:+--retargeter.foot-sticking-tolerance $HS_FOOT_STICK_TOL} \
     ) > /tmp/_gd_HS_$id.log 2>&1
   [ -f "$OUT" ] || { echo "$id HOLOSOMA_FAIL"; continue; }
   ( source ~/miniconda3/etc/profile.d/conda.sh; conda activate dreamcontrol_51
