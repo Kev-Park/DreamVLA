@@ -41,6 +41,9 @@ parser.add_argument("--seed", type=int, default=0,
 parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-MotionOnly-v0", help="Name of the task.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--name", type=str, default="sonic_adapter_play.mp4", help="Output video file name.")
+parser.add_argument("--no-stability", action="store_true", default=False,
+                    help="Disable the STABLE/UNSTABLE HUD readout (CoM ground projection vs the "
+                         "support polygon of the planted feet).")
 parser.add_argument("--camera-track", action="store_true", default=False,
                     help="Aim the third-person camera at the robot at the start of each segment "
                          "(uses Camera.set_world_poses_from_view). Needed for motion sets whose "
@@ -278,6 +281,98 @@ def _read_camera_rgb(env, key: str):
 
 
 # =========================================================================
+# ---------------------------------------------------------------------------
+# Static-stability readout: whole-body CoM ground projection vs support polygon.
+# Support polygon = convex hull of the URDF contact spheres of whichever feet are
+# planted (heel x=-0.05, toe x=+0.12, y=+-0.025/0.030, z=-0.03 in ankle_roll frame).
+# Sign convention: margin > 0 => projection INSIDE the polygon => statically stable.
+# NOTE: during single support / weight transfer a *correct* walking motion is
+# routinely UNSTABLE by this test -- it only implies a defect in a pose that is
+# meant to be held (e.g. the grab/hold phase).
+# ---------------------------------------------------------------------------
+_FOOT_CONTACT_PTS = np.array([[-0.05, 0.025, -0.03], [-0.05, -0.025, -0.03],
+                              [0.12, 0.030, -0.03], [0.12, -0.030, -0.03]])
+_STAB = {}
+
+
+def _stability_init(env):
+    """Cache body masses (from the articulation) and the ankle body indices."""
+    robot = env.unwrapped.scene["robot"]
+    names = list(robot.data.body_names)
+    try:
+        masses = robot.root_physx_view.get_masses()[0].cpu().numpy()
+    except Exception:
+        masses = np.asarray(robot.data.default_mass[0].cpu().numpy())
+    idx = {}
+    for f in ("left_ankle_roll_link", "right_ankle_roll_link"):
+        if f in names:
+            idx[f] = names.index(f)
+    _STAB["masses"] = masses
+    _STAB["feet"] = idx
+    _STAB["ok"] = bool(idx) and float(masses.sum()) > 0
+    print(f"[stability] {len(names)} bodies, mass {masses.sum():.2f} kg, "
+          f"feet {list(idx)} -> readout {'ON' if _STAB['ok'] else 'OFF'}")
+
+
+def _convex_hull2d(pts):
+    pts = np.unique(pts, axis=0)
+    if len(pts) < 3:
+        return pts
+    pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
+
+    def half(P):
+        h = []
+        for q in P:
+            while len(h) >= 2 and np.cross(h[-1] - h[-2], q - h[-2]) <= 0:
+                h.pop()
+            h.append(q)
+        return h
+    return np.array(half(pts)[:-1] + half(pts[::-1])[:-1])
+
+
+def _stability_margin(env):
+    """Return (stable: bool, margin_m: float). margin>0 = CoM inside support polygon."""
+    if not _STAB.get("ok"):
+        return None, None
+    robot = env.unwrapped.scene["robot"]
+    org = env.unwrapped.scene.env_origins[0].cpu().numpy()
+    pos = robot.data.body_pos_w[0].cpu().numpy() - org          # (B,3)
+    quat = robot.data.body_quat_w[0].cpu().numpy()              # (B,4) wxyz
+    m = _STAB["masses"]
+    com = (m[:, None] * pos).sum(0) / m.sum()
+
+    def R_of(q):
+        w, x, y, z = q
+        return np.array([[1-2*(y*y+z*z), 2*(x*y-w*z), 2*(x*z+w*y)],
+                         [2*(x*y+w*z), 1-2*(x*x+z*z), 2*(y*z-w*x)],
+                         [2*(x*z-w*y), 2*(y*z+w*x), 1-2*(x*x+y*y)]])
+
+    foot_pts, lows = {}, {}
+    for f, bi in _STAB["feet"].items():
+        P = pos[bi] + (R_of(quat[bi]) @ _FOOT_CONTACT_PTS.T).T
+        foot_pts[f] = P
+        lows[f] = P[:, 2].min()
+    floor = min(lows.values())
+    planted = [P for f, P in foot_pts.items() if lows[f] < floor + 0.03]
+    if not planted:
+        return False, float("nan")                              # flight phase
+    hull = _convex_hull2d(np.concatenate(planted, 0)[:, :2])
+    if len(hull) < 3:
+        return False, float("nan")
+    inside, dmin = True, 1e9
+    for i in range(len(hull)):
+        a, b = hull[i], hull[(i + 1) % len(hull)]
+        e = b - a
+        L = float(np.linalg.norm(e))
+        if L < 1e-9:
+            continue
+        if np.cross(e, com[:2] - a) < 0:
+            inside = False
+        t = float(np.clip(np.dot(com[:2] - a, e) / (L * L), 0.0, 1.0))
+        dmin = min(dmin, float(np.linalg.norm(com[:2] - (a + t * e))))
+    return inside, (dmin if inside else -dmin)
+
+
 def _aim_camera_at_robot(env, device):
     """Point the third-person camera at the robot's current root.
 
@@ -769,6 +864,9 @@ def main():
         print(f"[overlay-obj-candidates] YELLOW = synthesized object ref (rest->palm), "
               f"CYAN = hand-FK palm (forward={args_cli.hand_fk_forward})")
 
+    if not args_cli.no_stability:
+        _stability_init(env)
+
     # ---- montage: choose the motion set ----
     _total = int(env.unwrapped.total_motions)
     if args_cli.motion_ids:
@@ -841,6 +939,14 @@ def main():
 
                 label = (f"motion {_mid}   [{_seg_i + 1}/{len(_mlist)}]   "
                          f"t {_s * 0.02:4.1f}s")
+                if not args_cli.no_stability:
+                    _st, _mg = _stability_margin(env)
+                    if _st is not None:
+                        label += ("   STABLE" if _st else "   UNSTABLE")
+                        if _mg == _mg:  # not NaN
+                            label += f" ({_mg:+.3f} m)"
+                        else:
+                            label += " (flight)"
                 if args_cli.reference_pd:
                     label = "REFERENCE-PD  " + label
                 elif args_cli.reference_playback:
