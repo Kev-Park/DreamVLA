@@ -110,6 +110,7 @@ import os
 import math
 import time
 import torch
+import numpy as np
 
 from rsl_rl.runners import OnPolicyRunner
 
