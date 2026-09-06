@@ -343,11 +343,89 @@ def main():
     t_start = time.time()
     step_count = 0
 
+    # ---- HS_EVAL_STABILITY=1: static stability of the SIMULATED robot, per step ----
+    # Every stability number elsewhere in this project is computed on the reference kinematics.
+    # This measures whether the robot ACTUALLY tracked a balanced state: CoM ground projection
+    # inside the convex hull of the planted feet's contact points. Batched over all envs.
+    STAB = os.environ.get("HS_EVAL_STABILITY", "0") == "1"
+    _stab_sum = _stab_n = 0
+    _stab_marg = []
+    if STAB:
+        _rb = env.unwrapped.scene["robot"]
+        _names = list(_rb.data.body_names)
+        try:
+            _mass = _rb.root_physx_view.get_masses()[0].to(device)
+        except Exception:
+            _mass = _rb.data.default_mass[0].to(device)
+        _feet_i = [_names.index(f) for f in ("left_ankle_roll_link", "right_ankle_roll_link")
+                   if f in _names]
+        _FCP = torch.tensor([[-0.05, 0.025, -0.03], [-0.05, -0.025, -0.03],
+                             [0.12, 0.030, -0.03], [0.12, -0.030, -0.03]],
+                            dtype=torch.float32, device=device)
+        print(f"[stability] SIM-robot readout ON: {len(_names)} bodies, "
+              f"{float(_mass.sum()):.2f} kg, feet={len(_feet_i)}")
+
+    def _convex_hull_np(pts):
+        pts = np.unique(pts, axis=0)
+        if len(pts) < 3: return pts
+        pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
+        def half(A):
+            h = []
+            for q in A:
+                while len(h) >= 2 and np.cross(h[-1]-h[-2], q-h[-2]) <= 0: h.pop()
+                h.append(q)
+            return h
+        return np.array(half(pts)[:-1] + half(pts[::-1])[:-1])
+
+    def _margin_np(pt, H):
+        ins, dmin = True, 1e9
+        for i in range(len(H)):
+            a, b = H[i], H[(i+1) % len(H)]
+            e = b - a; L = float(np.linalg.norm(e))
+            if L < 1e-9: continue
+            if np.cross(e, pt-a) < 0: ins = False
+            t = float(np.clip(np.dot(pt-a, e)/(L*L), 0, 1))
+            dmin = min(dmin, float(np.linalg.norm(pt-(a+t*e))))
+        return dmin if ins else -dmin
+
+    def _sim_stability():
+        """(N,) signed margin of the sim robot's CoM w.r.t. its planted-foot polygon."""
+        pos = _rb.data.body_pos_w - env.unwrapped.scene.env_origins[:, None, :]
+        quat = _rb.data.body_quat_w
+        com = (_mass[None, :, None] * pos).sum(1) / _mass.sum()
+        w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+        R = torch.stack([
+            torch.stack([1-2*(y*y+z*z), 2*(x*y-w*z), 2*(x*z+w*y)], -1),
+            torch.stack([2*(x*y+w*z), 1-2*(x*x+z*z), 2*(y*z-w*x)], -1),
+            torch.stack([2*(x*z-w*y), 2*(y*z+w*x), 1-2*(x*x+y*y)], -1)], -2)
+        P = []
+        for bi in _feet_i:
+            P.append(pos[:, bi, None, :] + torch.einsum("nij,kj->nki", R[:, bi], _FCP))
+        P = torch.cat(P, 1)                                   # (N, 4*nfeet, 3)
+        floor = P[..., 2].min(1, keepdim=True).values
+        planted = P[..., 2] < floor + 0.03                    # (N, K)
+        out = torch.full((pos.shape[0],), float("nan"), device=device)
+        Pc = P.cpu().numpy(); pl = planted.cpu().numpy(); cm = com.cpu().numpy()
+        for n in range(Pc.shape[0]):
+            pts = Pc[n][pl[n]][:, :2]
+            if len(pts) < 3: continue
+            H = _convex_hull_np(pts)
+            if len(H) < 3: continue
+            out[n] = _margin_np(cm[n, :2], H)
+        return out
+
     while completed_episodes < target_episodes and step_count < max_steps:
         per_env_motion_id.copy_(env.unwrapped.motion_ids)
         with torch.inference_mode():
             actions = policy(obs).clone()
             obs, _, dones, extras = env.step(actions)
+        if STAB:
+            with torch.inference_mode():
+                _m = _sim_stability()
+            _ok = ~torch.isnan(_m)
+            if _ok.any():
+                _stab_sum += int((_m[_ok] > 0).sum()); _stab_n += int(_ok.sum())
+                _stab_marg.append(_m[_ok].cpu().numpy())
 
         # Read bottle z + is_closed AFTER step.
         bottle_z = (env.unwrapped.scene["object"].data.root_pos_w[:, 2] if HAS_OBJECT
@@ -574,6 +652,16 @@ def main():
                 pass
             print(f"      motion {_i:3d} {_fn:14s} eps={int(m_ep[_i]):3d}  dominant={_CLASSES[_dom]:22s} ({int(m_class[_i,_dom])})")
     print(f"")
+    if os.environ.get("HS_EVAL_STABILITY", "0") == "1" and _stab_n > 0:
+        _M = np.concatenate(_stab_marg)
+        print(f"")
+        print(f"  SIM-ROBOT static stability (CoM in planted-foot polygon, all stepped frames):")
+        print(f"    stable          {100.0*_stab_sum/_stab_n:6.1f}%   ({_stab_sum}/{_stab_n} frames)")
+        print(f"    margin  mean    {_M.mean():+7.4f} m")
+        print(f"    margin  median  {np.median(_M):+7.4f} m")
+        print(f"    margin  p05     {np.percentile(_M, 5):+7.4f} m")
+        print(f"    margin  min     {_M.min():+7.4f} m")
+
     print(f"  Termination breakdown (of completed episodes):")
     for k, v in termination_counts.items():
         if v > 0:
