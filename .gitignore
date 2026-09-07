@@ -86,6 +86,18 @@ TrajGen/dataset/HumanML3D/*
 
 *.pkl
 !TrajGen/sample/*/*.pkl
+
+# Generated datasets (regenerated artifacts, not source). These sit under TrajGen/sample
+# only for historical reasons and are re-ignored AFTER the negation above (last match wins),
+# so they stop showing up as untracked/committable. Prefer generating out-of-tree:
+#   gen_dataset.sh <gpu> ~/kevin/datasets_shared/<name> <ids...>
+TrajGen/sample/Holosoma_*/
+TrajGen/sample/Sonic_native_probe*/
+
+# Editor/agent scratch copies
+*.bak
+*.bak[0-9]
+*.bak_*
 TrajGen/motions*/*
 
 .aws/
