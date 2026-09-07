@@ -16,6 +16,11 @@ gpu=$1; out=$2; shift 2
 #   HS_REST_MAP       : file of "<id> <rest_start_frame>" lines, used by HS_COM_MODE=rest.
 #   HS_COM_GAMMA      : CBF rate (default 0.5).  HS_COM_MARGIN: polygon inset in m (default 0.02).
 #   HS_REFINE_ARM     : 1 (default) runs the AL right-arm refine in Adapter B; 0 skips it.
+#   HS_NO_FOOT_STICK  : 1 disables the foot-sticking constraint entirely
+#                       (--retargeter.no-activate-foot-sticking). Ablation: foot sticking removes
+#                       ~93% of the source motion's foot slip, but slip-removal correlates -0.47
+#                       with ZMP feasibility, so pinning the feet while the body still tracks the
+#                       human appears to cost dynamic feasibility. This isolates that trade.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HS=~/kevin/holosoma/src/holosoma_retargeting/holosoma_retargeting
 HS_ACT=""
@@ -43,6 +48,7 @@ for id in "$@"; do
   ( source "$HS_ACT" hsretargeting; cd "$HS"; timeout 400 python examples/robot_retarget.py \
       --task-type object_interaction --robot g1 --data-format smplx --task-name "pick_$id" \
       --data-path ~/kevin/hs_input --save-dir "$NPZ_DIR" --task-config.object-name mustard       ${HS_FOOT_STICK_TOL:+--retargeter.foot-sticking-tolerance $HS_FOOT_STICK_TOL} $COM_ARGS \
+      ${HS_NO_FOOT_STICK:+--retargeter.no-activate-foot-sticking} \
     ) > /tmp/_gd_HS_$id.log 2>&1
   [ -f "$OUT" ] || { echo "$id HOLOSOMA_FAIL"; continue; }
   ( source ~/miniconda3/etc/profile.d/conda.sh; conda activate dreamcontrol_51
