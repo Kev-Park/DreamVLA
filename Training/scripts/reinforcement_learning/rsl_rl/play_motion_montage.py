@@ -41,6 +41,10 @@ parser.add_argument("--seed", type=int, default=0,
 parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-MotionOnly-v0", help="Name of the task.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--name", type=str, default="sonic_adapter_play.mp4", help="Output video file name.")
+parser.add_argument("--stability-markers", action="store_true", default=False,
+                    help="Draw the support polygon (planted-foot contact points + outline) and "
+                         "the CoM ground projection, coloured green inside / red outside. "
+                         "Requires the stability readout (i.e. not --no-stability).")
 parser.add_argument("--no-stability", action="store_true", default=False,
                     help="Disable the STABLE/UNSTABLE HUD readout (CoM ground projection vs the "
                          "support polygon of the planted feet).")
@@ -295,6 +299,13 @@ _FOOT_CONTACT_PTS = np.array([[-0.05, 0.025, -0.03], [-0.05, -0.025, -0.03],
 _STAB = {}
 
 
+# Contact band, measured from the LOWER foot at that frame (not a global floor). Across the
+# 60-clip holosoma set the two feet at the final frame are never more than 0.0393 m apart and
+# the distribution has no second mode, so every clip ends in double support; a 0.03 band clipped
+# the 7 clips sitting in the 0.03-0.04 bin and wrongly called them single support.
+_CONTACT_BAND = 0.04
+
+
 def _stability_init(env):
     """Cache body masses (from the articulation) and the ankle body indices."""
     robot = env.unwrapped.scene["robot"]
@@ -353,7 +364,7 @@ def _stability_margin(env):
         foot_pts[f] = P
         lows[f] = P[:, 2].min()
     floor = min(lows.values())
-    planted = [P for f, P in foot_pts.items() if lows[f] < floor + 0.03]
+    planted = [P for f, P in foot_pts.items() if lows[f] < floor + _CONTACT_BAND]
     if not planted:
         return False, float("nan")                              # flight phase
     hull = _convex_hull2d(np.concatenate(planted, 0)[:, :2])
@@ -371,6 +382,96 @@ def _stability_margin(env):
         t = float(np.clip(np.dot(com[:2] - a, e) / (L * L), 0.0, 1.0))
         dmin = min(dmin, float(np.linalg.norm(com[:2] - (a + t * e))))
     return inside, (dmin if inside else -dmin)
+
+
+_N_HULL_DOTS = 48
+
+
+def _make_stability_markers():
+    """Contact points, the support-polygon outline, and the CoM ground projection."""
+    cfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/stability",
+        markers={
+            "contact_on": sim_utils.SphereCfg(
+                radius=0.016, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.85, 0.95))),
+            "contact_off": sim_utils.SphereCfg(
+                radius=0.012, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.45, 0.45, 0.45))),
+            "hull": sim_utils.SphereCfg(
+                radius=0.009, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.20, 0.55, 1.0))),
+            "com_in": sim_utils.SphereCfg(
+                radius=0.040, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.10, 0.95, 0.20))),
+            "com_out": sim_utils.SphereCfg(
+                radius=0.048, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.10, 0.10))),
+        },
+    )
+    return VisualizationMarkers(cfg)
+
+
+def _update_stability_markers(env, markers):
+    """Draw the planted-foot contact points, the polygon outline, and the projected CoM.
+
+    Marker count is fixed (8 contacts + _N_HULL_DOTS outline + 1 CoM) so prototype indices stay
+    stable frame to frame. Everything is in world coordinates, matching the reference overlay.
+    """
+    if not _STAB.get("ok"):
+        return
+    robot = env.unwrapped.scene["robot"]
+    pos = robot.data.body_pos_w[0].cpu().numpy()
+    quat = robot.data.body_quat_w[0].cpu().numpy()
+    m = _STAB["masses"]
+    com = (m[:, None] * pos).sum(0) / m.sum()
+
+    def R_of(q):
+        w, x, y, z = q
+        return np.array([[1-2*(y*y+z*z), 2*(x*y-w*z), 2*(x*z+w*y)],
+                         [2*(x*y+w*z), 1-2*(x*x+z*z), 2*(y*z-w*x)],
+                         [2*(x*z-w*y), 2*(y*z+w*x), 1-2*(x*x+y*y)]])
+
+    foot_pts, lows = {}, {}
+    for f, bi in _STAB["feet"].items():
+        P = pos[bi] + (R_of(quat[bi]) @ _FOOT_CONTACT_PTS.T).T
+        foot_pts[f] = P
+        lows[f] = P[:, 2].min()
+    floor = min(lows.values())
+
+    pts, idxs = [], []
+    planted_xy = []
+    for f, P in foot_pts.items():
+        on = lows[f] < floor + _CONTACT_BAND
+        for row in P:
+            pts.append(row)
+            idxs.append(0 if on else 1)
+        if on:
+            planted_xy.append(P[:, :2])
+
+    hull = _convex_hull2d(np.concatenate(planted_xy, 0)) if planted_xy else np.zeros((0, 2))
+    if len(hull) >= 3:
+        peri = [np.linalg.norm(hull[(i+1) % len(hull)] - hull[i]) for i in range(len(hull))]
+        total = max(sum(peri), 1e-6)
+        for i in range(len(hull)):
+            a, b = hull[i], hull[(i+1) % len(hull)]
+            n = max(1, int(round(_N_HULL_DOTS * peri[i] / total)))
+            for t in np.linspace(0.0, 1.0, n, endpoint=False):
+                q = a + t * (b - a)
+                pts.append([q[0], q[1], floor + 0.004]); idxs.append(2)
+        inside = True
+        for i in range(len(hull)):
+            a, b = hull[i], hull[(i+1) % len(hull)]
+            if np.cross(b - a, com[:2] - a) < 0:
+                inside = False
+    else:
+        inside = False
+    while len(idxs) < 8 + _N_HULL_DOTS:            # pad so the count is constant
+        pts.append([com[0], com[1], floor + 0.004]); idxs.append(2)
+    pts = pts[: 8 + _N_HULL_DOTS]; idxs = idxs[: 8 + _N_HULL_DOTS]
+
+    pts.append([com[0], com[1], floor + 0.010])
+    idxs.append(3 if inside else 4)
+
+    markers.visualize(
+        translations=torch.tensor(np.asarray(pts), dtype=torch.float32, device=env.unwrapped.device),
+        marker_indices=torch.tensor(idxs, dtype=torch.long, device=env.unwrapped.device),
+    )
 
 
 def _aim_camera_at_robot(env, device):
@@ -864,8 +965,12 @@ def main():
         print(f"[overlay-obj-candidates] YELLOW = synthesized object ref (rest->palm), "
               f"CYAN = hand-FK palm (forward={args_cli.hand_fk_forward})")
 
+    stab_markers = None
     if not args_cli.no_stability:
         _stability_init(env)
+        if args_cli.stability_markers and _STAB.get("ok"):
+            stab_markers = _make_stability_markers()
+            print("[stability] support-polygon + CoM markers ON")
 
     # ---- montage: choose the motion set ----
     _total = int(env.unwrapped.total_motions)
@@ -941,6 +1046,8 @@ def main():
                          f"t {_s * 0.02:4.1f}s")
                 if not args_cli.no_stability:
                     _st, _mg = _stability_margin(env)
+                    if stab_markers is not None:
+                        _update_stability_markers(env, stab_markers)
                     if _st is not None:
                         label += ("   STABLE" if _st else "   UNSTABLE")
                         if _mg == _mg:  # not NaN
