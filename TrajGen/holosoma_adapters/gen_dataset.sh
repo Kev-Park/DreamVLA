@@ -15,6 +15,12 @@ gpu=$1; out=$2; shift 2
 #                       enforcement to the settled phase and needs HS_REST_MAP.
 #   HS_REST_MAP       : file of "<id> <rest_start_frame>" lines, used by HS_COM_MODE=rest.
 #   HS_COM_GAMMA      : CBF rate (default 0.5).  HS_COM_MARGIN: polygon inset in m (default 0.02).
+#   HS_COM_SLACK      : L1 penalty on the per-edge relaxation slack (holosoma default 50). The
+#                       barrier is a hard constraint RELAXED by a penalised slack, so this is the
+#                       hard-vs-objective knob: <=0 = strictly hard; ~5-20 = stability negotiates
+#                       with mesh tracking (laplacian_weights=10) as a soft objective; 1e4 = hard.
+#   HS_REST_MAP       : with HS_COM_MODE=rest, OPTIONAL. Unset => holosoma derives the rest start
+#                       from the contact schedule (preferred).
 #   HS_REFINE_ARM     : 1 (default) runs the AL right-arm refine in Adapter B; 0 skips it.
 #   HS_NO_FOOT_STICK  : 1 disables the foot-sticking constraint entirely
 #                       (--retargeter.no-activate-foot-sticking). Ablation: foot sticking removes
@@ -35,14 +41,23 @@ for id in "$@"; do
   OUT=$NPZ_DIR/pick_${id}_original.npz; rm -f "$OUT"
   # CoM static-stability barrier flags (empty unless HS_COM_MODE is set)
   COM_ARGS=""
+  COM_COMMON="--retargeter.com-stability.gamma ${HS_COM_GAMMA:-0.5} --retargeter.com-stability.margin ${HS_COM_MARGIN:-0.02}${HS_COM_SLACK:+ --retargeter.com-stability.slack-penalty $HS_COM_SLACK}"
   if [ "$HS_COM_MODE" = "full" ]; then
-    COM_ARGS="--retargeter.com-stability.enable --retargeter.com-stability.gamma ${HS_COM_GAMMA:-0.5} --retargeter.com-stability.margin ${HS_COM_MARGIN:-0.02}"
+    COM_ARGS="--retargeter.com-stability.enable $COM_COMMON"
   elif [ "$HS_COM_MODE" = "rest" ]; then
-    RS=$(awk -v i="$id" '$1==i{print $2}' "${HS_REST_MAP:-/dev/null}" 2>/dev/null)
-    if [ -n "$RS" ]; then
-      COM_ARGS="--retargeter.com-stability.enable --retargeter.com-stability.rest-only --retargeter.com-stability.rest-start-frame $RS --retargeter.com-stability.gamma ${HS_COM_GAMMA:-0.5} --retargeter.com-stability.margin ${HS_COM_MARGIN:-0.02}"
+    if [ -z "$HS_REST_MAP" ]; then
+      # No explicit map: let holosoma DERIVE the rest start from the contact schedule
+      # (first frame of the final contiguous double-support run). Contact-based, so it
+      # admits a settled pose that still carries momentum -- which a velocity threshold
+      # wrongly excludes. Preferred over an externally computed velocity-based map.
+      COM_ARGS="--retargeter.com-stability.enable --retargeter.com-stability.rest-only $COM_COMMON"
     else
-      echo "$id NO_REST_START (skipping CoM barrier)"
+      RS=$(awk -v i="$id" '$1==i{print $2}' "$HS_REST_MAP" 2>/dev/null)
+      if [ -n "$RS" ]; then
+        COM_ARGS="--retargeter.com-stability.enable --retargeter.com-stability.rest-only --retargeter.com-stability.rest-start-frame $RS $COM_COMMON"
+      else
+        echo "$id NO_REST_START (skipping CoM barrier)"
+      fi
     fi
   fi
   ( source "$HS_ACT" hsretargeting; cd "$HS"; timeout 400 python examples/robot_retarget.py \
