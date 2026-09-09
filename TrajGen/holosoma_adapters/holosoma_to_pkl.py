@@ -279,8 +279,15 @@ if not NO_LEADIN:
     joints = np.concatenate([j_lead, joints], axis=0)
     tr_lead = np.tile(base_pos[0], (PAUSE + INTERP, 1))                 # hold root during lead-in
     base_pos = np.concatenate([tr_lead, base_pos], axis=0)
-    q_lead = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (PAUSE + INTERP, 1))   # identity during PAUSE
-    q_lead[PAUSE:PAUSE + INTERP] = slerp(np.array([1.0, 0.0, 0.0, 0.0]), base_quat[0], np.linspace(0, 1, INTERP))
+    if os.environ.get("HS_STAND_LOWER", "0") == "1":
+        # The stitch freezes the root, so starting the lead-in at identity and slerping into the
+        # motion heading would spin the pelvis (~10 deg here) -- exactly the unphysical root
+        # motion the fixed stance exists to remove. Hold the frozen heading throughout instead;
+        # only the arms/waist ease out of INIT, and the legs are already at INIT so they no-op.
+        q_lead = np.tile(base_quat[0], (PAUSE + INTERP, 1))
+    else:
+        q_lead = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (PAUSE + INTERP, 1))   # identity during PAUSE
+        q_lead[PAUSE:PAUSE + INTERP] = slerp(np.array([1.0, 0.0, 0.0, 0.0]), base_quat[0], np.linspace(0, 1, INTERP))
     base_quat = np.concatenate([q_lead, base_quat], axis=0)
     obj_pos = np.concatenate([np.tile(obj_pos[0], (PAUSE + INTERP, 1)), obj_pos], axis=0)    # object sits still during lead-in
     obj_quat = np.concatenate([np.tile(obj_quat[0], (PAUSE + INTERP, 1)), obj_quat], axis=0)
