@@ -19,6 +19,9 @@ gpu=$1; out=$2; shift 2
 #                       barrier is a hard constraint RELAXED by a penalised slack, so this is the
 #                       hard-vs-objective knob: <=0 = strictly hard; ~5-20 = stability negotiates
 #                       with mesh tracking (laplacian_weights=10) as a soft objective; 1e4 = hard.
+#   HS_COM_RAMP       : frames over which the polygon margin fades in before the rest start
+#                       (holosoma default 10 = 0.5 s @20fps). The fade is a C2 smootherstep and is
+#                       clamped to the rest start; longer = gentler arrival of the constraint.
 #   HS_REST_MAP       : with HS_COM_MODE=rest, OPTIONAL. Unset => holosoma derives the rest start
 #                       from the contact schedule (preferred).
 #   HS_REFINE_ARM     : 1 (default) runs the AL right-arm refine in Adapter B; 0 skips it.
@@ -41,7 +44,7 @@ for id in "$@"; do
   OUT=$NPZ_DIR/pick_${id}_original.npz; rm -f "$OUT"
   # CoM static-stability barrier flags (empty unless HS_COM_MODE is set)
   COM_ARGS=""
-  COM_COMMON="--retargeter.com-stability.gamma ${HS_COM_GAMMA:-0.5} --retargeter.com-stability.margin ${HS_COM_MARGIN:-0.02}${HS_COM_SLACK:+ --retargeter.com-stability.slack-penalty $HS_COM_SLACK}"
+  COM_COMMON="--retargeter.com-stability.gamma ${HS_COM_GAMMA:-0.5} --retargeter.com-stability.margin ${HS_COM_MARGIN:-0.02}${HS_COM_SLACK:+ --retargeter.com-stability.slack-penalty $HS_COM_SLACK}${HS_COM_RAMP:+ --retargeter.com-stability.ramp-frames $HS_COM_RAMP}"
   if [ "$HS_COM_MODE" = "full" ]; then
     COM_ARGS="--retargeter.com-stability.enable $COM_COMMON"
   elif [ "$HS_COM_MODE" = "rest" ]; then
