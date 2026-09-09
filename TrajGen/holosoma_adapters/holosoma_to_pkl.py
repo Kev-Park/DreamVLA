@@ -187,6 +187,31 @@ if DOF == 29:
 moved = np.linalg.norm(obj_pos - obj_pos[0][None], axis=1)
 grab_idx = int(max(0, np.argmax(moved > 1e-4) - 1))
 
+# --- HS_STAND_LOWER=1: pin the LOWER body to the default standing stance, stitch the
+# retargeted UPPER body on top ---------------------------------------------------------
+# Trackability probe: the retargeted lower body (walk + weight shift) is what SONIC tracks
+# worst, so replace it wholesale with the refine's canonical standing stance and keep only
+# the generated waist+arms. "Pelvis down" = cols 0..11 (hip x3 / knee / ankle x2 per leg);
+# the waist (12..14) is above the pelvis and is KEPT as part of the upper body.
+#
+# The root is frozen too -- a fixed stance with a translating pelvis would be kinematically
+# inconsistent (feet would slide). It is pinned at the GRAB-frame xy and heading so the
+# reach geometry the AL refine solves against is the one the arm actually has to hit; roll
+# and pitch are dropped for an upright stance. Root z is deliberately NOT set here: the
+# grounding pass immediately below re-derives it by FK from the standing stance, so the
+# feet land exactly on z=0.
+if os.environ.get("HS_STAND_LOWER", "0") == "1":
+    _n_legs = 12
+    joints[:, :_n_legs] = np.asarray(_INIT_LEGS, dtype=joints.dtype)[None, :]
+    _w, _x, _y, _z = (float(base_quat[grab_idx, k]) for k in range(4))
+    _yaw = np.arctan2(2.0 * (_w * _z + _x * _y), 1.0 - 2.0 * (_y * _y + _z * _z))
+    base_quat[:] = np.array([np.cos(_yaw / 2.0), 0.0, 0.0, np.sin(_yaw / 2.0)])
+    base_pos[:, 0] = base_pos[grab_idx, 0]
+    base_pos[:, 1] = base_pos[grab_idx, 1]
+    print(f"[stand-lower] legs pinned to INIT stance; root frozen at grab-frame "
+          f"xy=({base_pos[grab_idx,0]:.3f},{base_pos[grab_idx,1]:.3f}) yaw={_yaw:+.3f} rad; "
+          f"waist+arms kept from the retarget")
+
 # --- per-frame grounding (lowest link-origin -> 0) via g1_{DOF}dof FK ---
 chain = pk.build_chain_from_urdf(open(URDF, "rb").read())
 fk = chain.forward_kinematics(torch.tensor(joints, dtype=torch.float32))
