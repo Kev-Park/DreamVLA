@@ -112,6 +112,13 @@ LEVEL_W = float(os.environ.get("HS_LEVEL_W", "150.0"))                      # le
 LEVEL_HARD_EPS = float(os.environ.get("HS_LEVEL_HARD_EPS", "0.03"))
 LEVEL_HARD_LEAD = int(os.environ.get("HS_LEVEL_HARD_LEAD", "60"))
 LEVEL_CONSTRAINT_TOL = 1e-3
+# Scope the HARD levelness window to the approach shaping instead of a fixed LEVEL_HARD_LEAD:
+# start it where the gate walls start moving (taper_start), i.e. exactly when the hand commits to
+# the final approach. Before that the arm is still departing INIT/transiting and has no business
+# being held flat -- and with the lead-in prepended before the refine, a fixed 60-frame lead
+# reaches back into the pinned PAUSE frames, whose INIT hand sits ~70 deg off level: an
+# infeasible constraint on non-decision variables (observed as level_viol=6.23e-01, AL maxiter).
+LEVEL_SCOPE_TAPER = os.environ.get("HS_LEVEL_SCOPE_TAPER", "0") == "1"
 POINT_W = float(os.environ.get("HS_POINT_W", "30.0"))                      # palm-pointing orientation weight (soft)
 POINT_FIXED = os.environ.get("HS_POINT_FIXED", "1") == "1"                   # Option A: constant per-clip azimuth target
 # Option B: wrist-neutral tie-breaker. With the azimuth target now FIXED (Option A), this small
@@ -538,7 +545,13 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # [grab - LEVEL_HARD_LEAD, grab]. Makes a tilted approach/hover INFEASIBLE (the soft
             # LEVEL_W term keeps gradient pressure toward perfectly flat inside the eps band).
             g_level_full = torch.zeros(rot_mat.shape[0], device=DEVICE, dtype=joint_angles.dtype)
-            _hard_s = max(grab_idx - LEVEL_HARD_LEAD, 0)
+            if LEVEL_SCOPE_TAPER:
+                _te_lv = max(min(grab_idx - APPROACH_TAPER_LEAD, grab_idx - 1), 1)
+                _hard_s = max(_te_lv - APPROACH_TAPER_WINDOW, 1)
+            else:
+                _hard_s = max(grab_idx - LEVEL_HARD_LEAD, 0)
+            # Never impose a hard constraint on frames that are not decision variables.
+            _hard_s = max(_hard_s, PIN_FIRST_N)
             _hard_e = min(grab_idx + 1, rot_mat.shape[0])
             if _hard_e > _hard_s:
                 g_level_full[_hard_s:_hard_e] = torch.relu(
