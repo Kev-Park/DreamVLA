@@ -93,6 +93,11 @@ APPROACH_TAPER_WINDOW = int(os.environ.get("HS_APPROACH_TAPER_WINDOW", "35"))  #
 # the hand enters the table. >0 pins it to a fixed number of frames from clip start; 0 keeps the
 # legacy grab-scaled behaviour (reproduces pre-existing datasets).
 APPROACH_RAMP_FRAMES = int(os.environ.get("HS_APPROACH_RAMP_FRAMES", "0"))
+# Hold the first N frames of the arm trajectory FIXED during the refine (projection after each
+# Adam step). Used when the lead-in is prepended BEFORE the refine: the PAUSE segment must stay
+# exactly at the INIT pose so the reference still starts at rest in the default pose, while the
+# optimiser is free to shape everything from frame N onward.
+PIN_FIRST_N = int(os.environ.get("HS_PIN_FIRST_FRAMES", "0"))
 PULL_RADIUS = float(os.environ.get("HS_PULL_RADIUS", "0.35"))               # Gaussian-well pull radius (m): no pull beyond ~1.7R, soft dock at 0
 APPROACH_Z_CLEARANCE = float(os.environ.get("HS_APPROACH_Z_CLEARANCE", "-0.03"))  # z-gate: allowed height above object center (m)
 DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))                      # downward-velocity penalty weight (pre-grab)
@@ -799,6 +804,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     capsule_obs_pos = palm_target.clone()
 
     joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone())
+    _pinned_head = (joint_angles.detach()[:PIN_FIRST_N].clone() if PIN_FIRST_N > 0 else None)
 
     # --- Augmented Lagrangian optimisation (outer: dual/rho update; inner: Adam) ---
     lambda_table = torch.zeros(joint_angles.shape[0], device=DEVICE)
@@ -822,6 +828,11 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
                                 rho_al=rho_al, rho_al_table=rho_al_table)
             cost.backward()
             optimizer.step()
+            if PIN_FIRST_N > 0:
+                # Exact projection back onto the pinned PAUSE frames (cheaper and stricter than
+                # a penalty; the frames simply are not decision variables any more).
+                with torch.no_grad():
+                    joint_angles[:PIN_FIRST_N] = _pinned_head
         g_curr = _last_g_t
         g_curr_wrist = _last_g_cap_wrist
         g_curr_dof_speed = _last_g_dof_speed

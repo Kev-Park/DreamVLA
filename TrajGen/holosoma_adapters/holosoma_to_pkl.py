@@ -245,6 +245,44 @@ if os.environ.get("HS_RETABLE", "1") == "1":
 # --- freeze left arm across ALL frames (refine parity) ---
 joints = freeze_left_arm(joints)
 
+# --- start lead-in (PAUSE static at INIT + INTERP ramp into the motion) ---------------------
+# HS_NO_LEADIN=1 omits it entirely. HS_REFINE_AFTER_LEADIN=1 prepends it BEFORE the refine so the
+# arm's departure from INIT is shaped by the approach walls/pull/table constraint instead of being
+# a blind joint-space lerp the optimiser never sees (that lerp is what put the fingertip inside the
+# table on 5/5 clips, frames 12-17). HS_ARM_LEADIN_INIT=1 additionally holds the RIGHT ARM at INIT
+# across the whole lead-in rather than lerping it to the motion's frame-0 pose -- the retargeted
+# frame-0 arm pose is an artifact of where the human was, not a pose the grasp must pass through.
+NO_LEADIN = os.environ.get("HS_NO_LEADIN", "0") == "1"
+REFINE_AFTER_LEADIN = os.environ.get("HS_REFINE_AFTER_LEADIN", "0") == "1"
+ARM_LEADIN_INIT = os.environ.get("HS_ARM_LEADIN_INIT", "0") == "1"
+_lead = 0 if NO_LEADIN else (PAUSE + INTERP)
+
+
+def _apply_leadin(joints, base_pos, base_quat, obj_pos, obj_quat):
+    a = np.linspace(0.0, 1.0, INTERP)[:, None]
+    j_lead = np.concatenate([np.tile(INIT, (PAUSE, 1)), INIT[None] * (1 - a) + joints[0][None] * a], axis=0)
+    if ARM_LEADIN_INIT:
+        j_lead[:, _RARM] = INIT[_RARM][None, :]        # right arm starts (and stays) at INIT
+    joints = np.concatenate([j_lead, joints], axis=0)
+    tr_lead = np.tile(base_pos[0], (PAUSE + INTERP, 1))                 # hold root during lead-in
+    base_pos = np.concatenate([tr_lead, base_pos], axis=0)
+    if os.environ.get("HS_STAND_LOWER", "0") == "1":
+        q_lead = np.tile(base_quat[0], (PAUSE + INTERP, 1))             # frozen heading (see stitch)
+    else:
+        q_lead = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (PAUSE + INTERP, 1))
+        q_lead[PAUSE:PAUSE + INTERP] = slerp(np.array([1.0, 0.0, 0.0, 0.0]), base_quat[0], np.linspace(0, 1, INTERP))
+    base_quat = np.concatenate([q_lead, base_quat], axis=0)
+    obj_pos = np.concatenate([np.tile(obj_pos[0], (PAUSE + INTERP, 1)), obj_pos], axis=0)
+    obj_quat = np.concatenate([np.tile(obj_quat[0], (PAUSE + INTERP, 1)), obj_quat], axis=0)
+    return joints, base_pos, base_quat, obj_pos, obj_quat
+
+
+if REFINE_AFTER_LEADIN and not NO_LEADIN:
+    joints, base_pos, base_quat, obj_pos, obj_quat = _apply_leadin(joints, base_pos, base_quat, obj_pos, obj_quat)
+    grab_idx += PAUSE + INTERP
+    print(f"[leadin] prepended BEFORE refine ({PAUSE}+{INTERP}); right arm "
+          f"{'held at INIT' if ARM_LEADIN_INIT else 'lerped to motion[0]'}; grab_idx -> {grab_idx}")
+
 # --- arm table-collision refine (right arm out of the table during the pre-grab reach) ---
 # Runs on the grounded core motion, before the grab-hold/lead-in so grab_idx is the core index.
 # HS_REFINE_MODE=al (default): full augmented-Lagrangian refine (refine_al_29 = ported
@@ -261,19 +299,18 @@ if REFINE_ARM and 0 < grab_idx < F:
 
 # --- FREEZE_FOR grab hold (length-preserving) ---
 def freeze_hold(a):
-    if FREEZE_FOR > 0 and 0 < grab_idx < F - FREEZE_FOR:
-        a[grab_idx + FREEZE_FOR:] = a[grab_idx:F - FREEZE_FOR]
+    # len(a), not the load-time F: under HS_REFINE_AFTER_LEADIN the lead-in is already prepended
+    # by this point, so the arrays are 20 frames longer than F.
+    n = len(a)
+    if FREEZE_FOR > 0 and 0 < grab_idx < n - FREEZE_FOR:
+        a[grab_idx + FREEZE_FOR:] = a[grab_idx:n - FREEZE_FOR]
         a[grab_idx:grab_idx + FREEZE_FOR] = a[grab_idx]
     return a
 base_pos = freeze_hold(base_pos); base_quat = freeze_hold(base_quat); joints = freeze_hold(joints)
 obj_pos = freeze_hold(obj_pos); obj_quat = freeze_hold(obj_quat)   # keep the object aligned with the grab-hold
 
-# --- prepend PAUSE + INTERP start lead-in (refine parity) ---
-# HS_NO_LEADIN=1 omits the 20-frame default-pose lead-in entirely: the .pkl starts at the motion's
-# own frame 0 and grab_idx stays the core index. Render/train these with --skip-start-frames 0.
-NO_LEADIN = os.environ.get("HS_NO_LEADIN", "0") == "1"
-_lead = 0 if NO_LEADIN else (PAUSE + INTERP)
-if not NO_LEADIN:
+# --- legacy path: lead-in AFTER the refine (unchanged when HS_REFINE_AFTER_LEADIN=0) ---
+if not NO_LEADIN and not REFINE_AFTER_LEADIN:
     a = np.linspace(0.0, 1.0, INTERP)[:, None]
     j_lead = np.concatenate([np.tile(INIT, (PAUSE, 1)), INIT[None] * (1 - a) + joints[0][None] * a], axis=0)
     joints = np.concatenate([j_lead, joints], axis=0)
