@@ -93,6 +93,18 @@ APPROACH_TAPER_WINDOW = int(os.environ.get("HS_APPROACH_TAPER_WINDOW", "35"))  #
 # the hand enters the table. >0 pins it to a fixed number of frames from clip start; 0 keeps the
 # legacy grab-scaled behaviour (reproduces pre-existing datasets).
 APPROACH_RAMP_FRAMES = int(os.environ.get("HS_APPROACH_RAMP_FRAMES", "0"))
+# PROPORTIONAL approach schedule. The static offsets are a fixed frame budget (LEAD+WINDOW=55)
+# measured backward from grab, but grab_idx spans 56..105 across the stand-stitch clips, so the
+# same numbers mean very different things: short-grab clips have taper_start collapse into the
+# pinned PAUSE frames (infeasible levelness), while long-grab clips hold the hand in the low/right
+# corner for 30-40 frames, which is where the z-ceiling fights the hard table constraint.
+# Expressing both as FRACTIONS of grab_idx keeps the phase structure identical across clips.
+# Fractions are calibrated at the median grab_idx (69) so the median clip reproduces the static
+# tuning exactly: 20/69 = 0.290 lead, 35/69 = 0.507 window -> taper_start = 0.203 * grab_idx,
+# which stays clear of a 10-frame pin for every grab_idx >= 50.
+APPROACH_PROPORTIONAL = os.environ.get("HS_APPROACH_PROPORTIONAL", "0") == "1"
+APPROACH_LEAD_FRAC = float(os.environ.get("HS_APPROACH_LEAD_FRAC", "0.290"))
+APPROACH_WINDOW_FRAC = float(os.environ.get("HS_APPROACH_WINDOW_FRAC", "0.507"))
 # Hold the first N frames of the arm trajectory FIXED during the refine (projection after each
 # Adam step). Used when the lead-in is prepended BEFORE the refine: the PAUSE segment must stay
 # exactly at the INIT pose so the reference still starts at rest in the default pose, while the
@@ -141,6 +153,17 @@ HAND_APPROACH_SOFT_WEIGHT = float(os.environ.get("HS_HAND_APPROACH_W", "3000.0")
 
 WRIST_GRAB_CHARB_WEIGHT = float(os.environ.get("HS_CHARB_W", "30.0")) # palm-to-object Charbonnier weight (final approach + hold)
 # (Charbonnier knee removed in v13 — the Gaussian-well pull's quadratic basin IS the landing zone.)
+
+
+def _taper_bounds(grab_idx):
+    """(taper_start, taper_end) for this clip -- the frames over which the gate walls open."""
+    if APPROACH_PROPORTIONAL:
+        te = max(int(round(grab_idx * (1.0 - APPROACH_LEAD_FRAC))), 1)
+        ts = max(int(round(grab_idx * (1.0 - APPROACH_LEAD_FRAC - APPROACH_WINDOW_FRAC))), 1)
+    else:
+        te = max(min(grab_idx - APPROACH_TAPER_LEAD, grab_idx - 1), 1)
+        ts = max(te - APPROACH_TAPER_WINDOW, 1)
+    return max(min(ts, te - 1), 1), te
 
 
 def _smooth01(u):
@@ -546,8 +569,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # LEVEL_W term keeps gradient pressure toward perfectly flat inside the eps band).
             g_level_full = torch.zeros(rot_mat.shape[0], device=DEVICE, dtype=joint_angles.dtype)
             if LEVEL_SCOPE_TAPER:
-                _te_lv = max(min(grab_idx - APPROACH_TAPER_LEAD, grab_idx - 1), 1)
-                _hard_s = max(_te_lv - APPROACH_TAPER_WINDOW, 1)
+                _hard_s = _taper_bounds(grab_idx)[0]
             else:
                 _hard_s = max(grab_idx - LEVEL_HARD_LEAD, 0)
             # Never impose a hard constraint on frames that are not decision variables.
@@ -669,8 +691,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             _obj_y = palm_target[1] if palm_target is not None else capsule_obs_pos[1]
             _obj_z = palm_target[2] if palm_target is not None else capsule_obs_pos[2]
             _n_pre = grab_idx - 1
-            taper_end = max(min(grab_idx - APPROACH_TAPER_LEAD, _n_pre), 1)
-            taper_start = max(taper_end - APPROACH_TAPER_WINDOW, 1)
+            taper_start, taper_end = _taper_bounds(grab_idx)
+            taper_end = max(min(taper_end, _n_pre), 1)
+            taper_start = max(min(taper_start, taper_end - 1), 1)
             frame_pre = torch.arange(1, grab_idx, device=DEVICE, dtype=joint_angles.dtype)
             _sline = _smooth01((frame_pre - float(taper_start)) / float(max(taper_end - taper_start, 1)))
             x_clear_t = (1.0 - _sline) * APPROACH_X_STANDOFF + _sline * (-GATE_END_SLACK)
