@@ -86,6 +86,13 @@ APPROACH_GATE_CLEARANCE = float(os.environ.get("HS_APPROACH_GATE_CLEARANCE", "0.
 APPROACH_X_STANDOFF = float(os.environ.get("HS_APPROACH_X_STANDOFF", "0"))  # >0 re-enables the x-gate
 APPROACH_TAPER_LEAD = int(os.environ.get("HS_APPROACH_TAPER_LEAD", "8"))    # gate held until this many frames before grab
 APPROACH_TAPER_WINDOW = int(os.environ.get("HS_APPROACH_TAPER_WINDOW", "35"))  # frames over which the gate releases (35 validated in gate12)
+# Authority ramp length in frames. The shared push/pull weight ramp used to be
+# min(grab_idx-40, taper_start), which scales with the grab frame: measured over the stand-stitch
+# clips grab_idx spans 56..105, so the "get ready" phase ran 13 frames on one clip and 62 on
+# another for no principled reason, and carried near-zero weight through the early window where
+# the hand enters the table. >0 pins it to a fixed number of frames from clip start; 0 keeps the
+# legacy grab-scaled behaviour (reproduces pre-existing datasets).
+APPROACH_RAMP_FRAMES = int(os.environ.get("HS_APPROACH_RAMP_FRAMES", "0"))
 PULL_RADIUS = float(os.environ.get("HS_PULL_RADIUS", "0.35"))               # Gaussian-well pull radius (m): no pull beyond ~1.7R, soft dock at 0
 APPROACH_Z_CLEARANCE = float(os.environ.get("HS_APPROACH_Z_CLEARANCE", "-0.03"))  # z-gate: allowed height above object center (m)
 DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))                      # downward-velocity penalty weight (pre-grab)
@@ -671,7 +678,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 # ONE clip-start ramp, shared by push AND pull, completing exactly when the walls
                 # start moving (taper_start) -- so the hand is fully pressed at the 3-wall corner
                 # at ride start. C2 smootherstep (no onset kink).
-                ramp_end = max(min(grab_idx - 40, taper_start, n_trans), 1)
+                if APPROACH_RAMP_FRAMES > 0:
+                    ramp_end = max(min(APPROACH_RAMP_FRAMES, n_trans), 1)
+                else:
+                    ramp_end = max(min(grab_idx - 40, taper_start, n_trans), 1)
                 pre_ramp = _smooth01(frame_ids / float(ramp_end))
                 if palm_target is not None:
                     # PULL = saturating spring (Charbonnier, knee PULL_RADIUS): force
