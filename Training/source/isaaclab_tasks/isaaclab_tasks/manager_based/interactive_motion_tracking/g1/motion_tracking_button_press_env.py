@@ -26,6 +26,7 @@ from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
 from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking_interactive_base import G1InteractiveBaseEnvCfg, touch_goal, goal_approach_reward, rel_pose_object, G1Rewards as G1RewardsBase, TerminationsCfg as TerminationsCfgBase, ActionsCfg as ActionsCfgBase, EventCfg as EventCfgBase, MySceneCfg as MySceneCfgBase
 from isaaclab_assets import G1_MINIMAL_CFG  # isort: skip
 from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder
+from isaaclab_tasks.utils.repo_paths import sibling
 
 
 
@@ -319,7 +320,7 @@ class G1ButtonPressEnvPlayCfg(G1InteractiveBaseEnvCfg):
         self.scene.terrain = None
         self.scene.lobby = AssetBaseCfg(
             prim_path="{ENV_REGEX_NS}/Lobby",
-            spawn=sim_utils.UsdFileCfg(usd_path="/home/dvij/isaaclab-sparky/assets/Collected_ElevatorLobby/ElevatorLobby.usd",scale=(1.,1.,.9)),
+            spawn=sim_utils.UsdFileCfg(usd_path=str(sibling("isaaclab-sparky", "assets", "Collected_ElevatorLobby", "ElevatorLobby.usd")),scale=(1.,1.,.9)),
             init_state=AssetBaseCfg.InitialStateCfg(pos=(2.14-1.629, 1.04, 0.00001), rot=(1, 0, 0, 0)),
         )
 

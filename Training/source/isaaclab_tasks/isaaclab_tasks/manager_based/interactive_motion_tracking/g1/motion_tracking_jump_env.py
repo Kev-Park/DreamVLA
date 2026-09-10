@@ -22,6 +22,7 @@ from isaaclab.sensors import CameraCfg
 from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking_interactive_base import G1InteractiveBaseEnvCfg, touch_goal, goal_approach_reward, rel_pose_object, G1Rewards as G1RewardsBase, TerminationsCfg as TerminationsCfgBase, ActionsCfg as ActionsCfgBase, MySceneCfg as MySceneCfgBase
 from isaaclab_assets import G1_MINIMAL_CFG  # isort: skip
 from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder
+from isaaclab_tasks.utils.repo_paths import sibling
 
 
 VISUALIZE_MARKERS = True
@@ -281,7 +282,7 @@ class G1JumpEnvPlayCfg(G1InteractiveBaseEnvCfg):
         
         self.scene.gym = AssetBaseCfg(
             prim_path="{ENV_REGEX_NS}/Gym",
-            spawn=sim_utils.UsdFileCfg(usd_path="/home/dvij/isaaclab-sparky/assets/boxing/Collected_boxing/boxing.usdc",scale=(0.7,0.7,0.7)),
+            spawn=sim_utils.UsdFileCfg(usd_path=str(sibling("isaaclab-sparky", "assets", "boxing", "Collected_boxing", "boxing.usdc")),scale=(0.7,0.7,0.7)),
             init_state=AssetBaseCfg.InitialStateCfg(pos=(2.05+1.74675*0.7, -17.17*0.7, 0.0001), rot=(1, 0, 0, 0)),
         )
 

@@ -38,7 +38,7 @@ sequential count, not parallel.
 Run:
 
     cd WBCBenchmark/Training && python3 scripts/reinforcement_learning/rsl_rl/eval_vla_sonic.py \\
-        --vla-checkpoint /home/dvij/kevin/checkpoints/run-01 \\
+        --vla-checkpoint ~/kevin/checkpoints/run-01 \\
         --num-episodes 50
 """
 

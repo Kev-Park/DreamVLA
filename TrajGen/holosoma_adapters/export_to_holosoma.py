@@ -55,7 +55,9 @@ def freeze_left_arm(gj):
 motion_idx = int(sys.argv[1]) if len(sys.argv) > 1 else 20
 results = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "sample", "Pick_sim", "results.npy")
-out_dir = sys.argv[3] if len(sys.argv) > 3 else os.path.expanduser("~/kevin/hs_input")
+# argv[3] > $HS_INPUT_DIR > ~/kevin/hs_input (the shared drop gen_dataset.sh/grasp_batch.sh also use).
+out_dir = sys.argv[3] if len(sys.argv) > 3 else os.path.expanduser(
+    os.environ.get("HS_INPUT_DIR", "~/kevin/hs_input"))
 os.makedirs(out_dir, exist_ok=True)
 
 DATA = np.load(results, allow_pickle=True).item()

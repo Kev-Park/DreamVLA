@@ -28,7 +28,7 @@ Run:
     cd WBCBenchmark/Training && python3 scripts/reinforcement_learning/rsl_rl/eval_parquet_sonic.py \\
         --parquet /path/to/episode_000000.parquet \\
         --num-episodes 1 \\
-        --record-video /home/dvij/kevin/eval_videos/parquet_ep0
+        --record-video ~/kevin/eval_videos/parquet_ep0
 """
 
 from __future__ import annotations

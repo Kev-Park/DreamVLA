@@ -21,7 +21,7 @@ Joint order:
 
 Usage:
     python replay_recorded_motion.py \\
-        --motion-dir /home/dvij/kevin/GR00T-WholeBodyControl/gear_sonic_deploy/\\
+        --motion-dir ../GR00T-WholeBodyControl/gear_sonic_deploy/\\
 reference/recorded_motion/20260424/planner_motion_175248
 """
 
@@ -87,9 +87,20 @@ _MJ_TO_IL = np.array([
 ], dtype=np.int32)
 _IL_TO_MJ = np.argsort(_MJ_TO_IL)  # shape (29,): CSV column for each MuJoCo joint
 
-_DEFAULT_MOTION_DIR = (
-    "/home/dvij/kevin/GR00T-WholeBodyControl/gear_sonic_deploy"
-    "/reference/recorded_motion/20260424/planner_motion_175248"
+# gear_sonic_deploy ships with the sibling GR00T-WholeBodyControl clone. Resolved the same way
+# as isaaclab_tasks/utils/repo_paths.py (inlined: this script also runs outside that package's env).
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_SEARCH_ROOTS = [_REPO_ROOT.parent, Path.home() / "kevin", Path.home()]
+
+
+def _sibling(name: str, *parts: str) -> Path:
+    cands = [r / name / Path(*parts) for r in _SEARCH_ROOTS]
+    return next((c for c in cands if c.exists()), cands[0])
+
+
+_DEFAULT_MOTION_DIR = str(
+    _sibling("GR00T-WholeBodyControl", "gear_sonic_deploy",
+             "reference", "recorded_motion", "20260424", "planner_motion_175248")
 )
 
 # ============================================================

@@ -5,7 +5,13 @@ import mujoco
 import numpy as np
 import torch
 import yaml
-LEGGED_GYM_ROOT_DIR = "/home/gr/isaaclab-sparky/unitree_rl_gym"
+import os
+
+# Sibling clone of unitree_rl_gym (override with LEGGED_GYM_ROOT_DIR); was hardcoded to one machine.
+LEGGED_GYM_ROOT_DIR = os.environ.get(
+    "LEGGED_GYM_ROOT_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "unitree_rl_gym"),
+)
 
 def get_gravity_orientation(quaternion):
     qw = quaternion[0]

@@ -9,6 +9,9 @@ from data_loaders.humanml.utils.paramUtil import *
 import torch
 from tqdm import tqdm
 
+# .../TrajGen/data_loaders/humanml/scripts/<this file> -> TrajGen (dataset/ lives beside it)
+_TRAJGEN_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 SMPL_JOINT_NAMES = [
     "pelvis",
     "left_hip",
@@ -544,7 +547,7 @@ if __name__ == "__main__":
 
     '''Get offsets of target skeleton'''
     # example_data = np.load(os.path.join(data_dir, example_id + '.npy'))[0] * scale_factor
-    _example_data = np.load(os.path.join("/home/dvij/isaaclab-sparky/TrajGen/dataset/HumanML3D/new_joint_vecs/000005.npy"))
+    _example_data = np.load(os.path.join(_TRAJGEN_ROOT, "dataset/HumanML3D/new_joint_vecs/000005.npy"))
     # import pdb; pdb.set_trace()
     example_data = recover_from_ric(torch.tensor(_example_data), joints_num)
     example_data = example_data.reshape(len(example_data), -1, 3)
@@ -571,13 +574,13 @@ if __name__ == "__main__":
             # import pdb; pdb.set_trace()
             
         # datas = np.stack(datas, axis=0)
-        # _example_data = np.load(os.path.join("/home/dvij/isaaclab-sparky/TrajGen/dataset/HumanML3D/new_joint_vecs/000005.npy"))
+        # _example_data = np.load(os.path.join(_TRAJGEN_ROOT, "dataset/HumanML3D/new_joint_vecs/000005.npy"))
         # example_data = recover_from_ric(torch.tensor(_example_data), joints_num).unsqueeze(0)
         # example_data_ = torch.zeros((1, 196, 22, 3))
         # example_data_[0,:example_data.shape[1]] = example_data[0,:]
         # example_data_[0,example_data.shape[1]:] = example_data[0,-1:]
         # data, ground_positions, positions, l_velocity = process_file(np.array(example_data_[0]), 0.05)
-        # _example_data1 = np.load(os.path.join("/home/dvij/isaaclab-sparky/TrajGen/dataset/HumanML3D/new_joint_vecs/000000.npy"))
+        # _example_data1 = np.load(os.path.join(_TRAJGEN_ROOT, "dataset/HumanML3D/new_joint_vecs/000000.npy"))
         # example_data1 = recover_from_ric(torch.tensor(_example_data1), joints_num).unsqueeze(0)
         # example_data1_ = torch.zeros((1, 196, 22, 3))
         # example_data1_[0,:example_data1.shape[1]] = example_data1[0,:]

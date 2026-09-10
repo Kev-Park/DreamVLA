@@ -8,6 +8,7 @@ gpu=$1; out=$2; shift 2
 #   HS_FOOT_STICK_TOL : --retargeter.foot-sticking-tolerance (default 1e-3). LOWER = stricter
 #                       per-frame XY window; foot sticking is relative to the previous frame,
 #                       so a tighter window slows accumulated drift over a clip.
+#   HS_INPUT_DIR      : Adapter A output / holosoma --data-path (default ~/kevin/hs_input).
 #   HS_NPZ_DIR        : holosoma --save-dir (default ~/kevin/hs_pick_out). Point elsewhere to
 #                       avoid clobbering the retarget output an existing dataset was built from.
 #   HS_COM_MODE       : "" (off, default) | "full" | "rest". Enables the CoM static-stability
@@ -31,7 +32,12 @@ gpu=$1; out=$2; shift 2
 #                       with ZMP feasibility, so pinning the feet while the body still tracks the
 #                       human appears to cost dynamic feasibility. This isolates that trade.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HS=~/kevin/holosoma/src/holosoma_retargeting/holosoma_retargeting
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"          # .../TrajGen/holosoma_adapters -> repo root
+# Sibling-clone search order, matching Training/source/isaaclab_tasks/isaaclab_tasks/utils/repo_paths.py:
+# beside THIS checkout first (so a worktree picks up its own siblings), then the shared ~/kevin drop.
+sibling() { for r in "$(dirname "$REPO_ROOT")" ~/kevin ~; do [ -e "$r/$1" ] && { echo "$r/$1"; return; }; done; echo "$(dirname "$REPO_ROOT")/$1"; }
+HS=$(sibling holosoma)/src/holosoma_retargeting/holosoma_retargeting
+HS_INPUT=${HS_INPUT_DIR:-~/kevin/hs_input}; HS_INPUT=$(eval echo "$HS_INPUT")
 HS_ACT=""
 for A in ~/.holosoma_deps/miniconda3/bin/activate ~/kevin/.holosoma_deps/miniconda3/bin/activate; do
   [ -f "$A" ] && { HS_ACT="$A"; break; }
@@ -65,7 +71,7 @@ for id in "$@"; do
   fi
   ( source "$HS_ACT" hsretargeting; cd "$HS"; timeout 400 python examples/robot_retarget.py \
       --task-type object_interaction --robot g1 --data-format smplx --task-name "pick_$id" \
-      --data-path ~/kevin/hs_input --save-dir "$NPZ_DIR" --task-config.object-name mustard       ${HS_FOOT_STICK_TOL:+--retargeter.foot-sticking-tolerance $HS_FOOT_STICK_TOL} $COM_ARGS \
+      --data-path "$HS_INPUT" --save-dir "$NPZ_DIR" --task-config.object-name mustard       ${HS_FOOT_STICK_TOL:+--retargeter.foot-sticking-tolerance $HS_FOOT_STICK_TOL} $COM_ARGS \
       ${HS_NO_FOOT_STICK:+--retargeter.no-activate-foot-sticking} \
     ) > /tmp/_gd_HS_$id.log 2>&1
   [ -f "$OUT" ] || { echo "$id HOLOSOMA_FAIL"; continue; }

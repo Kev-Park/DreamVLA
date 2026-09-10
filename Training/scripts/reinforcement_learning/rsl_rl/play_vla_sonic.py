@@ -24,9 +24,9 @@ no encoder, no vr_3pt teleop stage:
 Run:
 
     cd WBCBenchmark/Training && python3 scripts/reinforcement_learning/rsl_rl/play_vla_sonic.py \\
-        --vla-checkpoint /home/dvij/kevin/checkpoints/run-01 \\
+        --vla-checkpoint ~/kevin/checkpoints/run-01 \\
         --num-episodes 1 \\
-        --record-video /home/dvij/kevin/eval_videos/run01_ep0
+        --record-video ~/kevin/eval_videos/run01_ep0
 
 Produces ``<prefix>_third_person.mp4`` and ``<prefix>_ego.mp4``. ``--record-video``
 defaults to ``./vla_rollout`` so a video is always written.

@@ -30,6 +30,7 @@ from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking
 from isaaclab_assets import G1_MINIMAL_CFG  # isort: skip
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder
+from isaaclab_tasks.utils.repo_paths import sibling
 
 
 # =========================================================================
@@ -248,7 +249,10 @@ REWORK_OBJ_PC = os.environ.get("HS_REWORK_OBJ_PC", "0") == "1"  # ResMimic point
 REWORK_OBJ_PC_LAMBDA = float(os.environ.get("HS_REWORK_OBJ_PC_LAMBDA", "10.0"))
 REWORK_OBJ_PC_DEV_TAU = float(os.environ.get("HS_REWORK_OBJ_PC_DEV_TAU", "0.30"))  # ResMimic object-far: point-cloud dist (m) termination
 REWORK_OBJ_PC_N = int(os.environ.get("HS_REWORK_OBJ_PC_N", "256"))  # sampled mesh points
-_OBJ_MESH_PATH = os.environ.get("HS_REWORK_OBJ_MESH", "/bluesclues-data/home/sastrygrp-dvij/kevin/holosoma/src/holosoma_retargeting/holosoma_retargeting/models/mustard/mustard.obj")
+# Mesh ships with the sibling holosoma clone (see utils/repo_paths.py for the search order);
+# HS_REWORK_OBJ_MESH overrides it with a full path.
+_OBJ_MESH_PATH = str(sibling("holosoma", "src", "holosoma_retargeting", "holosoma_retargeting",
+                             "models", "mustard", "mustard.obj", env="HS_REWORK_OBJ_MESH"))
 # Object-frame points for the point-cloud reward: 8 bbox corners of the ~5x5x20cm bottle (half-extents).
 _OBJ_LOCAL_PTS = torch.tensor([[sx * 0.025, sy * 0.025, sz * 0.10] for sx in (-1.0, 1.0) for sy in (-1.0, 1.0) for sz in (-1.0, 1.0)], dtype=torch.float32)  # object ORIENTATION deviation (rad) from reference for termination (captures topple)         # object-tracking deviation termination (m)
 REWORK_HEIGHT_BACKSTOP = float(os.environ.get("HS_REWORK_HEIGHT_BACKSTOP", "0.2")) # smaller root-height backstop (<0.3)
