@@ -6,12 +6,24 @@ done
 # Adapters live beside THIS script (repo TrajGen/holosoma_adapters), not a hardcoded ~/kevin path.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"          # .../TrajGen/holosoma_adapters -> repo root
-# Sibling-clone search order, matching Training/source/isaaclab_tasks/isaaclab_tasks/utils/repo_paths.py:
-# beside THIS checkout first (so a worktree picks up its own siblings), then the shared ~/kevin drop.
-sibling() { for r in "$(dirname "$REPO_ROOT")" ~/kevin ~; do [ -e "$r/$1" ] && { echo "$r/$1"; return; }; done; echo "$(dirname "$REPO_ROOT")/$1"; }
+SHARED_ROOT=~/kevin
+# Mirrors Training/source/isaaclab_tasks/isaaclab_tasks/utils/repo_paths.py.
+#   sibling = CODE, worktree-local first: a worktree with its own holosoma worktree beside it uses
+#             THAT one, so two branches can develop different retargeters concurrently; a worktree
+#             without a paired clone falls through to the shared ~/kevin copy.
+#   pooled  = DATA, shared first: retargeted datasets are expensive and branches normally want the
+#             same best/most-recent one.
+# Either is overridden by an env var named after the directory: HOLOSOMA_DIR, HS_INPUT_DIR, ...
+_pick() { local n=$1; shift; local ov
+  ov=$(eval echo "\$$(echo "$n" | tr 'a-z-' 'A-Z_')_DIR")
+  [ -n "$ov" ] && { eval echo "$ov"; return; }
+  for r in "$@"; do [ -e "$r/$n" ] && { echo "$r/$n"; return; }; done
+  echo "$1/$n"; }
+sibling() { _pick "$1" "$(dirname "$REPO_ROOT")" "$SHARED_ROOT" ~; }
+pooled()  { _pick "$1" "$SHARED_ROOT" "$(dirname "$REPO_ROOT")" ~; }
 HS=$(sibling holosoma)/src/holosoma_retargeting/holosoma_retargeting
-HS_INPUT=${HS_INPUT_DIR:-~/kevin/hs_input}; HS_INPUT=$(eval echo "$HS_INPUT")
-NPZ_DIR=${HS_NPZ_DIR:-~/kevin/hs_pick_out}; NPZ_DIR=$(eval echo "$NPZ_DIR")
+HS_INPUT=$(pooled hs_input)
+NPZ_DIR=${HS_NPZ_DIR:-$(pooled hs_pick_out)}; mkdir -p "$NPZ_DIR"
 R=~/kevin/eval_videos/graspval; mkdir -p $R; CSV=$R/grasp_results.csv
 echo "motion_id,status,held,grab,moved_max,lift,end_dist" > $CSV
 for id in "$@"; do

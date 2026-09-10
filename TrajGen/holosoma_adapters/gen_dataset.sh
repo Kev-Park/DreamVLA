@@ -8,8 +8,14 @@ gpu=$1; out=$2; shift 2
 #   HS_FOOT_STICK_TOL : --retargeter.foot-sticking-tolerance (default 1e-3). LOWER = stricter
 #                       per-frame XY window; foot sticking is relative to the previous frame,
 #                       so a tighter window slows accumulated drift over a clip.
-#   HS_INPUT_DIR      : Adapter A output / holosoma --data-path (default ~/kevin/hs_input).
-#   HS_NPZ_DIR        : holosoma --save-dir (default ~/kevin/hs_pick_out). Point elsewhere to
+#   HS_INPUT_DIR      : Adapter A output / holosoma --data-path (default: pooled ~/kevin/hs_input).
+#   HOLOSOMA_DIR      : holosoma checkout to retarget with. Defaults to a holosoma worktree
+#                       beside THIS checkout if one exists, else the shared ~/kevin/holosoma.
+#                       Set it to run a variant retargeter without moving anything.
+#   HS_NPZ_DIR        : holosoma --save-dir (default: pooled ~/kevin/hs_pick_out). The pool is
+#                       shared ON PURPOSE so branches reuse one dataset -- but a run with a
+#                       NON-DEFAULT retargeter config MUST point this elsewhere, or it
+#                       overwrites the pooled pick_<id>_original.npz. Point elsewhere to
 #                       avoid clobbering the retarget output an existing dataset was built from.
 #   HS_COM_MODE       : "" (off, default) | "full" | "rest". Enables the CoM static-stability
 #                       barrier in the holosoma SQP (discrete-time CBF). "rest" restricts
@@ -33,20 +39,32 @@ gpu=$1; out=$2; shift 2
 #                       human appears to cost dynamic feasibility. This isolates that trade.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"          # .../TrajGen/holosoma_adapters -> repo root
-# Sibling-clone search order, matching Training/source/isaaclab_tasks/isaaclab_tasks/utils/repo_paths.py:
-# beside THIS checkout first (so a worktree picks up its own siblings), then the shared ~/kevin drop.
-sibling() { for r in "$(dirname "$REPO_ROOT")" ~/kevin ~; do [ -e "$r/$1" ] && { echo "$r/$1"; return; }; done; echo "$(dirname "$REPO_ROOT")/$1"; }
+SHARED_ROOT=~/kevin
+# Mirrors Training/source/isaaclab_tasks/isaaclab_tasks/utils/repo_paths.py.
+#   sibling = CODE, worktree-local first: a worktree with its own holosoma worktree beside it uses
+#             THAT one, so two branches can develop different retargeters concurrently; a worktree
+#             without a paired clone falls through to the shared ~/kevin copy.
+#   pooled  = DATA, shared first: retargeted datasets are expensive and branches normally want the
+#             same best/most-recent one.
+# Either is overridden by an env var named after the directory: HOLOSOMA_DIR, HS_INPUT_DIR, ...
+_pick() { local n=$1; shift; local ov
+  ov=$(eval echo "\$$(echo "$n" | tr 'a-z-' 'A-Z_')_DIR")
+  [ -n "$ov" ] && { eval echo "$ov"; return; }
+  for r in "$@"; do [ -e "$r/$n" ] && { echo "$r/$n"; return; }; done
+  echo "$1/$n"; }
+sibling() { _pick "$1" "$(dirname "$REPO_ROOT")" "$SHARED_ROOT" ~; }
+pooled()  { _pick "$1" "$SHARED_ROOT" "$(dirname "$REPO_ROOT")" ~; }
 HS=$(sibling holosoma)/src/holosoma_retargeting/holosoma_retargeting
-HS_INPUT=${HS_INPUT_DIR:-~/kevin/hs_input}; HS_INPUT=$(eval echo "$HS_INPUT")
+HS_INPUT=$(pooled hs_input)
 HS_ACT=""
 for A in ~/.holosoma_deps/miniconda3/bin/activate ~/kevin/.holosoma_deps/miniconda3/bin/activate; do
   [ -f "$A" ] && { HS_ACT="$A"; break; }
 done
 mkdir -p "$out"
+LOG_DIR="$out/_logs"; mkdir -p "$LOG_DIR"
 for id in "$@"; do
-  ( source "$HS_ACT" hsretargeting; python "$SCRIPT_DIR/export_to_holosoma.py" "$id" ) > /tmp/_gd_A_$id.log 2>&1 || { echo "$id ADAPTERA_FAIL"; continue; }
-  NPZ_DIR=${HS_NPZ_DIR:-~/kevin/hs_pick_out}
-  NPZ_DIR=$(eval echo "$NPZ_DIR"); mkdir -p "$NPZ_DIR"
+  ( source "$HS_ACT" hsretargeting; python "$SCRIPT_DIR/export_to_holosoma.py" "$id" ) > "$LOG_DIR/A_$id.log" 2>&1 || { echo "$id ADAPTERA_FAIL"; continue; }
+  NPZ_DIR=${HS_NPZ_DIR:-$(pooled hs_pick_out)}; mkdir -p "$NPZ_DIR"
   OUT=$NPZ_DIR/pick_${id}_original.npz; rm -f "$OUT"
   # CoM static-stability barrier flags (empty unless HS_COM_MODE is set)
   COM_ARGS=""
@@ -73,12 +91,12 @@ for id in "$@"; do
       --task-type object_interaction --robot g1 --data-format smplx --task-name "pick_$id" \
       --data-path "$HS_INPUT" --save-dir "$NPZ_DIR" --task-config.object-name mustard       ${HS_FOOT_STICK_TOL:+--retargeter.foot-sticking-tolerance $HS_FOOT_STICK_TOL} $COM_ARGS \
       ${HS_NO_FOOT_STICK:+--retargeter.no-activate-foot-sticking} \
-    ) > /tmp/_gd_HS_$id.log 2>&1
+    ) > "$LOG_DIR/HS_$id.log" 2>&1
   [ -f "$OUT" ] || { echo "$id HOLOSOMA_FAIL"; continue; }
   ( source ~/miniconda3/etc/profile.d/conda.sh; conda activate dreamcontrol_51
     export XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES="$gpu"
     HS_REFINE_MODE=al HS_REFINE_ARM=${HS_REFINE_ARM:-1} HS_PKL_DOF=29 python "$SCRIPT_DIR/holosoma_to_pkl.py" "$OUT" "$out/pick_$id" \
-    ) > /tmp/_gd_B_$id.log 2>&1
+    ) > "$LOG_DIR/B_$id.log" 2>&1
   [ -f "$out/pick_$id.pkl" ] && echo "$id OK" || echo "$id ADAPTERB_FAIL"
 done
 echo "[worker gpu$gpu] DONE $(date -u +%H:%MZ)"

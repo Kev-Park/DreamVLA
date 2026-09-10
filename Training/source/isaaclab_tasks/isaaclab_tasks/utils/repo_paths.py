@@ -3,66 +3,75 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Self-locating paths for assets that live OUTSIDE this repo.
+"""Self-locating paths for things that live OUTSIDE this repo.
 
 Several call sites need files that ship with a *sibling* repo (holosoma's object meshes,
-GR00T-WholeBodyControl's recorded motions) or with a shared asset drop (SONIC weights).
-Those used to be absolute paths into one machine's home directory, which meant the code
-only ran on that machine and silently pointed at the wrong checkout everywhere else.
+GR00T-WholeBodyControl's recorded motions) or with a shared data pool (retargeted datasets).
+Those used to be absolute paths into one machine's home directory, which meant the code only
+ran on that machine and silently pointed at the wrong checkout everywhere else.
 
-The convention is that clones sit side by side::
+Two resolution policies, because sibling repos and pooled data want opposite defaults:
+
+``sibling()`` -- CODE, worktree-local first::
 
     <parent>/
-      DreamVLA/            <- this repo (a.k.a. WBCBenchmark)
+      DreamVLA/                <- this repo (a.k.a. WBCBenchmark)
       holosoma/
       GR00T-WholeBodyControl/
-      sonic/               <- shared weight drop, not a repo
 
-``sibling()`` resolves against that layout with no configuration. It searches the repo's
-own parent first so a git worktree checked out under its own directory picks up whatever
-sits beside *it*, then falls back to ``~/kevin`` and ``$HOME`` so a worktree can share one
-copy of the big read-only assets instead of duplicating them per branch.
+It searches the repo's own parent first, so a git worktree that has its own holosoma
+worktree beside it picks *that* one up -- which is what lets two branches develop different
+retargeters concurrently. A worktree with no paired clone falls through to the shared
+``~/kevin`` copy, so pairing is opt-in per branch and costs nothing when unused.
 
-Nothing here needs to be set up by someone cloning the repo: put the sibling clone next to
-this one (or under ``~/kevin``) and it is found.
+``pooled()`` -- DATA, shared first. Retargeted datasets are expensive to regenerate and
+branches normally want the same best/most-recent one, so the shared drop wins and a
+worktree-local copy is only used when nothing shared exists.
+
+Both accept an explicit override via environment variable, named after the directory:
+``HOLOSOMA_DIR``, ``GR00T_WHOLEBODYCONTROL_DIR``, ``HS_PICK_OUT_DIR``. That is the escape
+hatch for pointing one worktree at a specific checkout or a variant dataset without moving
+anything. Nothing here needs setting up by someone cloning the repo: put the sibling clone
+next to this one (or under ``~/kevin``) and it is found.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 # .../DreamVLA/Training/source/isaaclab_tasks/isaaclab_tasks/utils/repo_paths.py -> DreamVLA
 REPO_ROOT = Path(__file__).resolve().parents[5]
 
+#: Shared drop for assets and datasets that all worktrees pool.
+SHARED_ROOT = Path.home() / "kevin"
 
-def search_roots() -> list[Path]:
-    """Directories searched for a sibling clone / shared asset drop, in priority order."""
-    roots = [REPO_ROOT.parent, Path.home() / "kevin", Path.home()]
-    seen, out = set(), []
-    for r in roots:
-        if r not in seen:
-            seen.add(r)
-            out.append(r)
-    return out
+
+def env_var_for(name: str) -> str:
+    """Environment variable that overrides ``name``: ``GR00T-WholeBodyControl`` -> ``GR00T_WHOLEBODYCONTROL_DIR``."""
+    return re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_") + "_DIR"
+
+
+def _resolve(name: str, parts: tuple[str, ...], roots: list[Path], env: str | None) -> Path:
+    override = os.environ.get(env or "") or os.environ.get(env_var_for(name))
+    if override:
+        base = Path(override).expanduser()
+        return base.joinpath(*parts) if parts else base
+    seen, candidates = set(), []
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        candidates.append(root / name / Path(*parts) if parts else root / name)
+    return next((c for c in candidates if c.exists()), candidates[0])
 
 
 def sibling(name: str, *parts: str, env: str | None = None) -> Path:
-    """Path to ``<root>/name/*parts`` for the first search root where it exists.
+    """Path inside a sibling clone, preferring one beside THIS checkout (worktree-local)."""
+    return _resolve(name, parts, [REPO_ROOT.parent, SHARED_ROOT, Path.home()], env)
 
-    Args:
-        name: sibling directory name, e.g. ``"holosoma"``.
-        parts: path components below it.
-        env: optional environment variable holding a full override path.
 
-    Returns:
-        The first existing candidate; if none exist, the candidate under the repo's own
-        parent, so the error message points at the layout the caller is expected to use.
-    """
-    if env and os.environ.get(env):
-        return Path(os.environ[env]).expanduser()
-    candidates = [root / name / Path(*parts) if parts else root / name for root in search_roots()]
-    for c in candidates:
-        if c.exists():
-            return c
-    return candidates[0]
+def pooled(name: str, *parts: str, env: str | None = None) -> Path:
+    """Path inside a shared data pool, preferring the drop all worktrees share."""
+    return _resolve(name, parts, [SHARED_ROOT, REPO_ROOT.parent, Path.home()], env)
