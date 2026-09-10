@@ -58,6 +58,14 @@ WRIST_TO_COLLISION = 0.35
 VISUALIZE = False
 OFFSET_Z = 0.86
 OFFSET_X = -0.35
+# Extra x margin (m) pulling the table edge back TOWARD the robot. x_edge is anchored to the
+# reference wrist at the grab frame, which lands anywhere from 0.11 m short of the sim table's
+# near edge to 0.02 m PAST it -- and where it lands past, a strip of real tabletop is unguarded
+# and the hand sweeps through it early in the clip. This margin absorbs that per-clip wander.
+# 0 reproduces the pre-margin datasets; 0.05 puts every measured clip >=0.034 m in front of the
+# true edge. Costs nothing for the grasp: the object rests above the z plane, so the constraint
+# only forbids being BELOW it while past the edge.
+TABLE_X_MARGIN = float(os.environ.get("HS_TABLE_X_MARGIN", "0"))
 HAND_TIP_OFFSET = 0.15
 # Forward-projection factor for the GRASP PALM target: palm = rubber_hand + HAND_FWD*(rubber_hand - wrist_yaw).
 # The AL loop drives THIS palm point (not the wrist) to the object, so the palm — the grasp point the
@@ -543,7 +551,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 Units: metres throughout — commensurable with TABLE_CONSTRAINT_TOL.
                 Drop-in replacement: same (gi,) shape, same sign convention, same AL loop.
                 """
-                x_edge  = grab_pos[0] + offset_x
+                x_edge  = grab_pos[0] + offset_x - TABLE_X_MARGIN
                 z_table = offset_z
                 eps     = 1e-8
 
