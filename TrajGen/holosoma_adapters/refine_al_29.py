@@ -112,6 +112,16 @@ APPROACH_RAMP_FRAMES = int(os.environ.get("HS_APPROACH_RAMP_FRAMES", "0"))
 # C1 continuous at delta, so no gradient step for the smoothness terms to inherit.
 APPROACH_HUBER_DELTA = float(os.environ.get("HS_APPROACH_HUBER_DELTA", "0"))
 APPROACH_PROPORTIONAL = os.environ.get("HS_APPROACH_PROPORTIONAL", "0") == "1"
+# PULL DELAY: by default the Charbonnier palm pull shares the walls' clip-start authority ramp
+# (pre_ramp), so the attractor is at full strength while the walls are still static -- the hand is
+# dragged off the corner before the ride even starts, and the y-wall spends its static phase
+# fighting the pull instead of placing the hand. With HS_PULL_DELAY=1 the pull gets its OWN
+# schedule: held at PULL_FLOOR through the static-wall hold, then faded in over PULL_RAMP_FRAC of
+# the taper window starting at taper_start -- so the wall acts alone first, and the pull arrives
+# together with the wall's release.
+PULL_DELAY = os.environ.get("HS_PULL_DELAY", "0") == "1"
+PULL_RAMP_FRAC = float(os.environ.get("HS_PULL_RAMP_FRAC", "0.5"))   # fade-in length as a fraction of (taper_end - taper_start)
+PULL_FLOOR = float(os.environ.get("HS_PULL_FLOOR", "0.0"))           # residual pull strength during the hold (0 = wall acts entirely alone)
 APPROACH_LEAD_FRAC = float(os.environ.get("HS_APPROACH_LEAD_FRAC", "0.290"))
 APPROACH_WINDOW_FRAC = float(os.environ.get("HS_APPROACH_WINDOW_FRAC", "0.507"))
 # Hold the first N frames of the arm trajectory FIXED during the refine (projection after each
@@ -763,7 +773,14 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     spring = WRIST_GRAB_CHARB_WEIGHT * (
                         torch.sqrt(d * d + PULL_RADIUS * PULL_RADIUS) - PULL_RADIUS)
                     pull_ramp = torch.ones(d.shape[0], device=DEVICE, dtype=joint_angles.dtype)
-                    pull_ramp[:n_trans] = pre_ramp                      # pre-grab: ramp; grab on: full
+                    if PULL_DELAY:
+                        # Own schedule: PULL_FLOOR until taper_start, then smootherstep to 1.0 over
+                        # PULL_RAMP_FRAC of the taper window. The walls keep pre_ramp (above).
+                        _plen = max(PULL_RAMP_FRAC * float(taper_end - taper_start), 1.0)
+                        _pf = _smooth01((frame_ids - float(taper_start)) / _plen)
+                        pull_ramp[:n_trans] = PULL_FLOOR + (1.0 - PULL_FLOOR) * _pf
+                    else:
+                        pull_ramp[:n_trans] = pre_ramp                  # pre-grab: ramp; grab on: full
                     cost2[1:] += pull_ramp * spring
 
                 approach_term = HAND_APPROACH_SOFT_WEIGHT * pre_ramp * approach_pen
