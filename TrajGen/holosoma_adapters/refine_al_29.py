@@ -158,8 +158,14 @@ WRIST_GRAB_CHARB_WEIGHT = float(os.environ.get("HS_CHARB_W", "30.0")) # palm-to-
 def _taper_bounds(grab_idx):
     """(taper_start, taper_end) for this clip -- the frames over which the gate walls open."""
     if APPROACH_PROPORTIONAL:
-        te = max(int(round(grab_idx * (1.0 - APPROACH_LEAD_FRAC))), 1)
-        ts = max(int(round(grab_idx * (1.0 - APPROACH_LEAD_FRAC - APPROACH_WINDOW_FRAC))), 1)
+        # Fractions are taken over the budget the solver actually CONTROLS (grab_idx minus the
+        # pinned head), not over grab_idx itself. Taking them over grab_idx leaves the corner-hold
+        # phase -- pin end -> taper_start, i.e. the descent into the low/right corner -- as a
+        # leftover: 1 frame (0.05 s) at grab_idx=56, too fast to see. Over the post-pin budget it
+        # is 9-19 frames (0.45-0.95 s) across the clip range.
+        _av = max(grab_idx - PIN_FIRST_N, 1)
+        te = PIN_FIRST_N + max(int(round(_av * (1.0 - APPROACH_LEAD_FRAC))), 1)
+        ts = PIN_FIRST_N + max(int(round(_av * (1.0 - APPROACH_LEAD_FRAC - APPROACH_WINDOW_FRAC))), 1)
     else:
         te = max(min(grab_idx - APPROACH_TAPER_LEAD, grab_idx - 1), 1)
         ts = max(te - APPROACH_TAPER_WINDOW, 1)
