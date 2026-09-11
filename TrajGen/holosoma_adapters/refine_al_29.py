@@ -102,6 +102,15 @@ APPROACH_RAMP_FRAMES = int(os.environ.get("HS_APPROACH_RAMP_FRAMES", "0"))
 # Fractions are calibrated at the median grab_idx (69) so the median clip reproduces the static
 # tuning exactly: 20/69 = 0.290 lead, 35/69 = 0.507 window -> taper_start = 0.203 * grab_idx,
 # which stays clear of a 10-frame pin for every grab_idx >= 50.
+# Penalty SHAPE for the approach gate walls. Default (<=0) is the legacy quadratic relu(v)^2,
+# whose force 2*w*v vanishes as the violation vanishes -- measured 3-40 mm of engagement on the
+# stand-stitch clips, i.e. 18-240 force units out of a nominal weight of 3000, so the walls graze
+# the hand instead of steering it. A Huber on the violation is quadratic within delta (smooth
+# settling onto the line, no chatter) and LINEAR beyond it with slope w (firm authority far out):
+#     pen(v) = 0.5*v^2/delta       v <= delta      -> force w*v/delta
+#            = v - 0.5*delta       v >  delta      -> force w (constant)
+# C1 continuous at delta, so no gradient step for the smoothness terms to inherit.
+APPROACH_HUBER_DELTA = float(os.environ.get("HS_APPROACH_HUBER_DELTA", "0"))
 APPROACH_PROPORTIONAL = os.environ.get("HS_APPROACH_PROPORTIONAL", "0") == "1"
 APPROACH_LEAD_FRAC = float(os.environ.get("HS_APPROACH_LEAD_FRAC", "0.290"))
 APPROACH_WINDOW_FRAC = float(os.environ.get("HS_APPROACH_WINDOW_FRAC", "0.507"))
@@ -153,6 +162,14 @@ HAND_APPROACH_SOFT_WEIGHT = float(os.environ.get("HS_HAND_APPROACH_W", "3000.0")
 
 WRIST_GRAB_CHARB_WEIGHT = float(os.environ.get("HS_CHARB_W", "30.0")) # palm-to-object Charbonnier weight (final approach + hold)
 # (Charbonnier knee removed in v13 — the Gaussian-well pull's quadratic basin IS the landing zone.)
+
+
+def _gate_pen(v):
+    """Penalty shape applied to a one-sided gate violation v >= 0 (see APPROACH_HUBER_DELTA)."""
+    if APPROACH_HUBER_DELTA > 0:
+        d = APPROACH_HUBER_DELTA
+        return torch.where(v <= d, 0.5 * v * v / d, v - 0.5 * d)
+    return v * v
 
 
 def _taper_bounds(grab_idx):
@@ -711,10 +728,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             hand_x = transformed_tip[1:grab_idx, 0]                         # (G-1,) tip forward pos
             hand_y = transformed_tip[1:grab_idx, 1]                         # (G-1,) tip lateral pos
             hand_z = transformed_tip[1:grab_idx, 2]                         # (G-1,) tip height
-            approach_pen = (torch.relu(hand_y - y_gate_t) ** 2
-                            + torch.relu(hand_z - z_gate_t) ** 2)
+            approach_pen = (_gate_pen(torch.relu(hand_y - y_gate_t))
+                            + _gate_pen(torch.relu(hand_z - z_gate_t)))
             if APPROACH_X_STANDOFF > 0:
-                approach_pen = approach_pen + torch.relu(hand_x - x_gate_t) ** 2
+                approach_pen = approach_pen + _gate_pen(torch.relu(hand_x - x_gate_t))
             # DOWNWARD-VELOCITY penalty (untapered, pre-grab): early gradual descent cheapest.
             _dz = transformed_tip[1:grab_idx, 2] - transformed_tip[:grab_idx - 1, 2]
             cost2[1:grab_idx] += DOWNVEL_W * torch.relu(-_dz) ** 2
