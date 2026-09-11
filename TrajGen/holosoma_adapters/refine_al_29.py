@@ -129,6 +129,16 @@ APPROACH_WINDOW_FRAC = float(os.environ.get("HS_APPROACH_WINDOW_FRAC", "0.507"))
 # exactly at the INIT pose so the reference still starts at rest in the default pose, while the
 # optimiser is free to shape everything from frame N onward.
 PIN_FIRST_N = int(os.environ.get("HS_PIN_FIRST_FRAMES", "0"))
+# GRASP-POINT OFFSET in the TABLE PLANE (no vertical component), expressed in the robot's heading
+# frame at the grab frame: FWD > 0 = away from the robot, LEFT > 0 = the robot's left. So "a bit
+# closer and to the robot's right" is FWD < 0, LEFT < 0. Rotated by the root yaw at grab_idx into
+# the FK world frame and added to palm_target -- the ONE point that the Charbonnier pull, the
+# fixed pointing azimuth (Option A), the per-frame pointing (Option B) and the gate-wall anchor
+# lines all key off, so every objective moves together. The stored object pose is untouched: this
+# only relocates where the PALM (not the fingers, which are not modelled) is asked to land.
+# Post-grab the same world offset is applied to the object trajectory (rigid grasp).
+GRASP_OFFSET_FWD  = float(os.environ.get("HS_GRASP_OFFSET_FWD",  "0"))
+GRASP_OFFSET_LEFT = float(os.environ.get("HS_GRASP_OFFSET_LEFT", "0"))
 PULL_RADIUS = float(os.environ.get("HS_PULL_RADIUS", "0.35"))               # Gaussian-well pull radius (m): no pull beyond ~1.7R, soft dock at 0
 APPROACH_Z_CLEARANCE = float(os.environ.get("HS_APPROACH_Z_CLEARANCE", "-0.03"))  # z-gate: allowed height above object center (m)
 DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))                      # downward-velocity penalty weight (pre-grab)
@@ -852,12 +862,22 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     # on the object.
     palm_target = torch.tensor(np.asarray(grab_pos_obj), dtype=torch.float32, device=DEVICE) \
         + torch.tensor([0., 0., 0.035], device=DEVICE)
+    # Table-plane grasp offset (see GRASP_OFFSET_*): heading-frame (fwd, left) -> world xy via the
+    # root yaw at the grab frame. Zero z, so the level/z-wall geometry is unchanged.
+    _q = quats[grab_idx]                                            # (w, x, y, z)
+    _yaw = torch.atan2(2.0 * (_q[0] * _q[3] + _q[1] * _q[2]),
+                       1.0 - 2.0 * (_q[2] * _q[2] + _q[3] * _q[3]))
+    grasp_offset_world = torch.stack([
+        torch.cos(_yaw) * GRASP_OFFSET_FWD - torch.sin(_yaw) * GRASP_OFFSET_LEFT,
+        torch.sin(_yaw) * GRASP_OFFSET_FWD + torch.cos(_yaw) * GRASP_OFFSET_LEFT,
+        torch.zeros((), device=DEVICE)]).to(torch.float32)
+    palm_target = palm_target + grasp_offset_world
     # Per-frame palm target: static grab point before grab; the MOVING object trajectory after
     # (so the full-window charb holds the palm ON the object through the lift/carry instead of
-    # pinning the arm at the pickup point).
+    # pinning the arm at the pickup point). The grasp offset rides along post-grab (rigid grasp).
     if obj_traj is not None:
         _ot = torch.tensor(np.asarray(obj_traj), dtype=torch.float32, device=DEVICE) \
-            + torch.tensor([0., 0., 0.035], device=DEVICE)
+            + torch.tensor([0., 0., 0.035], device=DEVICE) + grasp_offset_world.unsqueeze(0)
         palm_target_traj = palm_target.unsqueeze(0).repeat(target_joint_angles.shape[0], 1)
         _n = min(_ot.shape[0], palm_target_traj.shape[0])
         if grab_idx < _n:
@@ -951,7 +971,8 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     max_move = float((out[:, active_joint_ids] - target_joint_angles[:, active_joint_ids]).abs().max())
     fv = float(g_curr.max()) if g_curr is not None else -1.0
     fvl = float(_last_g_level.max()) if _last_g_level is not None else -1.0
-    print(f"[refine-al] grab_idx={grab_idx} AL {'converged' if converged else 'maxiter'} "
+    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) "
+          f"AL {'converged' if converged else 'maxiter'} "
           f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} "
           f"final_jlim_viol={float(_last_g_jlim.max()) if _last_g_jlim is not None else -1.0:.2e}rad "
           f"max_arm_move={max_move:.3f}rad")
