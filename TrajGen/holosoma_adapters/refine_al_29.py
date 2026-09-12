@@ -170,6 +170,17 @@ LEVEL_HARD_LEAD = int(os.environ.get("HS_LEVEL_HARD_LEAD", "60"))
 # awkward enough to make AL diverge -- with the arm fully re-solved (no retarget anchor) and the
 # palm following the object trajectory, that is a hypothesis to test via convergence, not a given.
 LEVEL_HARD_POSTGRAB = os.environ.get("HS_LEVEL_HARD_POSTGRAB", "0") == "1"
+# ORIENTATION SCHEDULE (HS_ORIENT_SCOPE_TAPER=1): both SOFT orientation terms (level + pointing)
+# start at taper_start (when the y-wall begins to move) and fade in with a smootherstep that
+# completes at hard_start = taper_start + LEVEL_HARD_DELAY_FRAC * (te - ts); the HARD band engages
+# at hard_start, when the soft terms are already at full weight and have had the delay window to
+# level the hand. Rationale (measured): with the soft term removed the hard band engaging at ts
+# produced a one-frame 20-25 deg snap, and with the soft/pointing terms un-ramped from frame 0 the
+# arm departed the pinned frame at the joint speed cap (0.30 rad/frame -> 0.10-0.17 m tip rise per
+# frame on frames 1-3, every config). Before ts no orientation objective acts, so the wrist rests.
+# Soft window runs to the clip end (post-grab covered); 0 keeps the legacy whole-clip windows.
+ORIENT_SCOPE_TAPER = os.environ.get("HS_ORIENT_SCOPE_TAPER", "0") == "1"
+LEVEL_HARD_DELAY_FRAC = float(os.environ.get("HS_LEVEL_HARD_DELAY_FRAC", "0"))   # hard band starts this fraction of the taper window after ts
 LEVEL_CONSTRAINT_TOL = 1e-3
 # Scope the HARD levelness window to the approach shaping instead of a fixed LEVEL_HARD_LEAD:
 # start it where the gate walls start moving (taper_start), i.e. exactly when the hand commits to
@@ -598,11 +609,20 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # Together they pin all 3 rotational DOF with a smooth target that rotates continuously as
             # the hand sweeps -- no azimuth slack for smoothing to fill, no onset transition. Direction
             # uses the HAND ORIGIN (stays ~0.2 m behind the palm target even at grasp -> never degenerate).
-            orient_start = max(grab_idx - LEVEL_LEAD, 0)
+            _ts_o, _te_o = _taper_bounds(grab_idx)
+            _hard_start = _ts_o + int(round(LEVEL_HARD_DELAY_FRAC * float(_te_o - _ts_o)))
+            if ORIENT_SCOPE_TAPER:
+                orient_start = min(_ts_o, rot_mat.shape[0])
+                _oramp = _smooth01((torch.arange(orient_start, rot_mat.shape[0], device=DEVICE,
+                                                 dtype=joint_angles.dtype) - float(_ts_o))
+                                   / float(max(_hard_start - _ts_o, 1)))
+            else:
+                orient_start = max(grab_idx - LEVEL_LEAD, 0)
+                _oramp = torch.ones(max(rot_mat.shape[0] - orient_start, 0), device=DEVICE, dtype=joint_angles.dtype)
             if orient_start < rot_mat.shape[0]:
                 _lvl_s = max(max(grab_idx - LEVEL_SOFT_LEAD, 0), orient_start)
                 up_z = rot_mat[_lvl_s:, 2, 2]                          # world-z component of hand local z
-                cost2[_lvl_s:] += LEVEL_W * (1.0 - up_z)               # = 1 - cos(tilt), soft window only
+                cost2[_lvl_s:] += LEVEL_W * _oramp[_lvl_s - orient_start:] * (1.0 - up_z)   # = 1 - cos(tilt), soft window only
                 _xaxis = rot_mat[orient_start:, :, 0]                  # hand local x (fingertip axis) in world
                 if POINT_FIXED and point_fixed_dir is not None:
                     # OPTION A: CONSTANT per-clip azimuth (bearing from the RAW reference hand at
@@ -613,7 +633,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     # jolt) or mid-sweep branch flipping (m42 oscillation). A constant target cannot
                     # drive a transit. Constant by construction: computed from the raw reference, not
                     # the optimized variables.
-                    cost2[orient_start:] += POINT_W * (1.0 - (_xaxis * point_fixed_dir.unsqueeze(0)).sum(dim=1))
+                    cost2[orient_start:] += POINT_W * _oramp * (1.0 - (_xaxis * point_fixed_dir.unsqueeze(0)).sum(dim=1))
                 else:
                     _F = transformed_hand_orig.shape[0]
                     _tg_o = (palm_target_traj[orient_start:_F]
@@ -621,7 +641,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     _dvec = _tg_o - transformed_hand_orig[orient_start:]
                     _dvec = torch.cat([_dvec[:, :2], torch.zeros_like(_dvec[:, 2:3])], dim=1)   # horizontal projection
                     _pstar = _dvec / torch.norm(_dvec, dim=1, keepdim=True).clamp(min=1e-6)
-                    cost2[orient_start:] += POINT_W * (1.0 - (_xaxis * _pstar).sum(dim=1))
+                    cost2[orient_start:] += POINT_W * _oramp * (1.0 - (_xaxis * _pstar).sum(dim=1))
             # Option B soft prior: active-joint cols 4 = right_wrist_roll, 6 = right_wrist_yaw.
             if WRIST_NEUTRAL_W > 0:
                 cost2 += WRIST_NEUTRAL_W * (joint_angles[:, 4] ** 2 + joint_angles[:, 6] ** 2)
@@ -631,7 +651,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # LEVEL_W term keeps gradient pressure toward perfectly flat inside the eps band).
             g_level_full = torch.zeros(rot_mat.shape[0], device=DEVICE, dtype=joint_angles.dtype)
             if LEVEL_SCOPE_TAPER:
-                _hard_s = _taper_bounds(grab_idx)[0]
+                _hard_s = _hard_start                                  # = ts + LEVEL_HARD_DELAY_FRAC * window
             else:
                 _hard_s = max(grab_idx - LEVEL_HARD_LEAD, 0)
             # Never impose a hard constraint on frames that are not decision variables.
