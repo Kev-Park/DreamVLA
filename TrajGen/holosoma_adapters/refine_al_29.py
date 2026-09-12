@@ -286,6 +286,7 @@ _last_g_level:     torch.Tensor | None = None
 _last_g_jlim:      torch.Tensor | None = None
 _last_g_wband:     torch.Tensor | None = None
 _last_cost_terms: dict[str, torch.Tensor] | None = None
+_last_table_dbg: dict | None = None   # HS_REFINE_DEBUG=1: components of the table constraint at the last pass
 jlim_lo: torch.Tensor | None = None   # (7,) soft lower limits of the ACTIVE (right-arm) joints
 jlim_hi: torch.Tensor | None = None   # (7,) soft upper limits
 JLIM_CONSTRAINT_TOL = 1e-3            # rad
@@ -735,6 +736,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 g_seg = torch.cat([g_seg, g_seg.new_zeros(1)]) # (gi,)
 
                 g_all = torch.maximum(g_point, g_seg)          # (gi,)  hard constraint
+                global _last_table_dbg
+                _last_table_dbg = dict(x_edge=float(x_edge), z_table=float(z_table),
+                                       g_point=g_point.detach(), g_seg_tip=g_seg_tip.detach(),
+                                       g_seg_orig=g_seg_orig.detach(), tip=pts.detach(), orig=orig_pts.detach())
                 if PIN_FIRST_N > 0:
                     # Pinned frames are not decision variables: a violation there (e.g. the INIT
                     # hand hanging past the modelled edge when the root is frozen close to the
@@ -1018,6 +1023,15 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
         rho_al_table = min(rho_al_table * AL_RHO_GROWTH_TABLE, AL_RHO_MAX)
         rho_al = min(rho_al * AL_RHO_GROWTH, AL_RHO_MAX)
 
+    if os.environ.get("HS_REFINE_DEBUG", "0") == "1" and _last_table_dbg is not None and g_curr is not None:
+        _d = _last_table_dbg; _top = torch.argsort(g_curr, descending=True)[:8]
+        print(f"[refine-dbg] x_edge={_d['x_edge']:.3f} z_table={_d['z_table']:.3f} grab_idx={grab_idx} pin={PIN_FIRST_N}")
+        for _t in _top.tolist():
+            if float(g_curr[_t]) <= 0: break
+            _gs = float(torch.cat([_d['g_seg_tip'], _d['g_seg_tip'].new_zeros(1)])[_t]); _go = float(torch.cat([_d['g_seg_orig'], _d['g_seg_orig'].new_zeros(1)])[_t])
+            print(f"[refine-dbg]  f{_t:3d} g={float(g_curr[_t]):.4f} point={float(_d['g_point'][_t]):.4f} seg_tip={_gs:.4f} seg_orig={_go:.4f} "
+                  f"| tip x-xe={float(_d['tip'][_t,0])-_d['x_edge']:+.3f} z-zt={float(_d['tip'][_t,2])-_d['z_table']:+.3f} "
+                  f"| orig x-xe={float(_d['orig'][_t,0])-_d['x_edge']:+.3f} z-zt={float(_d['orig'][_t,2])-_d['z_table']:+.3f}")
     out = target_joint_angles.clone()
     out[:, active_joint_ids] = joint_angles.detach()
     max_move = float((out[:, active_joint_ids] - target_joint_angles[:, active_joint_ids]).abs().max())
