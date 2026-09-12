@@ -141,6 +141,11 @@ GRASP_OFFSET_FWD  = float(os.environ.get("HS_GRASP_OFFSET_FWD",  "0"))
 GRASP_OFFSET_LEFT = float(os.environ.get("HS_GRASP_OFFSET_LEFT", "0"))
 PULL_RADIUS = float(os.environ.get("HS_PULL_RADIUS", "0.35"))               # Gaussian-well pull radius (m): no pull beyond ~1.7R, soft dock at 0
 APPROACH_Z_CLEARANCE = float(os.environ.get("HS_APPROACH_Z_CLEARANCE", "-0.03"))  # z-gate: allowed height above object center (m)
+# z-ceiling LAG: fraction of the taper window [ts, te] during which the ceiling stays at its floor
+# (APPROACH_Z_CLEARANCE) while the y-wall has already begun releasing. The ceiling then rises on
+# its own smootherstep over the remaining (1 - lag) of the window, still reaching +GATE_END_SLACK
+# at te. 0 = legacy (y and z release together). Encodes "commit leftward first, rise later".
+APPROACH_Z_LAG_FRAC = float(os.environ.get("HS_APPROACH_Z_LAG_FRAC", "0"))
 DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))
 LAZINESS_W = float(os.environ.get("HS_LAZINESS_W", "1.0"))                     # rest-pose (INIT) L1 prior weight, [0, grab-40), decaying (1-t/L)^2; 0 disables                      # downward-velocity penalty weight (pre-grab)
 GATE_END_SLACK = float(os.environ.get("HS_GATE_END_SLACK", "0.05"))              # gate line ends this far PAST the object (m)
@@ -755,7 +760,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             _sline = _smooth01((frame_pre - float(taper_start)) / float(max(taper_end - taper_start, 1)))
             x_clear_t = (1.0 - _sline) * APPROACH_X_STANDOFF + _sline * (-GATE_END_SLACK)
             y_clear_t = (1.0 - _sline) * APPROACH_GATE_CLEARANCE + _sline * (-GATE_END_SLACK)
-            z_clear_t = (1.0 - _sline) * APPROACH_Z_CLEARANCE + _sline * GATE_END_SLACK
+            if APPROACH_Z_LAG_FRAC > 0:
+                _zs = taper_start + APPROACH_Z_LAG_FRAC * float(taper_end - taper_start)
+                _sz = _smooth01((frame_pre - _zs) / float(max(taper_end - _zs, 1.0)))
+            else:
+                _sz = _sline
+            z_clear_t = (1.0 - _sz) * APPROACH_Z_CLEARANCE + _sz * GATE_END_SLACK
             x_gate_t = _obj_x - x_clear_t                                   # moving X line -> ends slack PAST obj
             y_gate_t = _obj_y - y_clear_t                                   # moving Y line -> ends slack LEFT of obj
             z_gate_t = _obj_z + z_clear_t                                   # moving Z line -> ends slack ABOVE obj
