@@ -734,7 +734,15 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 # Last frame has no outgoing segment — pad with zero
                 g_seg = torch.cat([g_seg, g_seg.new_zeros(1)]) # (gi,)
 
-                return torch.maximum(g_point, g_seg)           # (gi,)  hard constraint
+                g_all = torch.maximum(g_point, g_seg)          # (gi,)  hard constraint
+                if PIN_FIRST_N > 0:
+                    # Pinned frames are not decision variables: a violation there (e.g. the INIT
+                    # hand hanging past the modelled edge when the root is frozen close to the
+                    # table, pick_35) is unfixable by construction and would run AL to maxiter
+                    # with a schedule-independent residual. Same rule as the hard levelness window.
+                    g_all = torch.cat([g_all.new_zeros(min(PIN_FIRST_N, g_all.shape[0])),
+                                       g_all[PIN_FIRST_N:]])
+                return g_all
 
             # [ABS] Per-frame table collision — hard constraint via AL (g_t >= 0)
             # Enforce over the full trajectory.
