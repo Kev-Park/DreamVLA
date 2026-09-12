@@ -141,7 +141,8 @@ GRASP_OFFSET_FWD  = float(os.environ.get("HS_GRASP_OFFSET_FWD",  "0"))
 GRASP_OFFSET_LEFT = float(os.environ.get("HS_GRASP_OFFSET_LEFT", "0"))
 PULL_RADIUS = float(os.environ.get("HS_PULL_RADIUS", "0.35"))               # Gaussian-well pull radius (m): no pull beyond ~1.7R, soft dock at 0
 APPROACH_Z_CLEARANCE = float(os.environ.get("HS_APPROACH_Z_CLEARANCE", "-0.03"))  # z-gate: allowed height above object center (m)
-DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))                      # downward-velocity penalty weight (pre-grab)
+DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))
+LAZINESS_W = float(os.environ.get("HS_LAZINESS_W", "1.0"))                     # rest-pose (INIT) L1 prior weight, [0, grab-40), decaying (1-t/L)^2; 0 disables                      # downward-velocity penalty weight (pre-grab)
 GATE_END_SLACK = float(os.environ.get("HS_GATE_END_SLACK", "0.05"))              # gate line ends this far PAST the object (m)
 LEVEL_LEAD = int(os.environ.get("HS_LEVEL_LEAD", "1000"))                    # level-hand term starts this many frames before grab
 LEVEL_W = float(os.environ.get("HS_LEVEL_W", "150.0"))                      # level-hand orientation weight (soft)
@@ -484,8 +485,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             rest_pose = torch.tensor(init_joint_angles, device=DEVICE)[active_joint_ids]
             # Clamp effective end to actual sequence length — grab_idx can exceed N for some pkl files.
             laziness_end = min(max(grab_idx - 40, 0), joint_angles.shape[0])
-            if laziness_end > 0:
-                laziness_weight = torch.linspace(1.0, 0.0, laziness_end, device=DEVICE) ** 2
+            if LAZINESS_W > 0 and laziness_end > 0:
+                laziness_weight = LAZINESS_W * torch.linspace(1.0, 0.0, laziness_end, device=DEVICE) ** 2
                 cost2[:laziness_end] += laziness_weight * torch.sum(torch.abs(joint_angles[:laziness_end] - rest_pose), dim=1)
 
             # INTER-APPROACH COSTS
