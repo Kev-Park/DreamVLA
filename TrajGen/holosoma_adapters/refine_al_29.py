@@ -66,6 +66,14 @@ OFFSET_X = -0.35
 # true edge. Costs nothing for the grasp: the object rests above the z plane, so the constraint
 # only forbids being BELOW it while past the edge.
 TABLE_X_MARGIN = float(os.environ.get("HS_TABLE_X_MARGIN", "0"))
+# TABLE EDGE ANCHOR. "object" (default): the near edge sits a fixed TABLE_EDGE_BEHIND_OBJECT behind
+# the object centre, which is what the env actually builds (motion_lib places every object at
+# x=2.1 and the table spans x in [2.05, 3.05]). "wrist": legacy proxy anchored to the raw reference
+# wrist at grab (grab_x + WRIST_TO_COLLISION + OFFSET_X), which landed 0.13-0.21 m behind the object
+# depending on the clip -- 8-16 cm more conservative than the real edge, per clip, for no physical
+# reason; on pick_35 it put the pinned INIT hand "inside" the table and made AL unsolvable.
+TABLE_EDGE_ANCHOR = os.environ.get("HS_TABLE_EDGE_ANCHOR", "object")
+TABLE_EDGE_BEHIND_OBJECT = 0.05
 HAND_TIP_OFFSET = 0.15
 # Forward-projection factor for the GRASP PALM target: palm = rubber_hand + HAND_FWD*(rubber_hand - wrist_yaw).
 # The AL loop drives THIS palm point (not the wrist) to the object, so the palm — the grasp point the
@@ -291,6 +299,7 @@ jlim_lo: torch.Tensor | None = None   # (7,) soft lower limits of the ACTIVE (ri
 jlim_hi: torch.Tensor | None = None   # (7,) soft upper limits
 JLIM_CONSTRAINT_TOL = 1e-3            # rad
 palm_target:       torch.Tensor | None = None   # world-frame object target the PALM is driven to (set by refine_arm)
+obj_grab_x:        float | None = None          # raw object x at grab (no grasp offset); table-edge anchor when TABLE_EDGE_ANCHOR="object"
 point_fixed_dir:   torch.Tensor | None = None   # (3,) constant horizontal pointing direction (Option A; set by refine_arm)
 palm_target_traj:  torch.Tensor | None = None   # (F,3) per-frame palm target: static grab point pre-grab, object trajectory post-grab
 
@@ -681,7 +690,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 Units: metres throughout — commensurable with TABLE_CONSTRAINT_TOL.
                 Drop-in replacement: same (gi,) shape, same sign convention, same AL loop.
                 """
-                x_edge  = grab_pos[0] + offset_x - TABLE_X_MARGIN
+                if TABLE_EDGE_ANCHOR == "object" and obj_grab_x is not None:
+                    x_edge = obj_grab_x - TABLE_EDGE_BEHIND_OBJECT - TABLE_X_MARGIN
+                else:
+                    x_edge = grab_pos[0] + offset_x - TABLE_X_MARGIN
                 z_table = offset_z
                 eps     = 1e-8
 
@@ -882,7 +894,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     """
     global target_joint_angles, active_joint_names, inactive_joint_ids, joint_names
     global fk_results_ref, grab_idx, grab_pos, capsule_obs_pos, ref_dists, traj_fps_hz
-    global active_joint_ids, init_joint_angles, palm_target, palm_target_traj, jlim_lo, jlim_hi
+    global active_joint_ids, init_joint_angles, palm_target, palm_target_traj, jlim_lo, jlim_hi, obj_grab_x
 
     joint_names = JOINT_NAMES_29
     init_joint_angles = INIT_29
@@ -917,6 +929,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     # root lift, matching trans_with_z / motion_lib's object_poses). The AL loop drives the forward-
     # projected palm to THIS, so the palm (render CYAN, = the synthesized object ref post-grasp) lands
     # on the object.
+    obj_grab_x = float(np.asarray(grab_pos_obj)[0])
     palm_target = torch.tensor(np.asarray(grab_pos_obj), dtype=torch.float32, device=DEVICE) \
         + torch.tensor([0., 0., 0.035], device=DEVICE)
     # Table-plane grasp offset (see GRASP_OFFSET_*): heading-frame (fwd, left) -> world xy via the
@@ -1037,7 +1050,8 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     max_move = float((out[:, active_joint_ids] - target_joint_angles[:, active_joint_ids]).abs().max())
     fv = float(g_curr.max()) if g_curr is not None else -1.0
     fvl = float(_last_g_level.max()) if _last_g_level is not None else -1.0
-    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) "
+    _xe = (obj_grab_x - TABLE_EDGE_BEHIND_OBJECT - TABLE_X_MARGIN) if (TABLE_EDGE_ANCHOR == "object" and obj_grab_x is not None) else float(grab_pos[0] + OFFSET_X - TABLE_X_MARGIN)
+    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) "
           f"AL {'converged' if converged else 'maxiter'} "
           f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} "
           f"final_jlim_viol={float(_last_g_jlim.max()) if _last_g_jlim is not None else -1.0:.2e}rad "

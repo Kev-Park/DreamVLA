@@ -208,6 +208,18 @@ if os.environ.get("HS_STAND_LOWER", "0") == "1":
     base_quat[:] = np.array([np.cos(_yaw / 2.0), 0.0, 0.0, np.sin(_yaw / 2.0)])
     base_pos[:, 0] = base_pos[grab_idx, 0]
     base_pos[:, 1] = base_pos[grab_idx, 1]
+    # Minimum stance standoff: the grab-frame root can sit as little as 0.25 m from the object
+    # (pick_35), which parks the INIT hand hanging at the table's front face (env edge = object
+    # x - 0.05) -> spawn collision and an unsolvable table constraint on the pinned first frame.
+    # Push the root straight back along its heading until the along-heading root->object distance
+    # is at least HS_STAND_MIN_STANDOFF. Reach is unaffected (arm ~0.6 m); 0 disables.
+    _min_standoff = float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35"))
+    _hdg = np.array([np.cos(_yaw), np.sin(_yaw)])
+    _d_along = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _hdg))
+    if _min_standoff > 0 and _d_along < _min_standoff:
+        base_pos[:, :2] -= (_min_standoff - _d_along) * _hdg[None, :]
+        print(f"[stand-lower] root->object along heading {_d_along:.3f} m < {_min_standoff:.2f}; "
+              f"root moved back {_min_standoff - _d_along:.3f} m")
     print(f"[stand-lower] legs pinned to INIT stance; root frozen at grab-frame "
           f"xy=({base_pos[grab_idx,0]:.3f},{base_pos[grab_idx,1]:.3f}) yaw={_yaw:+.3f} rad; "
           f"waist+arms kept from the retarget")
