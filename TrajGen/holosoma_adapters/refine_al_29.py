@@ -146,6 +146,12 @@ LAZINESS_W = float(os.environ.get("HS_LAZINESS_W", "1.0"))                     #
 GATE_END_SLACK = float(os.environ.get("HS_GATE_END_SLACK", "0.05"))              # gate line ends this far PAST the object (m)
 LEVEL_LEAD = int(os.environ.get("HS_LEVEL_LEAD", "1000"))                    # level-hand term starts this many frames before grab
 LEVEL_W = float(os.environ.get("HS_LEVEL_W", "150.0"))                      # level-hand orientation weight (soft)
+# SOFT level window: starts this many frames before grab (1000 = whole clip, legacy). Pre-grab the
+# HARD band (LEVEL_HARD_EPS over [taper_start, grab]) is the accepted levelness spec, and the soft
+# term's only pre-grab effect of note is on the lead-in/hold, where it is the largest single term
+# (150*(1-cos 70deg) ~ 99/frame vs a <=0.3/frame laziness prior) flattening a hand nothing asked to
+# be flat yet. 0 = post-grab only, which the hard constraint does not cover (lift/carry levelness).
+LEVEL_SOFT_LEAD = int(os.environ.get("HS_LEVEL_SOFT_LEAD", "1000"))
 # HARD levelness constraint (AL): (1 - up_z) <= LEVEL_HARD_EPS within the approach window
 # [grab - LEVEL_HARD_LEAD, grab]. eps is 1 - cos(tilt): 0.03 ~= 14 deg max tilt. Enforced via the
 # same dual/rho machinery as the table constraint, so a tilted high hover (m66: level fell to 0.45
@@ -583,8 +589,9 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # uses the HAND ORIGIN (stays ~0.2 m behind the palm target even at grasp -> never degenerate).
             orient_start = max(grab_idx - LEVEL_LEAD, 0)
             if orient_start < rot_mat.shape[0]:
-                up_z = rot_mat[orient_start:, 2, 2]                    # world-z component of hand local z
-                cost2[orient_start:] += LEVEL_W * (1.0 - up_z)         # = 1 - cos(tilt)
+                _lvl_s = max(max(grab_idx - LEVEL_SOFT_LEAD, 0), orient_start)
+                up_z = rot_mat[_lvl_s:, 2, 2]                          # world-z component of hand local z
+                cost2[_lvl_s:] += LEVEL_W * (1.0 - up_z)               # = 1 - cos(tilt), soft window only
                 _xaxis = rot_mat[orient_start:, :, 0]                  # hand local x (fingertip axis) in world
                 if POINT_FIXED and point_fixed_dir is not None:
                     # OPTION A: CONSTANT per-clip azimuth (bearing from the RAW reference hand at
