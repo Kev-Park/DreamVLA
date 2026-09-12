@@ -159,6 +159,12 @@ LEVEL_SOFT_LEAD = int(os.environ.get("HS_LEVEL_SOFT_LEAD", "1000"))
 # soft-only (the raw carry can be kinematically awkward; hard-constraining it can make AL diverge).
 LEVEL_HARD_EPS = float(os.environ.get("HS_LEVEL_HARD_EPS", "0.03"))
 LEVEL_HARD_LEAD = int(os.environ.get("HS_LEVEL_HARD_LEAD", "60"))
+# Extend the HARD band through the end of the clip (lift/carry), so the hard constraint is the
+# whole levelness spec and the soft term can be dropped (HS_LEVEL_W=0). Off by default: the
+# legacy reason for soft-only post-grab was that the raw retargeted carry could be kinematically
+# awkward enough to make AL diverge -- with the arm fully re-solved (no retarget anchor) and the
+# palm following the object trajectory, that is a hypothesis to test via convergence, not a given.
+LEVEL_HARD_POSTGRAB = os.environ.get("HS_LEVEL_HARD_POSTGRAB", "0") == "1"
 LEVEL_CONSTRAINT_TOL = 1e-3
 # Scope the HARD levelness window to the approach shaping instead of a fixed LEVEL_HARD_LEAD:
 # start it where the gate walls start moving (taper_start), i.e. exactly when the hand commits to
@@ -625,7 +631,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 _hard_s = max(grab_idx - LEVEL_HARD_LEAD, 0)
             # Never impose a hard constraint on frames that are not decision variables.
             _hard_s = max(_hard_s, PIN_FIRST_N)
-            _hard_e = min(grab_idx + 1, rot_mat.shape[0])
+            _hard_e = rot_mat.shape[0] if LEVEL_HARD_POSTGRAB else min(grab_idx + 1, rot_mat.shape[0])
             if _hard_e > _hard_s:
                 g_level_full[_hard_s:_hard_e] = torch.relu(
                     (1.0 - rot_mat[_hard_s:_hard_e, 2, 2]) - LEVEL_HARD_EPS)
