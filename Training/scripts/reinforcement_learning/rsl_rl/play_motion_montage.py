@@ -1103,13 +1103,9 @@ def main():
     writer.close()
 
     if _trk is not None:
-
         np.savez(args_cli.dump_track, names=np.array(_trk["names"]), seg=np.array(_trk["seg"]), mid=np.array(_trk["mid"]),
-
                  step=np.array(_trk["step"]), hand_pos=np.stack(_trk["hand_pos"]), obj_pos=np.stack(_trk["obj_pos"]),
-
                  is_closed=np.array(_trk["is_closed"]))
-
         print(f"[dump-track] wrote {args_cli.dump_track}: {len(_trk['step'])} steps")
     env.close()
 
