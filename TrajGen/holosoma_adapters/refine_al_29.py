@@ -74,7 +74,11 @@ TABLE_X_MARGIN = float(os.environ.get("HS_TABLE_X_MARGIN", "0"))
 # reason; on pick_35 it put the pinned INIT hand "inside" the table and made AL unsolvable.
 TABLE_EDGE_ANCHOR = os.environ.get("HS_TABLE_EDGE_ANCHOR", "object")
 TABLE_EDGE_BEHIND_OBJECT = 0.05
-HAND_TIP_OFFSET = 0.15
+# Fingertip point: this far along the hand link's local x from the hand origin. The point the table
+# constraint, both approach walls and the tip-dynamics terms act on. 0.15 was the legacy value; the
+# frozen-SONIC render showed the real dex-hand fingertips reaching the table where the 0.15 point
+# cleared it, so the default is now 0.22 (HS_HAND_TIP_OFFSET overrides).
+HAND_TIP_OFFSET = float(os.environ.get("HS_HAND_TIP_OFFSET", "0.22"))
 # Forward-projection factor for the GRASP PALM target: palm = rubber_hand + HAND_FWD*(rubber_hand - wrist_yaw).
 # The AL loop drives THIS palm point (not the wrist) to the object, so the palm — the grasp point the
 # render draws as CYAN and the synthesized object ref tracks — lands on the object at grasp (no teleport).
@@ -1051,7 +1055,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     fv = float(g_curr.max()) if g_curr is not None else -1.0
     fvl = float(_last_g_level.max()) if _last_g_level is not None else -1.0
     _xe = (obj_grab_x - TABLE_EDGE_BEHIND_OBJECT - TABLE_X_MARGIN) if (TABLE_EDGE_ANCHOR == "object" and obj_grab_x is not None) else float(grab_pos[0] + OFFSET_X - TABLE_X_MARGIN)
-    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) "
+    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} "
           f"AL {'converged' if converged else 'maxiter'} "
           f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} "
           f"final_jlim_viol={float(_last_g_jlim.max()) if _last_g_jlim is not None else -1.0:.2e}rad "
