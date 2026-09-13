@@ -1050,12 +1050,9 @@ def main():
                 _rst = _uwt.motion_lib.get_motion_state(_uwt.motion_ids, _mtt)
                 _trk["is_closed"].append(bool(_rst["is_closed"].reshape(-1)[0].item() > 0.5))
                 _trk["seg"].append(_seg_i); _trk["mid"].append(int(_mid)); _trk["step"].append(_s)
-
             # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
             _APP.update()
             _APP.update()
-
-
             # 3. read + write the frame
             frame = _read_camera_rgb(env, "camera")
             if frame is None:
@@ -1065,7 +1062,6 @@ def main():
                     diff = int(np.abs(frame.astype(np.int32) - _prev_frame.astype(np.int32)).max())
                     print(f"[step {timestep}] camera max_pixel_diff_from_prev={diff}")
                 _prev_frame = frame.copy()
-
                 label = (f"motion {_mid}   [{_seg_i + 1}/{len(_mlist)}]   "
                          f"t {_s * 0.02:4.1f}s")
                 if not args_cli.no_stability:
@@ -1093,23 +1089,15 @@ def main():
                     _icc = bool(_resc["is_closed"].reshape(-1)[0].item() > 0.5)
                     frame = _overlay_contact(frame, _icc)
                 writer.write(_overlay(frame, label))
-
             timestep += 1
-
             sleep_time = dt - (time.time() - start_time)
             if args_cli.real_time and sleep_time > 0:
                 time.sleep(sleep_time)
-
     writer.close()
-
     if _trk is not None:
-
         np.savez(args_cli.dump_track, names=np.array(_trk["names"]), seg=np.array(_trk["seg"]), mid=np.array(_trk["mid"]),
-
                  step=np.array(_trk["step"]), hand_pos=np.stack(_trk["hand_pos"]), obj_pos=np.stack(_trk["obj_pos"]),
-
                  is_closed=np.array(_trk["is_closed"]))
-
         print(f"[dump-track] wrote {args_cli.dump_track}: {len(_trk['step'])} steps")
     env.close()
 
