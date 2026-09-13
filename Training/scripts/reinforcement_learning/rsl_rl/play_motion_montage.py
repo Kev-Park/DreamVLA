@@ -57,6 +57,10 @@ parser.add_argument("--camera-offset", type=str, default="2.6,2.6,1.4",
                     help="Camera eye offset from the robot root (x,y,z, metres) when --camera-track.")
 parser.add_argument("--camera-look-z", type=float, default=0.9,
                     help="Height above the robot root xy that the camera looks at when --camera-track.")
+parser.add_argument("--dump-track", type=str, default=None,
+                    help="Write an .npz of per-step world positions (env-local) of the right-hand bodies "
+                         "(right_hand_*/right_rubber_hand/right_wrist_*) and the object, plus is_closed and "
+                         "segment/motion ids, for non-visual hand-vs-table analysis.")
 parser.add_argument("--sonic-pt", type=str, default=None,
                     help="Directory of a native SONIC .pt checkpoint (groot-era). Overrides the "
                          "ONNX encoder/decoder: 640-D g1 encoder input + heading-normalized anchor.")
@@ -191,6 +195,7 @@ _APP = simulation_app
 
 import gymnasium as gym
 import numpy as np
+import re
 import os
 import time
 import torch
@@ -985,6 +990,15 @@ def main():
     print(f"[montage] {len(_mlist)} motions x {_seg} steps ({_seg * 0.02:.1f} s each) "
           f"= {len(_mlist) * _seg * 0.02:.0f} s total; ids={_mlist}")
 
+    _trk = None
+    if args_cli.dump_track:
+        _rb = env.unwrapped.scene["robot"]
+        _bn = list(_rb.data.body_names)
+        _tidx = [i for i, n in enumerate(_bn) if re.match(r"right_(hand_|rubber_hand|wrist_)", n)]
+        _trk = {"names": [_bn[i] for i in _tidx], "idx": _tidx, "seg": [], "mid": [], "step": [],
+                "hand_pos": [], "obj_pos": [], "is_closed": []}
+        print(f"[dump-track] {len(_tidx)} right-hand bodies: {_trk['names']}")
+
     for _seg_i, _mid in enumerate(_mlist):
         # switch the env onto this motion and reset onto its first frame
         env.unwrapped._forced_motion_id = int(_mid)
@@ -1026,6 +1040,16 @@ def main():
                 _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
             if args_cli.overlay_obj_candidates:
                 _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)
+
+            if _trk is not None:
+                _uwt = env.unwrapped
+                _org = _uwt.scene.env_origins[0]
+                _trk["hand_pos"].append((_uwt.scene["robot"].data.body_pos_w[0, _trk["idx"]] - _org).cpu().numpy())
+                _trk["obj_pos"].append((_uwt.scene["object"].data.root_pos_w[0] - _org).cpu().numpy())
+                _mtt = _uwt.episode_length_buf * _uwt.step_dt + _uwt.start_motion_times.clone().detach().to(device=_uwt.device, dtype=torch.float32)
+                _rst = _uwt.motion_lib.get_motion_state(_uwt.motion_ids, _mtt)
+                _trk["is_closed"].append(bool(_rst["is_closed"].reshape(-1)[0].item() > 0.5))
+                _trk["seg"].append(_seg_i); _trk["mid"].append(int(_mid)); _trk["step"].append(_s)
 
             # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
             _APP.update()
@@ -1077,6 +1101,16 @@ def main():
                 time.sleep(sleep_time)
 
     writer.close()
+
+    if _trk is not None:
+
+        np.savez(args_cli.dump_track, names=np.array(_trk["names"]), seg=np.array(_trk["seg"]), mid=np.array(_trk["mid"]),
+
+                 step=np.array(_trk["step"]), hand_pos=np.stack(_trk["hand_pos"]), obj_pos=np.stack(_trk["obj_pos"]),
+
+                 is_closed=np.array(_trk["is_closed"]))
+
+        print(f"[dump-track] wrote {args_cli.dump_track}: {len(_trk['step'])} steps")
     env.close()
 
 
