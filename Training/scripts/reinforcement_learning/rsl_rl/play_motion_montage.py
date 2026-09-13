@@ -997,7 +997,8 @@ def main():
         _tidx = [i for i, n in enumerate(_bn) if re.match(r"right_(hand_|rubber_hand|wrist_)", n)]
         _cs = env.unwrapped.scene["contact_forces"]
         _csn = list(_cs.body_names)
-        _cidx = [_csn.index(n) for n in _trk_names] if all(n in _csn for n in (_trk_names := [_bn[i] for i in _tidx])) else []
+        _trk_names = [_bn[i] for i in _tidx]
+        _cidx = [_csn.index(n) for n in _trk_names] if all(n in _csn for n in _trk_names) else []
         _trk = {"names": _trk_names, "idx": _tidx, "cidx": _cidx, "seg": [], "mid": [], "step": [],
                 "hand_pos": [], "obj_pos": [], "is_closed": [], "contact_f": []}
         print(f"[dump-track] {len(_tidx)} right-hand bodies: {_trk['names']}")
