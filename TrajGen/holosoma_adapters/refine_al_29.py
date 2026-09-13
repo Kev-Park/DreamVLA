@@ -203,6 +203,15 @@ LEVEL_CONSTRAINT_TOL = 1e-3
 LEVEL_SCOPE_TAPER = os.environ.get("HS_LEVEL_SCOPE_TAPER", "0") == "1"
 POINT_W = float(os.environ.get("HS_POINT_W", "30.0"))                      # palm-pointing orientation weight (soft)
 POINT_FIXED = os.environ.get("HS_POINT_FIXED", "1") == "1"                   # Option A: constant per-clip azimuth target
+# Yaw offset (rad) applied to the fixed pointing bearing about world z. Positive = counter-
+# clockwise from above = toward the robot's LEFT = inward for the right hand. The default bearing
+# aims the fingertip axis straight at the target, so the thumb leads the slide-in and is the first
+# thing to reach the bottle (measured: thumb_2 pushes it on every clip at zero residual).
+POINT_YAW_OFFSET = float(os.environ.get("HS_POINT_YAW_OFFSET", "0"))
+# Ease-out exponent for the wall release progress: s -> 1 - (1 - s)^k on top of the smootherstep.
+# k > 1 releases quickly early and decelerates into the end line (slower arrival at the object);
+# 1 = legacy. Both ends keep zero slope since the smootherstep already has them.
+APPROACH_EASE_OUT = float(os.environ.get("HS_APPROACH_EASE_OUT", "1"))
 # Option B: wrist-neutral tie-breaker. With the azimuth target now FIXED (Option A), this small
 # prior merely selects WHICH joint-space realization of the one constant orientation to use --
 # breaking the residual two-branch ambiguity (m66 yaw oscillation, m5 spike survived A alone).
@@ -807,11 +816,15 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             taper_start = max(min(taper_start, taper_end - 1), 1)
             frame_pre = torch.arange(1, grab_idx, device=DEVICE, dtype=joint_angles.dtype)
             _sline = _smooth01((frame_pre - float(taper_start)) / float(max(taper_end - taper_start, 1)))
+            if APPROACH_EASE_OUT != 1.0:
+                _sline = 1.0 - (1.0 - _sline) ** APPROACH_EASE_OUT
             x_clear_t = (1.0 - _sline) * APPROACH_X_STANDOFF + _sline * (-GATE_END_SLACK)
             y_clear_t = (1.0 - _sline) * APPROACH_GATE_CLEARANCE + _sline * (-GATE_END_SLACK)
             if APPROACH_Z_LAG_FRAC > 0:
                 _zs = taper_start + APPROACH_Z_LAG_FRAC * float(taper_end - taper_start)
                 _sz = _smooth01((frame_pre - _zs) / float(max(taper_end - _zs, 1.0)))
+                if APPROACH_EASE_OUT != 1.0:
+                    _sz = 1.0 - (1.0 - _sz) ** APPROACH_EASE_OUT
             else:
                 _sz = _sline
             z_clear_t = (1.0 - _sz) * APPROACH_Z_CLEARANCE + _sz * GATE_END_SLACK
@@ -965,6 +978,10 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     _ts = max(max(min(grab_idx - APPROACH_TAPER_LEAD, grab_idx - 1), 1) - APPROACH_TAPER_WINDOW, 1)
     _pf = palm_target - wrist_keypts[_ts]
     _pf = torch.tensor([float(_pf[0]), float(_pf[1]), 0.0], device=DEVICE)
+    if POINT_YAW_OFFSET != 0.0:
+        _ca, _sa = float(np.cos(POINT_YAW_OFFSET)), float(np.sin(POINT_YAW_OFFSET))
+        _pf = torch.tensor([_ca * float(_pf[0]) - _sa * float(_pf[1]),
+                            _sa * float(_pf[0]) + _ca * float(_pf[1]), 0.0], device=DEVICE)
     point_fixed_dir = _pf / _pf.norm().clamp(min=1e-6)
 
     # Approach-avoid anchor = the HAND grasp point (the grounded object the palm is driven to), NOT the
@@ -1055,7 +1072,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     fv = float(g_curr.max()) if g_curr is not None else -1.0
     fvl = float(_last_g_level.max()) if _last_g_level is not None else -1.0
     _xe = (obj_grab_x - TABLE_EDGE_BEHIND_OBJECT - TABLE_X_MARGIN) if (TABLE_EDGE_ANCHOR == "object" and obj_grab_x is not None) else float(grab_pos[0] + OFFSET_X - TABLE_X_MARGIN)
-    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} "
+    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} point_yaw={POINT_YAW_OFFSET:+.2f} ease_out={APPROACH_EASE_OUT:.1f} "
           f"AL {'converged' if converged else 'maxiter'} "
           f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} "
           f"final_jlim_viol={float(_last_g_jlim.max()) if _last_g_jlim is not None else -1.0:.2e}rad "
