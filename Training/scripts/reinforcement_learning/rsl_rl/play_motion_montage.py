@@ -995,8 +995,11 @@ def main():
         _rb = env.unwrapped.scene["robot"]
         _bn = list(_rb.data.body_names)
         _tidx = [i for i, n in enumerate(_bn) if re.match(r"right_(hand_|rubber_hand|wrist_)", n)]
-        _trk = {"names": [_bn[i] for i in _tidx], "idx": _tidx, "seg": [], "mid": [], "step": [],
-                "hand_pos": [], "obj_pos": [], "is_closed": []}
+        _cs = env.unwrapped.scene["contact_forces"]
+        _csn = list(_cs.body_names)
+        _cidx = [_csn.index(n) for n in _trk_names] if all(n in _csn for n in (_trk_names := [_bn[i] for i in _tidx])) else []
+        _trk = {"names": _trk_names, "idx": _tidx, "cidx": _cidx, "seg": [], "mid": [], "step": [],
+                "hand_pos": [], "obj_pos": [], "is_closed": [], "contact_f": []}
         print(f"[dump-track] {len(_tidx)} right-hand bodies: {_trk['names']}")
 
     for _seg_i, _mid in enumerate(_mlist):
@@ -1046,6 +1049,8 @@ def main():
                 _org = _uwt.scene.env_origins[0]
                 _trk["hand_pos"].append((_uwt.scene["robot"].data.body_pos_w[0, _trk["idx"]] - _org).cpu().numpy())
                 _trk["obj_pos"].append((_uwt.scene["object"].data.root_pos_w[0] - _org).cpu().numpy())
+                if _trk["cidx"]:
+                    _trk["contact_f"].append(_uwt.scene["contact_forces"].data.net_forces_w[0, _trk["cidx"]].norm(dim=-1).cpu().numpy())
                 _mtt = _uwt.episode_length_buf * _uwt.step_dt + _uwt.start_motion_times.clone().detach().to(device=_uwt.device, dtype=torch.float32)
                 _rst = _uwt.motion_lib.get_motion_state(_uwt.motion_ids, _mtt)
                 _trk["is_closed"].append(bool(_rst["is_closed"].reshape(-1)[0].item() > 0.5))
@@ -1105,7 +1110,8 @@ def main():
     if _trk is not None:
         np.savez(args_cli.dump_track, names=np.array(_trk["names"]), seg=np.array(_trk["seg"]), mid=np.array(_trk["mid"]),
                  step=np.array(_trk["step"]), hand_pos=np.stack(_trk["hand_pos"]), obj_pos=np.stack(_trk["obj_pos"]),
-                 is_closed=np.array(_trk["is_closed"]))
+                 is_closed=np.array(_trk["is_closed"]),
+                 contact_f=(np.stack(_trk["contact_f"]) if _trk["contact_f"] else np.zeros((0, 0))))
         print(f"[dump-track] wrote {args_cli.dump_track}: {len(_trk['step'])} steps")
     env.close()
 
