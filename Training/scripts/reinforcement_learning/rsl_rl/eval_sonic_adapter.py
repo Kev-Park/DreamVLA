@@ -156,6 +156,13 @@ def main():
         enable_cameras=False,
     )
     env_cfg.seed = args_cli.seed
+    # HS_EVAL_NO_EE_TERM=1: drop the HOI end-effector tracking termination (any wrist/ankle z
+    # > 0.25 m from the reference) for EVALUATION. It ended 98.8% of fixH60 episodes ~1 s after
+    # the grab (the reference carries the object on the human trajectory; the policy does not
+    # follow it that far), truncating the post-grab window before a hold could be scored.
+    if os.environ.get("HS_EVAL_NO_EE_TERM", "0") == "1" and getattr(env_cfg.terminations, "ee_body_pos", None) is not None:
+        env_cfg.terminations.ee_body_pos = None
+        print("[eval_sonic_adapter] HS_EVAL_NO_EE_TERM=1: ee_body_pos termination removed for eval")
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
     # ---- mirror train_sonic_adapter.py's agent overrides EXACTLY ----
@@ -294,6 +301,19 @@ def main():
     _TOPPLE_COS = math.cos(math.radians(TOPPLE_DEG))
     per_env_touched = torch.zeros(num_envs, device=device, dtype=torch.bool)
     per_env_toppled = torch.zeros(num_envs, device=device, dtype=torch.bool)
+    # ---- PHYSICAL hold metric (reference-independent) ----
+    # phys_held_<dz>: object lifted >= dz above its rest height AND within PHYS_R of the SIM palm,
+    # sustained for >= PHYS_STEPS consecutive steps at any point in the episode. Reported at 2 cm
+    # and 5 cm. The rest height is the object z at the first valid step of the episode.
+    PHYS_R = float(os.environ.get("HS_EVAL_PHYS_R", "0.15"))
+    PHYS_STEPS = int(os.environ.get("HS_EVAL_PHYS_STEPS", "25"))
+    PHYS_DZS = (0.02, 0.05)
+    per_env_rest_z = torch.full((num_envs,), float("nan"), device=device)
+    per_env_phys_run = {dz: torch.zeros(num_envs, device=device, dtype=torch.long) for dz in PHYS_DZS}
+    per_env_phys_ok = {dz: torch.zeros(num_envs, device=device, dtype=torch.bool) for dz in PHYS_DZS}
+    per_env_max_lift = torch.zeros(num_envs, device=device)
+    completed_phys = {dz: 0 for dz in PHYS_DZS}
+    max_lift_list: list[float] = []
     completed_touched = 0; completed_toppled = 0; completed_touched_not_held = 0; completed_never_touched = 0
     try:
         _hand_bid = env.unwrapped.scene['robot'].find_bodies('right_wrist_yaw_link')[0][0]
@@ -486,6 +506,16 @@ def main():
             palm = (robot.data.body_pos_w[:, _hand_bid, :] - env.unwrapped.scene.env_origins) + ax * TOUCH_OFFX
             touched_now = torch.norm(palm - obj_pos_w, dim=1) < TOUCH_TOL
         valid = ~just_reset_mask
+        if HAS_OBJECT and _hand_bid is not None:
+            _first = valid & torch.isnan(per_env_rest_z)
+            per_env_rest_z[_first] = obj_pos_w[_first, 2]
+            _dz_now = obj_pos_w[:, 2] - per_env_rest_z
+            per_env_max_lift = torch.where(valid, torch.maximum(per_env_max_lift, torch.nan_to_num(_dz_now, nan=0.0)), per_env_max_lift)
+            _near = torch.norm(palm - obj_pos_w, dim=1) < PHYS_R
+            for _dz in PHYS_DZS:
+                _cond = valid & _near & (_dz_now >= _dz)
+                per_env_phys_run[_dz] = torch.where(_cond, per_env_phys_run[_dz] + 1, torch.zeros_like(per_env_phys_run[_dz]))
+                per_env_phys_ok[_dz] |= per_env_phys_run[_dz] >= PHYS_STEPS
         if valid.any():
             per_env_had_any_lift |= lifted & valid
             per_env_closed_steps += (is_closed & valid).long()
@@ -543,6 +573,10 @@ def main():
                     hs = int(per_env_held_steps[idx].item())
                     if cs > 0 and (hs / cs) >= HELD_FRAC:
                         completed_held += 1
+                for _dz in PHYS_DZS:
+                    if bool(per_env_phys_ok[_dz][idx].item()):
+                        completed_phys[_dz] += 1
+                max_lift_list.append(float(per_env_max_lift[idx].item()))
                 _touched = bool(per_env_touched[idx].item())
                 _toppled = bool(per_env_toppled[idx].item())
                 _held_ok = REWORK and int(per_env_closed_steps[idx].item()) > 0 and (int(per_env_held_steps[idx].item()) / max(int(per_env_closed_steps[idx].item()),1)) >= HELD_FRAC
@@ -597,6 +631,11 @@ def main():
             per_env_held_steps[done_idxs] = 0
             per_env_touched[done_idxs] = False
             per_env_toppled[done_idxs] = False
+            per_env_rest_z[done_idxs] = float("nan")
+            per_env_max_lift[done_idxs] = 0.0
+            for _dz in PHYS_DZS:
+                per_env_phys_run[_dz][done_idxs] = 0
+                per_env_phys_ok[_dz][done_idxs] = False
             if FAILCLASS:
                 per_env_steps[done_idxs] = 0
                 per_env_first_touch[done_idxs] = -1
@@ -659,6 +698,13 @@ def main():
         print(f"    -> touched, not held:     {completed_touched_not_held} = {100*completed_touched_not_held/ce:.2f}%")
         print(f"    Never touched object:     {completed_never_touched} = {100*completed_never_touched/ce:.2f}%")
         print(f"    Object toppled:           {completed_toppled} / {completed_episodes} = {100*completed_toppled/ce:.2f}%  (tilt > {TOPPLE_DEG:.0f} deg)")
+        for _dz in PHYS_DZS:
+            print(f"  [PHYS] held (lift>={100*_dz:.0f}cm & obj within {PHYS_R:.2f} m of sim palm for >={PHYS_STEPS} steps): "
+                  f"{completed_phys[_dz]} / {completed_episodes} = {100*completed_phys[_dz]/ce:.2f}%")
+        if max_lift_list:
+            _ml = np.array(max_lift_list)
+            print(f"  [PHYS] max lift above rest: median {np.median(_ml)*100:.1f} cm  mean {_ml.mean()*100:.1f} cm  "
+                  f">=2cm {100*(_ml>=0.02).mean():.1f}%  >=5cm {100*(_ml>=0.05).mean():.1f}%")
     print(f"    (env.n_successes.sum() — uses the env reward's height_thres)")
     if FAILCLASS:
         print(f"")
