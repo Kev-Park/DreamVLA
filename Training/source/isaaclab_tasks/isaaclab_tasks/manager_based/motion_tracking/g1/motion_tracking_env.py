@@ -1281,18 +1281,28 @@ HOI_BODY_KEYPT_IDXS = [0, 3, 5, 7, 9, 11, 13, 16, 24, 26, 29, 32, 34, 37]
 
 
 def _hoi_aligned_ref(env: ManagerBasedRLEnv, keypt_idxs):
-    """Reset-aligned reference body pos/quat in world (env-local) frame, cached per episode.
+    """Reset-aligned reference body pos/quat in world (env-local) frame, ADVANCING in time.
 
-    Per the spec, these targets are built ONCE when the motion is assigned / the env is
-    reset and are NOT advanced as reference time moves on:
+    The ALIGNMENT is built once per episode (cached; key = (motion_id, start_motion_time)):
 
-        dq       = heading(q_sim_anchor  (x)  q_ref_anchor^-1)          # yaw only
-        p_align  = [p_sim_anchor_x, p_sim_anchor_y, p_ref_anchor_z]
-        p~_i     = p_align + R(dq) (p_ref_i - p_ref_anchor)
-        q~_i     = dq (x) q_ref_i
+        dq       = heading(q_sim_anchor(reset)  (x)  q_ref_anchor(start)^-1)     # yaw only
+        p_align  = [p_sim_anchor_x(reset), p_sim_anchor_y(reset)]                 # xy only
 
-    The cache key is (motion_id, start_motion_time); a reset rewrites at least one of
-    those, so rows refresh automatically without depending on reset-event ordering.
+    and applied every step to the reference sampled at the CURRENT motion time t:
+
+        p~_i(t)  = [p_align, p_ref_anchor_z(t)] + R(dq) (p_ref_i(t) - p_ref_anchor(t))
+        q~_i(t)  = dq (x) q_ref_i(t)
+
+    i.e. the reference body layout relative to its own root, placed at the robot's reset
+    heading/xy. Root translation is not tracked by these terms (the anchor terms do that).
+
+    HISTORY: until 2026-09-14 the POSE was also frozen at the start frame ("non-advancing
+    targets"), so the relative-body rewards and the ee_body_pos termination compared the robot
+    to the reference's FIRST frame for the whole episode -- for the pick task, the INIT pose
+    with the arm hanging. Every episode was terminated when the wrist rose 0.25 m above that
+    (about 1 s after the grab, 100% of episodes, policy-independent), and 6/15 tracking points
+    rewarded not raising the arm. The per-step result is memoised on common_step_counter so
+    the pos reward, ori reward and termination share one reference FK per step.
     """
     n = env.num_envs
     B = len(keypt_idxs)
@@ -1305,6 +1315,9 @@ def _hoi_aligned_ref(env: ManagerBasedRLEnv, keypt_idxs):
     if cache is None or cache["pos"].shape[1] != B or cache["pos"].shape[0] != n:
         cache = {
             "key": torch.full((n, 2), float("nan"), device=dev),
+            "dq": torch.zeros(n, 4, device=dev),
+            "p_align_xy": torch.zeros(n, 2, device=dev),
+            "step": -1,
             "pos": torch.zeros(n, B, 3, device=dev),
             "quat": torch.zeros(n, B, 4, device=dev),
         }
@@ -1312,38 +1325,41 @@ def _hoi_aligned_ref(env: ManagerBasedRLEnv, keypt_idxs):
     stale = (cache["key"] != key).any(dim=1)
 
     if bool(stale.any()):
+        # ---- per-episode ALIGNMENT (sim root at reset vs reference root at the start frame) ----
         idx = torch.where(stale)[0]
-        m = idx.shape[0]
-        res = env.motion_lib.get_motion_state(mid[idx], st[idx])
-        ref_root_pos = res["root_pos"]                                          # (M,3) env-local
-        ref_root_quat = res["root_rot"]                                         # (M,4) wxyz
-        ref_kpts = res["global_keypts"][:, keypt_idxs, :]                       # (M,B,3) env-local
-        # reference link orientations in world: R_root . R_link(dof)
-        R_link = get_link_rotations(res["dof_pos"], env.joint_names, env.pk2_robot)
-        R_link = R_link[:, keypt_idxs].reshape(-1, 3, 3)                        # (M*B,3,3)
-        q_link = math_utils.quat_from_matrix(R_link).reshape(m, B, 4)
-        q_ref_w = math_utils.quat_mul(
-            ref_root_quat.unsqueeze(1).expand(-1, B, -1).reshape(-1, 4),
-            q_link.reshape(-1, 4),
-        )                                                                       # (M*B,4)
-
+        res0 = env.motion_lib.get_motion_state(mid[idx], st[idx])
+        ref_root_quat0 = res0["root_rot"]                                       # (M,4) wxyz
         asset: Articulation = env.scene["robot"]
         sim_root_pos = asset.data.root_pos_w[idx] - env.scene.env_origins[idx]
         sim_root_quat = asset.data.root_quat_w[idx]
-
-        # yaw-only alignment rotation
-        dq = math_utils.yaw_quat(
-            math_utils.quat_mul(sim_root_quat, math_utils.quat_conjugate(ref_root_quat))
+        cache["dq"][idx] = math_utils.yaw_quat(
+            math_utils.quat_mul(sim_root_quat, math_utils.quat_conjugate(ref_root_quat0))
         )                                                                       # (M,4)
-        p_align = torch.stack(
-            [sim_root_pos[:, 0], sim_root_pos[:, 1], ref_root_pos[:, 2]], dim=1
-        )                                                                       # (M,3)
-        rel = (ref_kpts - ref_root_pos.unsqueeze(1)).reshape(-1, 3)             # (M*B,3)
-        dq_rep = dq.unsqueeze(1).expand(-1, B, -1).reshape(-1, 4)               # (M*B,4)
-
-        cache["pos"][idx] = p_align.unsqueeze(1) + math_utils.quat_apply(dq_rep, rel).reshape(m, B, 3)
-        cache["quat"][idx] = math_utils.quat_mul(dq_rep, q_ref_w).reshape(m, B, 4)
+        cache["p_align_xy"][idx] = sim_root_pos[:, :2]
         cache["key"][idx] = key[idx]
+        cache["step"] = -1                                                      # force a re-sample below
+
+    step = int(getattr(env, "common_step_counter", -1))
+    if cache["step"] != step or step < 0:
+        # ---- ADVANCING reference at the current motion time, aligned with the cached transform ----
+        t_now = env.episode_length_buf * env.step_dt + st
+        res = env.motion_lib.get_motion_state(mid, t_now)
+        ref_root_pos = res["root_pos"]                                          # (N,3) env-local
+        ref_root_quat = res["root_rot"]                                         # (N,4) wxyz
+        ref_kpts = res["global_keypts"][:, keypt_idxs, :]                       # (N,B,3) env-local
+        R_link = get_link_rotations(res["dof_pos"], env.joint_names, env.pk2_robot)
+        R_link = R_link[:, keypt_idxs].reshape(-1, 3, 3)                        # (N*B,3,3)
+        q_link = math_utils.quat_from_matrix(R_link).reshape(n, B, 4)
+        q_ref_w = math_utils.quat_mul(
+            ref_root_quat.unsqueeze(1).expand(-1, B, -1).reshape(-1, 4),
+            q_link.reshape(-1, 4),
+        )                                                                       # (N*B,4)
+        p_align = torch.cat([cache["p_align_xy"], ref_root_pos[:, 2:3]], dim=1)  # (N,3): reset xy, current ref z
+        rel = (ref_kpts - ref_root_pos.unsqueeze(1)).reshape(-1, 3)             # (N*B,3)
+        dq_rep = cache["dq"].unsqueeze(1).expand(-1, B, -1).reshape(-1, 4)      # (N*B,4)
+        cache["pos"] = p_align.unsqueeze(1) + math_utils.quat_apply(dq_rep, rel).reshape(n, B, 3)
+        cache["quat"] = math_utils.quat_mul(dq_rep, q_ref_w).reshape(n, B, 4)
+        cache["step"] = step
 
     return cache["pos"], cache["quat"]
 
@@ -1356,7 +1372,7 @@ def hoi_relative_body_pos_tracking_exp(
 ) -> torch.Tensor:
     """exp(-mean_i ||p~_ref_i - p_sim_i||^2 / std^2) over the 14 tracked bodies.
 
-    p~_ref is the RESET-ALIGNED (cached, non-advancing) reference — see _hoi_aligned_ref.
+    p~_ref is the reset-aligned reference at the CURRENT motion time — see _hoi_aligned_ref.
     """
     idxs = HOI_BODY_KEYPT_IDXS if keypt_idxs is None else keypt_idxs
     p_ref, _ = _hoi_aligned_ref(env, idxs)
@@ -1374,7 +1390,7 @@ def hoi_relative_body_ori_tracking_exp(
 ) -> torch.Tensor:
     """exp(-mean_i theta(q~_ref_i, q_sim_i)^2 / std^2) over the 14 tracked bodies.
 
-    q~_ref is the RESET-ALIGNED (cached, non-advancing) reference — see _hoi_aligned_ref.
+    q~_ref is the reset-aligned reference at the CURRENT motion time — see _hoi_aligned_ref.
     """
     idxs = HOI_BODY_KEYPT_IDXS if keypt_idxs is None else keypt_idxs
     _, q_ref = _hoi_aligned_ref(env, idxs)
@@ -1446,8 +1462,8 @@ def exceeded_body_height(
 ) -> torch.Tensor:
     """OR_i |p~_ref_i_z - p_sim_i_z(t)| > threshold over the ankle/wrist bodies.
 
-    Z ONLY. The reference is the RESET-ALIGNED cached target (same cache the relative
-    body rewards use), NOT the advancing reference. Failure termination.
+    Z ONLY. The reference is the reset-aligned target at the CURRENT motion time (same
+    per-step cache the relative body rewards use). Failure termination.
     """
     idxs = HOI_EE_LOCAL_IDXS if local_idxs is None else local_idxs
     p_ref, _ = _hoi_aligned_ref(env, HOI_BODY_KEYPT_IDXS)
