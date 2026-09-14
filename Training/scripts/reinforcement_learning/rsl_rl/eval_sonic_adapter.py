@@ -283,6 +283,18 @@ def main():
     ep_len_list: list[int] = []
     post_grab_list: list[int] = []
     _term_dones_now = {}
+    # ee_body_pos attribution: which of the 4 HOI end-effector bodies exceeded the z threshold at
+    # termination, and the signed (sim - ref) z error, so "policy lifted higher than the reference"
+    # is distinguishable from "policy fell behind" or an ankle/left-wrist deviation.
+    _ee_attr = None
+    try:
+        from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import (
+            _hoi_aligned_ref, HOI_BODY_KEYPT_IDXS, HOI_EE_LOCAL_IDXS, HOI_EE_BODY_NAMES)
+        _ee_bids = [env.unwrapped.scene["robot"].find_bodies(n)[0][0] for n in HOI_EE_BODY_NAMES]
+        _ee_attr = {"names": HOI_EE_BODY_NAMES, "bids": _ee_bids, "count": [0]*len(HOI_EE_BODY_NAMES),
+                    "signed_sum": [0.0]*len(HOI_EE_BODY_NAMES)}
+    except Exception as _e:
+        print(f"[eval] ee attribution unavailable: {_e}")
 
     # ---- REWORK success metric: object HELD near the synthesized object ref during the grasp ----
     # (the height-based lift metric is miscalibrated under REWORK — the object rests at the grounded
@@ -545,6 +557,18 @@ def main():
                     _term_dones_now[_tn] = _tm.get_term(_tn)[done_idxs].bool()
                 except Exception:
                     _term_dones_now[_tn] = None
+            if _ee_attr is not None and _term_dones_now.get("ee_body_pos") is not None and bool(_term_dones_now["ee_body_pos"].any()):
+                try:
+                    _pr, _ = _hoi_aligned_ref(env.unwrapped, HOI_BODY_KEYPT_IDXS)
+                    _rz = _pr[:, HOI_EE_LOCAL_IDXS, 2]
+                    _sz = env.unwrapped.scene["robot"].data.body_pos_w[:, _ee_attr["bids"], 2] - env.unwrapped.scene.env_origins[:, 2:3]
+                    _err = (_sz - _rz)[done_idxs][_term_dones_now["ee_body_pos"]]          # (M,4) signed sim-ref
+                    _ex = _err.abs() > 0.25
+                    for _b in range(len(_ee_attr["names"])):
+                        _ee_attr["count"][_b] += int(_ex[:, _b].sum().item())
+                        _ee_attr["signed_sum"][_b] += float(_err[:, _b][_ex[:, _b]].sum().item())
+                except Exception as _e:
+                    print(f"[eval] ee attribution failed: {_e}"); _ee_attr = None
             time_outs = extras.get("time_outs", torch.zeros_like(dones_bool))
             time_out_mask = (
                 time_outs[done_idxs].bool() if isinstance(time_outs, torch.Tensor)
@@ -741,6 +765,11 @@ def main():
     print(f"  Termination breakdown (of completed episodes):")
     for _tn, _tv in term_counts.items():
         print(f"    term {_tn:<22} {_tv:6d}  ({100.0*_tv/max(completed_episodes,1):.1f}%)")
+    if _ee_attr is not None:
+        for _b, _n in enumerate(_ee_attr["names"]):
+            _c = _ee_attr["count"][_b]
+            print(f"    ee_body_pos attribution: {_n:<24} exceeded in {_c:6d} terminations"
+                  + (f"  mean signed (sim - ref) z = {_ee_attr['signed_sum'][_b]/_c:+.3f} m" if _c else ""))
     if ep_len_list:
         _ela = np.array(ep_len_list); _pga = np.array(post_grab_list) if post_grab_list else np.array([0])
         print(f"    episode length steps: mean {_ela.mean():.0f}  median {np.median(_ela):.0f}  min {_ela.min()}  max {_ela.max()}")
