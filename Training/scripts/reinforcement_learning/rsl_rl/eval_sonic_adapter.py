@@ -559,7 +559,8 @@ def main():
                     _term_dones_now[_tn] = None
             if _ee_attr is not None and _term_dones_now.get("ee_body_pos") is not None and bool(_term_dones_now["ee_body_pos"].any()):
                 try:
-                    _pr, _ = _hoi_aligned_ref(env.unwrapped, HOI_BODY_KEYPT_IDXS)
+                    with torch.inference_mode():
+                        _pr, _ = _hoi_aligned_ref(env.unwrapped, HOI_BODY_KEYPT_IDXS)
                     _rz = _pr[:, HOI_EE_LOCAL_IDXS, 2]
                     _sz = env.unwrapped.scene["robot"].data.body_pos_w[:, _ee_attr["bids"], 2] - env.unwrapped.scene.env_origins[:, 2:3]
                     _err = (_sz - _rz)[done_idxs][_term_dones_now["ee_body_pos"]]          # (M,4) signed sim-ref
