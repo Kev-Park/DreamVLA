@@ -518,6 +518,15 @@ def main():
             palm = (robot.data.body_pos_w[:, _hand_bid, :] - env.unwrapped.scene.env_origins) + ax * TOUCH_OFFX
             touched_now = torch.norm(palm - obj_pos_w, dim=1) < TOUCH_TOL
         valid = ~just_reset_mask
+        if _ee_attr is not None:
+            try:
+                with torch.inference_mode():
+                    _pr, _ = _hoi_aligned_ref(env.unwrapped, HOI_BODY_KEYPT_IDXS)
+                    _rz = _pr[:, HOI_EE_LOCAL_IDXS, 2]
+                    _sz = env.unwrapped.scene["robot"].data.body_pos_w[:, _ee_attr["bids"], 2] - env.unwrapped.scene.env_origins[:, 2:3]
+                    _ee_attr["cur"] = (_sz - _rz).clone()
+            except Exception as _e:
+                print(f"[eval] ee attribution failed: {_e}"); _ee_attr = None
         if HAS_OBJECT and _hand_bid is not None:
             _first = valid & torch.isnan(per_env_rest_z)
             per_env_rest_z[_first] = obj_pos_w[_first, 2]
@@ -557,19 +566,16 @@ def main():
                     _term_dones_now[_tn] = _tm.get_term(_tn)[done_idxs].bool()
                 except Exception:
                     _term_dones_now[_tn] = None
-            if _ee_attr is not None and _term_dones_now.get("ee_body_pos") is not None and bool(_term_dones_now["ee_body_pos"].any()):
-                try:
-                    with torch.inference_mode():
-                        _pr, _ = _hoi_aligned_ref(env.unwrapped, HOI_BODY_KEYPT_IDXS)
-                    _rz = _pr[:, HOI_EE_LOCAL_IDXS, 2]
-                    _sz = env.unwrapped.scene["robot"].data.body_pos_w[:, _ee_attr["bids"], 2] - env.unwrapped.scene.env_origins[:, 2:3]
-                    _err = (_sz - _rz)[done_idxs][_term_dones_now["ee_body_pos"]]          # (M,4) signed sim-ref
-                    _ex = _err.abs() > 0.25
-                    for _b in range(len(_ee_attr["names"])):
-                        _ee_attr["count"][_b] += int(_ex[:, _b].sum().item())
-                        _ee_attr["signed_sum"][_b] += float(_err[:, _b][_ex[:, _b]].sum().item())
-                except Exception as _e:
-                    print(f"[eval] ee attribution failed: {_e}"); _ee_attr = None
+            if _ee_attr is not None and _ee_attr.get("prev") is not None and _term_dones_now.get("ee_body_pos") is not None and bool(_term_dones_now["ee_body_pos"].any()):
+                # Terminated envs are already reset after env.step, so use the error buffered from
+                # the step BEFORE this one (the last state the policy acted from); the worst body
+                # is attributed even if it was just under the threshold at that step.
+                _err = _ee_attr["prev"][done_idxs][_term_dones_now["ee_body_pos"]]          # (M,4) signed sim-ref
+                _worst = _err.abs().argmax(dim=1)
+                for _b in range(len(_ee_attr["names"])):
+                    _sel = _worst == _b
+                    _ee_attr["count"][_b] += int(_sel.sum().item())
+                    _ee_attr["signed_sum"][_b] += float(_err[_sel, _b].sum().item())
             time_outs = extras.get("time_outs", torch.zeros_like(dones_bool))
             time_out_mask = (
                 time_outs[done_idxs].bool() if isinstance(time_outs, torch.Tensor)
@@ -670,6 +676,8 @@ def main():
                 per_env_root_fwd_grab[done_idxs] = 0.0
 
         just_reset_mask = dones_bool
+        if _ee_attr is not None and _ee_attr.get("cur") is not None:
+            _ee_attr["prev"] = _ee_attr["cur"]
         step_count += 1
 
         if step_count % 200 == 0:
