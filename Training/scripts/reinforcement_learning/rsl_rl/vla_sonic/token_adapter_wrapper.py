@@ -39,6 +39,7 @@ import isaaclab.utils.math as math_utils
 
 from .planner_to_utm import ENCODER_SLICES, ENCODER_TOTAL_DIM
 from .token_action_wrapper import (
+    UTM_29_JOINT_NAMES,
     FSQ_MAX_NUM_TOKENS,
     FSQ_NUM_LEVELS,
     N_BODY_JOINTS,
@@ -50,6 +51,19 @@ from .token_action_wrapper import (
 # dt_future_ref_frames=0.1 in sonic_release.yaml).
 N_FUTURE_FRAMES = 10
 FUTURE_DT = 0.1
+
+# --- teleop encoder (native .pt only): VR 3-point + lower-body command. Mirrors gear_sonic
+# config/manager_env/commands/terms/motion.yaml + mdp/observations.py (vr_3point_local_target,
+# vr_3point_local_orn_target, command_multi_future_lower_body, motion_anchor_ori_heading).
+TELEOP_3PT_BODIES = ["left_wrist_yaw_link", "right_wrist_yaw_link", "torso_link"]
+TELEOP_3PT_OFFSETS = [[0.18, -0.025, 0.0], [0.18, 0.025, 0.0], [0.0, 0.0, 0.35]]   # in each body's frame
+# Lower-body joints in gear_sonic's MUJOCO order (lower_joint_indices_mujoco = range(12)).
+TELEOP_LOWER_JOINTS = [
+    "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+    "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+    "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+    "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+]
 
 
 def _patch_reshape_batch_dims(gm) -> int:
@@ -143,8 +157,31 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
 
     def __init__(self, env, decoder, encoder, device, *, residual_scale: float = 0.3,
                  residual_transform: str = "additive", clip_actions=None,
-                 pt_mode: bool = False):
+                 pt_mode: bool = False, encoder_mode: str = "g1"):
         super().__init__(env, decoder, device, clip_actions=clip_actions)
+
+        # encoder_mode (pt_mode only): "g1" = full-body joint reference (default); "teleop" =
+        # the checkpoint's VR 3-point head: the reference's two wrists + torso point (+ fixed
+        # offsets) in the reference pelvis frame, the reference lower-body joint command, and
+        # the heading-normalized anchor. SONIC then synthesizes the rest of the body itself.
+        assert encoder_mode in ("g1", "teleop"), encoder_mode
+        if encoder_mode == "teleop" and not pt_mode:
+            raise ValueError("encoder_mode=teleop requires a native .pt checkpoint (pt_mode)")
+        self.encoder_mode = encoder_mode
+        if encoder_mode == "teleop":
+            import os as _os
+            import pytorch_kinematics as _pk
+            _urdf = _os.environ.get("HS_G1_URDF", "")
+            if not _urdf:
+                _here = _os.path.dirname(_os.path.abspath(__file__))   # Training/scripts/reinforcement_learning/rsl_rl/vla_sonic
+                _urdf = _os.path.normpath(_os.path.join(_here, "..", "..", "..", "..", "HumanoidVerse",
+                                                        "humanoidverse", "data", "robots", "g1", "g1_29dof.urdf"))
+            if not _os.path.isfile(_urdf):
+                raise FileNotFoundError(f"teleop mode needs the 29-DOF URDF for reference FK; not found: {_urdf} (set HS_G1_URDF)")
+            self._tp_chain = _pk.build_chain_from_urdf(open(_urdf, "rb").read()).to(dtype=torch.float32, device=device)
+            self._tp_lower_idx = [UTM_29_JOINT_NAMES.index(n) for n in TELEOP_LOWER_JOINTS]
+            self._tp_offsets = torch.tensor(TELEOP_3PT_OFFSETS, dtype=torch.float32, device=device)   # (3,3)
+            print(f"[token-adapter] TELEOP encoder mode: 3pt bodies={TELEOP_3PT_BODIES}, urdf={_urdf}")
 
         # pt_mode: native groot-era .pt checkpoint. The g1 encoder takes a 640-D
         # per-frame-interleaved input and the anchor is HEADING-normalized (yaw-only),
@@ -266,7 +303,34 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
             mat = math_utils.matrix_from_quat(rel)                                      # (N*10, 3, 3)
             rot6d = mat[:, :, :2].reshape(N, N_FUTURE_FRAMES, 6)                        # row-major ✓
 
-            if self.pt_mode:
+            if self.pt_mode and self.encoder_mode == "teleop":
+                # (N, 267) teleop encoder input, gear_sonic layout:
+                #   command_multi_future_lower_body (240) = cat([lower pos x10 frames, lower vel x10])
+                #   vr_3point_local_target (9)      = 3pt positions in the REFERENCE pelvis frame
+                #   vr_3point_local_orn_target (12) = 3pt quats (wxyz) in the reference pelvis frame
+                #   motion_anchor_ori_heading (6)   = rot6d of yaw(robot)^-1 . R_ref_pelvis(now)
+                # The reference FK is evaluated in the URDF base (pelvis) frame, which IS the
+                # anchor-local frame the observation terms compute (anchor_body = pelvis).
+                lo = self._tp_lower_idx
+                cmd_lb = torch.cat([pos29[..., lo].reshape(N, -1), vel29[..., lo].reshape(N, -1)], dim=1)  # (N,240)
+                q_now = pos29[:, 0]                                                       # (N,29) SONIC-29 order, frame 0
+                fk = self._tp_chain.forward_kinematics({n: q_now[:, i] for i, n in enumerate(UTM_29_JOINT_NAMES)})
+                pts, qts = [], []
+                for bi, bname in enumerate(TELEOP_3PT_BODIES):
+                    m = fk[bname].get_matrix()                                            # (N,4,4) pelvis-frame
+                    r = m[:, :3, :3]; pos = m[:, :3, 3]
+                    pts.append(pos + torch.bmm(r, self._tp_offsets[bi].view(1, 3, 1).expand(N, -1, -1)).squeeze(-1))
+                    qts.append(math_utils.quat_from_matrix(r))                            # wxyz
+                pts3 = torch.cat(pts, dim=1)                                              # (N,9)
+                qts3 = torch.cat(qts, dim=1)                                              # (N,12)
+                anc_now = rot6d[:, 0, :]                                                  # (N,6) heading-normalized, current frame
+                buf = torch.cat([cmd_lb, pts3, qts3, anc_now], dim=1)                     # (N,267)
+                if not getattr(self, "_teleop_printed", False):
+                    self._teleop_printed = True
+                    print("[token-adapter TELEOP @ first call, env 0] 3pt pos (pelvis frame): "
+                          + ", ".join(f"{b}={[round(v, 3) for v in pts[i][0].tolist()]}" for i, b in enumerate(TELEOP_3PT_BODIES))
+                          + f" | lower cmd[frame0]={[round(v, 3) for v in pos29[0, 0, lo].tolist()]}")
+            elif self.pt_mode:
                 # (N, 640): command_multi_future = cat([all 10 pos frames, all 10 vel
                 # frames]) -> reshape (N,10,58); anchor -> (N,10,6); cat on the feature
                 # dim, then flatten. The temporal split is nominal (slot k is NOT frame

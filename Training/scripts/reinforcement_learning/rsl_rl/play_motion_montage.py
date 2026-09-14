@@ -57,6 +57,10 @@ parser.add_argument("--camera-offset", type=str, default="2.6,2.6,1.4",
                     help="Camera eye offset from the robot root (x,y,z, metres) when --camera-track.")
 parser.add_argument("--camera-look-z", type=float, default=0.9,
                     help="Height above the robot root xy that the camera looks at when --camera-track.")
+parser.add_argument("--encoder-mode", type=str, default="g1", choices=["g1", "teleop"],
+                    help="Native .pt only. g1 = full-body joint reference encoder (default). teleop = the "
+                         "checkpoint VR 3-point head: reference wrists+torso point and lower-body command; "
+                         "SONIC synthesizes the whole body itself.")
 parser.add_argument("--dump-track", type=str, default=None,
                     help="Write an .npz of per-step world positions (env-local) of the right-hand bodies "
                          "(right_hand_*/right_rubber_hand/right_wrist_*) and the object, plus is_closed and "
@@ -871,7 +875,7 @@ def main():
         encoder_pt = decoder_pt = None
         if args_cli.sonic_pt:
             from vla_sonic.sonic_pt import load_sonic_pt
-            encoder_pt, decoder_pt = load_sonic_pt(args_cli.sonic_pt, device)
+            encoder_pt, decoder_pt = load_sonic_pt(args_cli.sonic_pt, device, encoder=args_cli.encoder_mode)
             decoder = decoder_pt
         else:
             decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
@@ -883,6 +887,7 @@ def main():
             residual_transform=args_cli.residual_transform,
             clip_actions=None,
         pt_mode=bool(args_cli.sonic_pt),
+        encoder_mode=args_cli.encoder_mode,
     )
 
     # ---- policy: trained adapter, zero-residual baseline, reference playback, or reference-PD ----

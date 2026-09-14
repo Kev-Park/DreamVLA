@@ -91,11 +91,20 @@ def _mlp_from_state_dict(sd: dict, prefix: str, device) -> nn.Sequential:
     return nn.Sequential(*layers).to(device).eval()
 
 
-def load_sonic_pt(ckpt_dir: str, device) -> tuple[nn.Sequential, nn.Sequential]:
-    """Return (encoder_g1, decoder_g1_dyn) as frozen torch modules.
+ENCODER_TELEOP_IN_DIM = 267   # lower-body cmd 10x(12 pos + 12 vel) + 3pt pos 9 + 3pt quat 12 + anchor rot6d 6
+ENCODER_IN_DIMS = {"g1": ENCODER_G1_IN_DIM, "teleop": ENCODER_TELEOP_IN_DIM}
 
-    ``ckpt_dir`` may be the checkpoint directory or the .pt file itself.
+
+def load_sonic_pt(ckpt_dir: str, device, encoder: str = "g1") -> tuple[nn.Sequential, nn.Sequential]:
+    """Return (encoder_<encoder>, decoder_g1_dyn) as frozen torch modules.
+
+    ``ckpt_dir`` may be the checkpoint directory or the .pt file itself. ``encoder`` selects
+    which of the checkpoint's encoder heads to rebuild: "g1" (full-body joint reference,
+    640-D) or "teleop" (VR 3-point + lower-body command, 267-D). Both feed the same
+    g1_dyn decoder.
     """
+    if encoder not in ENCODER_IN_DIMS:
+        raise ValueError(f"encoder must be one of {list(ENCODER_IN_DIMS)}, got {encoder!r}")
     path = ckpt_dir
     if os.path.isdir(path):
         pts = [f for f in os.listdir(path) if f.endswith(".pt")]
@@ -107,19 +116,19 @@ def load_sonic_pt(ckpt_dir: str, device) -> tuple[nn.Sequential, nn.Sequential]:
     ck = torch.load(path, map_location="cpu", weights_only=False)
     sd = ck["policy_state_dict"]
 
-    enc = _mlp_from_state_dict(sd, "actor_module.encoders.g1", device)
+    enc = _mlp_from_state_dict(sd, f"actor_module.encoders.{encoder}", device)
     dec = _mlp_from_state_dict(sd, "actor_module.decoders.g1_dyn", device)
 
     in_e = enc[0].in_features
     in_d = dec[0].in_features
     out_e = enc[-1].out_features
     out_d = dec[-1].out_features
-    if (in_e, out_e) != (ENCODER_G1_IN_DIM, TOKEN_DIM):
-        raise ValueError(f"g1 encoder shape {in_e}->{out_e}, expected {ENCODER_G1_IN_DIM}->{TOKEN_DIM}")
+    if (in_e, out_e) != (ENCODER_IN_DIMS[encoder], TOKEN_DIM):
+        raise ValueError(f"{encoder} encoder shape {in_e}->{out_e}, expected {ENCODER_IN_DIMS[encoder]}->{TOKEN_DIM}")
     if in_d != DECODER_G1_IN_DIM:
         raise ValueError(f"g1_dyn decoder in {in_d}, expected {DECODER_G1_IN_DIM}")
     for p in list(enc.parameters()) + list(dec.parameters()):
         p.requires_grad_(False)
     print(f"[sonic-pt] loaded {os.path.basename(path)}: "
-          f"encoder {in_e}->{out_e}, decoder {in_d}->{out_d}")
+          f"encoder[{encoder}] {in_e}->{out_e}, decoder {in_d}->{out_d}")
     return enc, dec
