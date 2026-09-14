@@ -267,6 +267,15 @@ def main():
     sum_lift_fraction_over_lifted_episodes = 0.0
     completed_episodes_with_any_lift = 0
     termination_counts = {"time_out": 0, "other": 0}
+    # Per-term termination counts (which HOI/task term actually ended the episode) + episode-length
+    # and post-grab-window statistics, so an early failure termination is distinguishable from a
+    # policy that never lifts.
+    _tm = env.unwrapped.termination_manager
+    term_names = list(_tm.active_terms)
+    term_counts = {n: 0 for n in term_names}
+    ep_len_list: list[int] = []
+    post_grab_list: list[int] = []
+    _term_dones_now = {}
 
     # ---- REWORK success metric: object HELD near the synthesized object ref during the grasp ----
     # (the height-based lift metric is miscalibrated under REWORK — the object rests at the grounded
@@ -501,6 +510,11 @@ def main():
         dones_bool = dones.bool() if dones.dtype != torch.bool else dones
         if dones_bool.any():
             done_idxs = torch.where(dones_bool)[0]
+            for _tn in term_names:
+                try:
+                    _term_dones_now[_tn] = _tm.get_term(_tn)[done_idxs].bool()
+                except Exception:
+                    _term_dones_now[_tn] = None
             time_outs = extras.get("time_outs", torch.zeros_like(dones_bool))
             time_out_mask = (
                 time_outs[done_idxs].bool() if isinstance(time_outs, torch.Tensor)
@@ -508,6 +522,15 @@ def main():
             )
             for k, idx in enumerate(done_idxs.tolist()):
                 completed_episodes += 1
+                for _tn in term_names:
+                    _td = _term_dones_now.get(_tn)
+                    if _td is not None and bool(_td[k].item()):
+                        term_counts[_tn] += 1
+                if FAILCLASS:
+                    _el = int(per_env_steps[idx].item()); ep_len_list.append(_el)
+                    _gsx = int(per_env_grab_step[idx].item())
+                    if _gsx >= 0:
+                        post_grab_list.append(_el - _gsx)
                 if bool(per_env_had_any_lift[idx].item()):
                     completed_any_lift += 1
                     cs = int(per_env_closed_steps[idx].item())
@@ -670,6 +693,13 @@ def main():
         print(f"    margin  min     {_M.min():+7.4f} m")
 
     print(f"  Termination breakdown (of completed episodes):")
+    for _tn, _tv in term_counts.items():
+        print(f"    term {_tn:<22} {_tv:6d}  ({100.0*_tv/max(completed_episodes,1):.1f}%)")
+    if ep_len_list:
+        _ela = np.array(ep_len_list); _pga = np.array(post_grab_list) if post_grab_list else np.array([0])
+        print(f"    episode length steps: mean {_ela.mean():.0f}  median {np.median(_ela):.0f}  min {_ela.min()}  max {_ela.max()}")
+        print(f"    post-grab window steps (episodes that reached the grab: {len(post_grab_list)}): "
+              f"mean {_pga.mean():.0f}  median {np.median(_pga):.0f}  <25 steps (0.5 s): {100.0*(_pga<25).mean():.1f}%")
     for k, v in termination_counts.items():
         if v > 0:
             print(f"    {k:30s} {v}  ({100*v/max(completed_episodes,1):.1f}%)")
