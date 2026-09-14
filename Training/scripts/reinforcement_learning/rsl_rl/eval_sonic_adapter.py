@@ -59,6 +59,11 @@ parser.add_argument("--sonic-decoder-onnx", type=str,
                     help="Path to the frozen SONIC decoder ONNX (must match training).")
 parser.add_argument("--sonic-pt", type=str, default=None,
                     help="Directory of a native SONIC .pt checkpoint (groot-era); overrides ONNX.")
+parser.add_argument(
+    "--encoder-mode", type=str, default="g1", choices=["g1", "teleop"],
+    help="Native .pt only. g1 = full-body joint reference encoder (default). teleop = the "
+         "checkpoint VR 3-point head (reference wrists + torso point, lower-body command).",
+)
 parser.add_argument("--sonic-encoder-onnx", type=str,
                     default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
                     help="Path to the frozen SONIC encoder ONNX (must match training).")
@@ -217,7 +222,7 @@ def main():
     print(f"[eval_sonic_adapter] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
     if args_cli.sonic_pt:
         from vla_sonic.sonic_pt import load_sonic_pt
-        encoder_pt, decoder_pt = load_sonic_pt(args_cli.sonic_pt, device)
+        encoder_pt, decoder_pt = load_sonic_pt(args_cli.sonic_pt, device, encoder=args_cli.encoder_mode)
         decoder = decoder_pt
     else:
         decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
@@ -229,6 +234,7 @@ def main():
         residual_transform=args_cli.residual_transform,
         clip_actions=None,
         pt_mode=bool(args_cli.sonic_pt),
+        encoder_mode=args_cli.encoder_mode,
     )
 
     # ---- initialize env.n_successes (gated on existence in object_above_threshold) ----

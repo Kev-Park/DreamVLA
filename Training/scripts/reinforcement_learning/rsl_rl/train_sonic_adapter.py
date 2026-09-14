@@ -65,6 +65,11 @@ parser.add_argument(
          "encoder/decoder: 640-D g1 encoder input + heading-normalized anchor.",
 )
 parser.add_argument(
+    "--encoder-mode", type=str, default="g1", choices=["g1", "teleop"],
+    help="Native .pt only. g1 = full-body joint reference encoder (default). teleop = the "
+         "checkpoint VR 3-point head (reference wrists + torso point, lower-body command).",
+)
+parser.add_argument(
     "--sonic-encoder-onnx", type=str,
     default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
     help="Path to the frozen SONIC encoder ONNX (model_encoder.onnx).",
@@ -429,7 +434,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.sonic_pt:
         from vla_sonic.sonic_pt import load_sonic_pt
         print(f"[train_sonic_adapter] loading native SONIC .pt: {args_cli.sonic_pt}")
-        encoder, decoder = load_sonic_pt(args_cli.sonic_pt, device)
+        encoder, decoder = load_sonic_pt(args_cli.sonic_pt, device, encoder=args_cli.encoder_mode)
     else:
         print(f"[train_sonic_adapter] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
         decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
@@ -444,6 +449,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         residual_transform=args_cli.residual_transform,
         clip_actions=None,
         pt_mode=bool(args_cli.sonic_pt),
+        encoder_mode=args_cli.encoder_mode,
     )
 
     # create runner from rsl-rl

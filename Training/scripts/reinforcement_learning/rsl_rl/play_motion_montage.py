@@ -1005,7 +1005,8 @@ def main():
         _trk_names = [_bn[i] for i in _tidx]
         _cidx = [_csn.index(n) for n in _trk_names] if all(n in _csn for n in _trk_names) else []
         _trk = {"names": _trk_names, "idx": _tidx, "cidx": _cidx, "seg": [], "mid": [], "step": [],
-                "hand_pos": [], "obj_pos": [], "is_closed": [], "contact_f": []}
+                "hand_pos": [], "obj_pos": [], "is_closed": [], "contact_f": [], "root_pos": [], "root_quat": [],
+                "ref_root_pos": []}
         print(f"[dump-track] {len(_tidx)} right-hand bodies: {_trk['names']}")
 
     for _seg_i, _mid in enumerate(_mlist):
@@ -1055,11 +1056,14 @@ def main():
                 _org = _uwt.scene.env_origins[0]
                 _trk["hand_pos"].append((_uwt.scene["robot"].data.body_pos_w[0, _trk["idx"]] - _org).cpu().numpy())
                 _trk["obj_pos"].append((_uwt.scene["object"].data.root_pos_w[0] - _org).cpu().numpy())
+                _trk["root_pos"].append((_uwt.scene["robot"].data.root_pos_w[0] - _org).cpu().numpy())
+                _trk["root_quat"].append(_uwt.scene["robot"].data.root_quat_w[0].cpu().numpy())
                 if _trk["cidx"]:
                     _trk["contact_f"].append(_uwt.scene["contact_forces"].data.net_forces_w[0, _trk["cidx"]].norm(dim=-1).cpu().numpy())
                 _mtt = _uwt.episode_length_buf * _uwt.step_dt + _uwt.start_motion_times.clone().detach().to(device=_uwt.device, dtype=torch.float32)
                 _rst = _uwt.motion_lib.get_motion_state(_uwt.motion_ids, _mtt)
                 _trk["is_closed"].append(bool(_rst["is_closed"].reshape(-1)[0].item() > 0.5))
+                _trk["ref_root_pos"].append((_rst["root_pos"].reshape(-1, 3)[0]).cpu().numpy())
                 _trk["seg"].append(_seg_i); _trk["mid"].append(int(_mid)); _trk["step"].append(_s)
 
             # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
@@ -1117,6 +1121,7 @@ def main():
         np.savez(args_cli.dump_track, names=np.array(_trk["names"]), seg=np.array(_trk["seg"]), mid=np.array(_trk["mid"]),
                  step=np.array(_trk["step"]), hand_pos=np.stack(_trk["hand_pos"]), obj_pos=np.stack(_trk["obj_pos"]),
                  is_closed=np.array(_trk["is_closed"]),
+                 root_pos=np.stack(_trk["root_pos"]), root_quat=np.stack(_trk["root_quat"]), ref_root_pos=np.stack(_trk["ref_root_pos"]),
                  contact_f=(np.stack(_trk["contact_f"]) if _trk["contact_f"] else np.zeros((0, 0))))
         print(f"[dump-track] wrote {args_cli.dump_track}: {len(_trk['step'])} steps")
     env.close()
