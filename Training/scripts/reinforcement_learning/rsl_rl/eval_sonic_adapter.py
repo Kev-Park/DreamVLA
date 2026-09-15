@@ -342,6 +342,7 @@ def main():
     per_env_phys_ok = {dz: torch.zeros(num_envs, device=device, dtype=torch.bool) for dz in PHYS_DZS}
     per_env_max_lift = torch.zeros(num_envs, device=device)
     completed_phys = {dz: 0 for dz in PHYS_DZS}
+    completed_phys_upright = {dz: 0 for dz in PHYS_DZS}   # held AND never toppled (= collector's success)
     max_lift_list: list[float] = []
     completed_touched = 0; completed_toppled = 0; completed_touched_not_held = 0; completed_never_touched = 0
     try:
@@ -630,6 +631,8 @@ def main():
                 for _dz in PHYS_DZS:
                     if bool(per_env_phys_ok[_dz][idx].item()):
                         completed_phys[_dz] += 1
+                        if not bool(per_env_toppled[idx].item()):
+                            completed_phys_upright[_dz] += 1
                 max_lift_list.append(float(per_env_max_lift[idx].item()))
                 _touched = bool(per_env_touched[idx].item())
                 _toppled = bool(per_env_toppled[idx].item())
@@ -757,6 +760,10 @@ def main():
         for _dz in PHYS_DZS:
             print(f"  [PHYS] held (lift>={100*_dz:.0f}cm & obj within {PHYS_R:.2f} m of sim palm for >={PHYS_STEPS} steps): "
                   f"{completed_phys[_dz]} / {completed_episodes} = {100*completed_phys[_dz]/ce:.2f}%")
+        for _dz in PHYS_DZS:
+            print(f"  [PHYS] held-upright (held as above AND object never toppled -- collect_sonic_adapter's "
+                  f"success): lift>={100*_dz:.0f}cm  {completed_phys_upright[_dz]} / {completed_episodes} = "
+                  f"{100*completed_phys_upright[_dz]/ce:.2f}%")
         if max_lift_list:
             _ml = np.array(max_lift_list)
             print(f"  [PHYS] max lift above rest: median {np.median(_ml)*100:.1f} cm  mean {_ml.mean()*100:.1f} cm  "
