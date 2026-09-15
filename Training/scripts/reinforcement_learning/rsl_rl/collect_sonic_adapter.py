@@ -13,16 +13,21 @@ Key behaviors:
     decoder → env action). Requires --residual-scale matching training.
   * Checkpoint: --checkpoint-path, else auto-selects the newest model_*.pt under the newest
     dated run in logs/rsl_rl/g1_sonic_adapter.
-  * SUCCESS FILTERING: only trajectories that meet the eval success criterion
-    (env.n_successes incremented — object lifted above the reward's height_thres during the
-    grasp phase) AND did not fall (error_terminated) are written. The collector keeps
-    rolling out with fresh seeds until --num-samples SUCCESSFUL trajectories are written
-    (capped by --max-attempts).
+  * SUCCESS FILTERING (physical hold, reference-independent): a trajectory is written only if
+    the object rose >= --phys-lift above its rest height while within --phys-radius of the SIM
+    right palm for >= --phys-steps consecutive steps (the eval_sonic_adapter.py [PHYS] criterion),
+    the episode did NOT end by a failure termination (time_out = reference exhausted is fine),
+    and (unless --allow-topple) the object never toppled. The collector sweeps every motion once
+    (deterministic policy) and writes up to --num-samples successes.
+  * Native SONIC .pt: pass --sonic-pt (and --residual-transform/--residual-scale/--encoder-mode
+    exactly as trained). The recorded motion_token is the EXECUTED FSQ-snapped token (base + residual)
+    in that model's latent space -- the GR00T flow-matching target.
   * --skip-start-frames N: episodes begin N frames into the motion (skip the refinement's
     20-frame interpolate-to-initial-pose prepend); the recorded trajectory starts there.
     GR00T SFT windows frames independently, so a mid-motion start is safe for fine-tuning.
-  * Default env is the kitchen-visuals BinaryFingers env (realistic ego backdrop) which
-    INHERITS the 0.9 grasp physics from the training env, so the policy behaves identically.
+  * Default env is Isaac-Motion-Tracking-Pick-Cam-HOI-v0: the HOI training env (same physics,
+    obs, actions, rewards, terminations, mustard object) plus the HQ-kitchen visual backdrop and the
+    torso d435 ego camera (1280x960, downsized to 640x480 by the converter).
 """
 
 from __future__ import annotations
@@ -285,7 +290,7 @@ def _find_latest_adapter_checkpoint(log_root: Path) -> str:
 
 
 def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, real_time,
-                         reset_at_start, lift_thres):
+                         reset_at_start, lift_thres, phys_lift=0.05, phys_radius=0.15, phys_steps=25):
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
     teleop_history: list[dict[str, torch.Tensor]] = []
@@ -304,6 +309,18 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     # (i.e., it reached rest) — otherwise the reset-drop transient is mistaken for a pickup
     # (the bug that let no-lift trajectories through, esp. with --skip-start near the grab).
     object_settled = False
+    # PHYSICAL-HOLD success (authoritative; same definition as eval_sonic_adapter.py [PHYS]):
+    # object risen >= phys_lift above its rest height AND within phys_radius of the SIM right
+    # palm (wrist_yaw + 0.12 m along the hand x-axis) for >= phys_steps consecutive steps.
+    # Reference-independent: it cannot be satisfied by tracking the plan without the bottle.
+    _robot = env.unwrapped.scene["robot"]
+    _rw_bid = _robot.find_bodies("right_wrist_yaw_link")[0][0]
+    obj_rest_z: float | None = None
+    phys_run = 0
+    phys_held = False
+    max_lift = 0.0
+    toppled_any = False
+    term_reason = "none"
 
     # The explicit reset must run inside inference_mode: after a prior rollout's
     # inference_mode policy/step, the env's persistent buffers (joint_acc, etc.) are
@@ -385,6 +402,25 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
                 object_settled = True
             if object_settled and bottle_z > lift_thres and is_closed:
                 had_any_lift = True
+            # ---- physical hold / topple bookkeeping (env-local frame) ----
+            _org = u.scene.env_origins[0]
+            _obj_p = u.scene["object"].data.root_pos_w[0] - _org
+            _hq = _robot.data.body_quat_w[0, _rw_bid]                                  # wxyz
+            _w, _x, _y, _z = _hq[0], _hq[1], _hq[2], _hq[3]
+            _hand_x = torch.stack([1 - 2 * (_y * _y + _z * _z), 2 * (_x * _y + _w * _z), 2 * (_x * _z - _w * _y)])
+            _palm = (_robot.data.body_pos_w[0, _rw_bid] - _org) + 0.12 * _hand_x
+            if obj_rest_z is None:
+                obj_rest_z = float(_obj_p[2].item())
+            _dz = float(_obj_p[2].item()) - obj_rest_z
+            max_lift = max(max_lift, _dz)
+            _near = bool(torch.norm(_palm - _obj_p).item() < phys_radius)
+            phys_run = phys_run + 1 if (_near and _dz >= phys_lift) else 0
+            if phys_run >= phys_steps:
+                phys_held = True
+            _oq = u.scene["object"].data.root_quat_w[0]
+            _up_z = float((1.0 - 2.0 * (_oq[1] ** 2 + _oq[2] ** 2)).item())
+            if _up_z < 0.7071:                                                         # tilt > 45 deg
+                toppled_any = True
         # Flush the RTX render pipeline so the NEXT iteration's camera read delivers
         # this step's frame (the camera annotator otherwise lags / stays on the warm-up
         # render). Two pumps match the proven play_sonic_adapter.py cadence.
@@ -393,6 +429,15 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         terminated_flag = bool(torch.as_tensor(terminated).any().item())
         truncated_flag = bool(torch.as_tensor(truncated).any().item())
         if terminated_flag or truncated_flag:
+            # Which termination term ended the episode (read BEFORE the next step; the manager
+            # keeps the per-term flags of the step that terminated). time_out = the reference
+            # ran out = a completed episode, NOT a failure.
+            try:
+                _tm = env.unwrapped.termination_manager
+                _fired = [n for n in _tm.active_terms if bool(_tm.get_term(n)[0].item())]
+                term_reason = ",".join(_fired) if _fired else "unknown"
+            except Exception as _e:
+                term_reason = f"unavailable({type(_e).__name__})"
             print(f"[INFO] rollout ended at step {step_index}/{max_steps} "
                   f"(terminated={terminated_flag}, truncated={truncated_flag})")
             break
@@ -446,14 +491,24 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     # filter for the bottle, so it must NOT gate what gets written.
     n_successes_delta = env.unwrapped.n_successes - n_successes_start
     success_n_successes = bool((n_successes_delta > 0).any().item())
-    rollout_success = had_any_lift
-    error_terminated = terminated_flag and step_index < max_steps
+    rollout_success = phys_held
+    # "Fallen" = ended by a FAILURE termination (anchor_pos / anchor_ori_full / ee_body_pos ...),
+    # not by time_out (reference exhausted) and not by reaching --rollout-length.
+    ended_early = (terminated_flag or truncated_flag) and step_index < max_steps
+    error_terminated = ended_early and ("time_out" not in term_reason)
     metadata = {
         "terminated": terminated_flag,
         "truncated": truncated_flag,
+        "termination_terms": term_reason,
         "error_terminated": error_terminated,
         "success": rollout_success,
-        "success_criterion": f"bottle_z>{lift_thres} & is_closed (eval_sonic_adapter parity)",
+        "success_criterion": (f"PHYS hold: lift>={phys_lift}m above rest & obj within {phys_radius}m of sim palm "
+                              f"for >={phys_steps} consecutive steps (eval_sonic_adapter [PHYS] parity)"),
+        "phys_held": bool(phys_held),
+        "max_lift_m": float(max_lift),
+        "object_rest_z": float(obj_rest_z) if obj_rest_z is not None else float("nan"),
+        "toppled_any": bool(toppled_any),
+        "legacy_lift_success": bool(had_any_lift),
         "lift_thres": float(lift_thres),
         "success_n_successes": success_n_successes,
         "num_steps": len(camera_frames),
@@ -468,10 +523,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Collect SONIC-adapter pick rollouts (ego camera → HDF5).")
     parser.add_argument("--disable_fabric", action="store_true", default=False)
     parser.add_argument("--num_envs", type=int, default=1, help="Only 1 supported (one file per rollout).")
-    parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-Pick-Cam-BinaryFingers-v0",
-                        help="Default: kitchen-visuals BinaryFingers env (0.9 grasp physics inherited "
-                             "from training). Use Isaac-Motion-Tracking-Pick-BinaryFingers-v0 for the "
-                             "no-kitchen green-box env (ego camera is injected either way).")
+    parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-Pick-Cam-HOI-v0",
+                        help="Default: kitchen-visuals + ego camera ON the HOI pick env (identical physics, "
+                             "obs, actions, rewards and terminations to Isaac-Motion-Tracking-Pick-HOI-v0, "
+                             "the env the residual policies are trained in). Run with the same HS_REWORK "
+                             "env vars as training.")
     parser.add_argument("--seed", type=int, default=0)
     state_group = parser.add_mutually_exclusive_group()
     state_group.add_argument("--state-on", dest="state_on", action="store_true")
@@ -494,11 +550,31 @@ def main() -> None:
                         default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx")
     parser.add_argument("--sonic-encoder-onnx", type=str,
                         default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx")
-    parser.add_argument("--residual-scale", type=float, default=0.3,
-                        help="MUST match the value train_sonic_adapter.py used.")
+    parser.add_argument("--sonic-pt", type=str, default=None,
+                        help="Directory of a native SONIC .pt checkpoint (groot-era). REQUIRED for policies "
+                             "trained with --sonic-pt: the recorded motion_token lives in THIS model's latent "
+                             "space. Overrides the ONNX encoder/decoder.")
+    parser.add_argument("--encoder-mode", type=str, default="g1", choices=["g1", "teleop"],
+                        help="Native .pt only; must match training (g1 = full-body reference encoder).")
+    parser.add_argument("--residual-scale", type=float, default=0.1,
+                        help="MUST match the value train_sonic_adapter.py used (current recipe: 0.1).")
+    parser.add_argument("--residual-transform", type=str, default="multiplicative_free",
+                        choices=["additive", "multiplicative", "multiplicative_free", "unclamped"],
+                        help="MUST match train_sonic_adapter.py (current recipe: multiplicative_free).")
+    parser.add_argument("--phys-lift", type=float, default=0.05,
+                        help="SUCCESS filter: object must rise >= this (m) above its rest height ...")
+    parser.add_argument("--phys-radius", type=float, default=0.15,
+                        help="... while within this distance (m) of the sim right palm ...")
+    parser.add_argument("--phys-steps", type=int, default=25,
+                        help="... for at least this many CONSECUTIVE steps (25 = 0.5 s). Same physical-hold "
+                             "criterion as eval_sonic_adapter.py [PHYS].")
+    parser.add_argument("--allow-topple", action="store_true", default=False,
+                        help="Keep trajectories in which the object toppled (>45 deg) at any point. Default: "
+                             "reject them, so the dataset only holds clean grasp+carry demonstrations.")
     parser.add_argument("--lift-thres", type=float, default=0.95,
-                        help="Object (bottle) root z (m) above which a frame counts as 'lifted' "
-                             "for the SUCCESS filter, evaluated during the reference grasp "
+                        help="DIAGNOSTIC ONLY (legacy criterion, reported in metadata, no longer gates "
+                             "writing): object root z (m) above which a frame counts as 'lifted' "
+                             "during the reference grasp "
                              "(is_closed) phase. MUST match eval_sonic_adapter.py --lift-thres "
                              "(default 0.95 = object rests at 0.9, a 5 cm pickup). Only "
                              "trajectories with at least one lifted+closed frame are written.")
@@ -507,7 +583,7 @@ def main() -> None:
                              "prepend). The recorded trajectory begins at the skip frame.")
     parser.add_argument("--start-pregrab-margin", type=float, default=None,
                         help="Start episodes this many seconds before the grab (drops prepend + walk).")
-    parser.add_argument("--waist-dof", type=int, default=27, choices=[27, 29],
+    parser.add_argument("--waist-dof", type=int, default=29, choices=[27, 29],
                         help="Body DOF. 29 actuates waist_roll/pitch (29-DOF + dex-hands USD) to match "
                              "SONIC's training articulation. 27 = legacy welded-waist asset.")
 
@@ -537,6 +613,7 @@ def main() -> None:
 
     from vla_sonic.token_action_wrapper import load_frozen_decoder
     from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
+    from vla_sonic.sonic_pt import load_sonic_pt
     from vla_sonic.physics_overrides import apply_sonic_physics_overrides
     from vla_sonic.robot_29dof import apply_29dof_waist_override
     from vla_sonic.adapter_actor_critic import AdapterActorCritic
@@ -607,10 +684,20 @@ def main() -> None:
         simulation_app.update()
 
     device = agent_cfg.device
-    decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
-    encoder = load_frozen_encoder(args_cli.sonic_encoder_onnx, device)
+    if args_cli.sonic_pt:
+        encoder, decoder = load_sonic_pt(args_cli.sonic_pt, device, encoder=args_cli.encoder_mode)
+    else:
+        decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
+        encoder = load_frozen_encoder(args_cli.sonic_encoder_onnx, device)
     env = TokenAdapterVecEnvWrapper(env, decoder, encoder, device,
-                                    residual_scale=args_cli.residual_scale, clip_actions=None)
+                                    residual_scale=args_cli.residual_scale,
+                                    residual_transform=args_cli.residual_transform,
+                                    clip_actions=None,
+                                    pt_mode=bool(args_cli.sonic_pt),
+                                    encoder_mode=args_cli.encoder_mode)
+    print(f"[collect_sonic_adapter] RECIPE: sonic_pt={args_cli.sonic_pt or 'ONNX v1.0'} encoder_mode={args_cli.encoder_mode} "
+          f"residual_transform={args_cli.residual_transform} residual_scale={args_cli.residual_scale} "
+          f"waist_dof={args_cli.waist_dof} task={args_cli.task} -- these MUST match the checkpoint's training run.")
 
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=device)
     runner.load(resume_path)
@@ -637,6 +724,7 @@ def main() -> None:
     tried = 0
     rejected_fall = 0
     rejected_nograsp = 0
+    rejected_topple = 0
     errored = 0
     try:
         for motion_id in range(total_motions):
@@ -656,6 +744,8 @@ def main() -> None:
                     state_on=bool(args_cli.state_on), real_time=bool(args_cli.real_time),
                     reset_at_start=True,  # always reset so the forced motion takes effect
                     lift_thres=float(args_cli.lift_thres),
+                    phys_lift=float(args_cli.phys_lift), phys_radius=float(args_cli.phys_radius),
+                    phys_steps=int(args_cli.phys_steps),
                 )
             except Exception as rollout_exc:
                 errored += 1
@@ -671,11 +761,18 @@ def main() -> None:
             # SUCCESS FILTER: write only non-fallen, task-successful trajectories.
             if meta["error_terminated"]:
                 rejected_fall += 1
-                print(f"[INFO] REJECTED motion={motion_id} (fall) steps={meta['num_steps']}")
+                print(f"[INFO] REJECTED motion={motion_id} (failure termination: {meta['termination_terms']}) "
+                      f"steps={meta['num_steps']}")
                 continue
             if not meta["success"]:
                 rejected_nograsp += 1
-                print(f"[INFO] REJECTED motion={motion_id} (no grasp success) steps={meta['num_steps']}")
+                print(f"[INFO] REJECTED motion={motion_id} (no physical hold; max_lift={meta['max_lift_m']:.3f} m, "
+                      f"toppled={meta['toppled_any']}) steps={meta['num_steps']}")
+                continue
+            if meta["toppled_any"] and not args_cli.allow_topple:
+                rejected_topple += 1
+                print(f"[INFO] REJECTED motion={motion_id} (held, but object toppled during the episode) "
+                      f"steps={meta['num_steps']}")
                 continue
 
             file_name = f"sonic_adapter__{motion_tag}__motion_{motion_id:03d}.hdf5"
@@ -686,6 +783,10 @@ def main() -> None:
                 "skip_start_frames": args_cli.skip_start_frames,
                 "start_pregrab_margin_s": args_cli.start_pregrab_margin,
                 "residual_scale": args_cli.residual_scale,
+                "residual_transform": args_cli.residual_transform,
+                "sonic_pt": str(args_cli.sonic_pt) if args_cli.sonic_pt else None,
+                "encoder_mode": args_cli.encoder_mode,
+                "waist_dof": int(args_cli.waist_dof),
                 "checkpoint": str(resume_path),
                 **meta,
             }
@@ -702,7 +803,7 @@ def main() -> None:
 
         print(f"\n[INFO] Collection finished. Successes written: {written}/{target_successes} "
               f"(motions tried={tried}/{total_motions}, rejected_fall={rejected_fall}, "
-              f"rejected_nograsp={rejected_nograsp}, errored={errored})")
+              f"rejected_nograsp={rejected_nograsp}, rejected_topple={rejected_topple}, errored={errored})")
         if written < target_successes:
             print(f"[WARN] Wrote {written} successes from {tried} motions tried. With a DETERMINISTIC "
                   f"policy the unique-success ceiling is the number of motions that succeed — re-running "

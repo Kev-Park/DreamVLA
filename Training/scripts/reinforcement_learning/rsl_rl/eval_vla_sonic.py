@@ -1,51 +1,33 @@
 """VLA (unitree_g1_sonic) + SONIC decoder closed-loop *statistical* eval in Isaac Lab.
 
-Runs a ``unitree_g1_sonic`` VLA in closed loop for a configurable number of
-episodes and reports height-lift statistics. VLA analog of ``eval_sonic_adapter.py``.
-No video is written; see ``play_vla_sonic.py`` for the recording sibling (the two
-share the exact same closed-loop wiring).
+Runs a ``unitree_g1_sonic`` VLA in closed loop for N episodes (sweeping the reference motion
+library) and reports the PHYSICAL-HOLD success used by eval_sonic_adapter.py. No video is
+written; see ``play_vla_sonic.py`` for a recording sibling.
 
-This VLA embodiment predicts the SONIC latent token DIRECTLY (``motion_token``,
-64-D) plus the finger joints, so the pipeline is short — no kinematic planner,
-no encoder, no vr_3pt teleop stage:
+This VLA predicts the SONIC latent token DIRECTLY (``motion_token``, 64-D) plus the finger
+joints. The token is fed through the SAME frozen decoder + proprio-history wrapper the residual
+policy was trained and collected with (``TokenActionDecoderVecEnvWrapper``), so the only thing
+that changes between data collection and this eval is WHO produces the token:
 
     env obs ─▶ ObsToPolicyAdapter ─▶ Gr00tPolicy.get_action ─▶ action_dict
-                                                                     │
-                          action_dict["motion_token"] (64-D)  ───────┤
-                                                                     │
-                          token + HistoryBuffer ──▶ build_decoder_obs
-                                                                     │
-                                              UtmWrapper.run_decoder → body_29
-                                                                     │
-        body_29 + action_dict["{left,right}_hand_joints"] ──▶ utm_plus_vla_to_env_action → env_action_41
-                                                                     │
-                                                              env.step(env_action_41)
+                        motion_token (64) + right_hand_joints (7 -> binary scalar)
+                                        │
+                     TokenActionDecoderVecEnvWrapper.step([token | finger])
+                       FSQ snap ─▶ [token | 10-frame history] ─▶ frozen decoder (.pt or ONNX)
+                       ─▶ 29 body targets + binary finger slots ─▶ env.step
 
-(The older vr_3pt → planner → encoder → token path was for the ``new_embodiment``
-VLA formulation; a ``unitree_g1_sonic`` VLA outputs the token itself, replacing
-that whole front half.)
-
-Reports (matching eval_sonic_adapter.py):
-  1. ``Episodes with any lift`` — per-episode discrete success rate.
-  2. ``Mean lift fraction`` — over lifted episodes, fraction of closed-phase steps lifted.
-  3. ``Cumulative lift-steps`` — env.n_successes.sum().
-  4. ``Termination breakdown`` — time_out vs terminated.
-
-NOTE: cameras are required (the VLA needs the ego view) and the pipeline is
-single-env (numpy, index [0]), so episodes run sequentially; --num-episodes is a
-sequential count, not parallel.
-
-Run:
-
-    cd WBCBenchmark/Training && python3 scripts/reinforcement_learning/rsl_rl/eval_vla_sonic.py \\
-        --vla-checkpoint ~/kevin/checkpoints/run-01 \\
-        --num-episodes 50
+Metrics (all reference-independent, computed from the sim object and the sim right palm):
+  1. [PHYS] held  — object >= 2 cm / 5 cm above its rest height AND within --phys-radius of the
+     sim palm for >= --phys-steps consecutive steps.
+  2. touched / toppled / max lift, post-grab window, per-term termination breakdown.
+Requires cameras (the VLA reads the ego view); the env is the Cam-* variant of the training env.
 """
 
 from __future__ import annotations
 
 import argparse
 import builtins
+import os
 import sys
 import time
 from functools import partial
@@ -66,7 +48,24 @@ DEFAULT_EMBODIMENT_TAG = "unitree_g1_sonic"
 
 def _parse_cli() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="VLA(unitree_g1_sonic)+SONIC closed-loop statistical eval")
-    parser.add_argument("--task", default="Isaac-Motion-Tracking-Pick-Cam-ContFingers-v0")
+    parser.add_argument("--task", default="Isaac-Motion-Tracking-Pick-Cam-HOI-v0",
+                        help="Kitchen-visual + ego-camera variant of the HOI pick env (identical physics/"
+                             "obs/actions/rewards/terminations to the residual training env, and the env "
+                             "collect_sonic_adapter.py records in).")
+    parser.add_argument("--sonic-pt", type=str, default=None,
+                        help="Directory of the native SONIC .pt checkpoint whose DECODER turns the VLA's "
+                             "motion_token into joint targets. MUST be the model the training data's "
+                             "tokens were recorded with (collect_sonic_adapter.py --sonic-pt). Overrides "
+                             "--decoder-onnx.")
+    parser.add_argument("--waist-dof", type=int, default=29, choices=[27, 29],
+                        help="29 = waist-actuated 29-DOF articulation (current pipeline).")
+    parser.add_argument("--sweep-motions", dest="sweep_motions", action="store_true", default=True,
+                        help="Episode k runs reference motion k mod N (deterministic coverage of the library).")
+    parser.add_argument("--random-motions", dest="sweep_motions", action="store_false",
+                        help="Draw a random motion per episode instead of sweeping.")
+    parser.add_argument("--finger-close-thres", type=float, default=0.6,
+                        help="Binary-fingers env: the VLA's 7 predicted right-hand joint angles are mapped "
+                             "to CLOSE when mean|q| exceeds this (rad); closed pose mean|q| ~ 1.27, open = 0.")
     parser.add_argument("--num-envs", type=int, default=1,
                         help="Keep at 1 to avoid camera OOM (the VLA pipeline is single-env).")
     parser.add_argument("--num-episodes", type=int, default=20,
@@ -81,16 +80,15 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--language", default="pick up the mustard bottle")
     # Default paths assume DreamVLA/ and GR00T-WholeBodyControl/ are sibling repos,
     # and you run this script from DreamVLA/Training/. Override if your layout differs.
-    # Only the decoder is used; the encoder is loaded by UtmWrapper but never run
-    # (this VLA replaces the encoder by predicting the token directly).
-    parser.add_argument("--encoder-onnx",
-                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
-                        help="Loaded by UtmWrapper for consistency but NOT used in this pipeline.")
     parser.add_argument("--decoder-onnx",
                         default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx")
     parser.add_argument("--lift-thres", type=float, default=0.95,
-                        help="Bottle z (m) above which a frame counts as 'lifted'. Matches the "
-                             "env's object_above height_thres (object rests at 0.9; 0.95 = 5 cm).")
+                        help="LEGACY diagnostic only (absolute bottle z). The headline metric is the "
+                             "physical hold below.")
+    parser.add_argument("--phys-radius", type=float, default=0.15,
+                        help="[PHYS] object must be within this (m) of the SIM right palm ...")
+    parser.add_argument("--phys-steps", type=int, default=25,
+                        help="... for >= this many consecutive steps, while lifted >= 2 cm / 5 cm above rest.")
     parser.add_argument("--no-fsq-snap", dest="fsq_snap", action="store_false", default=True,
                         help="Disable snapping the VLA's continuous motion_token onto the FSQ "
                              "lattice (32 levels) before the decoder. Snapping is ON by default "
@@ -147,16 +145,12 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from vla_sonic import (  # noqa: E402
-    HistoryBuffer,
-    UtmWrapper,
-    build_decoder_obs,
-    utm_plus_vla_to_env_action,
-)
-from vla_sonic.action_assembler import G1_ACTION_SCALE_SONIC, G1_DEFAULT_ANGLES_SONIC  # noqa: E402
 from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter  # noqa: E402
 from vla_sonic.physics_overrides import apply_sonic_physics_overrides  # noqa: E402
 from vla_sonic.simple_robot_model import SimpleG1RobotModel  # noqa: E402
+from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder  # noqa: E402
+from vla_sonic.sonic_pt import load_sonic_pt  # noqa: E402
+from vla_sonic.robot_29dof import apply_29dof_waist_override  # noqa: E402
 
 from gr00t.policy.gr00t_policy import Gr00tPolicy  # noqa: E402
 
@@ -371,7 +365,16 @@ def main() -> int:
     # friction / coarser substep / self-collisions-off make the robot unstable.
     # Same call both working SONIC scripts use (eval/play_sonic_adapter.py).
     apply_sonic_physics_overrides(env_cfg)
-    _inject_ego_camera(env_cfg)
+    if args.waist_dof == 29:
+        apply_29dof_waist_override(env_cfg)
+    if os.environ.get("HS_EVAL_NO_EE_TERM", "0") == "1" and getattr(env_cfg.terminations, "ee_body_pos", None) is not None:
+        env_cfg.terminations.ee_body_pos = None
+        print("[eval_vla_sonic] HS_EVAL_NO_EE_TERM=1: ee_body_pos termination removed")
+    # Use the env's own ego camera when it defines one (the Cam-* envs: 1280x960, identical to
+    # the collection render, downsized by ObsToPolicyAdapter exactly as the converter did);
+    # inject the 640x480 fallback only for envs without a camera.
+    if getattr(env_cfg.scene, "camera_robot", None) is None:
+        _inject_ego_camera(env_cfg)
     # The env injects a 1920x2560 third-person `camera` under enable_cameras=True; eval
     # never uses it (no video) — drop it to save VRAM/render time (keeps only the ego cam).
     if getattr(env_cfg.scene, "camera", None) is not None:
@@ -387,7 +390,9 @@ def main() -> int:
         env_cfg.motion_skip_start_frames = args.skip_start_frames
         print(f"[eval_vla_sonic] skip_start_frames = {args.skip_start_frames}")
     # Match the collection (training) ego view: hide red grab marker / glass bottle / ground.
-    if not args.raw_visuals:
+    # The Cam-* envs already carry the collection env's own visual hooks (green box, ground
+    # plane, glass bottle hidden; grab marker off); adding the eval's copy is redundant.
+    if not args.raw_visuals and "-Cam-" not in args.task:
         _match_collection_visuals(env_cfg)
     # render_mode="rgb_array" activates the RTX render product so the camera annotators
     # actually receive frames. Without it camera_robot.data.output["rgb"] comes back
@@ -409,11 +414,23 @@ def main() -> int:
         device="cuda:0",
     )
 
-    # --- 3. Build SONIC decoder (encoder loaded but unused) ------------
-    print(f"[utm] decoder={args.decoder_onnx}")
-    utm = UtmWrapper(args.encoder_onnx, args.decoder_onnx)
+    # --- 3. SONIC decoder: the same frozen decoder + proprio-history wrapper the residual
+    # policy was trained/collected with (TokenActionDecoderVecEnvWrapper). The VLA's token
+    # replaces "encoder base token + residual"; everything downstream is byte-identical:
+    # FSQ snap -> 994-D decoder obs (token | 10-frame history) -> 29 body targets, plus the
+    # binary right-hand slot. This is the wiring that produced the training data.
+    if args.sonic_pt:
+        _enc_unused, decoder = load_sonic_pt(args.sonic_pt, "cuda:0")
+        print(f"[sonic] native .pt decoder from {args.sonic_pt}")
+    else:
+        decoder = load_frozen_decoder(args.decoder_onnx, "cuda:0")
+        print(f"[sonic] ONNX decoder {args.decoder_onnx} (v1.0 latent space -- only valid if the "
+              f"training tokens were recorded with the ONNX model)")
+    env = TokenActionDecoderVecEnvWrapper(env, decoder, "cuda:0", clip_actions=None)
+    unw = env.unwrapped
+    total_motions = int(unw.total_motions)
 
-    # --- 4. Obs adapter & joint-order perm -----------------------------
+    # --- 4. Obs adapter (reads env.unwrapped.scene: state + ego camera) --------------
     robot_model = SimpleG1RobotModel.build()
     obs_adapter = ObsToPolicyAdapter(
         env,
@@ -423,64 +440,43 @@ def main() -> int:
             camera_scene_key="camera_robot",
         ),
     )
-    robot = env.unwrapped.scene["robot"]
-    isaac_to_utm_perm = build_isaac_to_utm_perm(list(robot.data.joint_names))
+    robot = unw.scene["robot"]
+    _rw_bid = robot.find_bodies("right_wrist_yaw_link")[0][0]
+    _tm = unw.termination_manager
+    term_names = list(_tm.active_terms)
 
-    # The pick reward's ``object_above_threshold`` only increments its success
-    # counter when ``hasattr(env, "n_successes")`` AND num_envs < 1001. Without
-    # this init the counter never exists and cumulative lift-steps stays 0.
-    env.unwrapped.n_successes = torch.zeros(env.unwrapped.num_envs, device="cuda:0", dtype=torch.float32)
+    def _finger_scalar(vla_chunk: dict, t_idx: int) -> float:
+        """VLA right_hand_joints (7) -> binary env scalar: <0 closes, >=0 opens."""
+        rh = np.asarray(vla_chunk["right_hand_joints"], dtype=np.float32)
+        q = rh[0, t_idx] if rh.ndim == 3 else rh.reshape(-1)
+        return -1.0 if float(np.abs(q).mean()) > args.finger_close_thres else 1.0
 
-    # --- 5. Decoder proprio-history buffer -----------------------------
-    history = HistoryBuffer()
-
-    # --- 6. Rollout setup ----------------------------------------------
-    action_space_dim = env.action_space.shape[-1]
-    zero_action = torch.zeros((args.num_envs, action_space_dim), device="cuda:0", dtype=torch.float32)
+    # --- 5. Rollout ------------------------------------------------------------------
     lift_thres = args.lift_thres
-
-    # Aggregate stats across episodes (single env → scalar bookkeeping).
-    completed_episodes = 0
-    completed_any_lift = 0
-    sum_lift_fraction_over_lifted_episodes = 0.0
-    completed_episodes_with_any_lift = 0
-    termination_counts = {"time_out": 0, "terminated": 0}
-    episode_lengths: list[int] = []
-
+    PHYS_DZS = (0.02, 0.05)
+    stats = {
+        "episodes": 0, "phys_held": {dz: 0 for dz in PHYS_DZS}, "touched": 0, "toppled": 0,
+        "legacy_any_lift": 0, "term": {n: 0 for n in term_names}, "term_other": 0,
+        "ep_len": [], "max_lift": [], "post_grab": [],
+    }
     print(f"[eval_vla_sonic] starting eval: num_episodes={args.num_episodes}, "
-          f"max_steps_per_episode={args.max_steps_per_episode}, lift_thres={lift_thres}")
+          f"max_steps_per_episode={args.max_steps_per_episode}, motions={total_motions}, "
+          f"phys: lift>=2/5cm & obj within {args.phys_radius} m of sim palm for >={args.phys_steps} steps")
     t_start = time.time()
-
     for ep in range(args.num_episodes):
-        print(f"\n[episode {ep}]")
-        obs, info = env.reset()
-        # Camera sensors populate on env.step(), not env.reset(). Warm-up step +
-        # render flush so the first ego frame the VLA sees is current.
-        env.step(zero_action)
-        _APP.update()
-        _APP.update()
-        history.reset()
-        prev_utm_body_29 = None  # set to (q-default)/scale on frame 0, then decoder output
+        mid = ep % total_motions if args.sweep_motions else None
+        unw._forced_motion_id = mid
+        print(f"\n[episode {ep}] motion_id={mid if mid is not None else 'random'}")
+        with torch.inference_mode():
+            obs, _ = env.reset()                      # wrapper.reset() also seeds the decoder history
+        _APP.update(); _APP.update()
 
-        # Per-episode lift trackers.
-        had_any_lift = False
-        closed_steps = 0
-        lift_steps = 0
-        # reset_object_state drops the bottle from z=1.0 each episode; it settles to its
-        # rest over the first frames, so it STARTS above lift_thres. Only count a lift once
-        # the bottle has been seen at/below the threshold (i.e. reached rest) — otherwise the
-        # reset-drop transient, OR a resting height already above thres (e.g. the kitchen
-        # counter), registers as a spurious lift (lift_steps == closed_steps every episode).
-        # Same gate as collect_sonic_adapter.py.
-        object_settled = False
-
-        vla_chunk: dict | None = None
-        chunk_step = 0
-        was_time_out = False
+        vla_chunk = None; chunk_step = 0
+        obj_rest_z = None; phys_run = {dz: 0 for dz in PHYS_DZS}; phys_ok = {dz: False for dz in PHYS_DZS}
+        max_lift = 0.0; toppled = False; touched = False; legacy_lift = False; object_settled = False
+        grab_step = -1; fired = []
         step = 0
-
         for step in range(args.max_steps_per_episode):
-            # 7a. Build VLA obs + refresh action chunk every `chunk_size` steps.
             if vla_chunk is None or chunk_step >= args.chunk_size:
                 vla_obs = obs_adapter()
                 vla_out = policy.get_action(vla_obs)
@@ -491,155 +487,106 @@ def main() -> int:
                     for k in sorted(vla_chunk.keys()):
                         arr = np.asarray(vla_chunk[k])
                         slice_ = arr[0, 0] if arr.ndim == 3 else arr.reshape(-1)
-                        prev = slice_.reshape(-1)[:8]
-                        print(f"  {k} [shape {tuple(arr.shape)}] = {prev.round(4).tolist()}"
+                        print(f"  {k} [shape {tuple(arr.shape)}] = {slice_.reshape(-1)[:8].round(4).tolist()}"
                               f"{' ...' if slice_.size > 8 else ''}")
-
             t_idx = chunk_step
-
-            # 7b. Push current env state into the decoder history. Convention
-            # matches the validated token_action_wrapper.py: joint positions are
-            # RELATIVE to the SONIC default standing pose, gravity is IsaacLab's
-            # body-frame projected gravity (NOT recomputed), and last_action is the
-            # previous decoder output (seeded on frame 0 with the latent that
-            # reproduces the current pose, q-default/scale). Feeding raw absolute
-            # joint positions here is off-distribution for the decoder → instability.
-            q_isaac = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
-            qd_isaac = robot.data.joint_vel[0].detach().cpu().numpy().astype(np.float32)
-            q_sonic = _gather_with_mask(q_isaac, isaac_to_utm_perm)
-            qd_sonic = _gather_with_mask(qd_isaac, isaac_to_utm_perm)
-            jp_sonic = (q_sonic - G1_DEFAULT_ANGLES_SONIC).astype(np.float32)
-            gravity_body = robot.data.projected_gravity_b[0].detach().cpu().numpy().astype(np.float32)
-            root_ang_vel_b = robot.data.root_ang_vel_b[0].detach().cpu().numpy().astype(np.float32)
-            if prev_utm_body_29 is None:
-                last_action = (jp_sonic / G1_ACTION_SCALE_SONIC).astype(np.float32)
-            else:
-                last_action = prev_utm_body_29
-            history.push(
-                joint_pos=jp_sonic,
-                joint_vel=qd_sonic,
-                last_action=last_action,
-                base_ang_vel=root_ang_vel_b,
-                gravity_dir=gravity_body,
-                mujoco_qpos=np.zeros(36, dtype=np.float32),  # unused (no planner)
-            )
-
-            # 7c. Token comes straight from the VLA (no planner/encoder).
-            token = extract_motion_token(vla_chunk, t_index=t_idx)  # (64,)
+            token = extract_motion_token(vla_chunk, t_index=t_idx)                # (64,) continuous
             if ep == 0 and step == 0 and float(np.abs(token).max()) < 1e-6:
-                print("\n[WARN] motion_token is ALL ZERO — the VLA is emitting a null SONIC "
-                      "token, so the robot is NOT VLA-controlled (the decoder runs on a constant "
-                      "zero token → nominal gait). Likely cause: action.motion_token was "
-                      "zero-filled in the training dataset (the populator in PARQUET_POPULATE_PLAN.md "
-                      "was never run) or its normalization stats are degenerate. Any lift/success "
-                      "numbers below are meaningless until this is fixed.\n")
-            if args.fsq_snap:
-                token = fsq_snap_token(token)
+                print("\n[WARN] motion_token is ALL ZERO -- the VLA is emitting a null SONIC token; "
+                      "the robot is NOT VLA-controlled. Check action.motion_token in the dataset.\n")
+            latent = torch.zeros((1, 65), device="cuda:0", dtype=torch.float32)
+            latent[0, :64] = torch.as_tensor(token, device="cuda:0")
+            latent[0, 64] = _finger_scalar(vla_chunk, t_idx)
+            with torch.inference_mode():
+                obs, _rew, dones, _extras = env.step(latent)                   # FSQ snap + decoder inside
+            _APP.update(); _APP.update()
 
-            # 7d. Decoder: token + proprio history → 29-D SONIC body action.
-            dec_hist = history.decoder_history()
-            dec_obs = build_decoder_obs(token_state=token, **dec_hist.as_kwargs())
-            utm_body_29 = utm.run_decoder({"obs_dict": dec_obs}).reshape(-1)  # (29,)
-
-            # 7e. Assemble env action (body + VLA fingers).
-            env_action_np = utm_plus_vla_to_env_action(
-                utm_body_29_sonic=utm_body_29,
-                vla_action=vla_chunk,
-                t_index=t_idx,
-            )  # (41,)
-            env_action = torch.as_tensor(env_action_np[None, :], device="cuda:0", dtype=torch.float32)
-
-            # 7f. Step.
-            obs, rew, term, trunc, info = env.step(env_action)
-            _APP.update()
-            _APP.update()
-
-            # 7g. Lift bookkeeping — read bottle z + is_closed AFTER the step.
-            bottle_z = float(env.unwrapped.scene["object"].data.root_pos_w[0, 2].item())
-            motion_times = (
-                env.unwrapped.episode_length_buf * env.unwrapped.step_dt
-                + env.unwrapped.start_motion_times.clone().detach().to(
-                    device="cuda:0", dtype=torch.float32)
-            )
-            motion_res = env.unwrapped.motion_lib.get_motion_state(
-                env.unwrapped.motion_ids, motion_times)
-            is_closed = bool(motion_res["is_closed"][0].item() > 0.5)
-            if bottle_z <= lift_thres:
-                object_settled = True
-            lifted = object_settled and (bottle_z > lift_thres) and is_closed
-            if is_closed:
-                closed_steps += 1
-            if lifted:
-                lift_steps += 1
-                had_any_lift = True
-
-            prev_utm_body_29 = utm_body_29
+            # ---- metrics (env-local frame), read AFTER the step ----
+            org = unw.scene.env_origins[0]
+            obj_p = unw.scene["object"].data.root_pos_w[0] - org
+            oq = unw.scene["object"].data.root_quat_w[0]
+            hq = robot.data.body_quat_w[0, _rw_bid]
+            w_, x_, y_, z_ = hq[0], hq[1], hq[2], hq[3]
+            hand_x = torch.stack([1 - 2 * (y_ * y_ + z_ * z_), 2 * (x_ * y_ + w_ * z_), 2 * (x_ * z_ - w_ * y_)])
+            palm = (robot.data.body_pos_w[0, _rw_bid] - org) + 0.12 * hand_x
+            d_palm = float(torch.norm(palm - obj_p).item())
+            done_now = bool(torch.as_tensor(dones).reshape(-1)[0].item())
+            if not done_now:                       # after a done the env has already reset -> skip
+                if obj_rest_z is None:
+                    obj_rest_z = float(obj_p[2].item())
+                dz = float(obj_p[2].item()) - obj_rest_z
+                max_lift = max(max_lift, dz)
+                for dzt in PHYS_DZS:
+                    phys_run[dzt] = phys_run[dzt] + 1 if (d_palm < args.phys_radius and dz >= dzt) else 0
+                    if phys_run[dzt] >= args.phys_steps:
+                        phys_ok[dzt] = True
+                if d_palm < 0.12:
+                    touched = True
+                if float((1.0 - 2.0 * (oq[1] ** 2 + oq[2] ** 2)).item()) < 0.7071:
+                    toppled = True
+                bottle_z = float(unw.scene["object"].data.root_pos_w[0, 2].item())
+                mt = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.to("cuda:0", dtype=torch.float32)
+                is_closed = bool(unw.motion_lib.get_motion_state(unw.motion_ids, mt)["is_closed"][0].item() > 0.5)
+                if is_closed and grab_step < 0:
+                    grab_step = step
+                if bottle_z <= lift_thres:
+                    object_settled = True
+                if object_settled and bottle_z > lift_thres and is_closed:
+                    legacy_lift = True
             chunk_step += 1
-
-            # End on termination OR truncation (time-out). The env auto-resets
-            # done envs on the NEXT step, so break here to keep one episode clean.
-            term_flag = bool(term[0] if hasattr(term, "ndim") and term.ndim > 0 else term)
-            trunc_flag = bool(trunc[0] if hasattr(trunc, "ndim") and trunc.ndim > 0 else trunc)
-            if term_flag or trunc_flag:
-                was_time_out = trunc_flag and not term_flag
+            if done_now:
+                try:
+                    fired = [n for n in term_names if bool(_tm.get_term(n)[0].item())]
+                except Exception:
+                    fired = []
                 break
 
-        # --- episode bookkeeping ---
-        completed_episodes += 1
-        episode_lengths.append(step + 1)
-        if had_any_lift:
-            completed_any_lift += 1
-            if closed_steps > 0:
-                sum_lift_fraction_over_lifted_episodes += lift_steps / closed_steps
-                completed_episodes_with_any_lift += 1
-        if was_time_out:
-            termination_counts["time_out"] += 1
+        # ---- episode bookkeeping ----
+        stats["episodes"] += 1
+        stats["ep_len"].append(step + 1)
+        stats["max_lift"].append(max_lift)
+        if grab_step >= 0:
+            stats["post_grab"].append(step + 1 - grab_step)
+        for dzt in PHYS_DZS:
+            stats["phys_held"][dzt] += int(phys_ok[dzt])
+        stats["touched"] += int(touched); stats["toppled"] += int(toppled); stats["legacy_any_lift"] += int(legacy_lift)
+        if fired:
+            for n in fired:
+                stats["term"][n] += 1
         else:
-            termination_counts["terminated"] += 1
-
-        n_succ_so_far = float(env.unwrapped.n_successes.sum().item())
-        any_lift_rate = completed_any_lift / max(completed_episodes, 1)
-        print(f"[episode {ep}] ended at step {step+1}  any_lift={had_any_lift}  "
-              f"settled={object_settled}  closed_steps={closed_steps}  lift_steps={lift_steps}  "
-              f"(running any_lift_rate={any_lift_rate:.3f}, cumulative_lift_steps={n_succ_so_far:.0f})")
+            stats["term_other"] += 1
+        print(f"[episode {ep}] ended at step {step+1} ({','.join(fired) if fired else 'max_steps'})  "
+              f"phys_held(2cm/5cm)={phys_ok[0.02]}/{phys_ok[0.05]}  max_lift={max_lift*100:.1f}cm  "
+              f"touched={touched} toppled={toppled}  running held5={stats['phys_held'][0.05]}/{stats['episodes']}")
 
     elapsed = time.time() - t_start
-
-    # --- final report (mirrors eval_sonic_adapter.py) ------------------
-    n_succ_total = float(env.unwrapped.n_successes.sum().item())
-    any_lift_rate = completed_any_lift / max(completed_episodes, 1)
-    mean_lift_fraction = (
-        sum_lift_fraction_over_lifted_episodes / max(completed_episodes_with_any_lift, 1)
-        if completed_episodes_with_any_lift > 0 else 0.0
-    )
-    mean_ep_len = sum(episode_lengths) / max(len(episode_lengths), 1)
-
+    ce = max(stats["episodes"], 1)
+    ml = np.array(stats["max_lift"]) if stats["max_lift"] else np.zeros(1)
     print("\n" + "=" * 60)
     print("                  VLA + SONIC EVAL SUMMARY")
     print("=" * 60)
     print(f"  VLA checkpoint:             {args.vla_checkpoint}")
     print(f"  Embodiment tag:             {args.embodiment_tag}")
     print(f"  Task:                       {args.task}")
-    print(f"  num_envs:                   {args.num_envs}")
+    print(f"  SONIC decoder:              {args.sonic_pt or args.decoder_onnx}")
     print(f"  chunk_size:                 {args.chunk_size}")
-    print(f"  lift_thres:                 {lift_thres} m")
-    print(f"  Completed episodes:         {completed_episodes}")
-    print(f"  Mean episode length:        {mean_ep_len:.1f} steps")
-    print(f"  Wall time:                  {elapsed:.1f}s")
-    print(f"")
-    print(f"  Episodes with any lift:     {completed_any_lift} / {completed_episodes} "
-          f"= {100*any_lift_rate:.2f}%")
-    print(f"  Mean lift fraction          {100*mean_lift_fraction:.2f}%")
-    print(f"    (over episodes with lift; closed_phase_lift_steps / closed_phase_steps)")
-    print(f"  Cumulative lift-steps       {n_succ_total:.0f}")
-    print(f"    (env.n_successes.sum() — uses the env reward's height_thres)")
-    print(f"")
-    print(f"  Termination breakdown (of completed episodes):")
-    for k, v in termination_counts.items():
-        if v > 0:
-            print(f"    {k:30s} {v}  ({100*v/max(completed_episodes,1):.1f}%)")
+    print(f"  Completed episodes:         {stats['episodes']}   (wall {elapsed:.1f}s)")
+    print(f"  Mean episode length:        {np.mean(stats['ep_len']):.1f} steps")
+    if stats["post_grab"]:
+        print(f"  Post-grab window:           median {np.median(stats['post_grab']):.0f} steps "
+              f"({len(stats['post_grab'])} episodes reached the grab)")
+    for dzt in PHYS_DZS:
+        print(f"  [PHYS] held (lift>={100*dzt:.0f}cm & obj within {args.phys_radius} m of sim palm "
+              f">={args.phys_steps} steps): {stats['phys_held'][dzt]} / {ce} = {100*stats['phys_held'][dzt]/ce:.2f}%")
+    print(f"  [PHYS] max lift above rest: median {np.median(ml)*100:.1f} cm  mean {ml.mean()*100:.1f} cm")
+    print(f"  Object touched (<0.12 m):   {stats['touched']} / {ce} = {100*stats['touched']/ce:.2f}%")
+    print(f"  Object toppled (>45 deg):   {stats['toppled']} / {ce} = {100*stats['toppled']/ce:.2f}%")
+    print(f"  legacy any-lift (z>{lift_thres}): {stats['legacy_any_lift']} / {ce}")
+    print(f"  Termination breakdown:")
+    for n, v in stats["term"].items():
+        print(f"    term {n:<22} {v:5d}  ({100*v/ce:.1f}%)")
+    print(f"    max_steps / other      {stats['term_other']:5d}  ({100*stats['term_other']/ce:.1f}%)")
     print("=" * 60)
-
     env.close()
     _APP.close()
     return 0

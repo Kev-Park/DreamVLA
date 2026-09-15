@@ -1890,3 +1890,25 @@ class G1PickHOIEnvCfg(G1PickBinaryFingersEnvCfg):
         super().__post_init__()
         print("[G1PickHOI] pick scene retained; rewards = 6 HOI tracking + object/contact/finger; "
               "terminations = 4 HOI (pelvis z, pelvis ori, ankle/wrist z, ref timeout)")
+
+
+@configclass
+class G1PickCamHOIEnvCfg(G1PickCamBinaryFingersEnvCfg):
+    """Kitchen-visuals + ego/third-person cameras ON TOP OF the HOI pick env.
+
+    The data-collection counterpart of ``G1PickHOIEnvCfg`` (Isaac-Motion-Tracking-Pick-HOI-v0,
+    the env the current residual policies are trained in). Physics, scene, observation group,
+    actions and the object are identical to the training env (all inherited from
+    G1PickBinaryFingersEnvCfg via the Cam env); this class swaps the Cam env's LEGACY reward /
+    termination sets for the HOI ones so that episodes start, run and END exactly as in
+    training (the old set terminated on different conditions), and adds the kitchen backdrop
+    and the torso d435 ego camera the collector records. Use with HS_REWORK=1 like training.
+    """
+
+    rewards: PickHOIRewardsCfg = PickHOIRewardsCfg()
+    terminations: MotionTrackTerminationsCfg = MotionTrackTerminationsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        print("[G1PickCamHOI] kitchen visuals + ego/3rd-person cameras on the HOI pick env "
+              "(rewards/terminations = HOI spec, same as Isaac-Motion-Tracking-Pick-HOI-v0)")

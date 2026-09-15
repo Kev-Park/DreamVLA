@@ -620,3 +620,16 @@ gym.register(
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
     },
 )
+
+# Data-collection variant of Pick-HOI: identical physics/obs/actions/rewards/terminations plus
+# the kitchen visual backdrop and the torso-ego + third-person cameras (collect_sonic_adapter.py).
+gym.register(
+    id="Isaac-Motion-Tracking-Pick-Cam-HOI-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.motion_tracking_pick_env:G1PickCamHOIEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_flat_ppo_cfg.yaml",
+    },
+)
