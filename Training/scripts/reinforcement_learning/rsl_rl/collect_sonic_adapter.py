@@ -585,6 +585,9 @@ def main() -> None:
                              "prepend). The recorded trajectory begins at the skip frame.")
     parser.add_argument("--start-pregrab-margin", type=float, default=None,
                         help="Start episodes this many seconds before the grab (drops prepend + walk).")
+    parser.add_argument("--motion-range", type=int, nargs=2, default=None, metavar=("START", "END"),
+                        help="Only sweep motion ids in [START, END) -- shard the deterministic sweep across "
+                             "GPUs/processes (file names are per-motion, so shards can share --output-directory).")
     parser.add_argument("--ref-motions-path", type=str, default=None,
                         help="Override the env's ref_motions_path (dir of reference .pkl files) -- the SAME "
                              "reference set the checkpoint was trained on (e.g. ../TrajGen/sample/Holosoma_Pick_29_fixH60).")
@@ -735,7 +738,14 @@ def main() -> None:
     rejected_topple = 0
     errored = 0
     try:
-        for motion_id in range(total_motions):
+        if args_cli.motion_range is None:
+            m_lo, m_hi = 0, total_motions
+        else:
+            m_lo = max(0, args_cli.motion_range[0])
+            m_hi = min(total_motions, args_cli.motion_range[1])
+        if args_cli.motion_range is not None:
+            print(f"[INFO] --motion-range: sweeping motions [{m_lo}, {m_hi}) of {total_motions}")
+        for motion_id in range(m_lo, m_hi):
             if written >= target_successes or not simulation_app.is_running():
                 break
             env.unwrapped._forced_motion_id = int(motion_id)  # forces the reset's motion draw
