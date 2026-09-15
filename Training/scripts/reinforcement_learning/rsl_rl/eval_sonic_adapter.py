@@ -48,6 +48,9 @@ parser.add_argument("--max_steps", type=int, default=10000,
                     help="Hard cap on step count, regardless of episode completion.")
 parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-Pick-BinaryFingers-v0",
                     help="Task name. Default matches train_sonic_adapter.py.")
+parser.add_argument("--motion-id", type=int, default=None,
+                    help="Force EVERY episode onto this reference motion id (per-clip statistics over "
+                         "num_envs parallel rollouts). Default: random motion per episode.")
 parser.add_argument("--seed", type=int, default=0,
                     help="Random seed for deterministic motion selection across runs.")
 parser.add_argument("--disable_fabric", action="store_true", default=False,
@@ -252,6 +255,14 @@ def main():
 
     # ---- initialize env.n_successes (gated on existence in object_above_threshold) ----
     env.unwrapped.n_successes = torch.zeros(env.num_envs, device=device, dtype=torch.float32)
+
+    # ---- optional: pin every episode to one motion (the initial reset inside gym.make already
+    # drew random motions, so re-reset once with the forced id in place) ----
+    if args_cli.motion_id is not None:
+        env.unwrapped._forced_motion_id = int(args_cli.motion_id)
+        with torch.inference_mode():
+            env.reset()
+        print(f"[eval_sonic_adapter] --motion-id {args_cli.motion_id}: all {env.num_envs} envs pinned to this motion")
 
     # ---- policy: trained adapter, or the zero-residual baseline ----
     if args_cli.zero_residual:
