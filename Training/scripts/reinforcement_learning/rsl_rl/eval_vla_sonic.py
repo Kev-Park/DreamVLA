@@ -57,6 +57,9 @@ def _parse_cli() -> argparse.Namespace:
                              "motion_token into joint targets. MUST be the model the training data's "
                              "tokens were recorded with (collect_sonic_adapter.py --sonic-pt). Overrides "
                              "--decoder-onnx.")
+    parser.add_argument("--ref-motions-path", type=str, default=None,
+                        help="Override the env's ref_motions_path (dir of reference .pkl files) -- the set the "
+                             "training data was collected on.")
     parser.add_argument("--waist-dof", type=int, default=29, choices=[27, 29],
                         help="29 = waist-actuated 29-DOF articulation (current pipeline).")
     parser.add_argument("--sweep-motions", dest="sweep_motions", action="store_true", default=True,
@@ -365,6 +368,9 @@ def main() -> int:
     # friction / coarser substep / self-collisions-off make the robot unstable.
     # Same call both working SONIC scripts use (eval/play_sonic_adapter.py).
     apply_sonic_physics_overrides(env_cfg)
+    if args.ref_motions_path is not None:
+        env_cfg.ref_motions_path = args.ref_motions_path
+        print(f"[eval_vla_sonic] ref_motions_path override -> {args.ref_motions_path}")
     if args.waist_dof == 29:
         apply_29dof_waist_override(env_cfg)
     if os.environ.get("HS_EVAL_NO_EE_TERM", "0") == "1" and getattr(env_cfg.terminations, "ee_body_pos", None) is not None:

@@ -583,6 +583,9 @@ def main() -> None:
                              "prepend). The recorded trajectory begins at the skip frame.")
     parser.add_argument("--start-pregrab-margin", type=float, default=None,
                         help="Start episodes this many seconds before the grab (drops prepend + walk).")
+    parser.add_argument("--ref-motions-path", type=str, default=None,
+                        help="Override the env's ref_motions_path (dir of reference .pkl files) -- the SAME "
+                             "reference set the checkpoint was trained on (e.g. ../TrajGen/sample/Holosoma_Pick_29_fixH60).")
     parser.add_argument("--waist-dof", type=int, default=29, choices=[27, 29],
                         help="Body DOF. 29 actuates waist_roll/pitch (29-DOF + dex-hands USD) to match "
                              "SONIC's training articulation. 27 = legacy welded-waist asset.")
@@ -629,6 +632,9 @@ def main() -> None:
     if hasattr(env_cfg, "seed"):
         env_cfg.seed = args_cli.seed
     apply_sonic_physics_overrides(env_cfg)
+    if args_cli.ref_motions_path is not None:
+        env_cfg.ref_motions_path = args_cli.ref_motions_path
+        print(f"[collect_sonic_adapter] ref_motions_path override -> {args_cli.ref_motions_path}")
 
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
