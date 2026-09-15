@@ -102,6 +102,7 @@ args_cli = parser.parse_args()
 # Headless eval: cameras off unless HS_EVAL_CAMERAS=1 (A/B against the camera-enabled,
 # render_mode="rgb_array" env the collector / montage / VLA scripts build).
 _EVAL_CAMERAS = os.environ.get("HS_EVAL_CAMERAS", "0") == "1"
+_APP_PUMPS = int(os.environ.get("HS_EVAL_APP_PUMPS", "0"))
 args_cli.enable_cameras = _EVAL_CAMERAS
 
 # Cap num_envs so n_successes fires (gated at <1001 in reward func).
@@ -490,6 +491,10 @@ def main():
         with torch.inference_mode():
             actions = policy(obs).clone()
             obs, _, dones, extras = env.step(actions)
+        # HS_EVAL_APP_PUMPS=N: A/B diagnostic -- N raw simulation_app.update() calls per step, as the
+        # collector / montage / VLA scripts do to flush camera frames (suspected to advance PhysX).
+        for _ in range(_APP_PUMPS):
+            simulation_app.update()
         if STAB:
             with torch.inference_mode():
                 _m = _sim_stability()
