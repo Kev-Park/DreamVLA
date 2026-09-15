@@ -534,8 +534,14 @@ def main():
             except Exception as _e:
                 print(f"[eval] ee attribution failed: {_e}"); _ee_attr = None
         if HAS_OBJECT and _hand_bid is not None:
+            # Rest height: the object is reset ABOVE its rest (z=1.0) and drops/settles over the
+            # first ~10 steps, so take the running MIN over the first 50 steps (1 s) of each
+            # episode, frozen afterwards. (First-frame sampling over-estimated rest by ~5 cm and
+            # made the lift thresholds correspondingly stricter.)
             _first = valid & torch.isnan(per_env_rest_z)
             per_env_rest_z[_first] = obj_pos_w[_first, 2]
+            _settling = valid & (env.unwrapped.episode_length_buf <= 50)
+            per_env_rest_z = torch.where(_settling, torch.minimum(per_env_rest_z, obj_pos_w[:, 2]), per_env_rest_z)
             _dz_now = obj_pos_w[:, 2] - per_env_rest_z
             per_env_max_lift = torch.where(valid, torch.maximum(per_env_max_lift, torch.nan_to_num(_dz_now, nan=0.0)), per_env_max_lift)
             _near = torch.norm(palm - obj_pos_w, dim=1) < PHYS_R

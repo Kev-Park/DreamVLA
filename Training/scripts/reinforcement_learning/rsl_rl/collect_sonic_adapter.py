@@ -409,8 +409,10 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
             _w, _x, _y, _z = _hq[0], _hq[1], _hq[2], _hq[3]
             _hand_x = torch.stack([1 - 2 * (_y * _y + _z * _z), 2 * (_x * _y + _w * _z), 2 * (_x * _z - _w * _y)])
             _palm = (_robot.data.body_pos_w[0, _rw_bid] - _org) + 0.12 * _hand_x
-            if obj_rest_z is None:
-                obj_rest_z = float(_obj_p[2].item())
+            # Rest height = running MIN over the first 50 steps (the object is reset above its
+            # rest and settles over the first ~10 steps); frozen afterwards.
+            if obj_rest_z is None or step_index <= 50:
+                obj_rest_z = float(_obj_p[2].item()) if obj_rest_z is None else min(obj_rest_z, float(_obj_p[2].item()))
             _dz = float(_obj_p[2].item()) - obj_rest_z
             max_lift = max(max_lift, _dz)
             _near = bool(torch.norm(_palm - _obj_p).item() < phys_radius)

@@ -518,8 +518,8 @@ def main() -> int:
             d_palm = float(torch.norm(palm - obj_p).item())
             done_now = bool(torch.as_tensor(dones).reshape(-1)[0].item())
             if not done_now:                       # after a done the env has already reset -> skip
-                if obj_rest_z is None:
-                    obj_rest_z = float(obj_p[2].item())
+                if obj_rest_z is None or step <= 50:          # running min over the first 1 s (settle)
+                    obj_rest_z = float(obj_p[2].item()) if obj_rest_z is None else min(obj_rest_z, float(obj_p[2].item()))
                 dz = float(obj_p[2].item()) - obj_rest_z
                 max_lift = max(max_lift, dz)
                 for dzt in PHYS_DZS:
