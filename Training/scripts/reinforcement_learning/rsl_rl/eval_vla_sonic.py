@@ -452,6 +452,8 @@ def main() -> int:
     _rw_bid = robot.find_bodies("right_wrist_yaw_link")[0][0]
     _tm = unw.termination_manager
     term_names = list(_tm.active_terms)
+    # measured right-finger joints (7) -- to check the hand physically closes when commanded
+    _rf_jids = robot.find_joints("right_hand_.*")[0]
 
     def _finger_scalar(vla_chunk: dict, t_idx: int) -> float:
         """VLA right_hand_joints (7) -> binary env scalar: <0 closes, >=0 opens."""
@@ -480,6 +482,7 @@ def main() -> int:
         _APP.update(); _APP.update()
 
         vla_chunk = None; chunk_step = 0
+        g_pred = []; g_cmd_close = []; g_meas = []                       # per-step grasp diagnostics
         obj_rest_z = None; phys_run = {dz: 0 for dz in PHYS_DZS}; phys_ok = {dz: False for dz in PHYS_DZS}
         max_lift = 0.0; toppled = False; touched = False; legacy_lift = False; object_settled = False
         grab_step = -1; fired = []
@@ -505,8 +508,12 @@ def main() -> int:
             latent = torch.zeros((1, 65), device="cuda:0", dtype=torch.float32)
             latent[0, :64] = torch.as_tensor(token, device="cuda:0")
             latent[0, 64] = _finger_scalar(vla_chunk, t_idx)
+            _rh = np.asarray(vla_chunk["right_hand_joints"], dtype=np.float32)
+            g_pred.append(float(np.abs(_rh[0, t_idx] if _rh.ndim == 3 else _rh.reshape(-1)).mean()))
+            g_cmd_close.append(bool(latent[0, 64].item() < 0))
             with torch.inference_mode():
                 obs, _rew, dones, _extras = env.step(latent)                   # FSQ snap + decoder inside
+            g_meas.append(float(robot.data.joint_pos[0, _rf_jids].abs().mean().item()))
             _APP.update(); _APP.update()
 
             # ---- metrics (env-local frame), read AFTER the step ----
@@ -566,6 +573,13 @@ def main() -> int:
         print(f"[episode {ep}] ended at step {step+1} ({','.join(fired) if fired else 'max_steps'})  "
               f"phys_held(2cm/5cm)={phys_ok[0.02]}/{phys_ok[0.05]}  max_lift={max_lift*100:.1f}cm  "
               f"touched={touched} toppled={toppled}  running held5={stats['phys_held'][0.05]}/{stats['episodes']}")
+        if g_pred:
+            _gp = np.array(g_pred); _gc = np.array(g_cmd_close); _gm = np.array(g_meas)
+            _first = int(np.argmax(_gc)) if _gc.any() else -1
+            print(f"[episode {ep}][grasp] VLA right-hand mean|q|: max {_gp.max():.2f}  median {np.median(_gp):.2f}  "
+                  f"steps>0.4: {int((_gp > 0.4).sum())}  >0.6(=close cmd): {int(_gc.sum())}/{len(_gc)}  first close step: {_first}  "
+                  f"ref grab step: {grab_step}  |  measured fingers mean|q| max {_gm.max():.2f}"
+                  + (f", while commanded closed: mean {_gm[_gc].mean():.2f}" if _gc.any() else ""))
 
     elapsed = time.time() - t_start
     ce = max(stats["episodes"], 1)
