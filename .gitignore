@@ -91,8 +91,10 @@ TrajGen/dataset/HumanML3D/*
 # only for historical reasons and are re-ignored AFTER the negation above (last match wins),
 # so they stop showing up as untracked/committable. Prefer generating out-of-tree:
 #   gen_dataset.sh <gpu> ~/kevin/datasets_shared/<name> <ids...>
-TrajGen/sample/Holosoma_*/
-TrajGen/sample/Sonic_native_probe*/
+# (no trailing slash: in the main checkout these are SYMLINKS into the pooled ~/kevin/ref_motions,
+# and a trailing slash only matches real directories)
+TrajGen/sample/Holosoma_*
+TrajGen/sample/Sonic_native_probe*
 
 # Editor/agent scratch copies
 *.bak
