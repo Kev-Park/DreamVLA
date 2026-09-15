@@ -16,8 +16,10 @@ Key behaviors:
   * SUCCESS FILTERING (physical hold, reference-independent): a trajectory is written only if
     the object rose >= --phys-lift above its rest height while within --phys-radius of the SIM
     right palm for >= --phys-steps consecutive steps (the eval_sonic_adapter.py [PHYS] criterion),
-    the episode did NOT end by a failure termination (time_out = reference exhausted is fine),
-    and (unless --allow-topple) the object never toppled. The collector sweeps every motion once
+    and the episode did NOT end by a failure termination (time_out = reference exhausted is fine).
+    This is exactly the eval's headline success; a toppled-but-held object is a success there too,
+    so it is written here too (--reject-topple opts into the stricter held-upright filter, which
+    the eval reports as "[PHYS] held-upright"). The collector sweeps every motion once
     (deterministic policy) and writes up to --num-samples successes.
   * Native SONIC .pt: pass --sonic-pt (and --residual-transform/--residual-scale/--encoder-mode
     exactly as trained). The recorded motion_token is the EXECUTED FSQ-snapped token (base + residual)
@@ -572,9 +574,10 @@ def main() -> None:
     parser.add_argument("--phys-steps", type=int, default=25,
                         help="... for at least this many CONSECUTIVE steps (25 = 0.5 s). Same physical-hold "
                              "criterion as eval_sonic_adapter.py [PHYS].")
-    parser.add_argument("--allow-topple", action="store_true", default=False,
-                        help="Keep trajectories in which the object toppled (>45 deg) at any point. Default: "
-                             "reject them, so the dataset only holds clean grasp+carry demonstrations.")
+    parser.add_argument("--reject-topple", action="store_true", default=False,
+                        help="Stricter filter: also reject trajectories in which the object toppled (>45 deg) "
+                             "at any point (= eval's [PHYS] held-upright). Default: the eval's headline [PHYS] "
+                             "held criterion, which keeps toppled-but-held grasps.")
     parser.add_argument("--lift-thres", type=float, default=0.95,
                         help="DIAGNOSTIC ONLY (legacy criterion, reported in metadata, no longer gates "
                              "writing): object root z (m) above which a frame counts as 'lifted' "
@@ -789,7 +792,7 @@ def main() -> None:
                 print(f"[INFO] REJECTED motion={motion_id} (no physical hold; max_lift={meta['max_lift_m']:.3f} m, "
                       f"toppled={meta['toppled_any']}) steps={meta['num_steps']}")
                 continue
-            if meta["toppled_any"] and not args_cli.allow_topple:
+            if meta["toppled_any"] and args_cli.reject_topple:
                 rejected_topple += 1
                 print(f"[INFO] REJECTED motion={motion_id} (held, but object toppled during the episode) "
                       f"steps={meta['num_steps']}")
