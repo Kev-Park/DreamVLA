@@ -1585,6 +1585,38 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
         print("[BinaryFingers] right_hand reward swapped to binary-match against is_closed")
 
 
+def spawn_visual_only_usd(prim_path: str, cfg, translation=None, orientation=None):
+    """Spawn a USD backdrop and disable EVERY physics API inside it (visual-only).
+
+    The HQ kitchen USD ships with its own physics: 122 prims carry ``UsdPhysics.CollisionAPI``
+    and 69 carry ``UsdPhysics.RigidBodyAPI`` (counter tops, appliances, a coffee pot ...). Spawned
+    as a plain ``UsdFileCfg`` those colliders are LIVE, and the mustard bottle came to rest on
+    the kitchen counter at z = 0.9999 instead of on the training table at z = 0.946 (probe
+    2026-09-15), so every reference hand trajectory arrived ~5 cm low on the bottle: the
+    single-env collection yield was 40% (24/60) against 62.5% held-upright for the same
+    checkpoint in the plain env, with per-clip contradictions (e.g. motion 46: 100% held in the
+    plain env, toppled in the Cam env). ``UsdFileCfg.collision_props`` cannot fix this -- it only
+    edits the ROOT prim -- so we post-process the spawned subtree (all env clones) and switch off
+    ``physics:collisionEnabled`` / ``physics:rigidBodyEnabled`` before PhysX is initialised. The
+    green collision box from the parent env stays the only physics surface, as documented.
+    """
+    from pxr import Usd, UsdPhysics
+
+    prim = sim_utils.spawn_from_usd(prim_path, cfg, translation, orientation)
+    n_col = n_rb = 0
+    for root in sim_utils.find_matching_prims(prim_path):
+        for p in Usd.PrimRange(root):
+            if p.HasAPI(UsdPhysics.CollisionAPI):
+                UsdPhysics.CollisionAPI(p).CreateCollisionEnabledAttr(False)
+                n_col += 1
+            if p.HasAPI(UsdPhysics.RigidBodyAPI):
+                UsdPhysics.RigidBodyAPI(p).CreateRigidBodyEnabledAttr(False)
+                n_rb += 1
+    print(f"[visual-only-usd] {prim_path}: disabled {n_col} collider(s) and {n_rb} rigid body(ies) "
+          f"inside the backdrop (physics surface = the training collision box only)")
+    return prim
+
+
 def hide_unwanted_visuals(env, env_ids=None):
     """Startup event: hide the RENDER of unwanted prims while KEEPING any colliders.
 
@@ -1675,9 +1707,13 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
         # Kitchen USD visual backdrop (no rigid body; AssetBaseCfg). Positioned as in
         # G1PickCamEnvCfg. The green-box collision table (from the parent) remains the
         # physics surface so the 0.9 rest height is preserved.
+        # spawn_visual_only_usd: the kitchen USD carries its own colliders/rigid bodies, which
+        # raised the bottle onto the kitchen counter (z 0.9999 vs 0.946 on the training table);
+        # they are switched off at spawn so the physics matches the plain training env.
         self.scene.kitchen_visual = AssetBaseCfg(
             prim_path="{ENV_REGEX_NS}/KitchenVisual",
-            spawn=sim_utils.UsdFileCfg(usd_path=self.kitchen_usd_path, scale=(1.0, 1.0, 0.89)),
+            spawn=sim_utils.UsdFileCfg(func=spawn_visual_only_usd,
+                                       usd_path=self.kitchen_usd_path, scale=(1.0, 1.0, 0.89)),
             init_state=AssetBaseCfg.InitialStateCfg(pos=(2.1 - 0.06, 1.0, 0.0), rot=(1, 0, 0, 0)),
         )
         # Swap the blue cuboid manipuland for the mustard bottle USD so the recorded footage
