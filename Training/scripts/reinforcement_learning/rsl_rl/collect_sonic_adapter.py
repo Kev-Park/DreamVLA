@@ -567,8 +567,9 @@ def main() -> None:
     parser.add_argument("--residual-transform", type=str, default="multiplicative_free",
                         choices=["additive", "multiplicative", "multiplicative_free", "unclamped"],
                         help="MUST match train_sonic_adapter.py (current recipe: multiplicative_free).")
-    parser.add_argument("--phys-lift", type=float, default=0.05,
-                        help="SUCCESS filter: object must rise >= this (m) above its rest height ...")
+    parser.add_argument("--phys-lift", type=float, default=0.02,
+                        help="SUCCESS filter: object must rise >= this (m) above its rest height ... "
+                             "(0.02 = eval_sonic_adapter.py's first-reported [PHYS] held line; it also reports 0.05)")
     parser.add_argument("--phys-radius", type=float, default=0.15,
                         help="... while within this distance (m) of the sim right palm ...")
     parser.add_argument("--phys-steps", type=int, default=25,
