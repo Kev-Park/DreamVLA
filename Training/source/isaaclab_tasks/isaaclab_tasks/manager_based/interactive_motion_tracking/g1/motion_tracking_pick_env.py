@@ -1170,7 +1170,12 @@ class ObservationsCfg:
             object_ref_next = ObsTerm(func=object_ref_obs, params={"time_offset": 0.2})
 
         def __post_init__(self):
-            self.enable_corruption = False # improves real world robustness
+            # Observation noise on the policy group (base lin/ang vel, gravity dir, joint pos/vel;
+            # the Unoise ranges above). Upstream DreamControl trains with this ON in every env;
+            # this fork had it off (fc04efd). HS_OBS_NOISE=1 enables it for TRAINING only -- the
+            # eval and montage scripts force it off after parse_env_cfg. The frozen SONIC decoder
+            # reads robot.data directly, so the noise reaches the residual policy only.
+            self.enable_corruption = os.environ.get("HS_OBS_NOISE", "0") == "1"
             self.concatenate_terms = True
 
     # observation groups

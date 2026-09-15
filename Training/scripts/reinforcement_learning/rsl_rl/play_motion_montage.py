@@ -775,6 +775,12 @@ def main():
         enable_cameras=True,
     )
     env_cfg.seed = _seed
+    # Playback always sees clean observations: force observation noise OFF on every group
+    # regardless of HS_OBS_NOISE (training-only lever).
+    for _gname in ("policy", "critic"):
+        _g = getattr(env_cfg.observations, _gname, None)
+        if _g is not None and hasattr(_g, "enable_corruption"):
+            _g.enable_corruption = False
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
     # ---- mirror train_sonic_adapter.py's agent overrides EXACTLY ----

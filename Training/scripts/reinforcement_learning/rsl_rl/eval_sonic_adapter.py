@@ -156,6 +156,12 @@ def main():
         enable_cameras=False,
     )
     env_cfg.seed = args_cli.seed
+    # Evaluation / playback always sees clean observations: force observation noise OFF on every
+    # observation group regardless of HS_OBS_NOISE (training-only lever).
+    for _gname in ("policy", "critic"):
+        _g = getattr(env_cfg.observations, _gname, None)
+        if _g is not None and hasattr(_g, "enable_corruption"):
+            _g.enable_corruption = False
     # HS_EVAL_NO_EE_TERM=1: drop the HOI end-effector tracking termination (any wrist/ankle z
     # > 0.25 m from the reference) for EVALUATION. It ended 98.8% of fixH60 episodes ~1 s after
     # the grab (the reference carries the object on the human trajectory; the policy does not
