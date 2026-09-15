@@ -1304,6 +1304,17 @@ def _hoi_aligned_ref(env: ManagerBasedRLEnv, keypt_idxs):
     rewarded not raising the arm. The per-step result is memoised on common_step_counter so
     the pos reward, ori reward and termination share one reference FK per step.
     """
+    # Callers may ask for any subset of HOI_BODY_KEYPT_IDXS (e.g. the hybrid right-arm split asks
+    # for 11 bodies and 3 bodies from separate reward terms). The cache always holds the FULL HOI
+    # set and each caller gets a view sliced to its request, so (a) one reference FK per step is
+    # shared by every caller and (b) the per-episode reset alignment is never recomputed mid-episode
+    # because two callers alternate body sets.
+    _req = list(keypt_idxs)
+    if all(i in HOI_BODY_KEYPT_IDXS for i in _req):
+        _sel = [HOI_BODY_KEYPT_IDXS.index(i) for i in _req]
+        keypt_idxs = HOI_BODY_KEYPT_IDXS
+    else:
+        _sel = None
     n = env.num_envs
     B = len(keypt_idxs)
     dev = env.device
@@ -1361,6 +1372,8 @@ def _hoi_aligned_ref(env: ManagerBasedRLEnv, keypt_idxs):
         cache["quat"] = math_utils.quat_mul(dq_rep, q_ref_w).reshape(n, B, 4)
         cache["step"] = step
 
+    if _sel is not None and len(_sel) != B:
+        return cache["pos"][:, _sel], cache["quat"][:, _sel]
     return cache["pos"], cache["quat"]
 
 
@@ -1414,6 +1427,12 @@ HOI_EE_BODY_NAMES = [
     "left_wrist_yaw_link", "right_wrist_yaw_link",
 ]
 HOI_EE_LOCAL_IDXS = [3, 6, 10, 13]   # indices of the above inside HOI_BODY_NAMES
+# Hybrid right-arm split (LadderMan-style) for the HOI relative-body terms: the task limb is
+# tracked by its own terms at a reduced weight so the object/contact rewards can own the carry.
+HOI_RARM_BODY_NAMES = ["right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"]
+HOI_RARM_KEYPT_IDXS = [HOI_BODY_KEYPT_IDXS[HOI_BODY_NAMES.index(b)] for b in HOI_RARM_BODY_NAMES]
+HOI_BODY_NAMES_NO_RARM = [b for b in HOI_BODY_NAMES if b not in HOI_RARM_BODY_NAMES]
+HOI_BODY_KEYPT_IDXS_NO_RARM = [i for b, i in zip(HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS) if b not in HOI_RARM_BODY_NAMES]
 
 
 def _hoi_motion_times(env: ManagerBasedRLEnv) -> torch.Tensor:

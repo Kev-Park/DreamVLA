@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, hoi_relative_body_pos_tracking_exp, hoi_relative_body_ori_tracking_exp, HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS, exceeded_anchor_height, exceeded_anchor_ori, exceeded_body_height, tracking_time_out, HOI_EE_BODY_NAMES, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, hoi_relative_body_pos_tracking_exp, hoi_relative_body_ori_tracking_exp, HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS, HOI_RARM_BODY_NAMES, HOI_RARM_KEYPT_IDXS, HOI_BODY_NAMES_NO_RARM, HOI_BODY_KEYPT_IDXS_NO_RARM, exceeded_anchor_height, exceeded_anchor_ori, exceeded_body_height, tracking_time_out, HOI_EE_BODY_NAMES, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
 import numpy as np
 import os
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -1900,6 +1900,30 @@ class G1MotionTrackEnvCfg(G1PickBinaryFingersEnvCfg):
 @configclass
 class PickHOIRewardsCfg(MotionTrackRewardsCfg):
     """6 HOI tracking rewards + the pick-task rewards (object, contact, finger)."""
+
+    # HS_REWORK_HYBRID_RARM=1 (HOI version of the LadderMan hybrid): the two relative-body tracking
+    # terms drop the three right-arm bodies (kept at full weight for the other 11) and the right arm
+    # is tracked by its own pair of terms at REWORK_RARM_W x the original weights. Measured
+    # motivation: with the advancing reference (4bb3f83) the full-weight arm terms pull the task
+    # limb along the demo carry and the bottle is dropped on the way (fixH60fix: toppled 41% vs
+    # 27% with the arm terms inert). Default off = the 14-body terms above, unchanged.
+    if REWORK_HYBRID_RARM:
+        tracking_relative_body_pos = RewTerm(
+            func=hoi_relative_body_pos_tracking_exp, weight=1.0,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=HOI_BODY_NAMES_NO_RARM, preserve_order=True),
+                    "std": 0.3, "keypt_idxs": HOI_BODY_KEYPT_IDXS_NO_RARM})
+        tracking_relative_body_ori = RewTerm(
+            func=hoi_relative_body_ori_tracking_exp, weight=5.0,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=HOI_BODY_NAMES_NO_RARM, preserve_order=True),
+                    "std": 0.4, "keypt_idxs": HOI_BODY_KEYPT_IDXS_NO_RARM})
+        tracking_rarm_pos = RewTerm(
+            func=hoi_relative_body_pos_tracking_exp, weight=1.0 * REWORK_RARM_W,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=HOI_RARM_BODY_NAMES, preserve_order=True),
+                    "std": 0.3, "keypt_idxs": HOI_RARM_KEYPT_IDXS})
+        tracking_rarm_ori = RewTerm(
+            func=hoi_relative_body_ori_tracking_exp, weight=5.0 * REWORK_RARM_W,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=HOI_RARM_BODY_NAMES, preserve_order=True),
+                    "std": 0.4, "keypt_idxs": HOI_RARM_KEYPT_IDXS})
 
     # finger open/close tracking (swapped to the binary-match variant by the parent env)
     right_hand_state_target_reward_val = RewTerm(func=right_hand_state_target_reward, weight=0.3)
