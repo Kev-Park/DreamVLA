@@ -1715,11 +1715,22 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
         # spawn_visual_only_usd: the kitchen USD carries its own colliders/rigid bodies, which
         # raised the bottle onto the kitchen counter (z 0.9999 vs 0.946 on the training table);
         # they are switched off at spawn so the physics matches the plain training env.
+        #
+        # ALIGNMENT of the backdrop to the training collision box (measured in sim 2026-09-15,
+        # post-reset, |y| < 0.6 at the bottle): the collision box (the only physics surface) has
+        # its front face at x = 2.050 and its top at z = 0.800. With the previous placement
+        # (x = 2.04, z-scale 0.89) the countertop's front face -- the outermost counter slab --
+        # was at x = 2.020 and its top at z = 0.824, so the robot's pelvis could visually enter
+        # the counter by 3 cm before any contact and the bottle appeared sunk 2.4 cm into the
+        # top. +0.030 in x puts the counter face ON the collision face; z-scale 0.89 * 0.800/0.824
+        # puts the counter top ON the collision top while the kitchen floor stays at z = 0 (the
+        # door handles still protrude ~3.8 cm in front of the physics face).
         self.scene.kitchen_visual = AssetBaseCfg(
             prim_path="{ENV_REGEX_NS}/KitchenVisual",
             spawn=sim_utils.UsdFileCfg(func=spawn_visual_only_usd,
-                                       usd_path=self.kitchen_usd_path, scale=(1.0, 1.0, 0.89)),
-            init_state=AssetBaseCfg.InitialStateCfg(pos=(2.1 - 0.06, 1.0, 0.0), rot=(1, 0, 0, 0)),
+                                       usd_path=self.kitchen_usd_path,
+                                       scale=(1.0, 1.0, 0.89 * 0.800 / 0.824)),
+            init_state=AssetBaseCfg.InitialStateCfg(pos=(2.1 - 0.06 + 0.030, 1.0, 0.0), rot=(1, 0, 0, 0)),
         )
         # Swap the blue cuboid manipuland for the mustard bottle USD so the recorded footage
         # shows a realistic object (same init pose / mass / scale as G1PickCamEnvCfg's bottle).
