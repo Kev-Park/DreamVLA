@@ -1603,7 +1603,7 @@ def spawn_visual_only_usd(prim_path: str, cfg, translation=None, orientation=Non
     from pxr import Usd, UsdPhysics
 
     prim = sim_utils.spawn_from_usd(prim_path, cfg, translation, orientation)
-    n_col = n_rb = 0
+    n_col = n_rb = n_joint = 0
     for root in sim_utils.find_matching_prims(prim_path):
         for p in Usd.PrimRange(root):
             if p.HasAPI(UsdPhysics.CollisionAPI):
@@ -1612,8 +1612,13 @@ def spawn_visual_only_usd(prim_path: str, cfg, translation=None, orientation=Non
             if p.HasAPI(UsdPhysics.RigidBodyAPI):
                 UsdPhysics.RigidBodyAPI(p).CreateRigidBodyEnabledAttr(False)
                 n_rb += 1
-    print(f"[visual-only-usd] {prim_path}: disabled {n_col} collider(s) and {n_rb} rigid body(ies) "
-          f"inside the backdrop (physics surface = the training collision box only)")
+            if p.IsA(UsdPhysics.Joint):
+                # cabinet-door hinges etc.: with their bodies disabled PhysX logs "cannot create a
+                # joint between static bodies" for each one -- switch them off too.
+                UsdPhysics.Joint(p).CreateJointEnabledAttr(False)
+                n_joint += 1
+    print(f"[visual-only-usd] {prim_path}: disabled {n_col} collider(s), {n_rb} rigid body(ies) and "
+          f"{n_joint} joint(s) inside the backdrop (physics surface = the training collision box only)")
     return prim
 
 
