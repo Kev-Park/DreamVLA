@@ -8,6 +8,7 @@
 # What a worktree gets:
 #   DreamVLA/   git worktree of <branch> (created from the current HEAD if it does not exist yet)
 #   .venv/      ~30 MB overlay on the dreamcontrol_51 conda env (--system-site-packages) with THIS
+#               (its activate also exports OMNI_KIT_ACCEPT_EULA=YES and XLA_PYTHON_CLIENT_PREALLOCATE=false)
 #               checkout's Training/source/* and Training/isaac_utils installed editable, so its
 #               edits win over the main checkout's editable installs. Everything else (torch,
 #               isaacsim, gear_sonic, gr00t, ...) is inherited from dreamcontrol_51 untouched.
@@ -68,9 +69,18 @@ cmd_new() {
   echo "== overlay venv: $wt/.venv  (on $py)"
   "$py" -m venv --system-site-packages "$wt/.venv"
   for pkg in "${EDITABLES[@]}"; do
-    "$wt/.venv/bin/pip" install -q -e "$wt/DreamVLA/$pkg" --no-deps --no-build-isolation
+    "$wt/.venv/bin/pip" install -q --disable-pip-version-check -e "$wt/DreamVLA/$pkg" --no-deps --no-build-isolation
     echo "   editable: $pkg"
   done
+  # Isaac Sim keys its EULA acceptance to the interpreter prefix, so a fresh venv prefix prompts
+  # for it again and a headless run dies with "Unable to bootstrap inner kit kernel: EOF". The
+  # documented non-interactive acceptance is this variable; bake it into the venv's activate.
+  cat >> "$wt/.venv/bin/activate" <<'ACT'
+
+# --- worktree.sh: Isaac Sim EULA already accepted for the base env; carry it into this overlay ---
+export OMNI_KIT_ACCEPT_EULA=YES
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+ACT
   echo "== done. Use it with:"
   echo "   source $wt/.venv/bin/activate && cd $wt/DreamVLA/Training"
 }
