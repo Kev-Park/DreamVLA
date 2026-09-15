@@ -98,8 +98,10 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
-# NEVER enable cameras — headless eval.
-args_cli.enable_cameras = False
+# Headless eval: cameras off unless HS_EVAL_CAMERAS=1 (A/B against the camera-enabled,
+# render_mode="rgb_array" env the collector / montage / VLA scripts build).
+_EVAL_CAMERAS = os.environ.get("HS_EVAL_CAMERAS", "0") == "1"
+args_cli.enable_cameras = _EVAL_CAMERAS
 
 # Cap num_envs so n_successes fires (gated at <1001 in reward func).
 if args_cli.num_envs >= 1001:
@@ -156,7 +158,7 @@ def main():
         device=args_cli.device,
         num_envs=args_cli.num_envs,
         use_fabric=not args_cli.disable_fabric,
-        enable_cameras=False,
+        enable_cameras=_EVAL_CAMERAS,
     )
     env_cfg.seed = args_cli.seed
     # Evaluation / playback always sees clean observations: force observation noise OFF on every
@@ -228,7 +230,9 @@ def main():
             else:
                 resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
-    env = gym.make(args_cli.task, cfg=env_cfg)
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=("rgb_array" if _EVAL_CAMERAS else None))
+    if _EVAL_CAMERAS:
+        print("[eval_sonic_adapter] HS_EVAL_CAMERAS=1: cameras enabled + render_mode=rgb_array (collector parity)")
     print(f"[env] action_space (pre-wrapper) = {env.action_space}")
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
