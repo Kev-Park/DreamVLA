@@ -1,7 +1,9 @@
 #!/bin/bash
-# gen_dataset.sh <gpu> <out_dir> <id...>
+# gen_dataset.sh <gpu> <out_dir|name> <id...>
 # One worker: for each motion id -> Adapter A (hsretargeting) -> holosoma retarget (hsretargeting,
 # CPU) -> Adapter B with AL refine (dreamcontrol_51, GPU <gpu>) -> <out_dir>/pick_<id>.pkl.
+# A bare NAME for <out_dir> writes to the pooled ~/kevin/ref_motions/<name>; pass it to train/eval as
+# --ref-motions-path <name> from any checkout.
 # Launch several of these pinned to different GPUs to parallelize the full filtered dataset.
 gpu=$1; out=$2; shift 2
 # Optional overrides (default = holosoma defaults, byte-identical to the original pipeline):
@@ -55,7 +57,14 @@ _pick() { local n=$1; shift; local ov
 sibling() { _pick "$1" "$(dirname "$REPO_ROOT")" "$SHARED_ROOT" ~; }
 pooled()  { _pick "$1" "$SHARED_ROOT" "$(dirname "$REPO_ROOT")" ~; }
 HS=$(sibling holosoma)/src/holosoma_retargeting/holosoma_retargeting
+# hsretargeting has holosoma_retargeting as an EDITABLE install pointing at the main clone, so a
+# paired holosoma worktree would be silently ignored. PYTHONPATH outranks editable finders, so
+# prepending the resolved checkout's package root makes THAT checkout win, in main and worktrees alike.
+export PYTHONPATH="$(dirname "$HS")${PYTHONPATH:+:$PYTHONPATH}"
 HS_INPUT=$(pooled hs_input)
+# <out_dir>: an explicit path is used as-is; a bare name lands in the pooled reference-motion dir
+# (~/kevin/ref_motions/<name>, override REF_MOTIONS_DIR) where every worktree finds it by that name.
+case "$out" in */*|.|..) ;; *) out="$(pooled ref_motions)/$out" ;; esac
 HS_ACT=""
 for A in ~/.holosoma_deps/miniconda3/bin/activate ~/kevin/.holosoma_deps/miniconda3/bin/activate; do
   [ -f "$A" ] && { HS_ACT="$A"; break; }

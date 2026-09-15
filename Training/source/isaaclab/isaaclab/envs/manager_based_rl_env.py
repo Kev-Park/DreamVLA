@@ -83,6 +83,7 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         self.start_motion_times = torch.zeros(self.scene.num_envs, device=self.device)
         if hasattr(cfg, "ref_motions_path"):
             from isaaclab_tasks.utils.motion_lib.motion_lib_robot import MotionLibRobot
+            from isaaclab_tasks.utils.repo_paths import dataset as _resolve_dataset
             import pytorch_kinematics as pk2
             from isaaclab.markers import VisualizationMarkers
             from isaaclab.markers.config import POSITION_GOAL_MARKER_CFG
@@ -90,7 +91,8 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             self.motion_lib = MotionLibRobot(
                 num_envs=self.scene.num_envs,
                 device=self.device,
-                motion_file=cfg.ref_motions_path,
+                # Bare names / stale ../TrajGen/sample/<name> paths resolve to the pooled datasets dir.
+                motion_file=str(_resolve_dataset(cfg.ref_motions_path)),
             )
             self.motion_lib.load_motions()
             self.total_motions = self.motion_lib.num_motions()

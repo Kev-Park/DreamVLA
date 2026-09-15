@@ -22,6 +22,7 @@ _pick() { local n=$1; shift; local ov
 sibling() { _pick "$1" "$(dirname "$REPO_ROOT")" "$SHARED_ROOT" ~; }
 pooled()  { _pick "$1" "$SHARED_ROOT" "$(dirname "$REPO_ROOT")" ~; }
 HS=$(sibling holosoma)/src/holosoma_retargeting/holosoma_retargeting
+export PYTHONPATH="$(dirname "$HS")${PYTHONPATH:+:$PYTHONPATH}"   # resolved checkout beats the editable install
 HS_INPUT=$(pooled hs_input)
 NPZ_DIR=${HS_NPZ_DIR:-$(pooled hs_pick_out)}; mkdir -p "$NPZ_DIR"
 R=~/kevin/eval_videos/graspval; mkdir -p $R; CSV=$R/grasp_results.csv

@@ -29,7 +29,7 @@ branches normally want the same best/most-recent one, so the shared drop wins an
 worktree-local copy is only used when nothing shared exists.
 
 Both accept an explicit override via environment variable, named after the directory:
-``HOLOSOMA_DIR``, ``GR00T_WHOLEBODYCONTROL_DIR``, ``HS_PICK_OUT_DIR``. That is the escape
+``HOLOSOMA_DIR``, ``GR00T_WHOLEBODYCONTROL_DIR``, ``REF_MOTIONS_DIR``. That is the escape
 hatch for pointing one worktree at a specific checkout or a variant dataset without moving
 anything. Nothing here needs setting up by someone cloning the repo: put the sibling clone
 next to this one (or under ``~/kevin``) and it is found.
@@ -75,3 +75,24 @@ def sibling(name: str, *parts: str, env: str | None = None) -> Path:
 def pooled(name: str, *parts: str, env: str | None = None) -> Path:
     """Path inside a shared data pool, preferring the drop all worktrees share."""
     return _resolve(name, parts, [SHARED_ROOT, REPO_ROOT.parent, Path.home()], env)
+
+
+def dataset(path_or_name: str) -> Path:
+    """Resolve a reference-motion dataset (a dir of .pkl files).
+
+    Generated datasets live in the pooled ``ref_motions`` dir (``~/kevin/ref_motions/<name>``,
+    override with ``REF_MOTIONS_DIR``) so every worktree sees the same ones. (Not ``~/kevin/datasets``,
+    which is the GR00T/LeRobot collected-episode root.) Accepts, in order:
+
+    1. a path that exists as given (relative to CWD) -- tracked source datasets such as
+       ``../TrajGen/sample/Pick_sim2`` and any explicit path keep working unchanged;
+    2. otherwise the basename looked up in the pool -- so ``Holosoma_Pick_29_full`` and the
+       historical ``../TrajGen/sample/Holosoma_Pick_29_full`` both resolve there.
+
+    If neither exists the input is returned untouched so the eventual error names what was asked.
+    """
+    p = Path(path_or_name).expanduser()
+    if p.exists():
+        return p
+    c = pooled("ref_motions", p.name)
+    return c if c.exists() else p
