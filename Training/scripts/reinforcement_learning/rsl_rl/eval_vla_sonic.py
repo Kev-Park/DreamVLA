@@ -112,6 +112,9 @@ def _parse_cli() -> argparse.Namespace:
                         help="Skip matching the ego view to the collection scene. By default the "
                              "red grab marker, kitchen glass-bottle prop, and ground plane are "
                              "hidden so the VLA sees the same clean view it trained on.")
+    parser.add_argument("--force-close-at-grab", action="store_true", default=False,
+                        help="DIAGNOSTIC: ignore the VLA's finger prediction and command CLOSE from the reference "
+                             "motion's grab frame onward (validates the finger command path eval -> wrapper -> env).")
     parser.add_argument("--seed", type=int, default=0)
     # AppLauncher args get appended below.
     return parser
@@ -508,6 +511,10 @@ def main() -> int:
             latent = torch.zeros((1, 65), device="cuda:0", dtype=torch.float32)
             latent[0, :64] = torch.as_tensor(token, device="cuda:0")
             latent[0, 64] = _finger_scalar(vla_chunk, t_idx)
+            if args.force_close_at_grab:
+                _mt = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.to("cuda:0", dtype=torch.float32)
+                if bool(unw.motion_lib.get_motion_state(unw.motion_ids, _mt)["is_closed"][0].item() > 0.5):
+                    latent[0, 64] = -1.0
             _rh = np.asarray(vla_chunk["right_hand_joints"], dtype=np.float32)
             g_pred.append(float(np.abs(_rh[0, t_idx] if _rh.ndim == 3 else _rh.reshape(-1)).mean()))
             g_cmd_close.append(bool(latent[0, 64].item() < 0))
