@@ -42,7 +42,8 @@ find_py() {
 }
 
 cmd_new() {
-  local br=$1 hsbr=${2:-} wt="$WT_ROOT/$br"
+  local br=$1 hsbr=${2:-} wt
+  wt="$WT_ROOT/$br"
   [ -e "$wt" ] && { echo "worktree.sh: $wt already exists (rm it first)" >&2; exit 1; }
   mkdir -p "$wt"
   echo "== DreamVLA worktree: $wt/DreamVLA  [$br]"
@@ -75,7 +76,8 @@ cmd_new() {
 }
 
 cmd_rm() {
-  local br=$1 wt="$WT_ROOT/$br"
+  local br=$1 wt
+  wt="$WT_ROOT/$br"
   [ -d "$wt/DreamVLA" ] && git -C "$MAIN" worktree remove --force "$wt/DreamVLA" && echo "removed $wt/DreamVLA"
   if [ -d "$wt/holosoma" ]; then
     git -C "$(sibling holosoma)" worktree remove --force "$wt/holosoma" && echo "removed $wt/holosoma"
