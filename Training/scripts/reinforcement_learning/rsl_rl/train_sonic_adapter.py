@@ -31,6 +31,8 @@ Differences vs train_sonic.py:
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import sys
 
 from isaaclab.app import AppLauncher
@@ -56,7 +58,7 @@ parser.add_argument(
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
 parser.add_argument(
     "--sonic-decoder-onnx", type=str,
-    default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
+    default=gear_sonic_deploy("policy/release/model_decoder.onnx"),
     help="Path to the frozen SONIC decoder ONNX (model_decoder.onnx).",
 )
 parser.add_argument(
@@ -71,7 +73,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--sonic-encoder-onnx", type=str,
-    default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
+    default=gear_sonic_deploy("policy/release/model_encoder.onnx"),
     help="Path to the frozen SONIC encoder ONNX (model_encoder.onnx).",
 )
 parser.add_argument(

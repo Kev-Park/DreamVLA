@@ -33,6 +33,8 @@ Key behaviors:
 from __future__ import annotations
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import builtins
 import os
 import time
@@ -549,9 +551,9 @@ def main() -> None:
     parser.add_argument("--image-width", type=int, default=640)
     parser.add_argument("--image-height", type=int, default=480)
     parser.add_argument("--sonic-decoder-onnx", type=str,
-                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx")
+                        default=gear_sonic_deploy("policy/release/model_decoder.onnx"))
     parser.add_argument("--sonic-encoder-onnx", type=str,
-                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx")
+                        default=gear_sonic_deploy("policy/release/model_encoder.onnx"))
     parser.add_argument("--sonic-pt", type=str, default=None,
                         help="Directory of a native SONIC .pt checkpoint (groot-era). REQUIRED for policies "
                              "trained with --sonic-pt: the recorded motion_token lives in THIS model's latent "

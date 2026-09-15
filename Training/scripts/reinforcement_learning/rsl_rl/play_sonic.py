@@ -26,6 +26,8 @@ tanh-saturation noise. Only the mean reflects the policy's intent.
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import builtins
 from functools import partial
 from pathlib import Path
@@ -54,7 +56,7 @@ parser.add_argument("--name", type=str, default="sonic_play.mp4", help="Output v
 parser.add_argument("--path", type=str, default=None, help="Explicit checkpoint path (overrides auto-discovery).")
 parser.add_argument(
     "--sonic-decoder-onnx", type=str,
-    default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
+    default=gear_sonic_deploy("policy/release/model_decoder.onnx"),
     help="Path to the frozen SONIC decoder ONNX (must match what train_sonic.py used).",
 )
 # append RSL-RL cli arguments (gives --checkpoint, --load_run, etc.)

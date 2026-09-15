@@ -37,6 +37,8 @@ Run:
 from __future__ import annotations
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import builtins
 import sys
 import time
@@ -65,11 +67,11 @@ def _parse_cli() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--encoder-onnx",
-        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
+        default=gear_sonic_deploy("policy/release/model_encoder.onnx"),
     )
     parser.add_argument(
         "--decoder-onnx",
-        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
+        default=gear_sonic_deploy("policy/release/model_decoder.onnx"),
     )
     parser.add_argument("--record-video", default=None,
                         help="Output path prefix. Saves _third_person.mp4 and _ego.mp4.")

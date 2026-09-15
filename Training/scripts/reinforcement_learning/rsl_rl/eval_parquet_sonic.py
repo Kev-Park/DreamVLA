@@ -34,6 +34,8 @@ Run:
 from __future__ import annotations
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import builtins
 import sys
 import time
@@ -59,11 +61,11 @@ def _parse_cli() -> argparse.ArgumentParser:
     parser.add_argument("--parquet", required=True, type=Path,
                         help="Path to a single LeRobot episode_*.parquet file.")
     parser.add_argument("--encoder-onnx",
-                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx")
+                        default=gear_sonic_deploy("policy/release/model_encoder.onnx"))
     parser.add_argument("--decoder-onnx",
-                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx")
+                        default=gear_sonic_deploy("policy/release/model_decoder.onnx"))
     parser.add_argument("--planner-onnx",
-                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx")
+                        default=gear_sonic_deploy("planner/target_vel/V2/planner_sonic.onnx"))
     parser.add_argument("--record-video", default=None,
                         help="Output prefix. Saves _third_person.mp4, _ego.mp4, _vla_skeleton.mp4.")
     parser.add_argument("--video-fps", type=int, default=50)

@@ -20,6 +20,8 @@ Modes (same wiring as play_sonic_adapter.py):
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import builtins
 from functools import partial
 from pathlib import Path
@@ -85,12 +87,12 @@ parser.add_argument("--force-motion-id", type=int, default=-1,
 parser.add_argument("--path", type=str, default=None, help="Explicit checkpoint path (overrides auto-discovery).")
 parser.add_argument(
     "--sonic-decoder-onnx", type=str,
-    default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
+    default=gear_sonic_deploy("policy/release/model_decoder.onnx"),
     help="Path to the frozen SONIC decoder ONNX (must match training).",
 )
 parser.add_argument(
     "--sonic-encoder-onnx", type=str,
-    default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
+    default=gear_sonic_deploy("policy/release/model_encoder.onnx"),
     help="Path to the frozen SONIC encoder ONNX (must match training).",
 )
 parser.add_argument(

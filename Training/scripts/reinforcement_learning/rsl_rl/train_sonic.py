@@ -19,6 +19,8 @@ the bare RslRlVecEnvWrapper. Default task is the no-camera continuous-fingers pi
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import sys
 
 from isaaclab.app import AppLauncher
@@ -45,7 +47,7 @@ parser.add_argument("--export_io_descriptors", action="store_true", default=Fals
 # Frozen SONIC decoder (ONNX). Same default path as eval_parquet_sonic.py.
 parser.add_argument(
     "--sonic-decoder-onnx", type=str,
-    default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
+    default=gear_sonic_deploy("policy/release/model_decoder.onnx"),
     help="Path to the frozen SONIC decoder ONNX (model_decoder.onnx).",
 )
 # append RSL-RL cli arguments

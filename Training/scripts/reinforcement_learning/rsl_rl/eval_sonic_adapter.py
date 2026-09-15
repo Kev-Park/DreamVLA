@@ -30,6 +30,8 @@ Deterministic actor mean via ``get_inference_policy``; fixed seed for reproducib
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import builtins
 import os
 from functools import partial
@@ -59,7 +61,7 @@ parser.add_argument("--disable_fabric", action="store_true", default=False,
 parser.add_argument("--path", type=str, default=None,
                     help="Explicit checkpoint path (overrides auto-discovery).")
 parser.add_argument("--sonic-decoder-onnx", type=str,
-                    default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
+                    default=gear_sonic_deploy("policy/release/model_decoder.onnx"),
                     help="Path to the frozen SONIC decoder ONNX (must match training).")
 parser.add_argument("--sonic-pt", type=str, default=None,
                     help="Directory of a native SONIC .pt checkpoint (groot-era); overrides ONNX.")
@@ -69,7 +71,7 @@ parser.add_argument(
          "checkpoint VR 3-point head (reference wrists + torso point, lower-body command).",
 )
 parser.add_argument("--sonic-encoder-onnx", type=str,
-                    default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
+                    default=gear_sonic_deploy("policy/release/model_encoder.onnx"),
                     help="Path to the frozen SONIC encoder ONNX (must match training).")
 parser.add_argument("--residual-scale", type=float, default=0.3,
                     help="Residual bound — MUST match the value used by train_sonic_adapter.py.")

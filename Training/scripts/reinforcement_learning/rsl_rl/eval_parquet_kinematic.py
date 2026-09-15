@@ -19,6 +19,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import time
 from pathlib import Path
 
@@ -396,7 +398,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--planner-onnx",
-        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx",
+        default=gear_sonic_deploy("planner/target_vel/V2/planner_sonic.onnx"),
         help="Path to planner_sonic.onnx.",
     )
     parser.add_argument(

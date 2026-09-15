@@ -32,6 +32,8 @@ per-episode [PHYS] line the eval prints.
 from __future__ import annotations
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import builtins
 import os
 import sys
@@ -87,7 +89,7 @@ def _parse_cli() -> argparse.Namespace:
     # Default paths assume DreamVLA/ and GR00T-WholeBodyControl/ are sibling repos,
     # and you run this script from DreamVLA/Training/. Override if your layout differs.
     parser.add_argument("--decoder-onnx",
-                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx")
+                        default=gear_sonic_deploy("policy/release/model_decoder.onnx"))
     parser.add_argument("--record-video", default=os.path.expanduser("~/kevin/eval_videos/vla_rollout"),
                         help="Output prefix; per episode writes <prefix>_ep<k>_m<motion>_{third_person,ego}.mp4.")
     parser.add_argument("--video-fps", type=int, default=50)

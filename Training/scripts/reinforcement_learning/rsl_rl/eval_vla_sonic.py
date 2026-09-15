@@ -26,6 +26,8 @@ Requires cameras (the VLA reads the ego view); the env is the Cam-* variant of t
 from __future__ import annotations
 
 import argparse
+
+from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import builtins
 import os
 import sys
@@ -84,7 +86,7 @@ def _parse_cli() -> argparse.Namespace:
     # Default paths assume DreamVLA/ and GR00T-WholeBodyControl/ are sibling repos,
     # and you run this script from DreamVLA/Training/. Override if your layout differs.
     parser.add_argument("--decoder-onnx",
-                        default="../../GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx")
+                        default=gear_sonic_deploy("policy/release/model_decoder.onnx"))
     parser.add_argument("--lift-thres", type=float, default=0.95,
                         help="LEGACY diagnostic only (absolute bottle z). The headline metric is the "
                              "physical hold below.")
