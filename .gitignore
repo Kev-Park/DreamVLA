@@ -89,8 +89,8 @@ TrajGen/dataset/HumanML3D/*
 
 # Generated datasets (regenerated artifacts, not source). These sit under TrajGen/sample
 # only for historical reasons and are re-ignored AFTER the negation above (last match wins),
-# so they stop showing up as untracked/committable. Prefer generating out-of-tree:
-#   gen_dataset.sh <gpu> ~/kevin/datasets_shared/<name> <ids...>
+# so they stop showing up as untracked/committable. Generate into the pool instead:
+#   gen_dataset.sh <gpu> <name> <ids...>      -> ~/kevin/ref_motions/<name>   (see WORKTREES.md)
 # (no trailing slash: in the main checkout these are SYMLINKS into the pooled ~/kevin/ref_motions,
 # and a trailing slash only matches real directories)
 TrajGen/sample/Holosoma_*
