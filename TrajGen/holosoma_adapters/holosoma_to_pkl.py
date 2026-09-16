@@ -220,6 +220,24 @@ if os.environ.get("HS_STAND_LOWER", "0") == "1":
         base_pos[:, :2] -= (_min_standoff - _d_along) * _hdg[None, :]
         print(f"[stand-lower] root->object along heading {_d_along:.3f} m < {_min_standoff:.2f}; "
               f"root moved back {_min_standoff - _d_along:.3f} m")
+    # Lateral band: the object's LATERAL offset in the heading frame is inherited from where the
+    # human stood (fixH60: -0.07..-0.42 m, always to the robot's right; a human reaches sideways
+    # with a step + torso twist that the pinned stance removes). Measured on fixH60: clips with the
+    # object > 0.30 m to the right hold 7% (fully extended arm), clips with it < 0.12 m hold 15-20%
+    # (side approach into the bottle), the -0.30..-0.20 band holds best. Clamp the offset into
+    # HS_STAND_LAT_BAND ("lo,hi", + = robot's left) by translating the pinned root along its
+    # lateral axis. The AL refine re-solves the arm against the new root->object geometry and the
+    # post-grab palm target is the object trajectory, so the carry stays consistent. "" disables.
+    _lat_band = os.environ.get("HS_STAND_LAT_BAND", "-0.28,-0.15")
+    if _lat_band:
+        _lat_lo, _lat_hi = (float(v) for v in _lat_band.split(","))
+        _lat_ax = np.array([-np.sin(_yaw), np.cos(_yaw)])
+        _d_lat = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _lat_ax))
+        _d_lat_new = min(max(_d_lat, _lat_lo), _lat_hi)
+        if _d_lat_new != _d_lat:
+            base_pos[:, :2] -= (_d_lat_new - _d_lat) * _lat_ax[None, :]
+            print(f"[stand-lower] root->object lateral {_d_lat:+.3f} m outside [{_lat_lo:+.2f},{_lat_hi:+.2f}]; "
+                  f"root moved {abs(_d_lat_new - _d_lat):.3f} m {'right' if _d_lat_new > _d_lat else 'left'}")
     print(f"[stand-lower] legs pinned to INIT stance; root frozen at grab-frame "
           f"xy=({base_pos[grab_idx,0]:.3f},{base_pos[grab_idx,1]:.3f}) yaw={_yaw:+.3f} rad; "
           f"waist+arms kept from the retarget")
