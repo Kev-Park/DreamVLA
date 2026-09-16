@@ -1,0 +1,15 @@
+#!/bin/bash
+# Enter the Isaac Sim 5.1 runtime layer (Ubuntu 22.04 .sif) with RC's anaconda module bound in.
+#   isaac                       interactive shell inside the container
+#   isaac <cmd> [args...]       run a command inside it (conda available; activate explicitly)
+#   isaac bash -c "conda activate dreamcontrol_51 && python train.py ..."
+RC=$HOME/kevin/bin/isaac.rc
+SIF=$HOME/kevin/sif/isaac-base.sif
+NV=(); command -v nvidia-smi >/dev/null && nvidia-smi -L >/dev/null 2>&1 && NV=(--nv)
+export APPTAINERENV_BASH_ENV=$RC
+[ $# -eq 0 ] && set -- bash --rcfile "$RC" -i
+# On a compute node: open the proxy tunnel to the login node if it isn't already up.
+if [ -n "$SLURM_JOB_ID" ] && ! pgrep -f 'ssh.*-L 8899:127.0.0.1:8899' >/dev/null; then
+  ssh -o BatchMode=yes -o ConnectTimeout=5 -N -f -L 8899:127.0.0.1:8899 adroit5 2>/dev/null || true
+fi
+exec apptainer exec "${NV[@]}" --bind /usr/licensed:/usr/licensed:ro "$SIF" "$@"

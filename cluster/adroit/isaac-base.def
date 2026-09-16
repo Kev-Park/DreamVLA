@@ -1,0 +1,16 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%post
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libvulkan1 libgl1 libglu1-mesa libegl1 libopengl0 \
+        libx11-6 libxt6 libxrandr2 libxinerama1 libxcursor1 libxi6 libxkbcommon0 libsm6 libice6 \
+        libgomp1 libatomic1 libfontconfig1 libfreetype6 \
+        ca-certificates git git-lfs wget curl bzip2 unzip tmux vim build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+%environment
+    export LC_ALL=C.UTF-8 LANG=C.UTF-8
+
+%labels
+    purpose "Ubuntu 22.04 runtime layer for pip-installed Isaac Sim 5.1 (dreamcontrol_51)"

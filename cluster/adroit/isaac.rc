@@ -1,0 +1,14 @@
+# Sourced inside the container by every shell the `isaac` shim starts (interactive via --rcfile,
+# non-interactive via BASH_ENV). Host env (PATH, PIP_CACHE_DIR, ...) is already inherited.
+source /usr/licensed/anaconda3/2025.6/etc/profile.d/conda.sh
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+# Compute nodes reach the internet only through the login-node proxy tunnel the `isaac` shim opens.
+if [ -n "$SLURM_JOB_ID" ]; then
+  export http_proxy=http://127.0.0.1:8899
+  export https_proxy=$http_proxy HTTP_PROXY=$http_proxy HTTPS_PROXY=$http_proxy
+fi
+[[ $- == *i* ]] && PS1="(isaac) $PS1"
+# Vulkan: --nv binds the NVIDIA driver libs but not the ICD manifest; point the loader at our copy.
+export VK_DRIVER_FILES=$HOME/kevin/etc/vulkan/icd.d/nvidia_icd.json
+export VK_ICD_FILENAMES=$VK_DRIVER_FILES   # older loader name, same thing
+export DREAMCONTROL_PY=$HOME/kevin/conda/dreamcontrol_51/bin/python   # env is not at a path worktree.sh searches
