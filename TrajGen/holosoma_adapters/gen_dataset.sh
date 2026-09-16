@@ -102,7 +102,9 @@ for id in "$@"; do
       ${HS_NO_FOOT_STICK:+--retargeter.no-activate-foot-sticking} \
     ) > "$LOG_DIR/HS_$id.log" 2>&1
   [ -f "$OUT" ] || { echo "$id HOLOSOMA_FAIL"; continue; }
-  ( source ~/miniconda3/etc/profile.d/conda.sh; conda activate dreamcontrol_51
+  ( # biped/bluesclues: own miniconda. Elsewhere (Adroit inside `isaac`) conda is already on the shell.
+    [ -f ~/miniconda3/etc/profile.d/conda.sh ] && source ~/miniconda3/etc/profile.d/conda.sh
+    conda activate dreamcontrol_51
     export XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES="$gpu"
     HS_REFINE_MODE=al HS_REFINE_ARM=${HS_REFINE_ARM:-1} HS_PKL_DOF=29 python "$SCRIPT_DIR/holosoma_to_pkl.py" "$OUT" "$out/pick_$id" \
     ) > "$LOG_DIR/B_$id.log" 2>&1
