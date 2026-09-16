@@ -591,6 +591,9 @@ def main() -> None:
                              "prepend). The recorded trajectory begins at the skip frame.")
     parser.add_argument("--start-pregrab-margin", type=float, default=None,
                         help="Start episodes this many seconds before the grab (drops prepend + walk).")
+    parser.add_argument("--skip-existing", action="store_true", default=False,
+                        help="Resume: skip motion ids that already have an .hdf5 anywhere under --output-directory "
+                             "(previously rejected motions are re-tried; the policy is deterministic).")
     parser.add_argument("--motion-range", type=int, nargs=2, default=None, metavar=("START", "END"),
                         help="Only sweep motion ids in [START, END) -- shard the deterministic sweep across "
                              "GPUs/processes (file names are per-motion, so shards can share --output-directory).")
@@ -754,6 +757,9 @@ def main() -> None:
         for motion_id in range(m_lo, m_hi):
             if written >= target_successes or not simulation_app.is_running():
                 break
+            if args_cli.skip_existing and list(output_root.rglob(f"*__motion_{motion_id:03d}.hdf5")):
+                print(f"[INFO] motion {motion_id}/{total_motions}: already collected under {output_root} -- skipping")
+                continue
             env.unwrapped._forced_motion_id = int(motion_id)  # forces the reset's motion draw
             _set_all_seeds(args_cli.seed + motion_id)          # deterministic per-motion init
             print(f"[INFO] motion {motion_id}/{total_motions} (written {written}/{target_successes})")
