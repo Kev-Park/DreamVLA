@@ -345,6 +345,14 @@ def main():
     # episodes are counted separately as tilted-in-hand.
     per_env_tilt_inhand = torch.zeros(num_envs, device=device, dtype=torch.bool)
     completed_tilt_inhand = 0
+    # HS_EVAL_DUMP_EPS=<file.npz>: per-episode diagnostic record (motion id, outcome flags, max lift,
+    # palm-object distance at max lift, min palm-object distance while lifted, min object up-cos
+    # while lifted) for auditing the hold/topple criteria against renders.
+    DUMP_EPS = os.environ.get("HS_EVAL_DUMP_EPS", "")
+    per_env_d_at_maxlift = torch.zeros(num_envs, device=device)
+    per_env_min_d_lifted = torch.full((num_envs,), 9.0, device=device)
+    per_env_min_upcos_lifted = torch.ones(num_envs, device=device)
+    ep_records: list[tuple] = []
     # ---- PHYSICAL hold metric (reference-independent) ----
     # phys_held_<dz>: object lifted >= dz above its rest height AND within PHYS_R of the SIM palm,
     # sustained for >= PHYS_STEPS consecutive steps at any point in the episode. Reported at 2 cm
@@ -581,6 +589,14 @@ def main():
                 per_env_phys_run[_dz] = torch.where(_cond, per_env_phys_run[_dz] + 1, torch.zeros_like(per_env_phys_run[_dz]))
                 per_env_phys_ok[_dz] |= per_env_phys_run[_dz] >= PHYS_STEPS
             _in_hand = _near & (torch.nan_to_num(_dz_now, nan=0.0) >= 0.02)
+            if DUMP_EPS:
+                _d = torch.norm(palm - obj_pos_w, dim=1)
+                _dzc = torch.nan_to_num(_dz_now, nan=0.0)
+                _is_max = valid & (_dzc >= per_env_max_lift - 1e-6) & (_dzc > 0)
+                per_env_d_at_maxlift = torch.where(_is_max, _d, per_env_d_at_maxlift)
+                _lift2 = valid & (_dzc >= 0.02)
+                per_env_min_d_lifted = torch.where(_lift2, torch.minimum(per_env_min_d_lifted, _d), per_env_min_d_lifted)
+                per_env_min_upcos_lifted = torch.where(_lift2 & _near, torch.minimum(per_env_min_upcos_lifted, up_z), per_env_min_upcos_lifted)
             per_env_tilt_inhand |= toppled_now & _in_hand & valid
             toppled_now = toppled_now & ~_in_hand
         if valid.any():
@@ -664,6 +680,14 @@ def main():
                 # metric). The reference-relative hold (_held_ref, object within HELD_TOL of the synth
                 # ref) scored a sound grasp whose carry leaves the demo path as a failure.
                 _held_ok = bool(per_env_phys_ok[0.05][idx].item())
+                if DUMP_EPS:
+                    ep_records.append((int(per_env_motion_id[idx].item()), int(_held_ok), int(bool(per_env_phys_ok[0.02][idx].item())),
+                                       int(_toppled), int(bool(per_env_tilt_inhand[idx].item())), int(_touched),
+                                       float(per_env_max_lift[idx].item()), float(per_env_d_at_maxlift[idx].item()),
+                                       float(per_env_min_d_lifted[idx].item()), float(per_env_min_upcos_lifted[idx].item()),
+                                       int(per_env_first_topple[idx].item()) if FAILCLASS else -1,
+                                       int(per_env_grab_step[idx].item()) if FAILCLASS else -1,
+                                       int(per_env_steps[idx].item()) if FAILCLASS else -1))
                 if _touched: completed_touched += 1
                 if _toppled: completed_toppled += 1
                 if not _held_ok:
@@ -716,6 +740,9 @@ def main():
             per_env_touched[done_idxs] = False
             per_env_toppled[done_idxs] = False
             per_env_tilt_inhand[done_idxs] = False
+            per_env_d_at_maxlift[done_idxs] = 0.0
+            per_env_min_d_lifted[done_idxs] = 9.0
+            per_env_min_upcos_lifted[done_idxs] = 1.0
             per_env_rest_z[done_idxs] = float("nan")
             per_env_max_lift[done_idxs] = 0.0
             for _dz in PHYS_DZS:
@@ -884,6 +911,11 @@ def main():
     open('/tmp/_perclip_worst.txt', 'w').write('WORST_BY_TOPPLE=%s\nWORST_BY_NOTHELD=%s\n' % (
         ','.join(map(str, by_top)), ','.join(map(str, by_nh))))
 
+    if DUMP_EPS and ep_records:
+        _arr = np.array(ep_records, dtype=np.float64)
+        np.savez(DUMP_EPS, records=_arr, columns=np.array(["mid", "held5", "held2", "toppled", "tilt_inhand", "touched",
+                 "max_lift", "d_at_maxlift", "min_d_lifted", "min_upcos_lifted", "first_topple", "grab_step", "ep_len"]))
+        print(f"[eval] wrote per-episode records: {DUMP_EPS} ({len(ep_records)} episodes)")
     env.close()
 
 
