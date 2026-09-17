@@ -353,6 +353,12 @@ def main():
     per_env_min_d_lifted = torch.full((num_envs,), 9.0, device=device)
     per_env_min_upcos_lifted = torch.ones(num_envs, device=device)
     ep_records: list[tuple] = []
+    _obj_mass = None
+    if DUMP_EPS and HAS_OBJECT:
+        try:
+            _obj_mass = env.unwrapped.scene["object"].root_physx_view.get_masses().reshape(num_envs, -1)[:, 0].to(device)
+        except Exception as _e:
+            print(f"[eval] object mass unavailable: {_e}")
     # ---- PHYSICAL hold metric (reference-independent) ----
     # phys_held_<dz>: object lifted >= dz above its rest height AND within PHYS_R of the SIM palm,
     # sustained for >= PHYS_STEPS consecutive steps at any point in the episode. Reported at 2 cm
@@ -687,7 +693,8 @@ def main():
                                        float(per_env_min_d_lifted[idx].item()), float(per_env_min_upcos_lifted[idx].item()),
                                        int(per_env_first_topple[idx].item()) if FAILCLASS else -1,
                                        int(per_env_grab_step[idx].item()) if FAILCLASS else -1,
-                                       int(per_env_steps[idx].item()) if FAILCLASS else -1))
+                                       int(per_env_steps[idx].item()) if FAILCLASS else -1,
+                                       int(idx), float(_obj_mass[idx].item()) if _obj_mass is not None else float("nan")))
                 if _touched: completed_touched += 1
                 if _toppled: completed_toppled += 1
                 if not _held_ok:
@@ -914,7 +921,7 @@ def main():
     if DUMP_EPS and ep_records:
         _arr = np.array(ep_records, dtype=np.float64)
         np.savez(DUMP_EPS, records=_arr, columns=np.array(["mid", "held5", "held2", "toppled", "tilt_inhand", "touched",
-                 "max_lift", "d_at_maxlift", "min_d_lifted", "min_upcos_lifted", "first_topple", "grab_step", "ep_len"]))
+                 "max_lift", "d_at_maxlift", "min_d_lifted", "min_upcos_lifted", "first_topple", "grab_step", "ep_len", "env", "obj_mass"]))
         print(f"[eval] wrote per-episode records: {DUMP_EPS} ({len(ep_records)} episodes)")
     env.close()
 
