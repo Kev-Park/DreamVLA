@@ -394,7 +394,8 @@ with open(out_base + ".pkl", "wb") as f:
     pickle.dump(pkl, f)
 _wr = np.linalg.norm(joints[:, 13]) if DOF == 29 else 0.0
 _wp = np.linalg.norm(joints[:, 14]) if DOF == 29 else 0.0
-print(f"wrote {out_base}.pkl  {DOF}-DOF  frames {F}->{joints.shape[0]} (lead-in {PAUSE}+{INTERP}) "
+print(f"wrote {out_base}.pkl  {DOF}-DOF  frames {F}->{joints.shape[0]} "
+      f"({'no lead-in' if NO_LEADIN else f'lead-in {PAUSE}+{INTERP}'}) "
       f"grab_idx={grab_idx}  ground_shift[{mz.min():.3f},{mz.max():.3f}]  "
       f"waist_roll|pitch L2={_wr:.3f}|{_wp:.3f}  frame0 |dq/dt|@20fps="
       f"{np.linalg.norm((joints[1]-joints[0])/0.05):.3f} (want ~0)")
