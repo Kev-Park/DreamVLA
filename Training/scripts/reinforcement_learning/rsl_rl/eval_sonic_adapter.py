@@ -354,7 +354,7 @@ def main():
     per_env_min_upcos_lifted = torch.ones(num_envs, device=device)
     ep_records: list[tuple] = []
     _obj_mass = None
-    if DUMP_EPS and HAS_OBJECT:
+    if DUMP_EPS:
         try:
             _obj_mass = env.unwrapped.scene["object"].root_physx_view.get_masses().reshape(num_envs, -1)[:, 0].to(device)
         except Exception as _e:
