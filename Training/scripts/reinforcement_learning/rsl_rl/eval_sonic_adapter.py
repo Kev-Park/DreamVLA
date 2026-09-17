@@ -338,6 +338,13 @@ def main():
     _TOPPLE_COS = math.cos(math.radians(TOPPLE_DEG))
     per_env_touched = torch.zeros(num_envs, device=device, dtype=torch.bool)
     per_env_toppled = torch.zeros(num_envs, device=device, dtype=torch.bool)
+    # "toppled" = tilt > TOPPLE_DEG while the object is NOT in the hand (not lifted >= 2 cm within
+    # PHYS_R of the sim palm). A bottle tilted past 45 deg while carried is a sound grasp with a
+    # rotated wrist, not a knock/drop; it used to count as toppled and pushed HELD episodes into
+    # DROPPED_LATE (latband60: pick_50/58/91 at ~100% "topple" on visually sound grasps). Those
+    # episodes are counted separately as tilted-in-hand.
+    per_env_tilt_inhand = torch.zeros(num_envs, device=device, dtype=torch.bool)
+    completed_tilt_inhand = 0
     # ---- PHYSICAL hold metric (reference-independent) ----
     # phys_held_<dz>: object lifted >= dz above its rest height AND within PHYS_R of the SIM palm,
     # sustained for >= PHYS_STEPS consecutive steps at any point in the episode. Reported at 2 cm
@@ -382,7 +389,7 @@ def main():
     # ---- HS_EVAL_FAILCLASS=1: per-episode failure taxonomy ----
     # Classifies every episode into ONE mode (priority order) so the failure distribution can
     # arbitrate "fix references" vs "change rewards":
-    #   HELD                 success (existing criterion)
+    #   HELD                 success = the [PHYS] >= 5 cm hold (reference-independent)
     #   KNOCKED_PRE_REACH    object toppled BEFORE the palm ever got within TOUCH_TOL
     #                        (wrist/forearm/body knock — approach-geometry failure)
     #   KNOCKDOWN_ON_ARRIVAL toppled within KNOCK_WIN steps of first palm contact
@@ -573,6 +580,9 @@ def main():
                 _cond = valid & _near & (_dz_now >= _dz)
                 per_env_phys_run[_dz] = torch.where(_cond, per_env_phys_run[_dz] + 1, torch.zeros_like(per_env_phys_run[_dz]))
                 per_env_phys_ok[_dz] |= per_env_phys_run[_dz] >= PHYS_STEPS
+            _in_hand = _near & (torch.nan_to_num(_dz_now, nan=0.0) >= 0.02)
+            per_env_tilt_inhand |= toppled_now & _in_hand & valid
+            toppled_now = toppled_now & ~_in_hand
         if valid.any():
             per_env_had_any_lift |= lifted & valid
             per_env_closed_steps += (is_closed & valid).long()
@@ -648,7 +658,12 @@ def main():
                 max_lift_list.append(float(per_env_max_lift[idx].item()))
                 _touched = bool(per_env_touched[idx].item())
                 _toppled = bool(per_env_toppled[idx].item())
-                _held_ok = REWORK and int(per_env_closed_steps[idx].item()) > 0 and (int(per_env_held_steps[idx].item()) / max(int(per_env_closed_steps[idx].item()),1)) >= HELD_FRAC
+                if bool(per_env_tilt_inhand[idx].item()): completed_tilt_inhand += 1
+                _held_ref = REWORK and int(per_env_closed_steps[idx].item()) > 0 and (int(per_env_held_steps[idx].item()) / max(int(per_env_closed_steps[idx].item()),1)) >= HELD_FRAC
+                # HELD for the outcome classes / per-clip table = the [PHYS] >= 5 cm hold (the headline
+                # metric). The reference-relative hold (_held_ref, object within HELD_TOL of the synth
+                # ref) scored a sound grasp whose carry leaves the demo path as a failure.
+                _held_ok = bool(per_env_phys_ok[0.05][idx].item())
                 if _touched: completed_touched += 1
                 if _toppled: completed_toppled += 1
                 if not _held_ok:
@@ -700,6 +715,7 @@ def main():
             per_env_held_steps[done_idxs] = 0
             per_env_touched[done_idxs] = False
             per_env_toppled[done_idxs] = False
+            per_env_tilt_inhand[done_idxs] = False
             per_env_rest_z[done_idxs] = float("nan")
             per_env_max_lift[done_idxs] = 0.0
             for _dz in PHYS_DZS:
@@ -765,10 +781,11 @@ def main():
         print(f"")
         print(f"  Failure/outcome classification:")
         print(f"    Object touched:           {completed_touched} / {completed_episodes} = {100*completed_touched/ce:.2f}%  (hand reached < {TOUCH_TOL} m)")
-        print(f"    -> HELD (success):        {completed_held} = {100*completed_held/ce:.2f}%")
+        print(f"    -> HELD ([PHYS] >=5cm):   {completed_phys[0.05]} = {100*completed_phys[0.05]/ce:.2f}%")
         print(f"    -> touched, not held:     {completed_touched_not_held} = {100*completed_touched_not_held/ce:.2f}%")
         print(f"    Never touched object:     {completed_never_touched} = {100*completed_never_touched/ce:.2f}%")
-        print(f"    Object toppled:           {completed_toppled} / {completed_episodes} = {100*completed_toppled/ce:.2f}%  (tilt > {TOPPLE_DEG:.0f} deg)")
+        print(f"    Object toppled:           {completed_toppled} / {completed_episodes} = {100*completed_toppled/ce:.2f}%  (tilt > {TOPPLE_DEG:.0f} deg while NOT in hand)")
+        print(f"    Tilted in hand:           {completed_tilt_inhand} / {completed_episodes} = {100*completed_tilt_inhand/ce:.2f}%  (tilt > {TOPPLE_DEG:.0f} deg while lifted >=2cm within {PHYS_R:.2f} m of the palm; not a topple)")
         for _dz in PHYS_DZS:
             print(f"  [PHYS] held (lift>={100*_dz:.0f}cm & obj within {PHYS_R:.2f} m of sim palm for >={PHYS_STEPS} steps): "
                   f"{completed_phys[_dz]} / {completed_episodes} = {100*completed_phys[_dz]/ce:.2f}%")
@@ -852,7 +869,7 @@ def main():
                      files[i] if files else ''))
     # rank: worst first by topple%, then by low held%
     rows.sort(key=lambda r: (-r[2], r[3]))
-    hdr = '  motion_id  ep   topple%  held%  touch%  never%  file'
+    hdr = '  motion_id  ep   topple%  held%  touch%  never%  file     (held = [PHYS] >=5cm; topple = tilt while not in hand)'
     lines = ['PER-CLIP OUTCOME RANKING (worst topple first)', hdr]
     for (i, ep, tp, hl, tc, nv, fn) in rows:
         lines.append('  %8d %4d  %6.1f  %5.1f  %6.1f  %6.1f  %s' % (i, ep, tp, hl, tc, nv, fn))
