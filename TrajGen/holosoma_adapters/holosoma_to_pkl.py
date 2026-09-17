@@ -200,47 +200,64 @@ grab_idx = int(max(0, np.argmax(moved > 1e-4) - 1))
 # and pitch are dropped for an upright stance. Root z is deliberately NOT set here: the
 # grounding pass immediately below re-derives it by FK from the standing stance, so the
 # feet land exactly on z=0.
-if os.environ.get("HS_STAND_LOWER", "0") == "1":
+# Grab-frame heading. Both the stitch and the two root corrections below are expressed in it.
+_w, _x, _y, _z = (float(base_quat[grab_idx, k]) for k in range(4))
+_yaw = np.arctan2(2.0 * (_w * _z + _x * _y), 1.0 - 2.0 * (_y * _y + _z * _z))
+STAND_LOWER = os.environ.get("HS_STAND_LOWER", "0") == "1"
+if STAND_LOWER:
     _n_legs = 12
     joints[:, :_n_legs] = np.asarray(_INIT_LEGS, dtype=joints.dtype)[None, :]
-    _w, _x, _y, _z = (float(base_quat[grab_idx, k]) for k in range(4))
-    _yaw = np.arctan2(2.0 * (_w * _z + _x * _y), 1.0 - 2.0 * (_y * _y + _z * _z))
     base_quat[:] = np.array([np.cos(_yaw / 2.0), 0.0, 0.0, np.sin(_yaw / 2.0)])
     base_pos[:, 0] = base_pos[grab_idx, 0]
     base_pos[:, 1] = base_pos[grab_idx, 1]
-    # Minimum stance standoff: the grab-frame root can sit as little as 0.25 m from the object
-    # (pick_35), which parks the INIT hand hanging at the table's front face (env edge = object
-    # x - 0.05) -> spawn collision and an unsolvable table constraint on the pinned first frame.
-    # Push the root straight back along its heading until the along-heading root->object distance
-    # is at least HS_STAND_MIN_STANDOFF. Reach is unaffected (arm ~0.6 m); 0 disables.
-    _min_standoff = float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35"))
-    _hdg = np.array([np.cos(_yaw), np.sin(_yaw)])
-    _d_along = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _hdg))
-    if _min_standoff > 0 and _d_along < _min_standoff:
-        base_pos[:, :2] -= (_min_standoff - _d_along) * _hdg[None, :]
-        print(f"[stand-lower] root->object along heading {_d_along:.3f} m < {_min_standoff:.2f}; "
-              f"root moved back {_min_standoff - _d_along:.3f} m")
-    # Lateral band: the object's LATERAL offset in the heading frame is inherited from where the
-    # human stood (fixH60: -0.07..-0.42 m, always to the robot's right; a human reaches sideways
-    # with a step + torso twist that the pinned stance removes). Measured on fixH60: clips with the
-    # object > 0.30 m to the right hold 7% (fully extended arm), clips with it < 0.12 m hold 15-20%
-    # (side approach into the bottle), the -0.30..-0.20 band holds best. Clamp the offset into
-    # HS_STAND_LAT_BAND ("lo,hi", + = robot's left) by translating the pinned root along its
-    # lateral axis. The AL refine re-solves the arm against the new root->object geometry and the
-    # post-grab palm target is the object trajectory, so the carry stays consistent. "" disables.
-    _lat_band = os.environ.get("HS_STAND_LAT_BAND", "-0.28,-0.15")
-    if _lat_band:
-        _lat_lo, _lat_hi = (float(v) for v in _lat_band.split(","))
-        _lat_ax = np.array([-np.sin(_yaw), np.cos(_yaw)])
-        _d_lat = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _lat_ax))
-        _d_lat_new = min(max(_d_lat, _lat_lo), _lat_hi)
-        if _d_lat_new != _d_lat:
-            base_pos[:, :2] -= (_d_lat_new - _d_lat) * _lat_ax[None, :]
-            print(f"[stand-lower] root->object lateral {_d_lat:+.3f} m outside [{_lat_lo:+.2f},{_lat_hi:+.2f}]; "
-                  f"root moved {abs(_d_lat_new - _d_lat):.3f} m {'right' if _d_lat_new > _d_lat else 'left'}")
+
+# --- root corrections (ALWAYS; independent of the stitch) -----------------------------------
+# Both are RIGID translations of the whole root trajectory (every frame by the same vector),
+# computed from the grab-frame geometry. Under HS_STAND_LOWER every frame equals the grab frame
+# so they read as "move the stance"; with the retargeted lower body kept (locomotion) the same
+# shift moves the entire walk, feet included, so nothing slides and the approach path is
+# preserved -- only where it ends relative to the object changes. Measured on the 60 raw
+# retargets: walks are ~1 m straight-ahead +x approaches (yaw within +-13 deg), the pelvis
+# never crosses the table edge pre-grab, but 40% grab closer than 0.35 m and every clip has
+# the object to the right, several beyond the band -- so both corrections are still needed.
+# Minimum stance standoff: the grab-frame root can sit as little as 0.25 m from the object
+# (pick_35), which parks the INIT hand hanging at the table's front face (env edge = object
+# x - 0.05) -> spawn collision and an unsolvable table constraint on the pinned first frame.
+# Push the root straight back along its heading until the along-heading root->object distance
+# is at least HS_STAND_MIN_STANDOFF. Reach is unaffected (arm ~0.6 m); 0 disables.
+_min_standoff = float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35"))
+_hdg = np.array([np.cos(_yaw), np.sin(_yaw)])
+_d_along = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _hdg))
+if _min_standoff > 0 and _d_along < _min_standoff:
+    base_pos[:, :2] -= (_min_standoff - _d_along) * _hdg[None, :]
+    print(f"[root-standoff] root->object along heading {_d_along:.3f} m < {_min_standoff:.2f}; "
+          f"root moved back {_min_standoff - _d_along:.3f} m")
+# Lateral band: the object's LATERAL offset in the heading frame is inherited from where the
+# human stood (fixH60: -0.07..-0.42 m, always to the robot's right; a human reaches sideways
+# with a step + torso twist that the pinned stance removes). Measured on fixH60: clips with the
+# object > 0.30 m to the right hold 7% (fully extended arm), clips with it < 0.12 m hold 15-20%
+# (side approach into the bottle), the -0.30..-0.20 band holds best. Clamp the offset into
+# HS_STAND_LAT_BAND ("lo,hi", + = robot's left) by translating the pinned root along its
+# lateral axis. The AL refine re-solves the arm against the new root->object geometry and the
+# post-grab palm target is the object trajectory, so the carry stays consistent. "" disables.
+_lat_band = os.environ.get("HS_STAND_LAT_BAND", "-0.28,-0.15")
+if _lat_band:
+    _lat_lo, _lat_hi = (float(v) for v in _lat_band.split(","))
+    _lat_ax = np.array([-np.sin(_yaw), np.cos(_yaw)])
+    _d_lat = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _lat_ax))
+    _d_lat_new = min(max(_d_lat, _lat_lo), _lat_hi)
+    if _d_lat_new != _d_lat:
+        base_pos[:, :2] -= (_d_lat_new - _d_lat) * _lat_ax[None, :]
+        print(f"[root-latband] root->object lateral {_d_lat:+.3f} m outside [{_lat_lo:+.2f},{_lat_hi:+.2f}]; "
+              f"root moved {abs(_d_lat_new - _d_lat):.3f} m {'right' if _d_lat_new > _d_lat else 'left'}")
+if STAND_LOWER:
     print(f"[stand-lower] legs pinned to INIT stance; root frozen at grab-frame "
           f"xy=({base_pos[grab_idx,0]:.3f},{base_pos[grab_idx,1]:.3f}) yaw={_yaw:+.3f} rad; "
           f"waist+arms kept from the retarget")
+else:
+    _walk = float(np.linalg.norm(np.diff(base_pos[:grab_idx, :2], axis=0), axis=1).sum())
+    print(f"[loco] retargeted lower body + root kept; root path {_walk:.2f} m before grab, "
+          f"grab-frame yaw={_yaw:+.3f} rad, start {float(np.linalg.norm(obj_pos[grab_idx,:2]-base_pos[0,:2])):.2f} m from object")
 
 # --- per-frame grounding (lowest link-origin -> 0) via g1_{DOF}dof FK ---
 chain = pk.build_chain_from_urdf(open(URDF, "rb").read())
