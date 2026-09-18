@@ -204,6 +204,19 @@ grab_idx = int(max(0, np.argmax(moved > 1e-4) - 1))
 _w, _x, _y, _z = (float(base_quat[grab_idx, k]) for k in range(4))
 _yaw = np.arctan2(2.0 * (_w * _z + _x * _y), 1.0 - 2.0 * (_y * _y + _z * _z))
 STAND_LOWER = os.environ.get("HS_STAND_LOWER", "0") == "1"
+# HS_PLANNER_LOWER=1: discard the retargeted root+legs and re-synthesize them with SONIC's own
+# kinematic planner, driven by the reference root path as waypoint targets plus a pelvis-height
+# command (see planner_lower.py). The waist and both arms -- the manipulation -- are untouched.
+# Mutually exclusive with HS_STAND_LOWER (that one pins the legs to a static stance instead).
+PLANNER_LOWER = os.environ.get("HS_PLANNER_LOWER", "0") == "1"
+if PLANNER_LOWER and STAND_LOWER:
+    raise SystemExit("HS_PLANNER_LOWER and HS_STAND_LOWER are mutually exclusive")
+if PLANNER_LOWER:
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "..", "..", "Training", "scripts", "reinforcement_learning", "rsl_rl"))
+    from planner_lower import plan_lower_body
+    base_pos, base_quat, joints[:, :12] = plan_lower_body(base_pos, base_quat, fps=20.0)
 if STAND_LOWER:
     _n_legs = 12
     joints[:, :_n_legs] = np.asarray(_INIT_LEGS, dtype=joints.dtype)[None, :]
@@ -256,7 +269,8 @@ if STAND_LOWER:
           f"waist+arms kept from the retarget")
 else:
     _walk = float(np.linalg.norm(np.diff(base_pos[:grab_idx, :2], axis=0), axis=1).sum())
-    print(f"[loco] retargeted lower body + root kept; root path {_walk:.2f} m before grab, "
+    _src = "planner-synthesized" if PLANNER_LOWER else "retargeted"
+    print(f"[loco] {_src} lower body + root; root path {_walk:.2f} m before grab, "
           f"grab-frame yaw={_yaw:+.3f} rad, start {float(np.linalg.norm(obj_pos[grab_idx,:2]-base_pos[0,:2])):.2f} m from object")
 
 # --- per-frame grounding (lowest link-origin -> 0) via g1_{DOF}dof FK ---
