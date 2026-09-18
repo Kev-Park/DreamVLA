@@ -78,7 +78,7 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--max-steps-per-episode", type=int, default=500)
     parser.add_argument("--chunk-size", type=int, default=8,
                         help="Execute first N of the VLA's predicted steps before replanning.")
-    parser.add_argument("--vla-checkpoint", required=True,
+    parser.add_argument("--vla-checkpoint", default=None,
                         help="Path to the unitree_g1_sonic fine-tuned GR00T checkpoint dir "
                              "(the VLA that emits motion_token + hand joints).")
     parser.add_argument("--embodiment-tag", default=DEFAULT_EMBODIMENT_TAG)
@@ -115,6 +115,17 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--force-close-at-grab", action="store_true", default=False,
                         help="DIAGNOSTIC: ignore the VLA's finger prediction and command CLOSE from the reference "
                              "motion's grab frame onward (validates the finger command path eval -> wrapper -> env).")
+    parser.add_argument("--episode-scale", type=float, default=1.0,
+                        help="Run episodes this many times longer than the reference clip (episode_length_s and "
+                             "--max-steps-per-episode are scaled; the reference-exhausted time_out is replaced by "
+                             "the flat cap and the reference holds its last frame past the clip end).")
+    parser.add_argument("--motions-from", type=str, default=None,
+                        help="collect_sonic_adapter.py HDF5 output root: sweep ONLY motion ids that have a "
+                             "collected demonstration there (filtered reference init states).")
+    parser.add_argument("--replay-hdf5", type=str, default=None,
+                        help="DIAGNOSTIC: instead of the VLA, feed this demo's RECORDED executed token + finger "
+                             "scalar through the same decoder wrapper (its motion id is used). The VLA checkpoint "
+                             "is not loaded.")
     parser.add_argument("--seed", type=int, default=0)
     # AppLauncher args get appended below.
     return parser
@@ -159,6 +170,7 @@ from vla_sonic.simple_robot_model import SimpleG1RobotModel  # noqa: E402
 from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder  # noqa: E402
 from vla_sonic.sonic_pt import load_sonic_pt  # noqa: E402
 from vla_sonic.robot_29dof import apply_29dof_waist_override  # noqa: E402
+from vla_sonic.eval_helpers import ReplaySource, apply_episode_scale, demo_motion_ids  # noqa: E402
 
 from gr00t.policy.gr00t_policy import Gr00tPolicy  # noqa: E402
 
@@ -381,6 +393,9 @@ def main() -> int:
     if os.environ.get("HS_EVAL_NO_EE_TERM", "0") == "1" and getattr(env_cfg.terminations, "ee_body_pos", None) is not None:
         env_cfg.terminations.ee_body_pos = None
         print("[eval_vla_sonic] HS_EVAL_NO_EE_TERM=1: ee_body_pos termination removed")
+    apply_episode_scale(env_cfg, args.episode_scale, "eval_vla_sonic")
+    if args.episode_scale != 1.0:
+        args.max_steps_per_episode = int(round(args.max_steps_per_episode * args.episode_scale))
     # Use the env's own ego camera when it defines one (the Cam-* envs: 1280x960, identical to
     # the collection render, downsized by ObsToPolicyAdapter exactly as the converter did);
     # inject the 640x480 fallback only for envs without a camera.
@@ -418,12 +433,20 @@ def main() -> int:
         _APP.update()
 
     # --- 2. Build VLA policy -------------------------------------------
-    print(f"[vla] loading {args.vla_checkpoint}  (embodiment={args.embodiment_tag})")
-    policy = Gr00tPolicy(
-        embodiment_tag=args.embodiment_tag,
-        model_path=args.vla_checkpoint,
-        device="cuda:0",
-    )
+    replay = ReplaySource(args.replay_hdf5) if args.replay_hdf5 else None
+    if replay is not None:
+        policy = None
+        print(f"[replay] {replay.path.name}: {replay.num_steps} recorded steps, motion {replay.motion_id} -- "
+              f"feeding the RECORDED token + finger scalar (VLA not loaded)")
+    else:
+        if not args.vla_checkpoint:
+            raise SystemExit("--vla-checkpoint is required unless --replay-hdf5 is given")
+        print(f"[vla] loading {args.vla_checkpoint}  (embodiment={args.embodiment_tag})")
+        policy = Gr00tPolicy(
+            embodiment_tag=args.embodiment_tag,
+            model_path=args.vla_checkpoint,
+            device="cuda:0",
+        )
 
     # --- 3. SONIC decoder: the same frozen decoder + proprio-history wrapper the residual
     # policy was trained/collected with (TokenActionDecoderVecEnvWrapper). The VLA's token
@@ -476,8 +499,14 @@ def main() -> int:
           f"max_steps_per_episode={args.max_steps_per_episode}, motions={total_motions}, "
           f"phys: lift>=2/5cm & obj within {args.phys_radius} m of sim palm for >={args.phys_steps} steps")
     t_start = time.time()
+    sweep_ids = demo_motion_ids(args.motions_from) if args.motions_from else list(range(total_motions))
+    if args.motions_from:
+        print(f"[eval_vla_sonic] --motions-from: sweeping only the {len(sweep_ids)} motions with a demonstration: {sweep_ids}")
     for ep in range(args.num_episodes):
-        mid = ep % total_motions if args.sweep_motions else None
+        if replay is not None:
+            mid = replay.motion_id
+        else:
+            mid = sweep_ids[ep % len(sweep_ids)] if args.sweep_motions else None
         unw._forced_motion_id = mid
         print(f"\n[episode {ep}] motion_id={mid if mid is not None else 'random'}")
         with torch.inference_mode():
@@ -491,26 +520,31 @@ def main() -> int:
         grab_step = -1; fired = []
         step = 0
         for step in range(args.max_steps_per_episode):
-            if vla_chunk is None or chunk_step >= args.chunk_size:
-                vla_obs = obs_adapter()
-                vla_out = policy.get_action(vla_obs)
-                vla_chunk = vla_out[0] if isinstance(vla_out, tuple) else vla_out
-                chunk_step = 0
-                if ep == 0 and step == 0:
-                    print("\n[VLA @ ep0 step0] action-dict dump (t=0 slice, batch=0):")
-                    for k in sorted(vla_chunk.keys()):
-                        arr = np.asarray(vla_chunk[k])
-                        slice_ = arr[0, 0] if arr.ndim == 3 else arr.reshape(-1)
-                        print(f"  {k} [shape {tuple(arr.shape)}] = {slice_.reshape(-1)[:8].round(4).tolist()}"
-                              f"{' ...' if slice_.size > 8 else ''}")
-            t_idx = chunk_step
-            token = extract_motion_token(vla_chunk, t_index=t_idx)                # (64,) continuous
-            if ep == 0 and step == 0 and float(np.abs(token).max()) < 1e-6:
-                print("\n[WARN] motion_token is ALL ZERO -- the VLA is emitting a null SONIC token; "
-                      "the robot is NOT VLA-controlled. Check action.motion_token in the dataset.\n")
+            if replay is not None:
+                token, _fs = replay.latent(step)
+                vla_chunk = {"right_hand_joints": np.zeros((1, 1, 7), np.float32)}  # keeps the grasp log shape
+                t_idx = 0
+            else:
+                if vla_chunk is None or chunk_step >= args.chunk_size:
+                    vla_obs = obs_adapter()
+                    vla_out = policy.get_action(vla_obs)
+                    vla_chunk = vla_out[0] if isinstance(vla_out, tuple) else vla_out
+                    chunk_step = 0
+                    if ep == 0 and step == 0:
+                        print("\n[VLA @ ep0 step0] action-dict dump (t=0 slice, batch=0):")
+                        for k in sorted(vla_chunk.keys()):
+                            arr = np.asarray(vla_chunk[k])
+                            slice_ = arr[0, 0] if arr.ndim == 3 else arr.reshape(-1)
+                            print(f"  {k} [shape {tuple(arr.shape)}] = {slice_.reshape(-1)[:8].round(4).tolist()}"
+                                  f"{' ...' if slice_.size > 8 else ''}")
+                t_idx = chunk_step
+                token = extract_motion_token(vla_chunk, t_index=t_idx)                # (64,) continuous
+                if ep == 0 and step == 0 and float(np.abs(token).max()) < 1e-6:
+                    print("\n[WARN] motion_token is ALL ZERO -- the VLA is emitting a null SONIC token; "
+                          "the robot is NOT VLA-controlled. Check action.motion_token in the dataset.\n")
             latent = torch.zeros((1, 65), device="cuda:0", dtype=torch.float32)
             latent[0, :64] = torch.as_tensor(token, device="cuda:0")
-            latent[0, 64] = _finger_scalar(vla_chunk, t_idx)
+            latent[0, 64] = _fs if replay is not None else _finger_scalar(vla_chunk, t_idx)
             if args.force_close_at_grab:
                 _mt = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.to("cuda:0", dtype=torch.float32)
                 if bool(unw.motion_lib.get_motion_state(unw.motion_ids, _mt)["is_closed"][0].item() > 0.5):
