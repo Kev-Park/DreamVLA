@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, hoi_relative_body_pos_tracking_exp, hoi_relative_body_ori_tracking_exp, HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS, HOI_RARM_BODY_NAMES, HOI_RARM_KEYPT_IDXS, HOI_BODY_NAMES_NO_RARM, HOI_BODY_KEYPT_IDXS_NO_RARM, exceeded_anchor_height, exceeded_anchor_ori, exceeded_body_height, tracking_time_out, HOI_EE_BODY_NAMES, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import anti_shake_ang_vel_l2, keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, hoi_relative_body_pos_tracking_exp, hoi_relative_body_ori_tracking_exp, HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS, HOI_RARM_BODY_NAMES, HOI_RARM_KEYPT_IDXS, HOI_BODY_NAMES_NO_RARM, HOI_BODY_KEYPT_IDXS_NO_RARM, exceeded_anchor_height, exceeded_anchor_ori, exceeded_body_height, tracking_time_out, HOI_EE_BODY_NAMES, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
 import numpy as np
 import os
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -375,6 +375,14 @@ KEYPTS_MASK_RARM_ONLY = [m if i >= 31 else 0 for i, m in enumerate(KEYPTS_MASK)]
 # #2 equal whole-body tracking: track ALL 39 FK links equally (right arm included), no grasp-driven
 # masking. All-ones so the relative body pos/ori terms cover the full body incl. the task arm/hand.
 KEYPTS_MASK_ALL = [1 for _ in KEYPTS_MASK]
+
+# gear_sonic's VR 5-point set (config/manager_env/commands/terms/motion.yaml:reward_point_body):
+# pelvis + both wrists + both ankles, tracked root-locally. This is the term that separates the
+# TELEOP/planner-mode reward set (rewards/tracking/base_5point_local_feet_acc.yaml) from the dense
+# g1-mode set (base.yaml): the endpoints that matter for teleoperation -- what the hands do and
+# where the feet land -- get their own concentrated kernel (std 0.1, w 2.0) on top of the dense
+# body terms, rather than being averaged away across 39 links.
+KEYPTS_MASK_VR5 = [1 if i in (0, 7, 13, 29, 37) else 0 for i in range(len(KEYPTS_MASK))]
 
 
         
@@ -969,6 +977,31 @@ class G1Rewards(G1RewardsBase):
             object_contact_pos = RewTerm(func=object_contact_pos_reward, weight=REWORK_CONTACT_POS_W,
                 params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"]),
                         "std": REWORK_CONTACT_POS_STD, "offset_x": REWORK_CONTACT_POS_OFFX})
+        # ===== TELEOP / PLANNER-MODE REWARD SET (HS_REWORK_TELEOP_REWARDS=1) =====
+        # Mirrors gear_sonic rewards/tracking/base_5point_local_feet_acc.yaml, the set SONIC's own
+        # teleop (VR 3-point + planner lower-body command) mode trains under. Note what it does NOT
+        # do: it does not drop dense lower-body tracking. Every tracking term above stays, so the
+        # legs remain implicitly tracked and the gait cannot drift away from the commanded one --
+        # which works here because the reference legs are now PLANNER output (in-distribution),
+        # not a human walk. base_5point adds exactly three terms on top of base.yaml:
+        #   tracking_vr_5point_local  w 2.0  std 0.1   (pelvis + wrists + ankles, root-local)
+        #   feet_acc                  w -2.5e-7        (joint_acc_l2 on the ankles)
+        #   anti_shake_ang_vel        w -5e-3          (wrist/head angular-velocity above 1.5 rad/s)
+        # Deviation from gear_sonic, deliberate: its 5-point wrist targets carry a +0.18 m local-x
+        # offset (the VR controller sits ahead of the wrist link). Our keypoints are link origins
+        # and both sides use the same convention, so the offset cancels in the difference; the only
+        # residual is a second-order wrist-orientation effect.
+        if os.environ.get("HS_REWORK_TELEOP_REWARDS", "0") == "1":
+            tracking_vr_5point_local = RewTerm(func=relative_keypts_tracking_exp, weight=2.0,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                        "std": 0.1, "keypts_mask": KEYPTS_MASK_VR5})
+            feet_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*ankle.*"])})
+            anti_shake_ang_vel = RewTerm(func=anti_shake_ang_vel_l2, weight=-5e-3,
+                params={"asset_cfg": SceneEntityCfg("robot",
+                            body_names=["left_wrist_yaw_link", "right_wrist_yaw_link", "head_link"]),
+                        "threshold": 1.5})
+
         # HS_REWORK_SONIC_ONLY=1: strip everything that is NOT in gear_sonic's native reward set
         # (rewards/tracking/base.yaml = 6 tracking terms + action_rate/joint_limit/undesired_contacts).
         # Drops the pick-task rewards AND the inherited survival/shaping terms. Combine with
