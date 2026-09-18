@@ -315,7 +315,16 @@ class GraspGate:
     # so one dot product guards the DOF the box ignores, still with no reference and no motion id.
     UP_MAX_DEG = 35.0
 
-    def __init__(self, env, *, pad: float = 0.03, hold: int = 3, release: int = 25, up_max_deg: float = UP_MAX_DEG):
+    def __init__(self, env, *, pad: float = 0.03, hold: int = 3, release: int = 25, up_max_deg: float = UP_MAX_DEG,
+                 stall: int = 0, stall_eps: float = 0.002):
+        # ADAPTIVE (constant-free) timing: instead of a fixed dwell from box entry, fire once the
+        # APPROACH PLATEAUS -- d_center's running minimum has not improved by more than stall_eps for
+        # `stall` frames ("I am at my closest and getting no closer"). A fast approach plateaus early,
+        # a slow one late, so the rule follows each clip's own pace. Offline on the 54 demos this
+        # tracks the per-clip close time far better than any dwell (k=15: 69% within +-25 frames,
+        # IQR 25 wide, vs dwell-50's 59% / IQR 42). stall=0 disables it (pure dwell).
+        self.stall, self.stall_eps = int(stall), float(stall_eps)
+        self.mid = 0.5 * ((self.LO - pad) + (self.HI + pad))
         self.lo = self.LO - pad; self.hi = self.HI + pad
         self.cos_up_min = float(np.cos(np.radians(up_max_deg))) if up_max_deg < 180.0 else -1.0
         self.up_max_deg = float(up_max_deg)
@@ -329,6 +338,7 @@ class GraspGate:
 
     def reset(self):
         self.latched = False; self._in = 0; self._out = 0
+        self._dmin = float("inf"); self._since_improve = 0
 
     def _palm(self):
         q = self._robot.data.body_quat_w[0, self._bid]                      # wxyz
@@ -346,8 +356,15 @@ class GraspGate:
     def __call__(self) -> bool:
         r, R = self._palm()
         upright = bool(R[2, 2] >= self.cos_up_min)                          # angle(palm z, world up)
+        d_center = float(np.linalg.norm(r - self.mid))
+        if d_center < self._dmin - self.stall_eps:
+            self._dmin = d_center; self._since_improve = 0                  # still closing in
+        else:
+            self._since_improve += 1
         if not self.latched:
-            self._in = self._in + 1 if (upright and bool(np.all((r >= self.lo) & (r <= self.hi)))) else 0
+            in_box = upright and bool(np.all((r >= self.lo) & (r <= self.hi)))
+            plateaued = self._since_improve >= self.stall if self.stall > 0 else True
+            self._in = self._in + 1 if (in_box and plateaued) else 0
             if self._in >= self.hold:
                 self.latched = True; self._out = 0
         else:
@@ -689,7 +706,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
                               "vla_steps": dagger.n_vla, "labels": "expert token + expert finger command"}
     if grasp_gate is not None:
         metadata["grasp_gate"] = {"lo": grasp_gate.lo.tolist(), "hi": grasp_gate.hi.tolist(), "up_max_deg": grasp_gate.up_max_deg,
-                                  "hold": grasp_gate.hold, "release": grasp_gate.release, "drives": bool(gate_drives),
+                                  "hold": grasp_gate.hold, "stall": grasp_gate.stall, "release": grasp_gate.release, "drives": bool(gate_drives),
                                   "closed_frames": int(np.sum(gate_hist)), "first_close": int(np.argmax(gate_hist)) if any(gate_hist) else -1}
     return camera_frames, raw_state, metadata, teleop_payload
 
@@ -778,6 +795,10 @@ def main() -> None:
     parser.add_argument("--grasp-gate-up-deg", type=float, default=35.0,
                         help="Also require the palm z-axis within this angle of world up (demos: 9.5 +- 7.6 deg), "
                              "guarding the roll DOF the position box leaves free. 180 disables.")
+    parser.add_argument("--grasp-gate-stall", type=int, default=0,
+                        help="ADAPTIVE timing: require the approach to have PLATEAUED -- d_center's running minimum "
+                             "unimproved for this many frames -- before latching (0 = pure dwell). 15-25 recommended.")
+    parser.add_argument("--grasp-gate-stall-eps", type=float, default=0.002, help="Improvement (m) that resets the plateau counter.")
     parser.add_argument("--grasp-gate-hold", type=int, default=3, help="Consecutive in-box frames before latching.")
     parser.add_argument("--grasp-gate-release", type=int, default=25, help="Consecutive out-of-2x-box frames to release.")
     parser.add_argument("--grasp-gate-drives", action="store_true", default=False,
@@ -919,10 +940,11 @@ def main() -> None:
 
     grasp_gate = GraspGate(env, pad=args_cli.grasp_gate_pad, hold=args_cli.grasp_gate_hold,
                            release=args_cli.grasp_gate_release,
-                           up_max_deg=args_cli.grasp_gate_up_deg) if args_cli.grasp_gate else None
+                           up_max_deg=args_cli.grasp_gate_up_deg, stall=args_cli.grasp_gate_stall,
+                           stall_eps=args_cli.grasp_gate_stall_eps) if args_cli.grasp_gate else None
     if grasp_gate is not None:
         print(f"[grasp-gate] palm-frame box lo={np.round(grasp_gate.lo,3).tolist()} hi={np.round(grasp_gate.hi,3).tolist()} "
-              f"hold={grasp_gate.hold} release={grasp_gate.release} up<={grasp_gate.up_max_deg:.0f}deg "
+              f"hold={grasp_gate.hold} stall={grasp_gate.stall} release={grasp_gate.release} up<={grasp_gate.up_max_deg:.0f}deg "
               f"drives={args_cli.grasp_gate_drives}")
     dagger = None; dagger_closed = None; dagger_motions = None
     if args_cli.dagger_vla_checkpoint:
