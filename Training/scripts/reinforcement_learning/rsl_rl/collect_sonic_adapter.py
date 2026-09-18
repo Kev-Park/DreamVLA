@@ -308,9 +308,17 @@ class GraspGate:
 
     LO = np.array([0.082, 0.062, -0.071])       # demos' hold-phase p05 (palm frame, m)
     HI = np.array([0.151, 0.099, -0.004])       # demos' hold-phase p95
+    # The box fixes the object's BEARING + DISTANCE in hand axes but leaves the hand's ROLL about the
+    # palm->object axis free (spin the hand about that line and rel is unchanged) -- for an upright
+    # bottle that is the difference between wrapping its circumference and closing along its axis.
+    # The demos pin it (hold phase: angle(palm z, up) 9.5 +- 7.6 deg, p95 22 deg; roll -8 +- 8.5 deg),
+    # so one dot product guards the DOF the box ignores, still with no reference and no motion id.
+    UP_MAX_DEG = 35.0
 
-    def __init__(self, env, *, pad: float = 0.03, hold: int = 3, release: int = 25):
+    def __init__(self, env, *, pad: float = 0.03, hold: int = 3, release: int = 25, up_max_deg: float = UP_MAX_DEG):
         self.lo = self.LO - pad; self.hi = self.HI + pad
+        self.cos_up_min = float(np.cos(np.radians(up_max_deg))) if up_max_deg < 180.0 else -1.0
+        self.up_max_deg = float(up_max_deg)
         mid = 0.5 * (self.lo + self.hi); half = 0.5 * (self.hi - self.lo)
         self.rel_lo, self.rel_hi = mid - 2.0 * half, mid + 2.0 * half      # release box (2x)
         self.hold, self.release = int(hold), int(release)
@@ -322,7 +330,7 @@ class GraspGate:
     def reset(self):
         self.latched = False; self._in = 0; self._out = 0
 
-    def rel(self) -> np.ndarray:
+    def _palm(self):
         q = self._robot.data.body_quat_w[0, self._bid]                      # wxyz
         w, x, y, z = (float(v) for v in q)
         R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
@@ -330,12 +338,16 @@ class GraspGate:
                       [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
         p_palm = self._robot.data.body_pos_w[0, self._bid].detach().cpu().numpy()
         p_obj = self._obj.data.root_pos_w[0].detach().cpu().numpy()
-        return R.T @ (p_obj - p_palm)                                       # env origin cancels
+        return R.T @ (p_obj - p_palm), R                                    # env origin cancels
+
+    def rel(self) -> np.ndarray:
+        return self._palm()[0]
 
     def __call__(self) -> bool:
-        r = self.rel()
+        r, R = self._palm()
+        upright = bool(R[2, 2] >= self.cos_up_min)                          # angle(palm z, world up)
         if not self.latched:
-            self._in = self._in + 1 if bool(np.all((r >= self.lo) & (r <= self.hi))) else 0
+            self._in = self._in + 1 if (upright and bool(np.all((r >= self.lo) & (r <= self.hi)))) else 0
             if self._in >= self.hold:
                 self.latched = True; self._out = 0
         else:
@@ -676,7 +688,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         metadata["dagger"] = {"beta": dagger.beta, "chunk": dagger.chunk, "expert_steps": dagger.n_expert,
                               "vla_steps": dagger.n_vla, "labels": "expert token + expert finger command"}
     if grasp_gate is not None:
-        metadata["grasp_gate"] = {"lo": grasp_gate.lo.tolist(), "hi": grasp_gate.hi.tolist(),
+        metadata["grasp_gate"] = {"lo": grasp_gate.lo.tolist(), "hi": grasp_gate.hi.tolist(), "up_max_deg": grasp_gate.up_max_deg,
                                   "hold": grasp_gate.hold, "release": grasp_gate.release, "drives": bool(gate_drives),
                                   "closed_frames": int(np.sum(gate_hist)), "first_close": int(np.argmax(gate_hist)) if any(gate_hist) else -1}
     return camera_frames, raw_state, metadata, teleop_payload
@@ -763,6 +775,9 @@ def main() -> None:
                              "closing volume in the PALM frame (box calibrated on the demos' hold phase), latched. "
                              "Replaces the reference clip's is_closed schedule as the DAgger finger label.")
     parser.add_argument("--grasp-gate-pad", type=float, default=0.03, help="Box padding (m) around the demos' p05/p95.")
+    parser.add_argument("--grasp-gate-up-deg", type=float, default=35.0,
+                        help="Also require the palm z-axis within this angle of world up (demos: 9.5 +- 7.6 deg), "
+                             "guarding the roll DOF the position box leaves free. 180 disables.")
     parser.add_argument("--grasp-gate-hold", type=int, default=3, help="Consecutive in-box frames before latching.")
     parser.add_argument("--grasp-gate-release", type=int, default=25, help="Consecutive out-of-2x-box frames to release.")
     parser.add_argument("--grasp-gate-drives", action="store_true", default=False,
@@ -903,10 +918,12 @@ def main() -> None:
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
     grasp_gate = GraspGate(env, pad=args_cli.grasp_gate_pad, hold=args_cli.grasp_gate_hold,
-                           release=args_cli.grasp_gate_release) if args_cli.grasp_gate else None
+                           release=args_cli.grasp_gate_release,
+                           up_max_deg=args_cli.grasp_gate_up_deg) if args_cli.grasp_gate else None
     if grasp_gate is not None:
         print(f"[grasp-gate] palm-frame box lo={np.round(grasp_gate.lo,3).tolist()} hi={np.round(grasp_gate.hi,3).tolist()} "
-              f"hold={grasp_gate.hold} release={grasp_gate.release} drives={args_cli.grasp_gate_drives}")
+              f"hold={grasp_gate.hold} release={grasp_gate.release} up<={grasp_gate.up_max_deg:.0f}deg "
+              f"drives={args_cli.grasp_gate_drives}")
     dagger = None; dagger_closed = None; dagger_motions = None
     if args_cli.dagger_vla_checkpoint:
         from gr00t.policy.gr00t_policy import Gr00tPolicy
