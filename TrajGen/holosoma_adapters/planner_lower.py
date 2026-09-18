@@ -39,6 +39,7 @@ import numpy as np
 PLANNER_HZ = 30.0
 FRAMES_PER_TOKEN = 4          # one token's worth of waypoints
 REPLAN_EVERY = 3              # emitted frames between replans (10 Hz)
+MAX_CMD_SPEED = 1.2           # m/s ceiling on the commanded speed (WALK mode territory)
 _DEFAULT_ANGLES_29 = np.array([
     -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
     -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
@@ -127,15 +128,22 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
     for k in range(n_plan):
         if k % REPLAN_EVERY == 0 or cached is None or cache_i >= cached.shape[0]:
             idx = np.clip(np.arange(k, k + FRAMES_PER_TOKEN), 0, n_plan - 1)
-            # COMMANDS derived from the reference root alone. movement_direction is the
-            # reference's own direction of travel over this token -- NOT a bearing to a
-            # remembered waypoint, which is what would turn it back into path tracking.
-            step = ref_xy[idx[-1]] - ref_xy[idx[0]]
-            nrm = float(np.linalg.norm(step))
-            move = np.array([[step[0] / nrm, step[1] / nrm, 0.0]], dtype=np.float32) if nrm > 1e-6 \
+            # COMMANDS derived from the reference root alone: a planar velocity and a pelvis
+            # height -- the signals a teleoperator's joystick produces. The velocity is CLOSED
+            # LOOP on the reference path: v = (ref position at the end of this token - where the
+            # planner will actually be) / token duration. That is still a velocity command, and
+            # it is what a human driving the robot does -- look at the gap, push the stick
+            # accordingly. Commanding the reference's own speed OPEN LOOP instead overshoots
+            # badly (measured: 0.75-0.92 m of reference travel became 1.11-1.63 m, leaving the
+            # hand 0.34-0.74 m past the object), because the planner's achieved speed exceeds
+            # the commanded one and nothing ever corrects the accumulated error.
+            here = ctx[0, -1, 0:2].astype(np.float64)      # where the next plan takes effect
+            err = ref_xy[idx[-1]] - here
+            nrm = float(np.linalg.norm(err))
+            spd = float(np.clip(nrm / (FRAMES_PER_TOKEN / PLANNER_HZ), 0.0, MAX_CMD_SPEED))
+            move = np.array([[err[0] / nrm, err[1] / nrm, 0.0]], dtype=np.float32) if nrm > 1e-6 \
                 else np.array([[np.cos(ref_yaw[k]), np.sin(ref_yaw[k]), 0.0]], dtype=np.float32)
             face = np.array([[np.cos(ref_yaw[k]), np.sin(ref_yaw[k]), 0.0]], dtype=np.float32)
-            spd = float(ref_speed[idx].mean())        # token-averaged; per-frame FD is noisy
             kw = {}
             if cmd_mode == "waypoint":
                 wp = np.zeros((1, FRAMES_PER_TOKEN, 3), dtype=np.float32)
