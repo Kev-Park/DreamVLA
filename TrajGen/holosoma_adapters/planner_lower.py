@@ -127,17 +127,21 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
     for k in range(n_plan):
         if k % REPLAN_EVERY == 0 or cached is None or cache_i >= cached.shape[0]:
             idx = np.clip(np.arange(k, k + FRAMES_PER_TOKEN), 0, n_plan - 1)
-            wp = np.zeros((1, FRAMES_PER_TOKEN, 3), dtype=np.float32)
-            wp[0, :, :2] = ref_xy[idx]
-            wp[0, :, 2] = ref_z[idx]
-            head = ref_yaw[idx].astype(np.float32)[None, :]
-            here = ctx[0, -1, 0:2].astype(np.float64)   # where the next plan starts
-            to_goal = ref_xy[idx[-1]] - here
-            nrm = float(np.linalg.norm(to_goal))
-            move = np.array([[to_goal[0] / nrm, to_goal[1] / nrm, 0.0]], dtype=np.float32) if nrm > 1e-6 \
+            # COMMANDS derived from the reference root alone. movement_direction is the
+            # reference's own direction of travel over this token -- NOT a bearing to a
+            # remembered waypoint, which is what would turn it back into path tracking.
+            step = ref_xy[idx[-1]] - ref_xy[idx[0]]
+            nrm = float(np.linalg.norm(step))
+            move = np.array([[step[0] / nrm, step[1] / nrm, 0.0]], dtype=np.float32) if nrm > 1e-6 \
                 else np.array([[np.cos(ref_yaw[k]), np.sin(ref_yaw[k]), 0.0]], dtype=np.float32)
             face = np.array([[np.cos(ref_yaw[k]), np.sin(ref_yaw[k]), 0.0]], dtype=np.float32)
-            spd = float(ref_speed[k])
+            spd = float(ref_speed[idx].mean())        # token-averaged; per-frame FD is noisy
+            kw = {}
+            if cmd_mode == "waypoint":
+                wp = np.zeros((1, FRAMES_PER_TOKEN, 3), dtype=np.float32)
+                wp[0, :, :2] = ref_xy[idx]; wp[0, :, 2] = ref_z[idx]
+                kw = dict(has_specific_target=1, specific_target_positions=wp,
+                          specific_target_headings=ref_yaw[idx].astype(np.float32)[None, :])
             res = planner.run(
                 context_mujoco_qpos=ctx,
                 target_vel=np.array([spd], dtype=np.float32),
