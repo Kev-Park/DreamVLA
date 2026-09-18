@@ -216,7 +216,7 @@ if PLANNER_LOWER:
     _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      "..", "..", "Training", "scripts", "reinforcement_learning", "rsl_rl"))
     from planner_lower import plan_lower_body
-    base_pos, base_quat, joints[:, :12] = plan_lower_body(base_pos, base_quat, fps=20.0)
+    base_pos, base_quat, joints[:, :12] = plan_lower_body(base_pos, base_quat, fps=20.0, grab_idx=grab_idx)
 if STAND_LOWER:
     _n_legs = 12
     joints[:, :_n_legs] = np.asarray(_INIT_LEGS, dtype=joints.dtype)[None, :]

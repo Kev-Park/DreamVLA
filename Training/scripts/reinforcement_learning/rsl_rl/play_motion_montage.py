@@ -152,6 +152,12 @@ parser.add_argument(
          "time_out). Training (train_sonic_adapter.py) and eval (eval_sonic_adapter.py) are "
          "unaffected — they use their own cfgs and always keep terminations.")
 parser.add_argument(
+    "--overlay-ref-path", type=str, default=None,
+    help="Second reference dataset to draw as BLUE spheres alongside the loaded one. Use it to "
+         "compare two parameterisations of the same clips (e.g. the planner-reparameterised "
+         "reference vs the unparsed retarget it came from). Motion ids are matched by position "
+         "in the sorted file list, so both dirs must hold the same pick_<id>.pkl set.")
+parser.add_argument(
     "--overlay-ref", action="store_true", default=True,
     help="Draw the tracked REFERENCE motion as an overlay on top of the (physics) residual "
          "playback: 39 spheres at the reference link world positions, updated every frame "
@@ -536,6 +542,41 @@ def _make_ref_overlay_markers():
     # env 0 only (num_envs=1 for a clean video). Per-keypoint prototype index: right arm -> red.
     marker_indices = [1 if i >= _RARM_START_IDX else 0 for i in range(_N_KEYPTS)]
     return markers, marker_indices
+
+
+def _make_alt_overlay_markers():
+    """BLUE spheres for the --overlay-ref-path comparison dataset (all 39 links, one prototype)."""
+    cfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/alt_ref_keypts",
+        markers={"alt": sim_utils.SphereCfg(
+            radius=0.026,
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.35, 0.95)))},
+    )
+    return VisualizationMarkers(cfg), [0] * _N_KEYPTS
+
+
+def _load_alt_motion_lib(env, path, device):
+    """Load a SECOND MotionLibRobot for the comparison overlay (viz only; never touches obs)."""
+    from isaaclab_tasks.utils.motion_lib.motion_lib_robot import MotionLibRobot
+    from isaaclab_tasks.utils.repo_paths import dataset as _resolve_dataset
+    lib = MotionLibRobot(num_envs=env.unwrapped.scene.num_envs, device=device,
+                         motion_file=str(_resolve_dataset(path)))
+    lib.load_motions()
+    print(f"[overlay-ref-path] loaded {lib.num_motions()} comparison motions from {path} (BLUE)")
+    return lib
+
+
+def _update_alt_overlay_markers(env, lib, markers, marker_indices, device):
+    """Draw the comparison dataset's keypoints at the same motion time as the primary."""
+    unw = env.unwrapped
+    with torch.inference_mode():
+        t = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
+            device=device, dtype=torch.float32)
+        ids = torch.clamp(unw.motion_ids, max=lib.num_motions() - 1)
+        res = lib.get_motion_state(ids, t)
+        gk = res["global_keypts"].to(device) + unw.scene.env_origins.unsqueeze(1)
+    markers.visualize(translations=gk[0],
+                      marker_indices=torch.tensor(marker_indices, device=device, dtype=torch.long))
 
 
 def _update_ref_overlay_markers(env, markers, marker_indices, device):
@@ -971,6 +1012,10 @@ def main():
 
     # Reference-overlay markers (created once, after reset so motion_lib/motion_ids exist).
     ref_markers, ref_marker_indices = _make_ref_overlay_markers() if args_cli.overlay_ref else (None, None)
+    alt_lib = alt_markers = alt_marker_indices = None
+    if args_cli.overlay_ref_path:
+        alt_lib = _load_alt_motion_lib(env, args_cli.overlay_ref_path, device)
+        alt_markers, alt_marker_indices = _make_alt_overlay_markers()
     if args_cli.overlay_ref:
         _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)  # frame 0
         print(f"[overlay-ref] {_N_KEYPTS} reference-keypoint spheres enabled "
@@ -1031,6 +1076,8 @@ def main():
                 _write_reference_pose(env, ref_joint_map, device)
             if args_cli.overlay_ref:
                 _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
+            if alt_lib is not None:
+                _update_alt_overlay_markers(env, alt_lib, alt_markers, alt_marker_indices, device)
             if args_cli.camera_track:
                 _aim_camera_at_robot(env, device)
         _APP.update()
@@ -1056,6 +1103,8 @@ def main():
             # (before the render flush so they appear in this frame).
             if args_cli.overlay_ref:
                 _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
+            if alt_lib is not None:
+                _update_alt_overlay_markers(env, alt_lib, alt_markers, alt_marker_indices, device)
             if args_cli.overlay_obj_candidates:
                 _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)
 

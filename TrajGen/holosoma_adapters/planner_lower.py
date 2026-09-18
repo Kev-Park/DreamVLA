@@ -75,7 +75,8 @@ def _unwrap_resample_angle(ang: np.ndarray, n_out: int) -> np.ndarray:
 
 def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20.0,
                     onnx_path: str | None = None, seed: int = 1234, verbose: bool = True,
-                    cmd_mode: str | None = None):
+                    cmd_mode: str | None = None, path_mode: str | None = None,
+                    grab_idx: int | None = None):
     """Replace the root + legs with a planner-generated gait driven by locomotion COMMANDS.
 
     Args:
@@ -97,6 +98,9 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
     cmd_mode = (cmd_mode or os.environ.get("HS_PLANNER_CMD", "vel")).lower()
     if cmd_mode not in ("vel", "waypoint"):
         raise ValueError(f"HS_PLANNER_CMD must be vel|waypoint, got {cmd_mode!r}")
+    path_mode = (path_mode or os.environ.get("HS_PLANNER_PATH", "ref")).lower()
+    if path_mode not in ("ref", "linear"):
+        raise ValueError(f"HS_PLANNER_PATH must be ref|linear, got {path_mode!r}")
     if onnx_path is None:
         onnx_path = os.environ.get("HS_PLANNER_ONNX") or gear_sonic_deploy(
             "planner", "target_vel", "V2", "planner_sonic.onnx")
@@ -109,6 +113,22 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
     ref_z = _resample(base_pos[:, 2].astype(np.float64), n_plan)
     ref_yaw = _unwrap_resample_angle(_yaw_of(base_quat.astype(np.float64)), n_plan)
     ref_speed = np.concatenate([[0.0], np.linalg.norm(np.diff(ref_xy, axis=0), axis=1) * PLANNER_HZ])
+
+    if path_mode == "linear":
+        # "Fake" path: ignore the human's wander entirely and walk a STRAIGHT line from the start
+        # pose to the grasp stance, arriving at the grab frame and holding after it. The retarget
+        # keeps only two poses -- where the robot starts and where it must stand to reach the
+        # object -- so the approach becomes whatever gait the planner produces between them,
+        # rather than a resampled human path. Heading interpolates start -> grab the same way.
+        g_ref = (F - 1) if grab_idx is None else int(np.clip(grab_idx, 1, F - 1))
+        g = int(round(g_ref * PLANNER_HZ / fps))
+        g = int(np.clip(g, 1, n_plan - 1))
+        t = np.clip(np.arange(n_plan) / float(g), 0.0, 1.0)[:, None]
+        ref_xy = ref_xy[0][None, :] * (1.0 - t) + ref_xy[g][None, :] * t
+        y0, yg = ref_yaw[0], ref_yaw[g]
+        ref_yaw = y0 + (yg - y0) * t[:, 0]
+        ref_z = np.full(n_plan, float(np.median(ref_z)))     # single height command, no bobbing
+        ref_speed = np.concatenate([[0.0], np.linalg.norm(np.diff(ref_xy, axis=0), axis=1) * PLANNER_HZ])
 
     planner = PlannerWrapper(onnx_path)
 
@@ -183,7 +203,7 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
         err = np.linalg.norm(pos[:, :2] - base_pos[:, :2], axis=1)
         ref_travel = float(np.linalg.norm(base_pos[-1, :2] - base_pos[0, :2]))
         got_travel = float(np.linalg.norm(pos[-1, :2] - pos[0, :2]))
-        print(f"[planner-lower] cmd={cmd_mode} {n_plan} frames @ {PLANNER_HZ:.0f} Hz, {n_replans} replans; "
+        print(f"[planner-lower] path={path_mode} cmd={cmd_mode} {n_plan} frames @ {PLANNER_HZ:.0f} Hz, {n_replans} replans; "
               f"net travel ref {ref_travel:.2f} m -> planner {got_travel:.2f} m; "
               f"drift vs reference: med {np.median(err):.3f} m end {err[-1]:.3f} m")
     return pos, quat, legs
