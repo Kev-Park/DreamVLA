@@ -205,7 +205,8 @@ _w, _x, _y, _z = (float(base_quat[grab_idx, k]) for k in range(4))
 _yaw = np.arctan2(2.0 * (_w * _z + _x * _y), 1.0 - 2.0 * (_y * _y + _z * _z))
 STAND_LOWER = os.environ.get("HS_STAND_LOWER", "0") == "1"
 # HS_PLANNER_LOWER=1: discard the retargeted root+legs and re-synthesize them with SONIC's own
-# kinematic planner, driven by the reference root path as waypoint targets plus a pelvis-height
+# kinematic planner, driven by a planar velocity command toward the reference root path plus
+# a pelvis-height
 # command (see planner_lower.py). The waist and both arms -- the manipulation -- are untouched.
 # Mutually exclusive with HS_STAND_LOWER (that one pins the legs to a static stance instead).
 PLANNER_LOWER = os.environ.get("HS_PLANNER_LOWER", "0") == "1"

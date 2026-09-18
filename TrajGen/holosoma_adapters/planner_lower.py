@@ -8,14 +8,14 @@ reached the object, and 99.9% of episodes ended in time_out rather than a fall -
 does not fall over, it simply never gets where the reference goes.
 
 This module drops those dense targets entirely and instead **reparameterises the reference as
-commands the SONIC stack was trained to follow**: root waypoints (position + heading) and a
-pelvis height command. `planner_sonic.onnx` -- the same kinematic planner the deploy path runs
--- turns those commands into a gait. The resulting legs and root are in-distribution for SONIC
-by construction, because SONIC's own planner produced them.
+commands the SONIC stack was trained to follow**: a planar velocity and a pelvis height.
+`planner_sonic.onnx` -- the same kinematic planner the deploy path runs -- turns those commands
+into a gait. The resulting legs and root are in-distribution for SONIC by construction, because
+SONIC's own planner produced them.
 
 What is kept from the retarget: the waist (3) and both arms (14), i.e. the manipulation, plus
-the root path *as a target* (not as dense state). What is replaced: the root trajectory that is
-actually written to the reference, and the 12 leg joints.
+the root path as the thing the velocity command aims at (not as dense state). What is replaced:
+the root trajectory that is actually written to the reference, and the 12 leg joints.
 
 Conventions
 -----------
@@ -24,10 +24,6 @@ planner_sonic.onnx works in the MuJoCo Z-up world frame. Its ``mujoco_qpos`` is
 MUJOCO body-tree order, which is byte-identical to ``refine_al_29.JOINT_NAMES_29`` (left leg 6,
 right leg 6, waist 3, left arm 7, right arm 7) -- so columns map 1:1 with no permutation.
 
-The planner emits 30 Hz; one token is 4 frames. We replan at 10 Hz (every 3 emitted frames),
-matching the deploy-side C++ cadence, and feed ``specific_target_positions`` /
-``specific_target_headings`` (one token = the next 4 reference root poses) so the gait tracks
-the reference path instead of free-running on a velocity command and drifting.
 """
 
 from __future__ import annotations
@@ -37,7 +33,7 @@ import os
 import numpy as np
 
 PLANNER_HZ = 30.0
-FRAMES_PER_TOKEN = 4          # one token's worth of waypoints
+FRAMES_PER_TOKEN = 4          # planner frames per token; also the command horizon
 REPLAN_EVERY = 3              # emitted frames between replans (10 Hz)
 MAX_CMD_SPEED = 1.2           # m/s ceiling on the commanded speed (WALK mode territory)
 _DEFAULT_ANGLES_29 = np.array([
@@ -75,18 +71,16 @@ def _unwrap_resample_angle(ang: np.ndarray, n_out: int) -> np.ndarray:
 
 def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20.0,
                     onnx_path: str | None = None, seed: int = 1234, verbose: bool = True,
-                    cmd_mode: str | None = None, path_mode: str | None = None,
-                    grab_idx: int | None = None):
+                    path_mode: str | None = None, grab_idx: int | None = None):
     """Replace the root + legs with a planner-generated gait driven by locomotion COMMANDS.
 
     Args:
         base_pos:  (F,3) reference root position (pre-grounding).
         base_quat: (F,4) reference root quaternion, wxyz.
         fps:       reference frame rate (holosoma refs are 20 Hz).
-        cmd_mode:  "vel" (default, HS_PLANNER_CMD) reduces the root to speed + movement/facing
-                   direction + pelvis height -- the joystick signals the deploy stack uses.
-                   "waypoint" pins the gait to the reference path instead (comparison only:
-                   handing the planner the human's exact root trajectory is not a command).
+        path_mode: "ref" (default, HS_PLANNER_PATH) commands toward the retargeted root path;
+                   "linear" commands toward a straight line from the start pose to the grasp
+                   stance, keeping only those two poses from the retarget.
 
     Returns:
         (base_pos_new (F,3), base_quat_new (F,4 wxyz), legs (F,12)) at the reference rate/length.
@@ -95,9 +89,6 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
     from vla_sonic.frame_transforms import speed_to_mode
     from vla_sonic.repo_paths import gear_sonic_deploy
 
-    cmd_mode = (cmd_mode or os.environ.get("HS_PLANNER_CMD", "vel")).lower()
-    if cmd_mode not in ("vel", "waypoint"):
-        raise ValueError(f"HS_PLANNER_CMD must be vel|waypoint, got {cmd_mode!r}")
     path_mode = (path_mode or os.environ.get("HS_PLANNER_PATH", "ref")).lower()
     if path_mode not in ("ref", "linear"):
         raise ValueError(f"HS_PLANNER_PATH must be ref|linear, got {path_mode!r}")
@@ -164,12 +155,6 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
             move = np.array([[err[0] / nrm, err[1] / nrm, 0.0]], dtype=np.float32) if nrm > 1e-6 \
                 else np.array([[np.cos(ref_yaw[k]), np.sin(ref_yaw[k]), 0.0]], dtype=np.float32)
             face = np.array([[np.cos(ref_yaw[k]), np.sin(ref_yaw[k]), 0.0]], dtype=np.float32)
-            kw = {}
-            if cmd_mode == "waypoint":
-                wp = np.zeros((1, FRAMES_PER_TOKEN, 3), dtype=np.float32)
-                wp[0, :, :2] = ref_xy[idx]; wp[0, :, 2] = ref_z[idx]
-                kw = dict(has_specific_target=1, specific_target_positions=wp,
-                          specific_target_headings=ref_yaw[idx].astype(np.float32)[None, :])
             res = planner.run(
                 context_mujoco_qpos=ctx,
                 target_vel=np.array([spd], dtype=np.float32),
@@ -178,7 +163,6 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
                 facing_direction=face,
                 height=np.array([ref_z[k]], dtype=np.float32),
                 random_seed=seed,
-                **kw,
             )
             cached = res.mujoco_qpos[0][: res.num_pred_frames]
             cache_i = 0
@@ -203,7 +187,7 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
         err = np.linalg.norm(pos[:, :2] - base_pos[:, :2], axis=1)
         ref_travel = float(np.linalg.norm(base_pos[-1, :2] - base_pos[0, :2]))
         got_travel = float(np.linalg.norm(pos[-1, :2] - pos[0, :2]))
-        print(f"[planner-lower] path={path_mode} cmd={cmd_mode} {n_plan} frames @ {PLANNER_HZ:.0f} Hz, {n_replans} replans; "
+        print(f"[planner-lower] path={path_mode} {n_plan} frames @ {PLANNER_HZ:.0f} Hz, {n_replans} replans; "
               f"net travel ref {ref_travel:.2f} m -> planner {got_travel:.2f} m; "
               f"drift vs reference: med {np.median(err):.3f} m end {err[-1]:.3f} m")
     return pos, quat, legs
