@@ -123,7 +123,7 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
             wp[0, :, :2] = ref_xy[idx]
             wp[0, :, 2] = ref_z[idx]
             head = ref_yaw[idx].astype(np.float32)[None, :]
-            here = ctx[0, -1, 0:2].astype(np.float64)
+            here = ctx[0, -1, 0:2].astype(np.float64)   # where the next plan starts
             to_goal = ref_xy[idx[-1]] - here
             nrm = float(np.linalg.norm(to_goal))
             move = np.array([[to_goal[0] / nrm, to_goal[1] / nrm, 0.0]], dtype=np.float32) if nrm > 1e-6 \
@@ -145,10 +145,16 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
             cached = res.mujoco_qpos[0][: res.num_pred_frames]
             cache_i = 0
             n_replans += 1
+            # Context for the NEXT replan is frames 3..6 of THIS prediction -- the state the
+            # robot will be in when that plan takes effect, matching the deploy-side
+            # UpdateContextFromMotion (gen_time = now + look_ahead; context[n] = out(gen_time +
+            # n/30)). Feeding the frames already PLAYED instead makes the planner re-plan from a
+            # stale state and it deadlocks in place: measured 0.03 m/s versus 0.45 m/s
+            # (SLOW_WALK) / 1.55 m/s (WALK) with this scheme.
+            if len(cached) >= FRAMES_PER_TOKEN + REPLAN_EVERY:
+                ctx = cached[REPLAN_EVERY:REPLAN_EVERY + FRAMES_PER_TOKEN][None].copy()
         out_qpos[k] = cached[cache_i]
         cache_i += 1
-        ctx[0, :-1] = ctx[0, 1:]                 # rolling closed-loop context
-        ctx[0, -1] = out_qpos[k]
 
     # Back to the reference rate/length.
     pos = _resample(out_qpos[:, 0:3].astype(np.float64), F)
