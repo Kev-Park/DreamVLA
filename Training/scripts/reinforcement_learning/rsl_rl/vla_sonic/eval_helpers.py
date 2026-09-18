@@ -54,8 +54,7 @@ def extract_replay(hdf5_root: str | Path, out_dir: str | Path) -> list[Path]:
             np.savez(out / (f.stem + "_replay.npz"), tokens=g["obs/motion_token"][()].astype(np.float32),
                      fingers=g["actions"][()][:, 64].astype(np.float32), motion_id=int(meta.get("motion_id", -1)))
         written.append(out / (f.stem + "_replay.npz"))
-    (out / "motion_ids.txt").write_text(" ".join(str(i) for i in demo_motion_ids(out)) + "
-")
+    (out / "motion_ids.txt").write_text(" ".join(str(i) for i in demo_motion_ids(out)) + chr(10))
     return written
 
 
