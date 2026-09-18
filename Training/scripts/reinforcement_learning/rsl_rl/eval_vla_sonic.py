@@ -126,6 +126,9 @@ def _parse_cli() -> argparse.Namespace:
                         help="DIAGNOSTIC: instead of the VLA, feed this demo's RECORDED executed token + finger "
                              "scalar through the same decoder wrapper (its motion id is used). The VLA checkpoint "
                              "is not loaded.")
+    parser.add_argument("--grasp-dump", type=str, default=None,
+                        help="Write per-step grasp diagnostics per episode to this .npz (VLA right-hand mean|q|, "
+                             "close command, measured finger mean|q|, palm-object distance, ref grab step).")
     parser.add_argument("--seed", type=int, default=0)
     # AppLauncher args get appended below.
     return parser
@@ -499,6 +502,7 @@ def main() -> int:
           f"max_steps_per_episode={args.max_steps_per_episode}, motions={total_motions}, "
           f"phys: lift>=2/5cm & obj within {args.phys_radius} m of sim palm for >={args.phys_steps} steps")
     t_start = time.time()
+    grasp_dump: dict = {}
     sweep_ids = demo_motion_ids(args.motions_from) if args.motions_from else list(range(total_motions))
     if args.motions_from:
         print(f"[eval_vla_sonic] --motions-from: sweeping only the {len(sweep_ids)} motions with a demonstration: {sweep_ids}")
@@ -514,7 +518,7 @@ def main() -> int:
         _APP.update(); _APP.update()
 
         vla_chunk = None; chunk_step = 0
-        g_pred = []; g_cmd_close = []; g_meas = []                       # per-step grasp diagnostics
+        g_pred = []; g_cmd_close = []; g_meas = []; g_dpalm = []         # per-step grasp diagnostics
         obj_rest_z = None; phys_run = {dz: 0 for dz in PHYS_DZS}; phys_ok = {dz: False for dz in PHYS_DZS}
         max_lift = 0.0; toppled = False; touched = False; legacy_lift = False; object_settled = False
         grab_step = -1; fired = []
@@ -566,6 +570,7 @@ def main() -> int:
             hand_x = torch.stack([1 - 2 * (y_ * y_ + z_ * z_), 2 * (x_ * y_ + w_ * z_), 2 * (x_ * z_ - w_ * y_)])
             palm = (robot.data.body_pos_w[0, _rw_bid] - org) + 0.12 * hand_x
             d_palm = float(torch.norm(palm - obj_p).item())
+            g_dpalm.append(d_palm)
             done_now = bool(torch.as_tensor(dones).reshape(-1)[0].item())
             if not done_now:                       # after a done the env has already reset -> skip
                 if obj_rest_z is None or step <= 50:          # running min over the first 1 s (settle)
@@ -614,6 +619,11 @@ def main() -> int:
         print(f"[episode {ep}] ended at step {step+1} ({','.join(fired) if fired else 'max_steps'})  "
               f"phys_held(2cm/5cm)={phys_ok[0.02]}/{phys_ok[0.05]}  max_lift={max_lift*100:.1f}cm  "
               f"touched={touched} toppled={toppled}  running held5={stats['phys_held'][0.05]}/{stats['episodes']}")
+        if g_pred and args.grasp_dump:
+            grasp_dump.setdefault("episodes", []).append(dict(
+                ep=ep, motion=mid, pred_meanq=np.array(g_pred, np.float32), cmd_close=np.array(g_cmd_close, bool),
+                meas_meanq=np.array(g_meas, np.float32), d_palm=np.array(g_dpalm, np.float32), grab_step=grab_step,
+                end_step=step + 1, fired=",".join(fired)))
         if g_pred:
             _gp = np.array(g_pred); _gc = np.array(g_cmd_close); _gm = np.array(g_meas)
             _first = int(np.argmax(_gc)) if _gc.any() else -1
@@ -650,6 +660,14 @@ def main() -> int:
         print(f"    term {n:<22} {v:5d}  ({100*v/ce:.1f}%)")
     print(f"    max_steps / other      {stats['term_other']:5d}  ({100*stats['term_other']/ce:.1f}%)")
     print("=" * 60)
+    if args.grasp_dump and grasp_dump.get("episodes"):
+        Path(args.grasp_dump).parent.mkdir(parents=True, exist_ok=True)
+        flat = {}
+        for e in grasp_dump["episodes"]:
+            for k, v in e.items():
+                flat[f"ep{e['ep']}_{k}"] = np.asarray(v)
+        np.savez(args.grasp_dump, **flat)
+        print(f"[grasp-dump] wrote {len(grasp_dump['episodes'])} episodes -> {args.grasp_dump}")
     env.close()
     _APP.close()
     return 0
