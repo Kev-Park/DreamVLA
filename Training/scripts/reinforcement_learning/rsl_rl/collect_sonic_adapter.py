@@ -293,8 +293,72 @@ def _find_latest_adapter_checkpoint(log_root: Path) -> str:
     return str(ckpts[-1])
 
 
+class DaggerDriver:
+    """DAgger relabelling: a VLA drives the robot (with probability 1-beta per re-plan chunk; the
+    residual expert drives otherwise) while the RESIDUAL supplies the label for EVERY visited state.
+
+    Per step the collector computes the expert's latent a_exp = residual(obs) and records
+      * obs/motion_token           = env.expert_token(a_exp): the FSQ token the expert WOULD execute
+                                     at this state (not the token that was actually executed),
+      * actions                    = a_exp (65-D: residual latent + finger scalar),
+      * teleop/finger_joints/right = the expert's finger COMMAND as a joint pose: the demo set's mean
+                                     measured closed-on-bottle pose when a_exp[64] < 0, zeros otherwise
+                                     (the measured fingers stay open while the VLA drives, so they
+                                     cannot serve as the label here).
+    The env's own terminations end a rollout (ee_body_pos = the expert's 0.25 m validity gate);
+    rollouts are kept regardless of task success (they are supposed to contain failures).
+    """
+
+    def __init__(self, env, vla_policy, obs_adapter, *, beta: float, chunk: int, close_thres: float, seed: int):
+        self.env = env; self.vla = vla_policy; self.obs_adapter = obs_adapter
+        self.beta = float(beta); self.chunk = int(chunk); self.close_thres = float(close_thres)
+        self.rng = np.random.default_rng(seed)
+        self.begin_episode()
+
+    def begin_episode(self):
+        self._chunk = None; self._chunk_step = self.chunk; self._expert_drives = True
+        self.n_expert = 0; self.n_vla = 0
+
+    def step(self, expert_latent: torch.Tensor):
+        """Advance the env one step; returns (obs, rew, dones, extras, expert_drove: bool)."""
+        if self._chunk_step >= self.chunk:                               # re-plan boundary
+            self._expert_drives = bool(self.rng.random() < self.beta)
+            self._chunk_step = 0
+            if not self._expert_drives:
+                out = self.vla.get_action(self.obs_adapter())
+                self._chunk = out[0] if isinstance(out, tuple) else out
+        t = self._chunk_step; self._chunk_step += 1
+        if self._expert_drives:
+            self.n_expert += 1
+            return (*self.env.step(expert_latent), True)
+        tok = np.asarray(self._chunk["motion_token"], np.float32)[0, t]
+        rh = np.asarray(self._chunk["right_hand_joints"], np.float32)[0, t]
+        composed = torch.zeros((1, 65), device=expert_latent.device, dtype=torch.float32)
+        composed[0, :64] = torch.as_tensor(tok, device=expert_latent.device)
+        composed[0, 64] = -1.0 if float(np.abs(rh).mean()) > self.close_thres else 1.0
+        self.n_vla += 1
+        return (*self.env.step_composed(composed), False)
+
+
+def dagger_closed_pose(demo_root: str, max_files: int = 8) -> np.ndarray:
+    """Mean measured right-finger pose (collector joint order) over closed-command frames of the demos."""
+    import h5py
+    acc, n = None, 0
+    for f in sorted(Path(demo_root).expanduser().rglob("*.hdf5"))[:max_files]:
+        with h5py.File(f, "r") as h:
+            g = h["data/demo_0"]
+            closed = g["actions"][()][:, 64] < 0
+            if closed.any():
+                fr = g["teleop/finger_joints/right"][()][closed]
+                acc = fr.sum(0) if acc is None else acc + fr.sum(0); n += len(fr)
+    if not n:
+        raise RuntimeError(f"no closed frames found under {demo_root}")
+    return (acc / n).astype(np.float64)
+
+
 def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, real_time,
-                         reset_at_start, lift_thres, phys_lift=0.05, phys_radius=0.15, phys_steps=25):
+                         reset_at_start, lift_thres, phys_lift=0.05, phys_radius=0.15, phys_steps=25,
+                         dagger: "DaggerDriver | None" = None, dagger_closed_pose_arr: np.ndarray | None = None):
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
     teleop_history: list[dict[str, torch.Tensor]] = []
@@ -303,6 +367,9 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     # the recorded motion → the correct VLA supervision target, stored directly instead
     # of being re-derived offline (which would recover only the un-adapted base token).
     token_history: list[np.ndarray] = []
+    dagger_mask: list[bool] = []                                     # expert drove this step?
+    if dagger is not None:
+        dagger.begin_episode()
     # Eval-parity success: a frame is a real pickup when the object (bottle) clears lift_thres
     # AND the reference motion is in its closed/grasp phase. Mirrors eval_sonic_adapter.py
     # (bottle_z > lift_thres & is_closed), evaluated POST-step.
@@ -363,15 +430,26 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         step_index += 1
         with torch.inference_mode():
             actions = policy(obs).clone()
+            expert_tok = env.expert_token(actions)[0].cpu().numpy().astype(np.float64) if dagger is not None else None
         camera_output = getattr(cam_robot.data, "output", None)
         if camera_output is None or "rgb" not in camera_output:
             raise RuntimeError("camera_robot.data.output missing 'rgb'.")
         camera_frames.append(_frame_to_uint8_rgb(camera_output["rgb"][0].cpu().numpy()))
         if state_on:
-            state_history.append(_capture_rollout_state(env, actions))
+            st = _capture_rollout_state(env, actions)
+            if dagger is not None:
+                # label = the expert's finger COMMAND as a pose (measured fingers follow the driver, not the expert)
+                closed = bool(actions[0, 64].item() < 0)
+                st["robot"]["right_finger_joint_pos"] = torch.as_tensor(
+                    dagger_closed_pose_arr if closed else np.zeros_like(dagger_closed_pose_arr), dtype=torch.float32)
+            state_history.append(st)
             teleop_history.append(_capture_teleop_frame(env))
         with torch.inference_mode():
-            step_result = env.step(actions)
+            if dagger is not None:
+                *step_result, expert_drove = dagger.step(actions)
+                step_result = tuple(step_result); dagger_mask.append(expert_drove)
+            else:
+                step_result = env.step(actions)
         if len(step_result) == 5:
             obs, _, terminated, truncated, _ = step_result
         else:
@@ -383,9 +461,12 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         # actions applied above). Pairs index-for-index with camera_frames/state_history
         # since all three append exactly once per iteration before the break check.
         if state_on:
-            last_token = getattr(env, "_last_token", None)
-            if last_token is not None:
-                token_history.append(last_token[0].detach().cpu().numpy().astype(np.float64))
+            if dagger is not None:
+                token_history.append(expert_tok)                     # DAgger label: the expert's token
+            else:
+                last_token = getattr(env, "_last_token", None)
+                if last_token is not None:
+                    token_history.append(last_token[0].detach().cpu().numpy().astype(np.float64))
         # Eval-parity lift check — POST-step, matching eval_sonic_adapter.py
         # (bottle_z > lift_thres while the reference is_closed). The settle gate
         # (object_settled) ignores the reset-drop transient: the object is reset to z=1.0
@@ -462,6 +543,8 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         n_state = int(np.asarray(raw_state["robot"]["joint_pos"]).shape[0])
         if len(token_history) == n_state:
             raw_state["motion_token"] = np.stack(token_history, axis=0)  # (N, 64)
+            if dagger is not None and len(dagger_mask) == n_state:
+                raw_state["dagger_expert_mask"] = np.asarray(dagger_mask, dtype=np.uint8)
         else:
             print(f"[WARN] token_history ({len(token_history)}) != state frames ({n_state}) "
                   "— NOT writing obs/motion_token; converter will re-derive instead.")
@@ -522,6 +605,9 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         "camera_on": True,
         "state_on": state_on,
     }
+    if dagger is not None:
+        metadata["dagger"] = {"beta": dagger.beta, "chunk": dagger.chunk, "expert_steps": dagger.n_expert,
+                              "vla_steps": dagger.n_vla, "labels": "expert token + expert finger command"}
     return camera_frames, raw_state, metadata, teleop_payload
 
 
@@ -591,6 +677,18 @@ def main() -> None:
                              "prepend). The recorded trajectory begins at the skip frame.")
     parser.add_argument("--start-pregrab-margin", type=float, default=None,
                         help="Start episodes this many seconds before the grab (drops prepend + walk).")
+    parser.add_argument("--dagger-vla-checkpoint", type=str, default=None,
+                        help="DAgger mode: GR00T checkpoint that DRIVES the robot (with prob 1-beta per chunk) while "
+                             "the residual labels every state. Rollouts are written regardless of success.")
+    parser.add_argument("--dagger-demo-root", type=str, default=None,
+                        help="DAgger: collector HDF5 root of the demonstrations -- sweeps only its motion ids and "
+                             "takes the closed-finger label pose from it.")
+    parser.add_argument("--dagger-beta", type=float, default=0.5, help="DAgger: P(expert drives) per re-plan chunk.")
+    parser.add_argument("--dagger-chunk", type=int, default=8, help="DAgger: VLA re-plan cadence (eval parity).")
+    parser.add_argument("--dagger-rollouts", type=int, default=2, help="DAgger: rollouts per demo motion.")
+    parser.add_argument("--dagger-min-steps", type=int, default=50, help="DAgger: discard rollouts shorter than this.")
+    parser.add_argument("--dagger-finger-close-thres", type=float, default=0.6,
+                        help="DAgger: VLA right-hand mean|q| above which its close is executed (eval parity).")
     parser.add_argument("--skip-existing", action="store_true", default=False,
                         help="Resume: skip motion ids that already have an .hdf5 anywhere under --output-directory "
                              "(previously rejected motions are re-tried; the policy is deterministic).")
@@ -723,6 +821,27 @@ def main() -> None:
     runner.load(resume_path)
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
+    dagger = None; dagger_closed = None; dagger_motions = None
+    if args_cli.dagger_vla_checkpoint:
+        from gr00t.policy.gr00t_policy import Gr00tPolicy
+        from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter
+        from vla_sonic.simple_robot_model import SimpleG1RobotModel
+        from vla_sonic.eval_helpers import demo_motion_ids
+        if not args_cli.dagger_demo_root:
+            raise SystemExit("--dagger-demo-root is required in DAgger mode")
+        dagger_motions = demo_motion_ids(args_cli.dagger_demo_root)
+        dagger_closed = dagger_closed_pose(args_cli.dagger_demo_root)
+        vla = Gr00tPolicy(embodiment_tag="unitree_g1_sonic", model_path=args_cli.dagger_vla_checkpoint, device=device)
+        obs_adapter = ObsToPolicyAdapter(env, ObsAdapterConfig(language_instruction="pick up the mustard bottle",
+                                                               robot_model=SimpleG1RobotModel.build(),
+                                                               camera_scene_key="camera_robot"))
+        dagger = DaggerDriver(env, vla, obs_adapter, beta=args_cli.dagger_beta, chunk=args_cli.dagger_chunk,
+                              close_thres=args_cli.dagger_finger_close_thres, seed=args_cli.seed)
+        print(f"[DAgger] VLA {args_cli.dagger_vla_checkpoint} drives with P={1-args_cli.dagger_beta:.2f} per "
+              f"{args_cli.dagger_chunk}-step chunk; expert labels every state. {len(dagger_motions)} demo motions x "
+              f"{args_cli.dagger_rollouts} rollouts. closed-pose label (mean|q| {np.abs(dagger_closed).mean():.2f}) "
+              f"= {np.round(dagger_closed, 2).tolist()}")
+
     output_root = Path(args_cli.output_directory).resolve()
     recorder = RolloutRecorder(output_root / datetime.now().strftime("%Y-%m-%d"))
     recorder.output_dir.mkdir(parents=True, exist_ok=True)
@@ -754,15 +873,22 @@ def main() -> None:
             m_hi = min(total_motions, args_cli.motion_range[1])
         if args_cli.motion_range is not None:
             print(f"[INFO] --motion-range: sweeping motions [{m_lo}, {m_hi}) of {total_motions}")
-        for motion_id in range(m_lo, m_hi):
+        if dagger is not None:
+            sweep = [(m, r) for m in dagger_motions if m_lo <= m < m_hi for r in range(args_cli.dagger_rollouts)]
+        else:
+            sweep = [(m, 0) for m in range(m_lo, m_hi)]
+        for motion_id, rollout_idx in sweep:
             if written >= target_successes or not simulation_app.is_running():
                 break
-            if args_cli.skip_existing and list(output_root.rglob(f"*__motion_{motion_id:03d}.hdf5")):
-                print(f"[INFO] motion {motion_id}/{total_motions}: already collected under {output_root} -- skipping")
+            suffix = f"_r{rollout_idx}" if dagger is not None else ""
+            if args_cli.skip_existing and list(output_root.rglob(f"*__motion_{motion_id:03d}{suffix}.hdf5")):
+                print(f"[INFO] motion {motion_id}{suffix}: already collected under {output_root} -- skipping")
                 continue
             env.unwrapped._forced_motion_id = int(motion_id)  # forces the reset's motion draw
-            _set_all_seeds(args_cli.seed + motion_id)          # deterministic per-motion init
-            print(f"[INFO] motion {motion_id}/{total_motions} (written {written}/{target_successes})")
+            _set_all_seeds(args_cli.seed + motion_id * 10 + rollout_idx)   # deterministic per-rollout init
+            if dagger is not None:
+                dagger.rng = np.random.default_rng(args_cli.seed + motion_id * 10 + rollout_idx)
+            print(f"[INFO] motion {motion_id}{suffix}/{total_motions} (written {written}/{target_successes})")
 
             # Per-motion resilience: a single bad rollout (or a recoverable error) shouldn't
             # lose the whole run / the partial dataset. If the sim app itself died (e.g. an
@@ -775,7 +901,7 @@ def main() -> None:
                     reset_at_start=True,  # always reset so the forced motion takes effect
                     lift_thres=float(args_cli.lift_thres),
                     phys_lift=float(args_cli.phys_lift), phys_radius=float(args_cli.phys_radius),
-                    phys_steps=int(args_cli.phys_steps),
+                    phys_steps=int(args_cli.phys_steps), dagger=dagger, dagger_closed_pose_arr=dagger_closed,
                 )
             except Exception as rollout_exc:
                 errored += 1
@@ -788,24 +914,33 @@ def main() -> None:
                 continue
             tried += 1
 
+            # DAgger: keep everything long enough to carry labels (failures are the point).
+            if dagger is not None:
+                if meta["num_steps"] < args_cli.dagger_min_steps:
+                    rejected_fall += 1
+                    print(f"[INFO] REJECTED motion={motion_id}{suffix} (DAgger rollout too short: {meta['num_steps']} steps)")
+                    continue
+                print(f"[INFO] DAgger motion={motion_id}{suffix}: {meta['num_steps']} steps "
+                      f"(expert {meta['dagger']['expert_steps']} / vla {meta['dagger']['vla_steps']}), "
+                      f"end={meta['termination_terms']}, held={meta['phys_held']}, max_lift={meta['max_lift_m']:.3f}")
             # SUCCESS FILTER: write only non-fallen, task-successful trajectories.
-            if meta["error_terminated"]:
+            if dagger is None and meta["error_terminated"]:
                 rejected_fall += 1
                 print(f"[INFO] REJECTED motion={motion_id} (failure termination: {meta['termination_terms']}) "
                       f"steps={meta['num_steps']}")
                 continue
-            if not meta["success"]:
+            if dagger is None and not meta["success"]:
                 rejected_nograsp += 1
                 print(f"[INFO] REJECTED motion={motion_id} (no physical hold; max_lift={meta['max_lift_m']:.3f} m, "
                       f"toppled={meta['toppled_any']}) steps={meta['num_steps']}")
                 continue
-            if meta["toppled_any"] and args_cli.reject_topple:
+            if dagger is None and meta["toppled_any"] and args_cli.reject_topple:
                 rejected_topple += 1
                 print(f"[INFO] REJECTED motion={motion_id} (held, but object toppled during the episode) "
                       f"steps={meta['num_steps']}")
                 continue
 
-            file_name = f"sonic_adapter__{motion_tag}__motion_{motion_id:03d}.hdf5"
+            file_name = f"sonic_adapter__{motion_tag}__motion_{motion_id:03d}{suffix}.hdf5"
             metadata = {
                 "motion_reference": motion_tag,
                 "motion_id": int(motion_id),
