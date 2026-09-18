@@ -163,7 +163,9 @@ def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20
     quat = _yaw_to_quat(yaw)                                       # upright root (roll/pitch dropped)
     if verbose:
         err = np.linalg.norm(pos[:, :2] - base_pos[:, :2], axis=1)
-        print(f"[planner-lower] {n_plan} frames @ {PLANNER_HZ:.0f} Hz, {n_replans} replans "
-              f"(1 per {REPLAN_EVERY}); path error vs reference: med {np.median(err):.3f} m "
-              f"max {err.max():.3f} m, end {err[-1]:.3f} m")
+        ref_travel = float(np.linalg.norm(base_pos[-1, :2] - base_pos[0, :2]))
+        got_travel = float(np.linalg.norm(pos[-1, :2] - pos[0, :2]))
+        print(f"[planner-lower] cmd={cmd_mode} {n_plan} frames @ {PLANNER_HZ:.0f} Hz, {n_replans} replans; "
+              f"net travel ref {ref_travel:.2f} m -> planner {got_travel:.2f} m; "
+              f"drift vs reference: med {np.median(err):.3f} m end {err[-1]:.3f} m")
     return pos, quat, legs
