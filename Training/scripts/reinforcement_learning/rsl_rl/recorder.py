@@ -207,6 +207,16 @@ class RolloutRecorder:
                     compression="gzip",
                 )
 
+            # Optional per-frame diagnostics written by the DAgger / grasp-gate collector
+            # (uint8 masks; absent for ordinary collections).
+            for _diag in ("grasp_gate", "dagger_expert_mask"):
+                if raw_state is not None and _diag in raw_state:
+                    obs_grp.create_dataset(
+                        _diag,
+                        data=np.asarray(_to_numpy(raw_state[_diag]), dtype=np.uint8),
+                        compression="gzip",
+                    )
+
             if raw_state is not None and "action" in raw_state:
                 demo_grp.create_dataset(
                     "actions",
