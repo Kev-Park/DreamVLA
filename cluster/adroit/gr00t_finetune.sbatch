@@ -19,10 +19,14 @@
 # CUDA_HOME=/usr/local/cuda-12.8 (nvcc 12.8 exactly matches torch's cu128), so the import is safe
 # and deepspeed stays installed. Do NOT delete that module load.
 #
-# OFFLINE: compute nodes reach the internet only through the login-node proxy tunnel that the
+# NETWORK: compute nodes reach the internet only through the login-node proxy tunnel that the
 # `isaac` shim opens (see cluster/adroit/README.md); this job does not use the container, so it
-# runs fully offline instead -- both models are pre-staged in ~/.cache/huggingface (-> scratch)
-# and wandb logs locally (sync later from the login node with `wandb sync`).
+# opens the same tunnel itself. HF_HUB_OFFLINE is NOT usable here even though both models are
+# pre-staged: GR00T resolves the Cosmos backbone with `model_info(model_id)`, and offline mode
+# makes that a hard OfflineModeIsEnabled error instead of falling back to the cache (job 3371549
+# died there). Only metadata calls go out, and only at model load, so a tunnel that drops later
+# cannot kill the run. wandb stays offline deliberately -- a 23 h job should not depend on the
+# tunnel surviving; sync afterwards from the login node with `wandb sync <run-dir>`.
 #
 # ONE-TIME SETUP (login node, the only place with internet -- see cluster/adroit/README.md):
 #   git clone https://github.com/Kev-Park/Isaac-GR00T.git ~/kevin/Isaac-GR00T
@@ -54,8 +58,15 @@ OUT=$HOME/kevin/checkpoints
 GR=$HOME/kevin/Isaac-GR00T
 
 module load cudatoolkit/12.8
-export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 WANDB_MODE=offline
-export TOKENIZERS_PARALLELISM=false
+export WANDB_MODE=offline TOKENIZERS_PARALLELISM=false
+
+# Same tunnel the `isaac` shim opens (cluster/adroit/isaac): the proxy itself runs in tmux `conn`
+# on adroit5 and must already be up -- see README.md "once per login node boot".
+if [ -n "$SLURM_JOB_ID" ] && ! pgrep -f 'ssh.*-L 8899:127.0.0.1:8899' >/dev/null; then
+  ssh -o BatchMode=yes -o ConnectTimeout=5 -N -f -L 8899:127.0.0.1:8899 adroit5 2>/dev/null || true
+fi
+export http_proxy=http://127.0.0.1:8899
+export https_proxy=$http_proxy HTTP_PROXY=$http_proxy HTTPS_PROXY=$http_proxy
 
 echo "node=$(hostname)  gpu=$(nvidia-smi -L | head -1)"
 echo "dataset=$DS  run=$RUN  out=$OUT"
