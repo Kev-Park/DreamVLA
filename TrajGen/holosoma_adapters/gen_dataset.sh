@@ -10,6 +10,9 @@ gpu=$1; out=$2; shift 2
 #   HS_FOOT_STICK_TOL : --retargeter.foot-sticking-tolerance (default 1e-3). LOWER = stricter
 #                       per-frame XY window; foot sticking is relative to the previous frame,
 #                       so a tighter window slows accumulated drift over a clip.
+#   HS_STAND_ALONG_BAND : "lo,hi" two-sided clamp on the grab-frame root->object ALONG-heading
+#                       distance (unset = legacy one-sided HS_STAND_MIN_STANDOFF). Orthogonal to
+#                       HS_STAND_LAT_BAND, so the two compose without conflict.
 #   HS_INPUT_DIR      : Adapter A output / holosoma --data-path (default: pooled ~/kevin/hs_input).
 #   HOLOSOMA_DIR      : holosoma checkout to retarget with. Defaults to a holosoma worktree
 #                       beside THIS checkout if one exists, else the shared ~/kevin/holosoma.

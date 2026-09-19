@@ -239,13 +239,34 @@ if STAND_LOWER:
 # x - 0.05) -> spawn collision and an unsolvable table constraint on the pinned first frame.
 # Push the root straight back along its heading until the along-heading root->object distance
 # is at least HS_STAND_MIN_STANDOFF. Reach is unaffected (arm ~0.6 m); 0 disables.
-_min_standoff = float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35"))
+# ALONG-HEADING band. HS_STAND_ALONG_BAND="lo,hi" clamps the grab-frame root->object distance
+# from BOTH sides; unset keeps the legacy one-sided HS_STAND_MIN_STANDOFF push-back. The upper
+# bound is what makes the refine well-posed when the retarget under-travels (e.g. a tighter
+# foot-sticking tolerance removes the slip that was silently supplying reach): the one-sided
+# clamp never pulls the robot IN, so a clip that stops short just fails to reach and the AL
+# refine is handed an impossible target. Note this composes with the lateral band below by
+# construction -- _hdg and _lat_ax are orthonormal in the same grab-frame basis, so the two
+# clamps set independent components of one rigid translation and cannot fight each other. It is
+# also why the repositioning is along-heading ONLY: restoring the full 2D grab-frame position
+# would restore the human's lateral placement, which is exactly what the lateral band exists to
+# discard.
 _hdg = np.array([np.cos(_yaw), np.sin(_yaw)])
 _d_along = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _hdg))
-if _min_standoff > 0 and _d_along < _min_standoff:
-    base_pos[:, :2] -= (_min_standoff - _d_along) * _hdg[None, :]
-    print(f"[root-standoff] root->object along heading {_d_along:.3f} m < {_min_standoff:.2f}; "
-          f"root moved back {_min_standoff - _d_along:.3f} m")
+_along_band = os.environ.get("HS_STAND_ALONG_BAND", "")
+if _along_band:
+    _al_lo, _al_hi = (float(v) for v in _along_band.split(","))
+    _d_along_new = min(max(_d_along, _al_lo), _al_hi)
+    if _d_along_new != _d_along:
+        base_pos[:, :2] -= (_d_along_new - _d_along) * _hdg[None, :]
+        print(f"[root-along] root->object along {_d_along:.3f} m outside [{_al_lo:.2f},{_al_hi:.2f}]; "
+              f"root moved {abs(_d_along_new - _d_along):.3f} m "
+              f"{'back' if _d_along_new > _d_along else 'forward'}")
+else:
+    _min_standoff = float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35"))
+    if _min_standoff > 0 and _d_along < _min_standoff:
+        base_pos[:, :2] -= (_min_standoff - _d_along) * _hdg[None, :]
+        print(f"[root-standoff] root->object along heading {_d_along:.3f} m < {_min_standoff:.2f}; "
+              f"root moved back {_min_standoff - _d_along:.3f} m")
 # Lateral band: the object's LATERAL offset in the heading frame is inherited from where the
 # human stood (fixH60: -0.07..-0.42 m, always to the robot's right; a human reaches sideways
 # with a step + torso twist that the pinned stance removes). Measured on fixH60: clips with the
@@ -264,6 +285,9 @@ if _lat_band:
         base_pos[:, :2] -= (_d_lat_new - _d_lat) * _lat_ax[None, :]
         print(f"[root-latband] root->object lateral {_d_lat:+.3f} m outside [{_lat_lo:+.2f},{_lat_hi:+.2f}]; "
               f"root moved {abs(_d_lat_new - _d_lat):.3f} m {'right' if _d_lat_new > _d_lat else 'left'}")
+_chk_al = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _hdg))
+_chk_lat = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], np.array([-np.sin(_yaw), np.cos(_yaw)])))
+print(f"[root-final] grab-frame root->object: along {_chk_al:+.3f} m, lateral {_chk_lat:+.3f} m")
 if STAND_LOWER:
     print(f"[stand-lower] legs pinned to INIT stance; root frozen at grab-frame "
           f"xy=({base_pos[grab_idx,0]:.3f},{base_pos[grab_idx,1]:.3f}) yaw={_yaw:+.3f} rad; "
