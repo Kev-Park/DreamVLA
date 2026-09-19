@@ -66,7 +66,12 @@ HS_INPUT=$(pooled hs_input)
 # (~/kevin/ref_motions/<name>, override REF_MOTIONS_DIR) where every worktree finds it by that name.
 case "$out" in */*|.|..) ;; *) out="$(pooled ref_motions)/$out" ;; esac
 HS_ACT=""
-for A in ~/.holosoma_deps/miniconda3/bin/activate ~/kevin/.holosoma_deps/miniconda3/bin/activate; do
+# ~/kevin FIRST: on biped the other copy carries numpy 2.4.2, which violates holosoma's only
+# declared pin (numpy==2.3.5) and makes the retarget die inside mj_jac with
+# "TypeError: only 0-dimensional arrays can be converted to Python scalars" -- the exact failure
+# the pin exists to prevent. bluesclues has only ~/.holosoma_deps (numpy 2.3.5) so it still
+# resolves correctly there.
+for A in ~/kevin/.holosoma_deps/miniconda3/bin/activate ~/.holosoma_deps/miniconda3/bin/activate; do
   [ -f "$A" ] && { HS_ACT="$A"; break; }
 done
 mkdir -p "$out"
