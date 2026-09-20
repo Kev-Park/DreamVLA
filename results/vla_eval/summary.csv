@@ -1,0 +1,3 @@
+tag,episodes,held2,held5,held5_upright,toppled,touched,lift_median_cm,lift_max_cm,close_lag_median,notes
+dagger1_base,20,5,3,3,12,19,0.6,18.4,-47,"pure VLA, 20 eps, HS_EVAL_NO_EE_TERM=1, 4-way motion split, latband60_dagger1_run01/checkpoint-10000"
+dagger2_adroit,20,11,9,6,12,19,5.2,31.8,-22,"pure VLA, 20 eps, HS_EVAL_NO_EE_TERM=1, same 4-way split, latband60_dagger2_adroit/checkpoint-10000 (A100 finetune)"
