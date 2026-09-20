@@ -47,6 +47,8 @@ WIN = 25                                    # frames (0.5 s) for the median/stab
 T_HELD = 25                                 # frames of held required somewhere
 N_END = 25                                  # frames at the end that must be held
 FLOOR_DROP = 0.20                           # m below rest => on the ground
+PRE_TILT_DEG = 50.0                         # object tilt BEFORE the lift => it was knocked over
+LIFT_M = 0.030                              # m above rest that counts as "left the support" once
 
 
 def quat_to_R(q: np.ndarray) -> np.ndarray:
@@ -69,9 +71,9 @@ def palm_frame(root_pos: np.ndarray, root_quat: np.ndarray, wrist: np.ndarray):
     return p, R
 
 
-def score(obj_pos, root_pos, root_quat, wrist, *, z_rest=None,
+def score(obj_pos, root_pos, root_quat, wrist, *, obj_quat=None, z_rest=None,
           box_lo=BOX_LO, box_hi=BOX_HI, eps=EPS_STABLE, tau=TAU_COMOVE,
-          v_min=V_MIN, win=WIN, t_held=T_HELD, n_end=N_END):
+          v_min=V_MIN, win=WIN, t_held=T_HELD, n_end=N_END, pre_tilt_deg=PRE_TILT_DEG):
     """Per-step held mask + episode verdict. All inputs are (T,·) arrays in world frame."""
     p_palm, R_palm = palm_frame(root_pos, root_quat, wrist)
     T = len(obj_pos)
@@ -103,16 +105,39 @@ def score(obj_pos, root_pos, root_quat, wrist, *, z_rest=None,
             last = bool(last and in_volume[t])         # but the object must still be in the hand
         held[t] = last
 
+    first_held = int(np.argmax(held)) if held.any() else -1
+    # The FIRST time the object is both held and clearly off its resting height. Anchoring on
+    # first_held is not enough: a hand PUSHING the bottle along the table co-moves with it and sits
+    # in the grasp volume, so `held` can latch while the object is still supported. This is a real
+    # limit of a contact-free criterion -- requiring one unambiguous lift event bounds it.
+    lifted = held & (obj_pos[:, 2] > z_rest + LIFT_M)
+    first_lift = int(np.argmax(lifted)) if lifted.any() else -1
+    # Knocked over and THEN scooped up is not a pick. Tilt is consulted only BEFORE that lift,
+    # where the object is still on the table -- a bottle carried at 70 deg in-hand is untouched by
+    # this, which is why there is no terminal tilt test.
+    pre_grasp_topple = False
+    if obj_quat is not None and first_lift > 0:
+        q = np.asarray(obj_quat)[:first_lift]
+        if len(q):
+            zz = 1.0 - 2.0 * (q[:, 1] ** 2 + q[:, 2] ** 2)
+            tilt = np.degrees(np.arccos(np.clip(zz, -1.0, 1.0)))
+            pre_grasp_topple = bool((tilt > pre_tilt_deg).any())
+
     on_floor = bool((obj_pos[:, 2] < z_rest - FLOOR_DROP).any())
     held_frames = int(held.sum())
-    held_at_end = bool(held[-n_end:].all()) if T >= n_end else bool(held[-1])
+    # Majority over the tail, NOT "all of the last n_end frames": requiring every tail frame
+    # reintroduces exactly the one-bad-frame brittleness that made the old test reject real
+    # grasps (expert m12 was held through frame 498 of 499 and still failed an all() test).
+    held_at_end = bool(held[-n_end:].mean() >= 0.5) if T >= n_end else bool(held[-1])
     last_held = int(np.max(np.where(held)[0])) if held.any() else -1
 
     return dict(
         held=held, rel=rel, z_rest=z_rest,
         on_floor=on_floor, held_frames=held_frames, held_at_end=held_at_end,
-        last_held=last_held,
-        success=bool(not on_floor and held_frames >= t_held and held_at_end),
+        last_held=last_held, first_held=first_held, first_lift=first_lift,
+        pre_grasp_topple=pre_grasp_topple, lifted_ever=bool(lifted.any()),
+        success=bool(not on_floor and not pre_grasp_topple and bool(lifted.any())
+                     and held_frames >= t_held and held_at_end),
         # "lifted then lost it" -- kept separately so it is never silently counted as success
         dropped=bool(held_frames >= t_held and not held_at_end),
         truncate_at=last_held,                         # chop-before-the-drop point
