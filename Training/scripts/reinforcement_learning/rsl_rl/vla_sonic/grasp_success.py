@@ -10,7 +10,11 @@ Three rules, deliberately simple. Extra rules get added only when labelled motio
   3. FALLEN (orientation) reject if the object is horizontal (90 +/- 10 deg from upright) at any
                           point -- it was knocked over.
 
-  success = (not fallen_height) and (not fallen_horizontal) and in_box_at_end
+  4. SLIPPING (rigidity) reject if the object moves vertically in the PALM frame over the last
+                          second -- a solid grasp holds it rigid; "grasp + lean" is the object
+                          sliding out of the hand down onto the table.
+
+  success = (not fallen_height) and (not fallen_horizontal) and in_box_at_end and (not slipping)
 
 The box is CALIBRATED, not guessed: p05/p95 of the object's palm-frame position over the demos'
 hold phase (the longest contiguous run of frames the demo commanded the hand closed) -- 15175
@@ -41,6 +45,14 @@ HORIZ_DEG = 90.0                            # object axis perpendicular to world
 HORIZ_TOL = 10.0                            # +/- tolerance -> knocked over
 
 N_END = 1                                   # frames at the end used for the in-box test
+
+# rule 4: a solid grasp holds the bottle RIGID in the palm frame. Over the last SLIP_WIN frames a
+# good grasp moves <= 0.38 mm vertically in that frame; a "grasp + lean" (the object slipping out
+# of the hand down onto the table) moves >= 4.13 mm. Calibrated on 24 human-labelled episodes
+# (20 good / 4 lean); 1-3 mm all separate with zero errors. NOTE the RATE of slip does NOT work:
+# two of the four leans slide 25 mm but slowly (0.002 m/s), inside the good range.
+SLIP_WIN = 50                               # frames (1 s)
+SLIP_MAX = 0.002                            # m of palm-frame vertical excursion allowed
 
 
 def quat_to_R(q):
@@ -73,7 +85,7 @@ def object_tilt_deg(obj_quat):
 def score(obj_pos, obj_quat, root_pos, root_quat, wrist, *,
           box_lo=BOX_LO, box_hi=BOX_HI, margin=BOX_MARGIN,
           table_top=TABLE_TOP_Z, fallen_frac=FALLEN_FRAC,
-          horiz_tol=HORIZ_TOL, n_end=N_END):
+          horiz_tol=HORIZ_TOL, n_end=N_END, slip_win=SLIP_WIN, slip_max=SLIP_MAX):
     """Per-rule verdicts plus the overall success flag."""
     obj_pos = np.asarray(obj_pos, float)
     p_palm, R_palm = palm_frame(root_pos, root_quat, wrist)
@@ -90,15 +102,19 @@ def score(obj_pos, obj_quat, root_pos, root_quat, wrist, *,
     tilt = object_tilt_deg(obj_quat)
     fallen_horizontal = bool((np.abs(tilt - HORIZ_DEG) <= horiz_tol).any())          # rule 3
     in_box_at_end = bool(in_box[-n_end:].all()) if T >= n_end else bool(in_box[-1])   # rule 2
+    rz = rel[-slip_win:, 2]                                                          # rule 4
+    slip_spread = float(rz.max() - rz.min()) if len(rz) else 0.0
+    slipping = bool(slip_spread > slip_max)
 
     return dict(
         rel=rel, in_box=in_box, tilt=tilt,
         fallen_height=fallen_height,
         fallen_horizontal=fallen_horizontal,
-        in_box_at_end=in_box_at_end,
+        in_box_at_end=in_box_at_end, slipping=slipping, slip_spread=slip_spread,
         min_z=float(obj_pos[:, 2].min()),
         max_tilt=float(tilt.max()),
         in_box_frames=int(in_box.sum()),
         last_in_box=int(np.max(np.where(in_box)[0])) if in_box.any() else -1,
-        success=bool(not fallen_height and not fallen_horizontal and in_box_at_end),
+        success=bool(not fallen_height and not fallen_horizontal and in_box_at_end
+                     and not slipping),
     )
