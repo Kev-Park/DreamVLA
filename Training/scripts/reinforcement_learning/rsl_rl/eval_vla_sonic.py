@@ -129,6 +129,11 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--grasp-dump", type=str, default=None,
                         help="Write per-step grasp diagnostics per episode to this .npz (VLA right-hand mean|q|, "
                              "close command, measured finger mean|q|, palm-object distance, ref grab step).")
+    parser.add_argument("--traj-dump", default=None,
+                        help="Write <prefix>_ep<k>_m<motion>_traj.npz per episode (object + robot "
+                             "poses actually simulated), so vla_sonic.grasp_success can score the "
+                             "SAME rollout the metrics describe. Frames after a terminal reset are "
+                             "excluded (the env re-places the object on the table).")
     parser.add_argument("--seed", type=int, default=0)
     # AppLauncher args get appended below.
     return parser
@@ -365,6 +370,16 @@ def _match_collection_visuals(env_cfg) -> None:
 # Main rollout.
 # =========================================================================
 
+def _quat_to_R_t(q):
+    """(w,x,y,z) -> 3x3 rotation, torch; matches vla_sonic.grasp_success.quat_to_R."""
+    w, x, y, z = q[0], q[1], q[2], q[3]
+    return torch.stack([
+        torch.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)]),
+        torch.stack([2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)]),
+        torch.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]),
+    ])
+
+
 def main() -> int:
     args = _ARGS
 
@@ -523,6 +538,7 @@ def main() -> int:
         max_lift = 0.0; toppled = False; touched = False; legacy_lift = False; object_settled = False
         grab_step = -1; fired = []
         step = 0
+        traj = {k: [] for k in ("obj_pos", "obj_quat", "root_pos", "root_quat", "wrist")}
         for step in range(args.max_steps_per_episode):
             if replay is not None:
                 token, _fs = replay.latent(step)
@@ -573,6 +589,20 @@ def main() -> int:
             g_dpalm.append(d_palm)
             done_now = bool(torch.as_tensor(dones).reshape(-1)[0].item())
             if not done_now:                       # after a done the env has already reset -> skip
+                if args.traj_dump:
+                    rp = robot.data.root_pos_w[0] - org
+                    rq = robot.data.root_quat_w[0]
+                    wp = robot.data.body_pos_w[0, _rw_bid] - org
+                    wq = robot.data.body_quat_w[0, _rw_bid]
+                    Rr = _quat_to_R_t(rq); Rw = _quat_to_R_t(wq)
+                    Tw = torch.eye(4, device=Rr.device, dtype=Rr.dtype)
+                    Tw[:3, :3] = Rr.T @ Rw
+                    Tw[:3, 3] = Rr.T @ (wp - rp)
+                    traj["obj_pos"].append(obj_p.cpu().numpy().copy())
+                    traj["obj_quat"].append(oq.cpu().numpy().copy())
+                    traj["root_pos"].append(rp.cpu().numpy().copy())
+                    traj["root_quat"].append(rq.cpu().numpy().copy())
+                    traj["wrist"].append(Tw.cpu().numpy().copy())
                 if obj_rest_z is None or step <= 50:          # running min over the first 1 s (settle)
                     obj_rest_z = float(obj_p[2].item()) if obj_rest_z is None else min(obj_rest_z, float(obj_p[2].item()))
                 dz = float(obj_p[2].item()) - obj_rest_z
@@ -601,6 +631,12 @@ def main() -> int:
                 except Exception:
                     fired = []
                 break
+
+        if args.traj_dump and traj["obj_pos"]:
+            _tp = Path(f"{args.traj_dump}_ep{ep}_m{mid}_traj.npz")
+            _tp.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(_tp, **{k: np.stack(v) for k, v in traj.items()})
+            print(f"[traj-dump] {_tp} ({len(traj['obj_pos'])} frames)")
 
         # ---- episode bookkeeping ----
         stats["episodes"] += 1
