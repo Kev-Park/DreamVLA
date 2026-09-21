@@ -93,6 +93,12 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--record-video", default=os.path.expanduser("~/kevin/eval_videos/vla_rollout"),
                         help="Output prefix; per episode writes <prefix>_ep<k>_m<motion>_{third_person,ego}.mp4.")
     parser.add_argument("--video-fps", type=int, default=50)
+    parser.add_argument("--traj-dump", default=None,
+                        help="Write <prefix>_ep<k>_m<motion>_traj.npz with the object and robot poses "
+                             "ACTUALLY SIMULATED in this rollout. --replay-hdf5 re-simulates the object "
+                             "from the recorded actions, so the rendered episode can diverge from the "
+                             "recorded one; dump this to score exactly what the video shows. The frame "
+                             "after a terminal reset is excluded (the object is re-placed on the table).")
     parser.add_argument("--phys-radius", type=float, default=0.15,
                         help="[PHYS] object must be within this (m) of the SIM right palm ...")
     parser.add_argument("--phys-steps", type=int, default=25,
@@ -323,6 +329,16 @@ def _match_collection_visuals(env_cfg) -> None:
 # Main rollout.
 # =========================================================================
 
+def _quat_to_R_t(q):
+    """(w,x,y,z) -> 3x3 rotation, torch, matching vla_sonic.grasp_success.quat_to_R."""
+    w, x, y, z = q[0], q[1], q[2], q[3]
+    return torch.stack([
+        torch.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)]),
+        torch.stack([2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)]),
+        torch.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]),
+    ])
+
+
 def main() -> int:
     args = _ARGS
 
@@ -461,6 +477,7 @@ def main() -> int:
         max_lift = 0.0; toppled = False; touched = False
         grab_step = -1; fired = []
         step = 0
+        traj = {k: [] for k in ("obj_pos", "obj_quat", "root_pos", "root_quat", "wrist")}
         for step in range(args.max_steps_per_episode):
             if replay is not None:
                 token, _fs = replay.latent(step)
@@ -511,6 +528,20 @@ def main() -> int:
             d_palm = float(torch.norm(palm - obj_p).item())
             done_now = bool(torch.as_tensor(dones).reshape(-1)[0].item())
             if not done_now:                       # after a done the env has already reset -> skip
+                if args.traj_dump:
+                    rp = robot.data.root_pos_w[0] - org
+                    rq = robot.data.root_quat_w[0]
+                    wp = robot.data.body_pos_w[0, _rw_bid] - org
+                    wq = robot.data.body_quat_w[0, _rw_bid]
+                    Rr = _quat_to_R_t(rq); Rw = _quat_to_R_t(wq)
+                    T = torch.eye(4, device=Rr.device, dtype=Rr.dtype)
+                    T[:3, :3] = Rr.T @ Rw                       # wrist expressed in the root frame,
+                    T[:3, 3] = Rr.T @ (wp - rp)                 # i.e. the same 4x4 as teleop/right_wrist
+                    traj["obj_pos"].append(obj_p.cpu().numpy().copy())
+                    traj["obj_quat"].append(oq.cpu().numpy().copy())
+                    traj["root_pos"].append(rp.cpu().numpy().copy())
+                    traj["root_quat"].append(rq.cpu().numpy().copy())
+                    traj["wrist"].append(T.cpu().numpy().copy())
                 if obj_rest_z is None or step <= 50:          # running min over the first 1 s (settle)
                     obj_rest_z = float(obj_p[2].item()) if obj_rest_z is None else min(obj_rest_z, float(obj_p[2].item()))
                 dz = float(obj_p[2].item()) - obj_rest_z
@@ -534,6 +565,13 @@ def main() -> int:
                 except Exception:
                     fired = []
                 break
+
+        if args.traj_dump and traj["obj_pos"]:
+            import numpy as _np
+            _tp = Path(f"{args.traj_dump}_ep{ep}_m{mid}_traj.npz")
+            _tp.parent.mkdir(parents=True, exist_ok=True)
+            _np.savez(_tp, **{k: _np.stack(v) for k, v in traj.items()})
+            print(f"[traj-dump] {_tp}  ({len(traj['obj_pos'])} frames, terminal reset excluded)")
 
         for w in writers.values():
             w.close()

@@ -1,57 +1,49 @@
-"""Kinematic grasp-success criterion (replaces the [PHYS] held test).
+"""Grasp-success criterion for the pick task (user-specified, 2026-09-20).
 
-WHY THE OLD TEST WAS REPLACED
-  ``held = lifted >= 2 cm above rest AND within 0.15 m of the palm for >= 25 CONSECUTIVE steps``
-  fails in both directions:
-    * false positive  -- 0.15 m of the palm is proximity, not grasp: a bottle standing on the table
-      beside the hand is inside that sphere. It never checks the object is still held at the END,
-      so "lift then drop on the floor" scores as success (14/270 of the training set did).
-    * false positive  -- ``obj_rest_z`` was a running MINIMUM over the first 50 steps, so an object
-      knocked lower early (worst case: off the table) makes every later frame read as "lifted".
-    * false negative  -- the run counter resets on ONE bad frame, so a real grasp hovering near the
-      threshold never accumulates 25 consecutive steps; a grasp in the last <25 steps cannot register.
+Three rules, deliberately simple. Extra rules get added only when labelled motions reveal a hole.
 
-WHAT REPLACES IT
-  A supported object is static in the WORLD frame; a held object is static in the PALM frame.
-    rel(t)    = R_palm^T (p_obj - p_palm)           object expressed in the palm frame
-    in_volume = rel(t) inside the palm-frame grasp box (from the demos' hold phase)
-    stable    = || rel(t) - median(rel over W) || < eps
-    comove    = || v_obj - v_palm || < tau, asserted ONLY while || v_palm || > v_min
-    held(t)   = in_volume and stable and comove, LATCHED through near-static stretches
-  Deliberately NOT used:
-    * height above the table -- the arm can lift the object clear of the table and then carry it
-      BELOW the table top (past the edge); a height test would reject that legitimate grasp. Height
-      is used only for the unambiguous floor reject.
-    * object tilt -- a bottle carried at 70 deg is still a successful pick. A bottle knocked over on
-      the table is excluded by rel/comove instead, so no tilt threshold is needed.
-    * contact forces -- the env's ContactSensor covers ``Robot/.*`` with no filter, so it cannot
-      separate finger<->object from finger<->table, and the env's own comments call it unreliable
-      ("robust to the dead force sensor").
+  1. FALLEN (height)      reject if the object drops below half the table height at any point
+  2. HELD  (palm box)     a rectangular box anchored at the right palm, extending along the palm
+                          normal, just large enough to contain the mustard bottle while grasped.
+                          The object must be inside it AT THE END of the trajectory, else it was
+                          dropped.
+  3. FALLEN (orientation) reject if the object is horizontal (90 +/- 10 deg from upright) at any
+                          point -- it was knocked over.
 
-Thresholds are CALIBRATION TARGETS, not settled values: tune them against human-labelled episodes
-before this gates any dataset or eval.
+  success = (not fallen_height) and (not fallen_horizontal) and in_box_at_end
+
+The box is CALIBRATED, not guessed: p05/p95 of the object's palm-frame position over the demos'
+hold phase (the longest contiguous run of frames the demo commanded the hand closed) -- 15175
+frames over 54 demos. min/max and p01/p99 are unusable: they include frames where the hand still
+commands closed after the bottle is already gone (z spread of 1.17 m).
+
+NOTE the box tracks the object's ROOT (centre). Tipping the bottle swings its centre several cm,
+so a heavily tilted grasp can fall outside a box this tight. Rule 3 rejects near-horizontal cases
+outright, but tilts between roughly 30 and 80 degrees are neither rejected by rule 3 nor reliably
+inside the box. Worth watching for while labelling.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-DT = 0.02                                   # 50 Hz
-# palm-frame grasp box, from the demos' hold-phase p05/p95 (see GraspGate), plus margin
-BOX_LO = np.array([0.082, 0.062, -0.071]) - 0.045
-BOX_HI = np.array([0.151, 0.099, -0.004]) + 0.045
-EPS_STABLE = 0.030                          # m, palm-frame wander allowed
-TAU_COMOVE = 0.150                          # m/s, |v_obj - v_palm| while carried
-V_MIN = 0.050                               # m/s, palm speed above which comove is informative
-WIN = 25                                    # frames (0.5 s) for the median/stability window
-T_HELD = 25                                 # frames of held required somewhere
-N_END = 25                                  # frames at the end that must be held
-FLOOR_DROP = 0.20                           # m below rest => on the ground
-PRE_TILT_DEG = 50.0                         # object tilt BEFORE the lift => it was knocked over
-LIFT_M = 0.030                              # m above rest that counts as "left the support" once
+# --- calibration constants ---------------------------------------------------------------------
+BOX_LO = np.array([0.082, 0.062, -0.071])   # p05 of the demos' hold phase (palm frame, m)
+BOX_HI = np.array([0.148, 0.099, -0.005])   # p95
+BOX_MARGIN = 0.020                          # m, added to every face
+
+OBJ_REST_Z = 0.946                          # bottle centre at rest on the table (measured)
+BOTTLE_HALF_H = 0.095                       # => table top at ~0.851 m
+TABLE_TOP_Z = OBJ_REST_Z - BOTTLE_HALF_H
+FALLEN_FRAC = 0.5                           # "below half the table height"
+
+HORIZ_DEG = 90.0                            # object axis perpendicular to world up
+HORIZ_TOL = 10.0                            # +/- tolerance -> knocked over
+
+N_END = 1                                   # frames at the end used for the in-box test
 
 
-def quat_to_R(q: np.ndarray) -> np.ndarray:
+def quat_to_R(q):
     w, x, y, z = q
     return np.array([
         [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
@@ -60,8 +52,8 @@ def quat_to_R(q: np.ndarray) -> np.ndarray:
     ])
 
 
-def palm_frame(root_pos: np.ndarray, root_quat: np.ndarray, wrist: np.ndarray):
-    """World-frame palm position + rotation, from root pose composed with teleop/right_wrist (4x4)."""
+def palm_frame(root_pos, root_quat, wrist):
+    """World palm position + rotation, from the root pose composed with teleop/right_wrist (4x4)."""
     T = len(root_pos)
     p = np.zeros((T, 3)); R = np.zeros((T, 3, 3))
     for t in range(T):
@@ -71,74 +63,42 @@ def palm_frame(root_pos: np.ndarray, root_quat: np.ndarray, wrist: np.ndarray):
     return p, R
 
 
-def score(obj_pos, root_pos, root_quat, wrist, *, obj_quat=None, z_rest=None,
-          box_lo=BOX_LO, box_hi=BOX_HI, eps=EPS_STABLE, tau=TAU_COMOVE,
-          v_min=V_MIN, win=WIN, t_held=T_HELD, n_end=N_END, pre_tilt_deg=PRE_TILT_DEG):
-    """Per-step held mask + episode verdict. All inputs are (T,·) arrays in world frame."""
+def object_tilt_deg(obj_quat):
+    """Angle between the object's body z-axis and world up, per frame."""
+    q = np.asarray(obj_quat)
+    zz = 1.0 - 2.0 * (q[:, 1] ** 2 + q[:, 2] ** 2)
+    return np.degrees(np.arccos(np.clip(zz, -1.0, 1.0)))
+
+
+def score(obj_pos, obj_quat, root_pos, root_quat, wrist, *,
+          box_lo=BOX_LO, box_hi=BOX_HI, margin=BOX_MARGIN,
+          table_top=TABLE_TOP_Z, fallen_frac=FALLEN_FRAC,
+          horiz_tol=HORIZ_TOL, n_end=N_END):
+    """Per-rule verdicts plus the overall success flag."""
+    obj_pos = np.asarray(obj_pos, float)
     p_palm, R_palm = palm_frame(root_pos, root_quat, wrist)
     T = len(obj_pos)
-    rel = np.zeros((T, 3))
+
+    rel = np.empty((T, 3))
     for t in range(T):
         rel[t] = R_palm[t].T @ (obj_pos[t] - p_palm[t])
 
-    # z_rest from a settled early window (NOT a running min, which the old test used)
-    if z_rest is None:
-        z_rest = float(np.median(obj_pos[: min(20, T), 2]))
+    lo, hi = box_lo - margin, box_hi + margin
+    in_box = np.all((rel >= lo) & (rel <= hi), axis=1)
 
-    v_obj = np.gradient(obj_pos, DT, axis=0)
-    v_palm = np.gradient(p_palm, DT, axis=0)
-    speed_palm = np.linalg.norm(v_palm, axis=1)
-    comove_err = np.linalg.norm(v_obj - v_palm, axis=1)
-
-    in_volume = np.all((rel >= box_lo) & (rel <= box_hi), axis=1)
-    stable = np.zeros(T, bool)
-    for t in range(T):
-        a, b = max(0, t - win + 1), t + 1
-        stable[t] = np.linalg.norm(rel[t] - np.median(rel[a:b], axis=0)) < eps
-
-    held = np.zeros(T, bool)
-    last = False
-    for t in range(T):
-        if speed_palm[t] > v_min:                      # palm moving -> comove is informative
-            last = bool(in_volume[t] and stable[t] and comove_err[t] < tau)
-        else:                                          # near-static -> latch previous verdict,
-            last = bool(last and in_volume[t])         # but the object must still be in the hand
-        held[t] = last
-
-    first_held = int(np.argmax(held)) if held.any() else -1
-    # The FIRST time the object is both held and clearly off its resting height. Anchoring on
-    # first_held is not enough: a hand PUSHING the bottle along the table co-moves with it and sits
-    # in the grasp volume, so `held` can latch while the object is still supported. This is a real
-    # limit of a contact-free criterion -- requiring one unambiguous lift event bounds it.
-    lifted = held & (obj_pos[:, 2] > z_rest + LIFT_M)
-    first_lift = int(np.argmax(lifted)) if lifted.any() else -1
-    # Knocked over and THEN scooped up is not a pick. Tilt is consulted only BEFORE that lift,
-    # where the object is still on the table -- a bottle carried at 70 deg in-hand is untouched by
-    # this, which is why there is no terminal tilt test.
-    pre_grasp_topple = False
-    if obj_quat is not None and first_lift > 0:
-        q = np.asarray(obj_quat)[:first_lift]
-        if len(q):
-            zz = 1.0 - 2.0 * (q[:, 1] ** 2 + q[:, 2] ** 2)
-            tilt = np.degrees(np.arccos(np.clip(zz, -1.0, 1.0)))
-            pre_grasp_topple = bool((tilt > pre_tilt_deg).any())
-
-    on_floor = bool((obj_pos[:, 2] < z_rest - FLOOR_DROP).any())
-    held_frames = int(held.sum())
-    # Majority over the tail, NOT "all of the last n_end frames": requiring every tail frame
-    # reintroduces exactly the one-bad-frame brittleness that made the old test reject real
-    # grasps (expert m12 was held through frame 498 of 499 and still failed an all() test).
-    held_at_end = bool(held[-n_end:].mean() >= 0.5) if T >= n_end else bool(held[-1])
-    last_held = int(np.max(np.where(held)[0])) if held.any() else -1
+    fallen_height = bool((obj_pos[:, 2] < fallen_frac * table_top).any())            # rule 1
+    tilt = object_tilt_deg(obj_quat)
+    fallen_horizontal = bool((np.abs(tilt - HORIZ_DEG) <= horiz_tol).any())          # rule 3
+    in_box_at_end = bool(in_box[-n_end:].all()) if T >= n_end else bool(in_box[-1])   # rule 2
 
     return dict(
-        held=held, rel=rel, z_rest=z_rest,
-        on_floor=on_floor, held_frames=held_frames, held_at_end=held_at_end,
-        last_held=last_held, first_held=first_held, first_lift=first_lift,
-        pre_grasp_topple=pre_grasp_topple, lifted_ever=bool(lifted.any()),
-        success=bool(not on_floor and not pre_grasp_topple and bool(lifted.any())
-                     and held_frames >= t_held and held_at_end),
-        # "lifted then lost it" -- kept separately so it is never silently counted as success
-        dropped=bool(held_frames >= t_held and not held_at_end),
-        truncate_at=last_held,                         # chop-before-the-drop point
+        rel=rel, in_box=in_box, tilt=tilt,
+        fallen_height=fallen_height,
+        fallen_horizontal=fallen_horizontal,
+        in_box_at_end=in_box_at_end,
+        min_z=float(obj_pos[:, 2].min()),
+        max_tilt=float(tilt.max()),
+        in_box_frames=int(in_box.sum()),
+        last_in_box=int(np.max(np.where(in_box)[0])) if in_box.any() else -1,
+        success=bool(not fallen_height and not fallen_horizontal and in_box_at_end),
     )
