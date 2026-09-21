@@ -62,3 +62,33 @@ config directly from a wrapper that sets `data.datasets[0].dataset_paths` to the
 Switching `libsvtav1` -> `h264` would give ~3-5x on its own, but it changes the pixel data the VLA
 trains on. `base` and `base_dagger1` were encoded with AV1, so an h264 successor would not be
 comparable. Leave the codec alone unless re-encoding everything.
+
+
+# Parallelising collection and eval
+
+Both `collect_sonic_adapter.py` and `eval_vla_sonic.py` are already sharded by `--motion-range` /
+`--motions-from` across 4 GPUs. Measured on bluesclues (2026-09-21, 4 collectors + 4 eval workers
+sharing the box):
+
+| per Isaac process | value |
+|---|---|
+| CPU | ~390% (about 4 cores) |
+| RSS | 13.5-15.2 GB |
+| GPU | ~14.8 GB of 49 GB |
+| throughput | ~8.8 min per 500-step rollout |
+
+Machine: 104 cores, 1007 GB RAM, load average 61 with 8 Isaac processes.
+
+**Cheap win -- more shards.** CPU is the binding constraint, not GPU or RAM: ~4 cores each caps the
+box at roughly 13 concurrent Isaac processes. One shard per GPU (8-10 shards) is the practical
+setting and takes a 120-rollout round from ~3.5 h to ~1.5 h. Note a round measured while evals run
+concurrently is slower than collection alone.
+
+**Big win -- vectorised envs.** Everything runs `--num_envs 1`: one Isaac instance, one robot, one
+rollout, ~8.8 min for 10 s of simulated time. Isaac is designed to step hundreds of envs per GPU,
+amortising physics, rendering and startup, so 16 envs in ONE process beats 16 processes. This is a
+refactor, not a flag: `DaggerDriver`, `GraspGate` and the recorder all index env 0 and assume a
+single trajectory. Build it with per-env verification -- a silent cross-env mix-up would poison the
+dataset exactly the way the broken-symlink and replay-divergence bugs did.
+
+The same applies to eval: 60 episodes currently costs ~80 min.
