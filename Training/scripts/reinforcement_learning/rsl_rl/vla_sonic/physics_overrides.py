@@ -151,3 +151,48 @@ def apply_sonic_physics_overrides(
             print("[sonic-physics] enabled_self_collisions = True (matches gear_sonic training)")
         except AttributeError:
             print("[sonic-physics] could not override enabled_self_collisions")
+
+
+# ---------------------------------------------------------------------------------------------
+# Hand actuator stiffness/damping override (HS_HAND_STIFFNESS / HS_HAND_DAMPING), off by default.
+#
+# The G1 Inspire hand is configured stiffness=10.0, damping=0.2 -- 300x softer than the arm joints
+# (stiffness=3000). Those values were introduced whole in the Sim 5.1 migration (a4c15bd1,
+# 2026-04-04) with the rationale "flexibility focused for grasping"; they are not inherited from
+# upstream IsaacLab and have never been A/B'd.
+#
+# Consequence: the finger command is a BINARY, instantaneous target (BinaryJointPositionActionCfg
+# jumps 0 -> pi/2 in one step, no ramp), so closure SPEED is set entirely by the PD gains. At
+# stiffness=10 a pi/2 error commands only ~16 N.m, so the fingers drift shut over ~a second rather
+# than snapping. With a 0.1 kg bottle that means the fingers sweep through the object's space while
+# it is still free to move -- consistent with the observed failure: object enters the palm region,
+# rotates progressively, and is gone ~1 s later.
+#
+# Set HS_HAND_STIFFNESS=50 (and optionally HS_HAND_DAMPING) to A/B firmer, faster closure.
+# Flag-gated: unset leaves the robot byte-identical to every run measured so far.
+# ---------------------------------------------------------------------------------------------
+def apply_hand_gain_override(env_cfg, stiffness: float | None = None, damping: float | None = None):
+    """Override the hand actuator gains in-place. Returns (stiffness, damping) applied, or None."""
+    import os
+
+    if stiffness is None:
+        raw = os.environ.get("HS_HAND_STIFFNESS", "").strip()
+        stiffness = float(raw) if raw else None
+    if damping is None:
+        raw = os.environ.get("HS_HAND_DAMPING", "").strip()
+        damping = float(raw) if raw else None
+    if stiffness is None and damping is None:
+        return None
+    try:
+        act = env_cfg.scene.robot.actuators["hands"]
+    except (AttributeError, KeyError):
+        print("[physics] HS_HAND_STIFFNESS set but robot has no 'hands' actuator group -- ignored")
+        return None
+    old = (getattr(act, "stiffness", None), getattr(act, "damping", None))
+    if stiffness is not None:
+        act.stiffness = stiffness
+    if damping is not None:
+        act.damping = damping
+    print(f"[physics] HS_HAND gains: stiffness/damping {old} -> "
+          f"({act.stiffness}, {act.damping})")
+    return (act.stiffness, act.damping)

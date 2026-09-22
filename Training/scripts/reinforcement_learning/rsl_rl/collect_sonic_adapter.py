@@ -846,7 +846,7 @@ def main() -> None:
     from vla_sonic.token_action_wrapper import load_frozen_decoder
     from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
     from vla_sonic.sonic_pt import load_sonic_pt
-    from vla_sonic.physics_overrides import apply_sonic_physics_overrides, apply_object_mass_override
+    from vla_sonic.physics_overrides import apply_sonic_physics_overrides, apply_object_mass_override, apply_hand_gain_override
     from vla_sonic.robot_29dof import apply_29dof_waist_override
     from vla_sonic.adapter_actor_critic import AdapterActorCritic
     import rsl_rl.modules
@@ -862,6 +862,7 @@ def main() -> None:
         env_cfg.seed = args_cli.seed
     apply_sonic_physics_overrides(env_cfg)
     apply_object_mass_override(env_cfg)   # no-op unless HS_OBJ_MASS is set
+    apply_hand_gain_override(env_cfg)     # no-op unless HS_HAND_STIFFNESS/DAMPING set
     if args_cli.ref_motions_path is not None:
         env_cfg.ref_motions_path = args_cli.ref_motions_path
         print(f"[collect_sonic_adapter] ref_motions_path override -> {args_cli.ref_motions_path}")

@@ -163,7 +163,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter  # noqa: E402
-from vla_sonic.physics_overrides import apply_sonic_physics_overrides, apply_object_mass_override  # noqa: E402
+from vla_sonic.physics_overrides import apply_sonic_physics_overrides, apply_object_mass_override, apply_hand_gain_override  # noqa: E402
 from vla_sonic.simple_robot_model import SimpleG1RobotModel  # noqa: E402
 from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder  # noqa: E402
 from vla_sonic.sonic_pt import load_sonic_pt  # noqa: E402
@@ -358,6 +358,7 @@ def main() -> int:
     # self-collisions, solver iters) — same call the residual training/eval scripts use.
     apply_sonic_physics_overrides(env_cfg)
     apply_object_mass_override(env_cfg)   # no-op unless HS_OBJ_MASS is set
+    apply_hand_gain_override(env_cfg)     # no-op unless HS_HAND_STIFFNESS/DAMPING set
     if args.ref_motions_path is not None:
         env_cfg.ref_motions_path = args.ref_motions_path
         print(f"[play_vla_sonic] ref_motions_path override -> {args.ref_motions_path}")
