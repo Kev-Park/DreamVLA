@@ -38,6 +38,46 @@ PHYSICS_PRESETS = {
 }
 
 
+# ---------------------------------------------------------------------------------------------
+# Object mass override (HS_OBJ_MASS), off by default.
+#
+# The mustard bottle is configured at mass=0.1 kg in EVERY pick env variant (G1PickEnvCfg,
+# G1PickCamEnvCfg, G1PickPlayEnvCfg and the ground-pick envs), while a real YCB mustard bottle is
+# 0.603 kg -- so the sim object is ~6x too light, and it is stretched 1.5x vertically on top of
+# that. Tall and light is the tip-prone combination: from a given hand-contact impulse, angular
+# velocity scales inversely with inertia, so this bottle picks up far more spin than a real one.
+#
+# This is uniform across training and eval, so it is NOT a sim-to-sim gap -- but it does lower the
+# margin for error for every policy. Set HS_OBJ_MASS=0.603 to A/B whether class-A knockovers
+# ("bottle tips ~1 s AFTER it is in the hand") are driven by the under-massed object.
+#
+# Flag-gated deliberately: unset leaves the env byte-identical to every run measured so far.
+# ---------------------------------------------------------------------------------------------
+def apply_object_mass_override(env_cfg, mass: float | None = None) -> float | None:
+    """Override the scene object's mass in-place. Returns the applied mass, or None if unset."""
+    import os
+
+    if mass is None:
+        raw = os.environ.get("HS_OBJ_MASS", "").strip()
+        if not raw:
+            return None
+        mass = float(raw)
+    try:
+        spawn = env_cfg.scene.object.spawn
+    except AttributeError:
+        print("[physics] HS_OBJ_MASS set but env_cfg.scene.object.spawn is absent -- ignored")
+        return None
+    old = getattr(getattr(spawn, "mass_props", None), "mass", None)
+    try:
+        spawn.mass_props.mass = mass
+    except AttributeError:
+        import isaaclab.sim as sim_utils
+
+        spawn.mass_props = sim_utils.MassPropertiesCfg(mass=mass)
+    print(f"[physics] HS_OBJ_MASS: object mass {old} -> {mass} kg")
+    return mass
+
+
 def apply_sonic_physics_overrides(
     env_cfg,
     *,
