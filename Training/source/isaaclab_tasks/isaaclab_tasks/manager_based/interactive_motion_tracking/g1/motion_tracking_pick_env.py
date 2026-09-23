@@ -26,7 +26,7 @@ from isaaclab.sensors import CameraCfg
 from isaac_utils.rotations import(
     slerp,
 )
-from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking_interactive_base import G1InteractiveBaseEnvCfg, hand_state_target, hand_state_target_1, rel_pose_object_w_link, object_above_threshold, object_lift_reward, reset_object_state, rel_pose_object, hand_pose, object_approach_reward_right, G1Rewards as G1RewardsBase, TerminationsCfg as TerminationsCfgBase, ActionsCfg as ActionsCfgBase, MySceneCfg as MySceneCfgBase, EventCfg as EventCfgBase
+from isaaclab_tasks.manager_based.interactive_motion_tracking.g1.motion_tracking_interactive_base import G1InteractiveBaseEnvCfg, hand_state_target, hand_state_target_1, rel_pose_object_w_link, object_above_threshold, object_lift_reward, reset_object_state, apply_object_spawn_jitter, rel_pose_object, hand_pose, object_approach_reward_right, G1Rewards as G1RewardsBase, TerminationsCfg as TerminationsCfgBase, ActionsCfg as ActionsCfgBase, MySceneCfg as MySceneCfgBase, EventCfg as EventCfgBase
 from isaaclab_assets import G1_MINIMAL_CFG  # isort: skip
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder
@@ -393,20 +393,7 @@ def reset_object_state_rework(env: ManagerBasedRLEnv, env_ids: torch.Tensor,
     object_pos = ref[:, :3] + env.scene.env_origins[env_ids]                     # -> world
     object_pos[:, 0] += offset[0]
     object_pos[:, 1] += offset[1]
-    # Generalisation test (HS_OBJ_JITTER_X / _Y, metres, half-range; unset = no jitter).
-    # The bottle otherwise spawns at EXACTLY the same world pose in every reference clip
-    # (measured: sd 0.000 over all 54 motions) -- all existing variation comes from where the G1
-    # stands (robot->object dx spans 0.126 m, dy spans 0.292 m). So the policy has never seen the
-    # object anywhere else, and jittering it is a genuine out-of-distribution probe. Keep the
-    # half-ranges inside that envelope to stay "within reach".
-    _jx = float(os.environ.get("HS_OBJ_JITTER_X", "0") or 0)
-    _jy = float(os.environ.get("HS_OBJ_JITTER_Y", "0") or 0)
-    if _jx or _jy:
-        _n = object_pos.shape[0]
-        if _jx:
-            object_pos[:, 0] += (torch.rand(_n, device=object_pos.device) * 2 - 1) * _jx
-        if _jy:
-            object_pos[:, 1] += (torch.rand(_n, device=object_pos.device) * 2 - 1) * _jy
+    object_pos = apply_object_spawn_jitter(object_pos, "reset_object_state_rework")
     object_quat = ref[:, 3:7]
     velocities = torch.zeros((env.scene.num_envs, 6), device=env.device)[env_ids]
     object.write_root_pose_to_sim(torch.cat([object_pos, object_quat], dim=-1), env_ids=env_ids)

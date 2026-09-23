@@ -13,6 +13,7 @@ from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.envs import ManagerBasedRLEnv
+import os
 import torch
 from isaaclab.assets import Articulation, RigidObject
 import isaaclab.utils.math as math_utils
@@ -109,6 +110,37 @@ KEYPTS_MASK = [
 ]
 
 
+_OBJ_JITTER_LOGGED = False
+
+
+def apply_object_spawn_jitter(object_pos: torch.Tensor, path: str = "") -> torch.Tensor:
+    """Flag-gated object spawn jitter (HS_OBJ_JITTER_X / _Y, metres, half-range).
+
+    Unset (the default) returns ``object_pos`` untouched, so every existing run stays
+    byte-identical. The manipuland otherwise spawns at exactly the same world pose in every
+    reference clip (measured: sd 0.000 over all 54 pick motions) -- all existing variation comes
+    from where the robot stands -- so jittering it is a genuine out-of-distribution probe.
+
+    Logs once, naming the reset path that applied it: a silent no-op here is indistinguishable
+    from a real result, and both reset paths place the object, so jittering only one of them
+    yields a "generalisation" number that is really just the nominal run.
+    """
+    global _OBJ_JITTER_LOGGED
+    jx = float(os.environ.get("HS_OBJ_JITTER_X", "0") or 0)
+    jy = float(os.environ.get("HS_OBJ_JITTER_Y", "0") or 0)
+    if not (jx or jy):
+        return object_pos
+    n = object_pos.shape[0]
+    if jx:
+        object_pos[:, 0] += (torch.rand(n, device=object_pos.device) * 2 - 1) * jx
+    if jy:
+        object_pos[:, 1] += (torch.rand(n, device=object_pos.device) * 2 - 1) * jy
+    if not _OBJ_JITTER_LOGGED:
+        _OBJ_JITTER_LOGGED = True
+        print(f"[HS_OBJ_JITTER] +/-{jx} m x, +/-{jy} m y applied in {path}", flush=True)
+    return object_pos
+
+
 def reset_object_state(
     env: ManagerBasedRLEnv,
     env_ids: torch.Tensor,
@@ -130,6 +162,7 @@ def reset_object_state(
         object_pos[:,2] = height
         object_pos[:,0] += offset[0]
         object_pos[:,1] += offset[1]
+        object_pos = apply_object_spawn_jitter(object_pos, "reset_object_state")
         object_quat = torch.zeros((env.scene.num_envs, 4), device=env.device)[env_ids]
         object_quat[:, 0] = 1.0  # set the w component to 1.0 for identity quaternion
         object.write_root_pose_to_sim(torch.cat([object_pos, object_quat], dim=-1), env_ids=env_ids)
