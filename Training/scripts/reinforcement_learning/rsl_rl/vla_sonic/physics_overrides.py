@@ -171,8 +171,22 @@ def apply_sonic_physics_overrides(
 # Set HS_HAND_STIFFNESS=50 (and optionally HS_HAND_DAMPING) to A/B firmer, faster closure.
 # Flag-gated: unset leaves the robot byte-identical to every run measured so far.
 # ---------------------------------------------------------------------------------------------
-def apply_hand_gain_override(env_cfg, stiffness: float | None = None, damping: float | None = None):
-    """Override the hand actuator gains in-place. Returns (stiffness, damping) applied, or None."""
+def apply_hand_gain_override(env_cfg, stiffness: float | None = None, damping: float | None = None,
+                             effort: float | None = None, velocity: float | None = None):
+    """Override the hand actuator gains/limits in-place.
+
+    NOTE the EFFECTIVE config is the pick env's own "hands" group
+    (motion_tracking_pick_env.py, commit 5e0ecec1) -- stiffness=5.0, damping=1.25,
+    effort_limit_sim=3.0, velocity_limit_sim=1.0 -- which OVERRIDES the softer-looking
+    values in isaaclab_assets/robots/unitree.py (stiffness=10, damping=0.2).
+
+    velocity_limit_sim=1.0 rad/s is the binding constraint on closure SPEED: the binary finger
+    command steps the target 0 -> pi/2 (1.571 rad) instantly, so the fingers need >= 1.57 s to
+    travel that far REGARDLESS of stiffness. That is the same order as the measured interval
+    between the bottle entering the palm and reaching horizontal (~1.0 s median), i.e. the hand
+    may still be closing while the object is being displaced. Raising stiffness alone does not
+    help while this cap is in place (measured: 60% -> 63%).
+    """
     import os
 
     if stiffness is None:
@@ -181,18 +195,30 @@ def apply_hand_gain_override(env_cfg, stiffness: float | None = None, damping: f
     if damping is None:
         raw = os.environ.get("HS_HAND_DAMPING", "").strip()
         damping = float(raw) if raw else None
-    if stiffness is None and damping is None:
+    if effort is None:
+        raw = os.environ.get("HS_HAND_EFFORT", "").strip()
+        effort = float(raw) if raw else None
+    if velocity is None:
+        raw = os.environ.get("HS_HAND_VELOCITY", "").strip()
+        velocity = float(raw) if raw else None
+    if stiffness is None and damping is None and effort is None and velocity is None:
         return None
     try:
         act = env_cfg.scene.robot.actuators["hands"]
     except (AttributeError, KeyError):
         print("[physics] HS_HAND_STIFFNESS set but robot has no 'hands' actuator group -- ignored")
         return None
-    old = (getattr(act, "stiffness", None), getattr(act, "damping", None))
+    old = (getattr(act, "stiffness", None), getattr(act, "damping", None),
+           getattr(act, "effort_limit_sim", None), getattr(act, "velocity_limit_sim", None))
     if stiffness is not None:
         act.stiffness = stiffness
     if damping is not None:
         act.damping = damping
-    print(f"[physics] HS_HAND gains: stiffness/damping {old} -> "
-          f"({act.stiffness}, {act.damping})")
-    return (act.stiffness, act.damping)
+    if effort is not None:
+        act.effort_limit_sim = effort
+    if velocity is not None:
+        act.velocity_limit_sim = velocity
+    new = (act.stiffness, act.damping,
+           getattr(act, "effort_limit_sim", None), getattr(act, "velocity_limit_sim", None))
+    print(f"[physics] HS_HAND (stiffness, damping, effort, velocity): {old} -> {new}")
+    return new
