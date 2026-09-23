@@ -393,6 +393,20 @@ def reset_object_state_rework(env: ManagerBasedRLEnv, env_ids: torch.Tensor,
     object_pos = ref[:, :3] + env.scene.env_origins[env_ids]                     # -> world
     object_pos[:, 0] += offset[0]
     object_pos[:, 1] += offset[1]
+    # Generalisation test (HS_OBJ_JITTER_X / _Y, metres, half-range; unset = no jitter).
+    # The bottle otherwise spawns at EXACTLY the same world pose in every reference clip
+    # (measured: sd 0.000 over all 54 motions) -- all existing variation comes from where the G1
+    # stands (robot->object dx spans 0.126 m, dy spans 0.292 m). So the policy has never seen the
+    # object anywhere else, and jittering it is a genuine out-of-distribution probe. Keep the
+    # half-ranges inside that envelope to stay "within reach".
+    _jx = float(os.environ.get("HS_OBJ_JITTER_X", "0") or 0)
+    _jy = float(os.environ.get("HS_OBJ_JITTER_Y", "0") or 0)
+    if _jx or _jy:
+        _n = object_pos.shape[0]
+        if _jx:
+            object_pos[:, 0] += (torch.rand(_n, device=object_pos.device) * 2 - 1) * _jx
+        if _jy:
+            object_pos[:, 1] += (torch.rand(_n, device=object_pos.device) * 2 - 1) * _jy
     object_quat = ref[:, 3:7]
     velocities = torch.zeros((env.scene.num_envs, 6), device=env.device)[env_ids]
     object.write_root_pose_to_sim(torch.cat([object_pos, object_quat], dim=-1), env_ids=env_ids)
