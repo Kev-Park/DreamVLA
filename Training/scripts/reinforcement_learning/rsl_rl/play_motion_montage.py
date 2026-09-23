@@ -63,6 +63,10 @@ parser.add_argument("--encoder-mode", type=str, default="g1", choices=["g1", "te
                     help="Native .pt only. g1 = full-body joint reference encoder (default). teleop = the "
                          "checkpoint VR 3-point head: reference wrists+torso point and lower-body command; "
                          "SONIC synthesizes the whole body itself.")
+parser.add_argument("--no-video", action="store_true", default=False,
+                    help="Skip camera capture and video encoding. For data-capture runs (--dump-track) "
+                         "the RTX render + per-step annotator flush dominates wall time; disabling it "
+                         "makes a 60-clip capture practical.")
 parser.add_argument("--dump-track", type=str, default=None,
                     help="Write an .npz of per-step world positions (env-local) of the right-hand bodies "
                          "(right_hand_*/right_rubber_hand/right_wrist_*) and the object, plus is_closed and "
@@ -1139,54 +1143,55 @@ def main():
                 _trk["ref_root_quat"].append(_rst["root_rot"].reshape(-1, 4)[0].cpu().numpy())
                 _trk["seg"].append(_seg_i); _trk["mid"].append(int(_mid)); _trk["step"].append(_s)
 
-            # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
-            _APP.update()
-            _APP.update()
+            if not args_cli.no_video:
+                # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
+                _APP.update()
+                _APP.update()
 
 
-            # 3. read + write the frame
-            frame = _read_camera_rgb(env, "camera")
-            if frame is None:
-                print(f"[WARN] step {timestep}: third-person camera 'camera' returned no frame")
-            else:
-                if timestep < 5 and _prev_frame is not None:
-                    diff = int(np.abs(frame.astype(np.int32) - _prev_frame.astype(np.int32)).max())
-                    print(f"[step {timestep}] camera max_pixel_diff_from_prev={diff}")
-                _prev_frame = frame.copy()
+                # 3. read + write the frame
+                frame = _read_camera_rgb(env, "camera")
+                if frame is None:
+                    print(f"[WARN] step {timestep}: third-person camera 'camera' returned no frame")
+                else:
+                    if timestep < 5 and _prev_frame is not None:
+                        diff = int(np.abs(frame.astype(np.int32) - _prev_frame.astype(np.int32)).max())
+                        print(f"[step {timestep}] camera max_pixel_diff_from_prev={diff}")
+                    _prev_frame = frame.copy()
 
-                label = (f"motion {_mid}   [{_seg_i + 1}/{len(_mlist)}]   "
-                         f"t {_s * 0.02:4.1f}s")
-                if not args_cli.no_stability:
-                    _st, _mg = _stability_margin(env)
-                    if stab_markers is not None:
-                        _update_stability_markers(env, stab_markers)
-                    if _st is not None:
-                        label += ("   STABLE" if _st else "   UNSTABLE")
-                        if _mg == _mg:  # not NaN
-                            label += f" ({_mg:+.3f} m)"
-                        else:
-                            label += " (flight)"
-                if args_cli.reference_pd:
-                    label = "REFERENCE-PD  " + label
-                elif args_cli.reference_playback:
-                    label = "REFERENCE  " + label
-                elif args_cli.zero_residual:
-                    label = "ZERO-SHOT  " + label
-                if args_cli.overlay_ref:
-                    label = label + "  [ref overlay: R-arm red]"
-                if args_cli.overlay_contact:
-                    _uwc = env.unwrapped
-                    _mtc = _uwc.episode_length_buf * _uwc.step_dt + _uwc.start_motion_times.clone().detach().to(device=_uwc.device, dtype=torch.float32)
-                    _resc = _uwc.motion_lib.get_motion_state(_uwc.motion_ids, _mtc)
-                    _icc = bool(_resc["is_closed"].reshape(-1)[0].item() > 0.5)
-                    frame = _overlay_contact(frame, _icc)
-                writer.write(_overlay(frame, label))
+                    label = (f"motion {_mid}   [{_seg_i + 1}/{len(_mlist)}]   "
+                             f"t {_s * 0.02:4.1f}s")
+                    if not args_cli.no_stability:
+                        _st, _mg = _stability_margin(env)
+                        if stab_markers is not None:
+                            _update_stability_markers(env, stab_markers)
+                        if _st is not None:
+                            label += ("   STABLE" if _st else "   UNSTABLE")
+                            if _mg == _mg:  # not NaN
+                                label += f" ({_mg:+.3f} m)"
+                            else:
+                                label += " (flight)"
+                    if args_cli.reference_pd:
+                        label = "REFERENCE-PD  " + label
+                    elif args_cli.reference_playback:
+                        label = "REFERENCE  " + label
+                    elif args_cli.zero_residual:
+                        label = "ZERO-SHOT  " + label
+                    if args_cli.overlay_ref:
+                        label = label + "  [ref overlay: R-arm red]"
+                    if args_cli.overlay_contact:
+                        _uwc = env.unwrapped
+                        _mtc = _uwc.episode_length_buf * _uwc.step_dt + _uwc.start_motion_times.clone().detach().to(device=_uwc.device, dtype=torch.float32)
+                        _resc = _uwc.motion_lib.get_motion_state(_uwc.motion_ids, _mtc)
+                        _icc = bool(_resc["is_closed"].reshape(-1)[0].item() > 0.5)
+                        frame = _overlay_contact(frame, _icc)
+                    writer.write(_overlay(frame, label))
 
-            timestep += 1
+                timestep += 1
 
-            sleep_time = dt - (time.time() - start_time)
-            if args_cli.real_time and sleep_time > 0:
-                time.sleep(sleep_time)
+                sleep_time = dt - (time.time() - start_time)
+                if args_cli.real_time and sleep_time > 0:
+                    time.sleep(sleep_time)
 
     writer.close()
 
