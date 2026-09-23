@@ -1059,7 +1059,16 @@ def main():
         _cidx = [_csn.index(n) for n in _trk_names] if all(n in _csn for n in _trk_names) else []
         _trk = {"names": _trk_names, "idx": _tidx, "cidx": _cidx, "seg": [], "mid": [], "step": [],
                 "hand_pos": [], "obj_pos": [], "is_closed": [], "contact_f": [], "root_pos": [], "root_quat": [],
-                "ref_root_pos": []}
+                "ref_root_pos": [], "joint_pos": [], "ref_joint_pos": [], "ref_root_quat": []}
+        # articulation joint indices in motion_lib.joint_names order, so robot and reference
+        # joint vectors are directly comparable
+        try:
+            _jn = list(env.unwrapped.motion_lib.joint_names)
+            _ajn = list(env.unwrapped.scene["robot"].data.joint_names)
+            _trk["jidx"] = [_ajn.index(n) for n in _jn]
+        except Exception as _e:
+            _trk["jidx"] = None
+            print(f"[dump-track] joint index map unavailable ({_e}); dumping raw articulation order")
         print(f"[dump-track] {len(_tidx)} right-hand bodies: {_trk['names']}")
 
     for _seg_i, _mid in enumerate(_mlist):
@@ -1121,6 +1130,13 @@ def main():
                 _rst = _uwt.motion_lib.get_motion_state(_uwt.motion_ids, _mtt)
                 _trk["is_closed"].append(bool(_rst["is_closed"].reshape(-1)[0].item() > 0.5))
                 _trk["ref_root_pos"].append((_rst["root_pos"].reshape(-1, 3)[0]).cpu().numpy())
+                # Joint-level record: lets the ROBOT's own gait (stride, cadence, foot placement) be
+                # reconstructed by FK and compared against the reference's, which root-only data
+                # cannot distinguish -- under-stepping and under-cadence look identical in root drift.
+                _jp = _uwt.scene["robot"].data.joint_pos[0]
+                _trk["joint_pos"].append(_jp[_trk["jidx"]].cpu().numpy() if _trk.get("jidx") is not None else _jp.cpu().numpy())
+                _trk["ref_joint_pos"].append(_rst["dof_pos"].reshape(len(_uwt.motion_ids), -1)[0].cpu().numpy())
+                _trk["ref_root_quat"].append(_rst["root_rot"].reshape(-1, 4)[0].cpu().numpy())
                 _trk["seg"].append(_seg_i); _trk["mid"].append(int(_mid)); _trk["step"].append(_s)
 
             # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
@@ -1179,7 +1195,9 @@ def main():
                  step=np.array(_trk["step"]), hand_pos=np.stack(_trk["hand_pos"]), obj_pos=np.stack(_trk["obj_pos"]),
                  is_closed=np.array(_trk["is_closed"]),
                  root_pos=np.stack(_trk["root_pos"]), root_quat=np.stack(_trk["root_quat"]), ref_root_pos=np.stack(_trk["ref_root_pos"]),
-                 contact_f=(np.stack(_trk["contact_f"]) if _trk["contact_f"] else np.zeros((0, 0))))
+                 contact_f=(np.stack(_trk["contact_f"]) if _trk["contact_f"] else np.zeros((0, 0))),
+                 joint_pos=np.stack(_trk["joint_pos"]), ref_joint_pos=np.stack(_trk["ref_joint_pos"]),
+                 ref_root_quat=np.stack(_trk["ref_root_quat"]))
         print(f"[dump-track] wrote {args_cli.dump_track}: {len(_trk['step'])} steps")
     env.close()
 
