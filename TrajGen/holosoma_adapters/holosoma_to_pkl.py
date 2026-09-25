@@ -272,6 +272,27 @@ if os.environ.get("HS_RETABLE", "1") == "1":
     obj_pos[:, 2] += _retable_dz
     print(f"[retable] object rest z {_rest_z:.3f} -> {_retable_target:.3f} (dz {_retable_dz:+.3f})")
 
+# --- HS_OBJ_SHIFT_FWD / HS_OBJ_SHIFT_LEFT: IK-augmentation object shift -----------------------
+# Translate the WHOLE object trajectory in the table plane, in the grab-frame HEADING frame
+# (+fwd = along the root heading, +left = to the robot's left), BEFORE the AL refine. Everything
+# the refine and the pkl derive from the object follows automatically: palm_target and the
+# post-grab palm trajectory (refine_al_29 palm_target/palm_target_traj), the object-anchored table
+# edge (x_edge = obj_grab_x - ...), grab_pos, and object_poses. So one clip re-solves into N
+# variants that reach a different point on the table, with the lower body (pinned stance) and the
+# timing unchanged -- the DreamControl Pick_real1 wrist-shift augmentation, applied to the object.
+# Runs AFTER the HS_STAND_LAT_BAND root clamp, so the shift moves the root->object geometry out of
+# the clamped band by exactly this much (apply it before the clamp and the clamp cancels it).
+_obj_shift_fwd = float(os.environ.get("HS_OBJ_SHIFT_FWD", "0"))
+_obj_shift_left = float(os.environ.get("HS_OBJ_SHIFT_LEFT", "0"))
+if _obj_shift_fwd != 0.0 or _obj_shift_left != 0.0:
+    _sw, _sx, _sy, _sz = (float(base_quat[grab_idx, k]) for k in range(4))
+    _syaw = np.arctan2(2.0 * (_sw * _sz + _sx * _sy), 1.0 - 2.0 * (_sy * _sy + _sz * _sz))
+    _sd = np.array([np.cos(_syaw) * _obj_shift_fwd - np.sin(_syaw) * _obj_shift_left,
+                    np.sin(_syaw) * _obj_shift_fwd + np.cos(_syaw) * _obj_shift_left])
+    obj_pos[:, :2] += _sd[None, :]
+    print(f"[obj-shift] object moved (fwd {_obj_shift_fwd:+.3f}, left {_obj_shift_left:+.3f}) m in the "
+          f"heading frame (yaw {_syaw:+.3f}) -> world d=({_sd[0]:+.3f},{_sd[1]:+.3f})")
+
 # --- freeze left arm across ALL frames (refine parity) ---
 joints = freeze_left_arm(joints)
 
