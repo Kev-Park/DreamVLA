@@ -332,6 +332,8 @@ AUG_PALMTRACK_W = float(os.environ.get("HS_AUG_PALMTRACK_W", "20.0"))  # palm fo
 AUG_CURV_W      = float(os.environ.get("HS_AUG_CURV_W", "5.0"))        # joint curvature matches the source's
 aug_palm_path:    torch.Tensor | None = None   # (F,3) p_src(t) + s(t)*delta  (set by refine_arm)
 aug_src_active:   torch.Tensor | None = None   # (F,A) source joints, active columns (set by refine_arm)
+AUG_ORIENT_W    = float(os.environ.get("HS_AUG_ORIENT_W", "40.0"))     # hand rotation matches the source's
+aug_hand_R_src:   torch.Tensor | None = None   # (F,3,3) source hand world rotation (set by refine_arm)
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
                  lambda_table: torch.Tensor | None = None,
@@ -600,6 +602,18 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
         elif i == 38: # right hand link (red dot in viser)
             rot_mat = tf.get_matrix()[:,:3,:3]
             rot_mat = torch.bmm(rot_matrix, rot_mat)
+
+            # [AUG] Orientation anchor: hold the SOURCE hand rotation. Under a pure table-plane
+            # translation the object's orientation does not change, so the grasp-preserving target
+            # is the source rotation UNROTATED -- the orientation analogue of the object-frame
+            # invariance the palm anchor uses. Without it orientation is re-derived (point_fixed_dir
+            # recomputed toward the moved object, levelness absolute, several terms switching state
+            # at grab_idx) and resolves discontinuously there: measured 21 deg of grasp-rotation
+            # error arriving at 351 deg/s in the single frame before the grab.
+            if aug_hand_R_src is not None and AUG_ORIENT_W > 0:
+                _Rrel = torch.bmm(aug_hand_R_src.transpose(1, 2), rot_mat)
+                _c = ((_Rrel[:, 0, 0] + _Rrel[:, 1, 1] + _Rrel[:, 2, 2]) - 1.0) * 0.5
+                cost2 += AUG_ORIENT_W * (1.0 - _c.clamp(-1.0, 1.0))      # = 1 - cos(angle)
 
             # Get hand position and rotation in world frame
             hand_tf = tf.get_matrix()                   # (N, 4, 4)
@@ -974,7 +988,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     global target_joint_angles, active_joint_names, inactive_joint_ids, joint_names
     global fk_results_ref, grab_idx, grab_pos, capsule_obs_pos, ref_dists, traj_fps_hz
     global active_joint_ids, init_joint_angles, palm_target, palm_target_traj, jlim_lo, jlim_hi, obj_grab_x
-    global aug_palm_path, aug_src_active
+    global aug_palm_path, aug_src_active, aug_hand_R_src
 
     joint_names = JOINT_NAMES_29
     init_joint_angles = INIT_29
@@ -1056,6 +1070,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     # --- AUGMENTATION MODE targets (no-ops when src_joints / palm_shift are not given) ---------
     aug_palm_path = None
     aug_src_active = None
+    aug_hand_R_src = None
     if src_joints is not None:
         _src_t = torch.tensor(np.asarray(src_joints), dtype=torch.float32, device=DEVICE)
         aug_src_active = _src_t[:, active_joint_ids].clone()
@@ -1071,9 +1086,38 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
             _u = ((_tt - _r0) / (_r1 - _r0)).clamp(0.0, 1.0)
             _s = _u * _u * _u * (_u * (_u * 6.0 - 15.0) + 10.0)          # smootherstep
             aug_palm_path = _palm_path_of(_src_t, trans, quats) + _s.unsqueeze(1) * _delta.unsqueeze(0)
-            print(f"[refine-al][aug] palm-path shape anchor ON (W={AUG_PALMTRACK_W:.1f}) "
-                  f"delta=({float(_delta[0]):+.3f},{float(_delta[1]):+.3f},{float(_delta[2]):+.3f}) "
-                  f"ramp frames {_r0:.0f}->{_r1:.0f}; curvature W={AUG_CURV_W:.1f}; pinned head={PIN_FIRST_N}")
+
+            # Re-base the EXISTING palm terms onto the same path. Otherwise the Charbonnier
+            # (W=30) pulls to `object + nominal grasp offset` while the anchor (W=20) pulls to
+            # `p_src + delta`; they disagree by (the source's converged offset - the nominal one),
+            # the Charbonnier wins, and the grasp-relative position drifts ~1.5-2 cm. The source
+            # palm was already on the source object, so p_src(t)+delta IS the object-correct path.
+            palm_target_traj = aug_palm_path.clone()
+            palm_target = aug_palm_path[grab_idx].clone()
+            capsule_obs_pos = palm_target.clone()
+
+            # Pointing azimuth from the SOURCE geometry (target minus the shift), so the pointing
+            # term agrees with the orientation anchor instead of rotating the hand toward the
+            # displaced object.
+            _pf_s = (palm_target - _delta) - wrist_keypts[_ts]
+            _pf_s = torch.tensor([float(_pf_s[0]), float(_pf_s[1]), 0.0], device=DEVICE)
+            if POINT_YAW_OFFSET != 0.0:
+                _ca, _sa = float(np.cos(POINT_YAW_OFFSET)), float(np.sin(POINT_YAW_OFFSET))
+                _pf_s = torch.tensor([_ca * float(_pf_s[0]) - _sa * float(_pf_s[1]),
+                                      _sa * float(_pf_s[0]) + _ca * float(_pf_s[1]), 0.0], device=DEVICE)
+            point_fixed_dir = _pf_s / _pf_s.norm().clamp(min=1e-6)
+
+            # Source hand world rotation for the orientation anchor.
+            _fk_s = chain.forward_kinematics({n: _src_t[:, i] for i, n in enumerate(joint_names)})
+            _rot_s = quaternion_to_matrix(quats)
+            for _i, (_ln, _tf) in enumerate(_fk_s.items()):
+                if _i == 38:
+                    aug_hand_R_src = torch.bmm(_rot_s, _tf.get_matrix()[:, :3, :3]).detach()
+                    break
+            print(f"[refine-al][aug] palm anchor W={AUG_PALMTRACK_W:.1f} (palm terms re-based), "
+                  f"curvature W={AUG_CURV_W:.1f}, orientation W={AUG_ORIENT_W:.1f}; "
+                  f"delta=({float(_delta[0]):+.3f},{float(_delta[1]):+.3f}) ramp {_r0:.0f}->{_r1:.0f}; "
+                  f"pinned head={PIN_FIRST_N}")
 
     joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone())
     _pinned_head = (joint_angles.detach()[:PIN_FIRST_N].clone() if PIN_FIRST_N > 0 else None)
