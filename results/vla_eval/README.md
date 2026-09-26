@@ -69,3 +69,50 @@ labels for them are already in the data -- more aggregation cannot fix it.
 An earlier "~45% held" figure could not be reconciled with a re-run of the same checkpoint,
 because the log that produced it had been deleted from the cluster's `/tmp`. Record runs here so
 provenance survives.
+
+## Generalisation eval (object spawn jitter)
+
+The bottle spawns at exactly (2.100, 0.000) in all 54 reference motions (sd 0.000), so all
+existing variation is robot placement. `HS_OBJ_JITTER_X/_Y` jitters it. Scored with the 4-rule
+criterion, MID hand config + 0.603 kg:
+
+| arm | success | 95% CI | vs reference |
+|---|---|---|---|
+| no jitter | 52/60 = 86.7% | [75.8, 93.1] | — |
+| ±3 cm x / ±5 cm y | 46/60 = 76.7% | [64.6, 85.6] | p=0.157 ns |
+| ±6 cm x / ±10 cm y | 33/60 = 55.0% | [42.5, 66.9] | p=0.0001 |
+
+Pooled over 180 episodes the logistic slope on displacement is −25.8/m (p<0.0001): odds of
+success ×0.77 per additional cm.
+
+**Gotcha that cost four relaunches:** the editable install resolves `isaaclab_tasks` to
+`~/kevin/DreamVLA`, NOT the worktree you `cd` into, and `PYTHONPATH` does not survive Isaac's
+`SimulationApp`. Env-package changes must be pulled into the main checkout.
+
+## DAgger intervention signals (beta=0 rollouts, 81 episodes)
+
+Testing whether anything cheaper and more general than a hand-calibrated gate can decide when
+the expert takes over. All four signals are recorded by `--dagger-diagnostics`.
+
+| signal | jitter vs nominal | predicts failure | verdict |
+|---|---|---|---|
+| FSQ lattice residual | AUC 0.49 | 0.67 mean / 0.57 p90 | **dead** — aliased noise |
+| feature density (kNN cosine) | AUC 0.46 | 0.43 | **dead** |
+| feature density (Mahalanobis, LOO) | AUC 0.50 | 0.57 | **dead** |
+| root tracking deviation | AUC 0.50 | 0.49 (inverted at p90) | **dead** |
+| expert/VLA token disagreement | AUC 0.59 | **0.74 p90** | survivor |
+
+- FSQ residual fails because the grid step is 1/16 but per-channel prediction error is ~0.099,
+  so the residual aliases: 14.6% of frames sit at the 1/32 ceiling, dynamic range 1.6x.
+- Feature density scored AUC 0.935 until the covariance was fitted leave-one-EPISODE-out, after
+  which it is 0.50. The pooled VLM embedding cannot see a 6-10 cm object shift.
+- Root deviation stays bounded (median 7.8 cm, p99 18 cm) because SONIC holds the reference —
+  failures are in the hand/object interaction, not whole-body tracking.
+- Disagreement fires 3.4 s before termination in 22/25 early-terminated episodes.
+
+Two design facts found by measurement, both in `collect_sonic_adapter.py`:
+1. A fixed threshold cannot be calibrated offline — thresholding at the beta=0 median spent only
+   9.4% of frames on the expert once it drove, because intervening restores agreement. Hence
+   `--dagger-trigger-budget`, which targets the budget and self-calibrates the threshold.
+2. Committing the decision every frame gave 79 control switches/episode vs ~31 for stochastic
+   beta; decisions now commit at re-plan boundaries so both arms switch at the same rate.
