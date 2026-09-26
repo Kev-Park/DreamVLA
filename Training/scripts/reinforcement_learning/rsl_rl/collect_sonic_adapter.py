@@ -393,7 +393,7 @@ class DaggerDriver:
 
     def __init__(self, env, vla_policy, obs_adapter, *, beta: float, chunk: int, close_thres: float, seed: int,
                  diagnostics: bool = False, trigger: str = "stochastic", trigger_thr: float = 0.551,
-                 trigger_smooth: int = 15):
+                 trigger_smooth: int = 15, trigger_budget: float = -1.0, trigger_lr: float = 0.02):
         self.env = env; self.vla = vla_policy; self.obs_adapter = obs_adapter
         self.beta = float(beta); self.chunk = int(chunk); self.close_thres = float(close_thres)
         self.rng = np.random.default_rng(seed)
@@ -406,6 +406,16 @@ class DaggerDriver:
         self.trigger = str(trigger)
         self.trigger_thr = float(trigger_thr)
         self.trigger_smooth = max(1, int(trigger_smooth))
+        # A FIXED threshold cannot be calibrated offline: intervening changes the very
+        # distribution it is measured on. Calibrated on beta=0 rollouts (median 0.551) it spent
+        # only 9.4% of frames on the expert once it was actually driving, because the expert
+        # steers the rollout back into agreement. Targeting a BUDGET instead removes the
+        # constant entirely -- Robbins-Monro on the indicator drives P(d > thr) -> budget, so the
+        # threshold self-calibrates to whatever task, policy and embodiment it is run on, and the
+        # knob you set is the one comparable to beta.
+        self.trigger_budget = float(trigger_budget)      # <0 disables (fixed threshold)
+        self.trigger_lr = float(trigger_lr)
+        self._dis_mean = None                            # EMA of the disagreement, sets the step scale
         self._dis_win: list[float] = []
         self.n_trig_eval = 0
         self._feat = None            # pooled VLM embedding from the most recent VLA query
@@ -484,7 +494,13 @@ class DaggerDriver:
                 if len(self._dis_win) > self.trigger_smooth:
                     self._dis_win.pop(0)
                 self.n_trig_eval += 1
-                self._expert_drives = bool(np.mean(self._dis_win) > self.trigger_thr)
+                ds = float(np.mean(self._dis_win))
+                self._expert_drives = bool(ds > self.trigger_thr)
+                if self.trigger_budget >= 0.0:
+                    # scale the step by the signal's own magnitude so the rule is unit-free
+                    self._dis_mean = ds if self._dis_mean is None else 0.99 * self._dis_mean + 0.01 * ds
+                    self.trigger_thr += (self.trigger_lr * max(self._dis_mean, 1e-6)
+                                         * ((1.0 if self._expert_drives else 0.0) - self.trigger_budget))
 
         if self._expert_drives:
             self.n_expert += 1
@@ -794,6 +810,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     if dagger is not None:
         metadata["dagger"] = {"beta": dagger.beta, "chunk": dagger.chunk, "trigger": dagger.trigger,
                           "trigger_thr": dagger.trigger_thr, "trigger_smooth": dagger.trigger_smooth,
+                          "trigger_budget": dagger.trigger_budget,
                           "expert_steps": dagger.n_expert,
                               "vla_steps": dagger.n_vla, "labels": "expert token + expert finger command"}
     if grasp_gate is not None:
@@ -889,6 +906,12 @@ def main() -> None:
                              "beta=0 distribution, which reproduces the beta=0.5 expert budget (~50%% of frames).")
     parser.add_argument("--dagger-trigger-smooth", type=int, default=15,
                         help="Frames of moving average on the disagreement before thresholding (anti-chatter).")
+    parser.add_argument("--dagger-trigger-budget", type=float, default=-1.0,
+                        help="Target fraction of frames the expert should drive (e.g. 0.5 for parity with\n"
+                             "beta=0.5). The threshold then self-calibrates online to hit it, which is what\n"
+                             "makes the rule portable across tasks. Negative keeps --dagger-trigger-thr fixed.")
+    parser.add_argument("--dagger-trigger-lr", type=float, default=0.02,
+                        help="Step size for the budget controller, relative to the signal's own scale.")
     parser.add_argument("--dagger-rollouts", type=int, default=2, help="DAgger: rollouts per demo motion.")
     parser.add_argument("--dagger-min-steps", type=int, default=50, help="DAgger: discard rollouts shorter than this.")
     parser.add_argument("--grasp-gate", action="store_true", default=False,
@@ -1070,6 +1093,8 @@ def main() -> None:
                               diagnostics=args_cli.dagger_diagnostics,
                               trigger=args_cli.dagger_trigger, trigger_thr=args_cli.dagger_trigger_thr,
                               trigger_smooth=args_cli.dagger_trigger_smooth,
+                              trigger_budget=args_cli.dagger_trigger_budget,
+                              trigger_lr=args_cli.dagger_trigger_lr,
                               close_thres=args_cli.dagger_finger_close_thres, seed=args_cli.seed)
         print(f"[DAgger] VLA {args_cli.dagger_vla_checkpoint} drives with P={1-args_cli.dagger_beta:.2f} per "
               f"{args_cli.dagger_chunk}-step chunk; expert labels every state. {len(dagger_motions)} demo motions x "
