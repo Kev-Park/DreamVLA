@@ -392,11 +392,22 @@ class DaggerDriver:
     """
 
     def __init__(self, env, vla_policy, obs_adapter, *, beta: float, chunk: int, close_thres: float, seed: int,
-                 diagnostics: bool = False):
+                 diagnostics: bool = False, trigger: str = "stochastic", trigger_thr: float = 0.551,
+                 trigger_smooth: int = 15):
         self.env = env; self.vla = vla_policy; self.obs_adapter = obs_adapter
         self.beta = float(beta); self.chunk = int(chunk); self.close_thres = float(close_thres)
         self.rng = np.random.default_rng(seed)
         self.diagnostics = bool(diagnostics)
+        # Intervention rule. "stochastic" is the original beta coin-flip per re-plan chunk.
+        # "disagree" hands control to the expert exactly where it would act differently from the
+        # VLA -- measured, not predicted, and free because DAgger already evaluates the expert at
+        # every visited state in order to relabel it. Unlike a reference-tracking margin it needs
+        # no reference trajectory, so it carries over to any task that has an expert at all.
+        self.trigger = str(trigger)
+        self.trigger_thr = float(trigger_thr)
+        self.trigger_smooth = max(1, int(trigger_smooth))
+        self._dis_win: list[float] = []
+        self.n_trig_eval = 0
         self._feat = None            # pooled VLM embedding from the most recent VLA query
         self._vla_tok = None         # the VLA token executed at the current frame
         self._resid = (float("nan"), float("nan"))
@@ -445,17 +456,36 @@ class DaggerDriver:
 
     def begin_episode(self):
         self._chunk = None; self._chunk_step = self.chunk; self._expert_drives = True
-        self.n_expert = 0; self.n_vla = 0
+        self.n_expert = 0; self.n_vla = 0; self._dis_win = []; self.n_trig_eval = 0
 
-    def step(self, expert_latent: torch.Tensor):
+    def step(self, expert_latent: torch.Tensor, expert_tok=None):
         """Advance the env one step; returns (obs, rew, dones, extras, expert_drove: bool)."""
         if self._chunk_step >= self.chunk:                               # re-plan boundary
-            self._expert_drives = bool(self.rng.random() < self.beta)
             self._chunk_step = 0
-            if not self._expert_drives:
+            if self.trigger == "disagree":
+                # Always re-plan: the VLA's action is needed every step as the comparison term,
+                # whether or not it ends up executing.
                 out = self.vla.get_action(self.obs_adapter())
                 self._chunk = out[0] if isinstance(out, tuple) else out
+            else:
+                self._expert_drives = bool(self.rng.random() < self.beta)
+                if not self._expert_drives:
+                    out = self.vla.get_action(self.obs_adapter())
+                    self._chunk = out[0] if isinstance(out, tuple) else out
         t = self._chunk_step; self._chunk_step += 1
+
+        if self.trigger == "disagree":
+            if self._chunk is None or expert_tok is None:
+                self._expert_drives = True                               # no comparison yet
+            else:
+                cand = np.asarray(self._chunk["motion_token"], np.float32)[0, t]
+                d = float(np.linalg.norm(np.asarray(expert_tok, np.float32) - cand))
+                self._dis_win.append(d)
+                if len(self._dis_win) > self.trigger_smooth:
+                    self._dis_win.pop(0)
+                self.n_trig_eval += 1
+                self._expert_drives = bool(np.mean(self._dis_win) > self.trigger_thr)
+
         if self._expert_drives:
             self.n_expert += 1
             return (*self.env.step(expert_latent), True)
@@ -591,7 +621,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
             teleop_history.append(_capture_teleop_frame(env))
         with torch.inference_mode():
             if dagger is not None:
-                *step_result, expert_drove = dagger.step(actions)
+                *step_result, expert_drove = dagger.step(actions, expert_tok=expert_tok)
                 step_result = tuple(step_result); dagger_mask.append(expert_drove)
                 if dagger.diagnostics:
                     diag_hist.append(dagger.diag_record(expert_tok))
@@ -762,7 +792,9 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         "state_on": state_on,
     }
     if dagger is not None:
-        metadata["dagger"] = {"beta": dagger.beta, "chunk": dagger.chunk, "expert_steps": dagger.n_expert,
+        metadata["dagger"] = {"beta": dagger.beta, "chunk": dagger.chunk, "trigger": dagger.trigger,
+                          "trigger_thr": dagger.trigger_thr, "trigger_smooth": dagger.trigger_smooth,
+                          "expert_steps": dagger.n_expert,
                               "vla_steps": dagger.n_vla, "labels": "expert token + expert finger command"}
     if grasp_gate is not None:
         metadata["grasp_gate"] = {"lo": grasp_gate.lo.tolist(), "hi": grasp_gate.hi.tolist(), "up_max_deg": grasp_gate.up_max_deg,
@@ -848,6 +880,15 @@ def main() -> None:
                         help="Record per-frame VLA uncertainty signals (FSQ lattice residual, expert/VLA token "
                              "disagreement, pooled VLM embedding) into obs/. Logging only: control is unchanged.")
     parser.add_argument("--dagger-chunk", type=int, default=8, help="DAgger: VLA re-plan cadence (eval parity).")
+    parser.add_argument("--dagger-trigger", choices=("stochastic", "disagree"), default="stochastic",
+                        help="Who drives: 'stochastic' = the original beta coin-flip per chunk; 'disagree' = the\n"
+                             "expert drives whenever its token differs from the VLA's by more than\n"
+                             "--dagger-trigger-thr (smoothed), spending the same budget where it matters.")
+    parser.add_argument("--dagger-trigger-thr", type=float, default=0.551,
+                        help="Disagreement threshold (L2 in token space). Default is the median of the measured\n"
+                             "beta=0 distribution, which reproduces the beta=0.5 expert budget (~50%% of frames).")
+    parser.add_argument("--dagger-trigger-smooth", type=int, default=15,
+                        help="Frames of moving average on the disagreement before thresholding (anti-chatter).")
     parser.add_argument("--dagger-rollouts", type=int, default=2, help="DAgger: rollouts per demo motion.")
     parser.add_argument("--dagger-min-steps", type=int, default=50, help="DAgger: discard rollouts shorter than this.")
     parser.add_argument("--grasp-gate", action="store_true", default=False,
@@ -1027,6 +1068,8 @@ def main() -> None:
                                                                camera_scene_key="camera_robot"))
         dagger = DaggerDriver(env, vla, obs_adapter, beta=args_cli.dagger_beta, chunk=args_cli.dagger_chunk,
                               diagnostics=args_cli.dagger_diagnostics,
+                              trigger=args_cli.dagger_trigger, trigger_thr=args_cli.dagger_trigger_thr,
+                              trigger_smooth=args_cli.dagger_trigger_smooth,
                               close_thres=args_cli.dagger_finger_close_thres, seed=args_cli.seed)
         print(f"[DAgger] VLA {args_cli.dagger_vla_checkpoint} drives with P={1-args_cli.dagger_beta:.2f} per "
               f"{args_cli.dagger_chunk}-step chunk; expert labels every state. {len(dagger_motions)} demo motions x "
