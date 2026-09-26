@@ -60,6 +60,23 @@ def _heading_delta(yaw: float, fwd: float, left: float) -> np.ndarray:
                      np.sin(yaw) * fwd + np.cos(yaw) * left])
 
 
+def _unfreeze(a: np.ndarray, g: int, F: int) -> np.ndarray:
+    """Inverse of holosoma_to_pkl.freeze_hold: drop the F duplicated grab-hold frames.
+
+    freeze_hold is length-preserving -- it holds frame g for F extra frames and shifts the tail
+    back, dropping the last F frames. The refine must run on the UN-held motion (as it did in the
+    original pipeline, where the hold is applied after the refine): a displaced target demands
+    motion exactly where the source has a zero-velocity plateau, and the 6 rad/s cap then forces
+    the correction into the frames adjacent to the hold. Returns length len(a) - F.
+    """
+    return np.concatenate([a[:g], a[g + F:]], axis=0)
+
+
+def _refreeze(a: np.ndarray, g: int, F: int) -> np.ndarray:
+    """Re-apply the grab hold to an un-frozen array (inverse of _unfreeze). Returns len(a) + F."""
+    return np.concatenate([a[:g], np.repeat(a[g:g + 1], F, axis=0), a[g:]], axis=0)
+
+
 def parse_shifts(args) -> list[tuple[float, float]]:
     if args.grid:
         f0, f1, nf, l0, l1, nl = (float(v) for v in args.grid.split(","))
@@ -112,12 +129,22 @@ def main():
         # grab_pos is sampled _lead = PAUSE+INTERP frames BEFORE the grab (holosoma_to_pkl:365);
         # the object is static there, so this is just its rest position.
         lead = 0 if os.environ.get("HS_NO_LEADIN", "0") == "1" else 20
+        # The product clip carries the FREEZE_FOR grab hold; strip it for the refine and restore it
+        # afterwards, so the construction order matches the base pipeline (refine, then hold).
+        F = int(os.environ.get("HS_FREEZE_FOR", "10"))
+        if F > 0 and not np.allclose(joints0[grab_idx], joints0[grab_idx + F], atol=1e-6):
+            print(f"  {name}: no {F}-frame grab hold detected at {grab_idx}; refining as-is")
+            F = 0
+        j_src = _unfreeze(joints0, grab_idx, F) if F else joints0
+        bp = _unfreeze(base_pos, grab_idx, F) if F else base_pos
+        bq = _unfreeze(base_quat, grab_idx, F) if F else base_quat
 
         for (fwd, left) in shifts:
             tag = f"f{int(round(fwd * 1000)):+d}l{int(round(left * 1000)):+d}".replace("+", "p").replace("-", "m")
             out_name = f"{name[:-4]}_{tag}.pkl"
             obj = obj0.copy()
-            obj[:, :2] += _heading_delta(yaw, fwd, left)[None, :]
+            delta2 = _heading_delta(yaw, fwd, left)
+            obj[:, :2] += delta2[None, :]
             d_lat = float(np.dot(obj[grab_idx, :2] - base_pos[grab_idx, :2], lat_ax))
             d_along = float(np.dot(obj[grab_idx, :2] - base_pos[grab_idx, :2], hdg))
             if band is not None and not (band[0] <= d_lat <= band[1]):
@@ -125,12 +152,19 @@ def main():
                 n_skip += 1
                 continue
             print(f"  {out_name}: root->object along {d_along:+.3f} lateral {d_lat:+.3f}")
-            joints = refine_al_29.refine_arm(joints0.copy(), base_pos, base_quat, obj[grab_idx, :3],
-                                             grab_idx, fps=20.0, obj_traj=obj[:, :3])
+            obj_ref = _unfreeze(obj, grab_idx, F) if F else obj
+            joints = refine_al_29.refine_arm(
+                j_src.copy(), bp, bq, obj_ref[grab_idx, :3], grab_idx, fps=20.0,
+                obj_traj=obj_ref[:, :3],
+                src_joints=j_src, palm_shift=np.array([delta2[0], delta2[1], 0.0]))
             if not bool(np.isfinite(joints).all()):
                 print(f"  {out_name}: SKIP non-finite refine output")
                 n_skip += 1
                 continue
+            if F:
+                joints = _refreeze(joints, grab_idx, F)
+            _dq = float(np.abs(joints[:, 22:29] - joints0[:, 22:29]).max())
+            print(f"  {out_name}: max |dq vs source| {_dq:.3f} rad")
             pkl = {"global_pose": d["global_pose"],
                    "joints": torch.tensor(joints, dtype=torch.float32),
                    "global_position": torch.tensor(base_pos, dtype=torch.float32),

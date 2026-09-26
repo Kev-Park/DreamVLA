@@ -316,6 +316,23 @@ obj_grab_x:        float | None = None          # raw object x at grab (no grasp
 point_fixed_dir:   torch.Tensor | None = None   # (3,) constant horizontal pointing direction (Option A; set by refine_arm)
 palm_target_traj:  torch.Tensor | None = None   # (F,3) per-frame palm target: static grab point pre-grab, object trajectory post-grab
 
+# --- AUGMENTATION MODE (refine_arm(src_joints=..., palm_shift=...)) ---------------------------
+# Deform an EXISTING converged clip so its grasp lands on a translated object, instead of solving
+# the reach from scratch. Only active when refine_arm is given a source solution; the base
+# pipeline passes neither argument and none of this code runs (latband60 stays reproducible).
+#
+# Why it is needed only here: the base refine's shape prior is its INITIALISATION (the holosoma
+# retarget, a human motion) -- l2_cost is x0 and the reference block is `ref = False`, so nothing
+# states the shape explicitly. That is fine when the initialisation is consistent with the
+# objective. Displace the target and it no longer is: measured on the first smoke, the optimiser
+# walked up to 1.2 rad from the source on EVERY frame, re-deriving the approach and letting the
+# unregularised null space (elbow swivel / wrist roll) resolve arbitrarily. These two terms supply
+# the prior the base gets for free.
+AUG_PALMTRACK_W = float(os.environ.get("HS_AUG_PALMTRACK_W", "20.0"))  # palm follows the translated source path
+AUG_CURV_W      = float(os.environ.get("HS_AUG_CURV_W", "5.0"))        # joint curvature matches the source's
+aug_palm_path:    torch.Tensor | None = None   # (F,3) p_src(t) + s(t)*delta  (set by refine_arm)
+aug_src_active:   torch.Tensor | None = None   # (F,A) source joints, active columns (set by refine_arm)
+
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
                  lambda_table: torch.Tensor | None = None,
                  lambda_wrist: torch.Tensor | None = None,
@@ -373,6 +390,19 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
     # L2 cost to target
     l2_cost = 0.*torch.nn.functional.mse_loss(joint_angles, target_joint_angles[:, active_joint_ids])
+
+    # [AUG] Curvature preservation: match the SOURCE's second difference, not its positions.
+    #   d2 = q[t+1] - 2q[t] + q[t-1]     cost = W * ||d2 - d2_src||^2
+    # Equivalent to penalising the second difference of the correction delta = q - q_src, so every
+    # joint keeps a free constant offset AND a free linear ramp -- exactly the freedom needed to
+    # reach a displaced target -- while the bend of each joint trajectory is preserved. This is
+    # what removes the flat null-space direction: elbow swivel / wrist roll chatter that leaves the
+    # tracked Cartesian points untouched costs nothing today, and costs curvature here.
+    aug_curv = torch.zeros((), device=joint_angles.device, dtype=joint_angles.dtype)
+    if aug_src_active is not None and AUG_CURV_W > 0 and joint_angles.shape[0] >= 3:
+        _d2 = joint_angles[2:] - 2.0 * joint_angles[1:-1] + joint_angles[:-2]
+        _d2s = aug_src_active[2:] - 2.0 * aug_src_active[1:-1] + aug_src_active[:-2]
+        aug_curv = AUG_CURV_W * ((_d2 - _d2s) ** 2).sum(dim=1).mean()
 
     # [ABS] Right-arm DOF hard speed limits (rad/s), enforced via AL.
     # joint_angles are in rad/frame, so convert with current trajectory FPS.
@@ -587,6 +617,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             _wy_root = fk_results["right_wrist_yaw_link"].get_matrix()[:, :3, 3]
             _wy_world = torch.bmm(_wy_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
             palm_world = transformed_hand_orig + HAND_FWD * (transformed_hand_orig - _wy_world)
+
+            # [AUG] Shape anchor: follow the SOURCE palm path, rigidly translated by the object
+            # shift and ramped in across the approach (aug_palm_path = p_src(t) + s(t)*delta).
+            # Pre-grab nothing else tracks a reference path -- the approach is otherwise generated
+            # from scratch by the walls + smoothness terms, which is why a moved goal produced a
+            # different motion rather than a translated one. Deliberately SOFT (below the palm
+            # Charbonnier and far below the AL constraints) so an unreachable translated path
+            # yields to the table / joint limits instead of fighting them.
+            if aug_palm_path is not None and AUG_PALMTRACK_W > 0:
+                cost2 += AUG_PALMTRACK_W * ((palm_world - aug_palm_path) ** 2).sum(dim=1)
 
             # INTER-APPROACH COSTS
 
@@ -886,7 +926,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             continue
 
     mean_cost2 = torch.mean(cost2)
-    total_cost = l2_cost + mean_cost2 + dof_speed_hard_cost + jlim_hard_cost + wband_hard_cost
+    total_cost = l2_cost + mean_cost2 + dof_speed_hard_cost + jlim_hard_cost + wband_hard_cost + aug_curv
     _last_cost_terms = {
         "total": total_cost.detach(),
         "l2": l2_cost.detach(),
@@ -901,7 +941,29 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     return total_cost
 
 
-def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0, verbose=False, obj_traj=None):
+def _palm_path_of(joints_t, trans, quats):
+    """Forward-projected PALM path for a joint trajectory, identical construction to compute_cost.
+
+    palm = hand_link + HAND_FWD * (hand_link - right_wrist_yaw_link), in the FK world frame with
+    the same +0.035 root lift. Used to build the augmentation's shape target from the source clip.
+    """
+    q_dict = {name: joints_t[:, i] for i, name in enumerate(joint_names)}
+    fk = chain.forward_kinematics(q_dict)
+    rot = quaternion_to_matrix(quats)
+    tz = trans + torch.tensor([0., 0., 0.035], device=trans.device)
+    hand_pos = None
+    for _i, (_ln, _tf) in enumerate(fk.items()):          # same enumeration order compute_cost uses
+        if _i == 38:                                      # right hand link
+            hand_pos = _tf.get_matrix()[:, :3, 3]
+            break
+    hand_w = torch.bmm(hand_pos.unsqueeze(1), rot.transpose(2, 1))[:, 0] + tz
+    _wy = fk["right_wrist_yaw_link"].get_matrix()[:, :3, 3]
+    _wy_w = torch.bmm(_wy.unsqueeze(1), rot.transpose(2, 1))[:, 0] + tz
+    return hand_w + HAND_FWD * (hand_w - _wy_w)
+
+
+def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0, verbose=False, obj_traj=None,
+               src_joints=None, palm_shift=None):
     """AL right-arm refinement on the CORE motion (before Adapter B's grab-hold/lead-in).
 
     joints (F,29) JointNamesOrder-29, base_pos (F,3), base_quat (F,4 wxyz), grab_pos_obj (3,)
@@ -912,6 +974,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     global target_joint_angles, active_joint_names, inactive_joint_ids, joint_names
     global fk_results_ref, grab_idx, grab_pos, capsule_obs_pos, ref_dists, traj_fps_hz
     global active_joint_ids, init_joint_angles, palm_target, palm_target_traj, jlim_lo, jlim_hi, obj_grab_x
+    global aug_palm_path, aug_src_active
 
     joint_names = JOINT_NAMES_29
     init_joint_angles = INIT_29
@@ -989,6 +1052,28 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     # will actually grasp, instead of from the wrist keypoint (which sat ~0.1-0.15 m short of the
     # object). Same spoof shift / taper / weight as before -- only the anchored point changes.
     capsule_obs_pos = palm_target.clone()
+
+    # --- AUGMENTATION MODE targets (no-ops when src_joints / palm_shift are not given) ---------
+    aug_palm_path = None
+    aug_src_active = None
+    if src_joints is not None:
+        _src_t = torch.tensor(np.asarray(src_joints), dtype=torch.float32, device=DEVICE)
+        aug_src_active = _src_t[:, active_joint_ids].clone()
+        if palm_shift is not None:
+            _delta = torch.tensor(np.asarray(palm_shift), dtype=torch.float32, device=DEVICE).reshape(3)
+            # Ramp s(t): 0 across the pinned lead-in, smootherstep to 1 by the approach taper start,
+            # 1 thereafter. Without it the hand would be asked to start displaced while the lead-in
+            # frames are hard-pinned to INIT -- a discontinuity at the first free frame.
+            _n = _src_t.shape[0]
+            _r0 = float(max(PIN_FIRST_N, 0))
+            _r1 = float(max(_ts, _r0 + 1.0))              # _ts = approach taper start (see above)
+            _tt = torch.arange(_n, dtype=torch.float32, device=DEVICE)
+            _u = ((_tt - _r0) / (_r1 - _r0)).clamp(0.0, 1.0)
+            _s = _u * _u * _u * (_u * (_u * 6.0 - 15.0) + 10.0)          # smootherstep
+            aug_palm_path = _palm_path_of(_src_t, trans, quats) + _s.unsqueeze(1) * _delta.unsqueeze(0)
+            print(f"[refine-al][aug] palm-path shape anchor ON (W={AUG_PALMTRACK_W:.1f}) "
+                  f"delta=({float(_delta[0]):+.3f},{float(_delta[1]):+.3f},{float(_delta[2]):+.3f}) "
+                  f"ramp frames {_r0:.0f}->{_r1:.0f}; curvature W={AUG_CURV_W:.1f}; pinned head={PIN_FIRST_N}")
 
     joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone())
     _pinned_head = (joint_angles.detach()[:PIN_FIRST_N].clone() if PIN_FIRST_N > 0 else None)
