@@ -495,7 +495,13 @@ class DaggerDriver:
                     self._dis_win.pop(0)
                 self.n_trig_eval += 1
                 ds = float(np.mean(self._dis_win))
-                self._expert_drives = bool(ds > self.trigger_thr)
+                # Evaluate every frame (the window and the controller need the signal), but only
+                # COMMIT at a re-plan boundary. The stochastic rule can likewise only switch at a
+                # boundary, so the two arms get identical control-switching granularity and any
+                # difference between them is about WHERE the expert drives, not how often control
+                # changes hands.
+                if t == 0 or self._chunk is None:
+                    self._expert_drives = bool(ds > self.trigger_thr)
                 if self.trigger_budget >= 0.0:
                     # scale the step by the signal's own magnitude so the rule is unit-free
                     self._dis_mean = ds if self._dis_mean is None else 0.99 * self._dis_mean + 0.01 * ds
