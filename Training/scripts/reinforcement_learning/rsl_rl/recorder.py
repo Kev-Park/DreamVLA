@@ -217,6 +217,17 @@ class RolloutRecorder:
                         compression="gzip",
                     )
 
+            # Optional per-frame VLA uncertainty signals (--dagger-diagnostics): float scalars
+            # plus the pooled VLM embedding (2-D), so they need their own dtypes.
+            for _diag, _dt in (("vla_fsq_resid_l2", np.float32), ("vla_fsq_resid_max", np.float32),
+                               ("vla_expert_token_l2", np.float32), ("vla_feat", np.float16)):
+                if raw_state is not None and _diag in raw_state:
+                    obs_grp.create_dataset(
+                        _diag,
+                        data=np.asarray(_to_numpy(raw_state[_diag]), dtype=_dt),
+                        compression="gzip",
+                    )
+
             if raw_state is not None and "action" in raw_state:
                 demo_grp.create_dataset(
                     "actions",

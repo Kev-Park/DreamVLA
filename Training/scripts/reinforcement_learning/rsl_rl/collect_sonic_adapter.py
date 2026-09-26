@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
+from vla_sonic.fsq import fsq_lattice_snap
 import builtins
 import os
 import time
@@ -390,11 +391,57 @@ class DaggerDriver:
     rollouts are kept regardless of task success (they are supposed to contain failures).
     """
 
-    def __init__(self, env, vla_policy, obs_adapter, *, beta: float, chunk: int, close_thres: float, seed: int):
+    def __init__(self, env, vla_policy, obs_adapter, *, beta: float, chunk: int, close_thres: float, seed: int,
+                 diagnostics: bool = False):
         self.env = env; self.vla = vla_policy; self.obs_adapter = obs_adapter
         self.beta = float(beta); self.chunk = int(chunk); self.close_thres = float(close_thres)
         self.rng = np.random.default_rng(seed)
+        self.diagnostics = bool(diagnostics)
+        self._feat = None            # pooled VLM embedding from the most recent VLA query
+        self._vla_tok = None         # the VLA token executed at the current frame
+        self._resid = (float("nan"), float("nan"))
+        if self.diagnostics:
+            self._install_backbone_hook()
         self.begin_episode()
+
+    def _install_backbone_hook(self):
+        """Capture the VLM embedding the action head conditions on, via a forward hook.
+
+        A hook keeps this out of the vendored GR00T repo -- nothing there is patched, and with
+        diagnostics off no hook is registered at all. Pooled over the token axis so each frame
+        yields one vector, which is what a density model fitted on the training set consumes.
+        """
+        backbone = getattr(getattr(self.vla, "model", None), "backbone", None)
+        if backbone is None:
+            raise RuntimeError("VLA policy exposes no .model.backbone -- cannot capture features.")
+
+        def _grab(_module, _inputs, output):
+            f = output
+            if not torch.is_tensor(f):
+                f = f.get("backbone_features") if hasattr(f, "get") else getattr(f, "backbone_features", None)
+            if torch.is_tensor(f):
+                self._feat = f.detach().float().mean(dim=1)[0].cpu().numpy().astype(np.float16)
+
+        backbone.register_forward_hook(_grab)
+
+    def diag_record(self, expert_tok) -> dict:
+        """Per-frame uncertainty signals, all derived from quantities already computed.
+
+        fsq_resid_*          how far off the FSQ lattice the VLA's token landed. Its training
+                             targets sit exactly on the 1/16 grid, so landing between codewords
+                             is the continuous analogue of a flat categorical.
+        vla_expert_token_l2  how much the expert would change the token here -- the signal most
+                             directly relevant to whether taking over buys anything.
+        vla_feat             pooled VLM embedding, for offline feature-space density.
+        """
+        l2, mx = self._resid
+        d = {"vla_fsq_resid_l2": np.float32(l2), "vla_fsq_resid_max": np.float32(mx),
+             "vla_expert_token_l2": np.float32("nan")}
+        if self._vla_tok is not None and expert_tok is not None:
+            d["vla_expert_token_l2"] = np.float32(
+                np.linalg.norm(np.asarray(expert_tok, np.float32) - self._vla_tok))
+        d["vla_feat"] = self._feat if self._feat is not None else np.zeros(1, dtype=np.float16)
+        return d
 
     def begin_episode(self):
         self._chunk = None; self._chunk_step = self.chunk; self._expert_drives = True
@@ -413,6 +460,9 @@ class DaggerDriver:
             self.n_expert += 1
             return (*self.env.step(expert_latent), True)
         tok = np.asarray(self._chunk["motion_token"], np.float32)[0, t]
+        if self.diagnostics:
+            _r = tok - np.asarray(fsq_lattice_snap(tok), np.float32)
+            self._vla_tok = tok; self._resid = (float(np.linalg.norm(_r)), float(np.abs(_r).max()))
         rh = np.asarray(self._chunk["right_hand_joints"], np.float32)[0, t]
         composed = torch.zeros((1, 65), device=expert_latent.device, dtype=torch.float32)
         composed[0, :64] = torch.as_tensor(tok, device=expert_latent.device)
@@ -450,6 +500,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     # of being re-derived offline (which would recover only the un-adapted base token).
     token_history: list[np.ndarray] = []
     dagger_mask: list[bool] = []                                     # expert drove this step?
+    diag_hist: list[dict] = []                                       # per-frame VLA uncertainty signals
     gate_hist: list[bool] = []                                       # grasp gate latched this step?
     if dagger is not None:
         dagger.begin_episode()
@@ -542,6 +593,8 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
             if dagger is not None:
                 *step_result, expert_drove = dagger.step(actions)
                 step_result = tuple(step_result); dagger_mask.append(expert_drove)
+                if dagger.diagnostics:
+                    diag_hist.append(dagger.diag_record(expert_tok))
             else:
                 step_result = env.step(actions)
         if len(step_result) == 5:
@@ -641,6 +694,13 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
                 raw_state["dagger_expert_mask"] = np.asarray(dagger_mask, dtype=np.uint8)
             if grasp_gate is not None and len(gate_hist) == n_state:
                 raw_state["grasp_gate"] = np.asarray(gate_hist, dtype=np.uint8)
+            if diag_hist and len(diag_hist) == n_state:
+                for _k in ("vla_fsq_resid_l2", "vla_fsq_resid_max", "vla_expert_token_l2"):
+                    raw_state[_k] = np.asarray([d[_k] for d in diag_hist], dtype=np.float32)
+                _fd = max(len(d["vla_feat"]) for d in diag_hist)
+                raw_state["vla_feat"] = np.stack(
+                    [d["vla_feat"] if len(d["vla_feat"]) == _fd else np.zeros(_fd, np.float16)
+                     for d in diag_hist], axis=0)
         else:
             print(f"[WARN] token_history ({len(token_history)}) != state frames ({n_state}) "
                   "— NOT writing obs/motion_token; converter will re-derive instead.")
@@ -784,6 +844,9 @@ def main() -> None:
                         help="DAgger: collector HDF5 root of the demonstrations -- sweeps only its motion ids and "
                              "takes the closed-finger label pose from it.")
     parser.add_argument("--dagger-beta", type=float, default=0.5, help="DAgger: P(expert drives) per re-plan chunk.")
+    parser.add_argument("--dagger-diagnostics", action="store_true", default=False,
+                        help="Record per-frame VLA uncertainty signals (FSQ lattice residual, expert/VLA token "
+                             "disagreement, pooled VLM embedding) into obs/. Logging only: control is unchanged.")
     parser.add_argument("--dagger-chunk", type=int, default=8, help="DAgger: VLA re-plan cadence (eval parity).")
     parser.add_argument("--dagger-rollouts", type=int, default=2, help="DAgger: rollouts per demo motion.")
     parser.add_argument("--dagger-min-steps", type=int, default=50, help="DAgger: discard rollouts shorter than this.")
@@ -963,6 +1026,7 @@ def main() -> None:
                                                                robot_model=SimpleG1RobotModel.build(),
                                                                camera_scene_key="camera_robot"))
         dagger = DaggerDriver(env, vla, obs_adapter, beta=args_cli.dagger_beta, chunk=args_cli.dagger_chunk,
+                              diagnostics=args_cli.dagger_diagnostics,
                               close_thres=args_cli.dagger_finger_close_thres, seed=args_cli.seed)
         print(f"[DAgger] VLA {args_cli.dagger_vla_checkpoint} drives with P={1-args_cli.dagger_beta:.2f} per "
               f"{args_cli.dagger_chunk}-step chunk; expert labels every state. {len(dagger_motions)} demo motions x "
