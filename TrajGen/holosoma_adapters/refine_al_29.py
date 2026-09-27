@@ -1081,7 +1081,15 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
             # frames are hard-pinned to INIT -- a discontinuity at the first free frame.
             _n = _src_t.shape[0]
             _r0 = float(max(PIN_FIRST_N, 0))
-            _r1 = float(max(_ts, _r0 + 1.0))              # _ts = approach taper start (see above)
+            # Ramp END = the start of the FINAL approach (grab_idx - APPROACH_TAPER_LEAD), so the
+            # shift is fully applied before the grasp while the blend is spread over the whole
+            # reach. Do NOT use _ts here: that is the ORIENTATION taper-window start
+            # (grab - LEAD - APPROACH_TAPER_WINDOW, window 35), which for most clips lands BEFORE
+            # the pinned lead-in ends -- max(_ts, _r0+1) then collapsed to a single frame and the
+            # palm target stepped the full shift between frames 20 and 21 (106/190 variants),
+            # which is the audible/visible "click" at the moment the optimisation takes hold.
+            _r1 = float(min(max(_r0 + 10.0, float(grab_idx - APPROACH_TAPER_LEAD)), float(max(grab_idx - 1, 1))))
+            _r1 = max(_r1, _r0 + 1.0)
             _tt = torch.arange(_n, dtype=torch.float32, device=DEVICE)
             _u = ((_tt - _r0) / (_r1 - _r0)).clamp(0.0, 1.0)
             _s = _u * _u * _u * (_u * (_u * 6.0 - 15.0) + 10.0)          # smootherstep
