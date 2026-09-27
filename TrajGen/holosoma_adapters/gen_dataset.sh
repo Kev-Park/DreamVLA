@@ -13,6 +13,12 @@ gpu=$1; out=$2; shift 2
 #   HS_STAND_ALONG_BAND : "lo,hi" two-sided clamp on the grab-frame root->object ALONG-heading
 #                       distance (unset = legacy one-sided HS_STAND_MIN_STANDOFF). Orthogonal to
 #                       HS_STAND_LAT_BAND, so the two compose without conflict.
+#   HS_STEP_SIZE      : --retargeter.step-size (default 0.2) = the SQP trust region.
+#                       Smaller = more, shorter steps. Needed when an objective term is only
+#                       locally valid: the learned drift term is BIMODAL at step_size 0.2 --
+#                       lambda<=1 deforms the motion <0.2 deg (loses to laplacian weight 10),
+#                       lambda>=5 deforms it 5-10 deg and overshoots the model's linearity
+#                       radius. Shrinking the region decouples the two.
 #   HS_INPUT_DIR      : Adapter A output / holosoma --data-path (default: pooled ~/kevin/hs_input).
 #   HOLOSOMA_DIR      : holosoma checkout to retarget with. Defaults to a holosoma worktree
 #                       beside THIS checkout if one exists, else the shared ~/kevin/holosoma.
@@ -106,7 +112,7 @@ for id in "$@"; do
   fi
   ( source "$HS_ACT" hsretargeting; cd "$HS"; timeout 400 python examples/robot_retarget.py \
       --task-type object_interaction --robot g1 --data-format smplx --task-name "pick_$id" \
-      --data-path "$HS_INPUT" --save-dir "$NPZ_DIR" --task-config.object-name mustard       ${HS_FOOT_STICK_TOL:+--retargeter.foot-sticking-tolerance $HS_FOOT_STICK_TOL} $COM_ARGS \
+      --data-path "$HS_INPUT" --save-dir "$NPZ_DIR" --task-config.object-name mustard       ${HS_FOOT_STICK_TOL:+--retargeter.foot-sticking-tolerance $HS_FOOT_STICK_TOL} ${HS_STEP_SIZE:+--retargeter.step-size $HS_STEP_SIZE} $COM_ARGS \
       ${HS_NO_FOOT_STICK:+--retargeter.no-activate-foot-sticking} \
     ) > "$LOG_DIR/HS_$id.log" 2>&1
   [ -f "$OUT" ] || { echo "$id HOLOSOMA_FAIL"; continue; }
