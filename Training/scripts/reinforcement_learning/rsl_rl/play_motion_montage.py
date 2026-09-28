@@ -63,6 +63,9 @@ parser.add_argument("--encoder-mode", type=str, default="g1", choices=["g1", "te
                     help="Native .pt only. g1 = full-body joint reference encoder (default). teleop = the "
                          "checkpoint VR 3-point head: reference wrists+torso point and lower-body command; "
                          "SONIC synthesizes the whole body itself.")
+parser.add_argument("--physics-preset", type=str, default="deploy", choices=["deploy", "training"],
+                    help="Physics substep preset (both 50 Hz control): 'deploy' = 500 Hz/dec-10, "
+                         "'training' = 200 Hz/dec-4 (gear_sonic training).")
 parser.add_argument("--dump-track", type=str, default=None,
                     help="Write an .npz of per-step world positions (env-local) of the right-hand bodies "
                          "(right_hand_*/right_rubber_hand/right_wrist_*) and the object, plus is_closed and "
@@ -808,7 +811,7 @@ def main():
         log_dir = os.path.dirname(resume_path)
 
     # Match the SONIC decoder's training-time physics — same as train_sonic_adapter.py.
-    apply_sonic_physics_overrides(env_cfg)
+    apply_sonic_physics_overrides(env_cfg, preset=args_cli.physics_preset)
 
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
