@@ -393,7 +393,8 @@ class DaggerDriver:
 
     def __init__(self, env, vla_policy, obs_adapter, *, beta: float, chunk: int, close_thres: float, seed: int,
                  diagnostics: bool = False, trigger: str = "stochastic", trigger_thr: float = 0.551,
-                 trigger_smooth: int = 15, trigger_budget: float = -1.0, trigger_lr: float = 0.02):
+                 trigger_smooth: int = 15, trigger_budget: float = -1.0, trigger_lr: float = 0.02,
+                 expert_base: str = "reference"):
         self.env = env; self.vla = vla_policy; self.obs_adapter = obs_adapter
         self.beta = float(beta); self.chunk = int(chunk); self.close_thres = float(close_thres)
         self.rng = np.random.default_rng(seed)
@@ -413,6 +414,12 @@ class DaggerDriver:
         # constant entirely -- Robbins-Monro on the indicator drives P(d > thr) -> budget, so the
         # threshold self-calibrates to whatever task, policy and embodiment it is run on, and the
         # knob you set is the one comparable to beta.
+        # "student": the residual composes onto the VLA's token instead of the reference's, so
+        # the expert becomes a corrector of the student rather than a reference tracker. The VLA
+        # is then queried every chunk regardless of who drives, since its token is needed as the
+        # base. The override is set one step AHEAD because the wrapper refreshes the base token
+        # at the end of env.step, and that refreshed value is what the next observation carries.
+        self.expert_base = str(expert_base)
         self.trigger_budget = float(trigger_budget)      # <0 disables (fixed threshold)
         self.trigger_lr = float(trigger_lr)
         self._dis_mean = None                            # EMA of the disagreement, sets the step scale
@@ -472,9 +479,9 @@ class DaggerDriver:
         """Advance the env one step; returns (obs, rew, dones, extras, expert_drove: bool)."""
         if self._chunk_step >= self.chunk:                               # re-plan boundary
             self._chunk_step = 0
-            if self.trigger == "disagree":
-                # Always re-plan: the VLA's action is needed every step as the comparison term,
-                # whether or not it ends up executing.
+            if self.trigger == "disagree" or self.expert_base == "student":
+                # Always re-plan: the VLA's token is needed every step -- as the comparison term
+                # for the trigger, and/or as the residual's base.
                 out = self.vla.get_action(self.obs_adapter())
                 self._chunk = out[0] if isinstance(out, tuple) else out
             else:
@@ -508,6 +515,10 @@ class DaggerDriver:
                     self.trigger_thr += (self.trigger_lr * max(self._dis_mean, 1e-6)
                                          * ((1.0 if self._expert_drives else 0.0) - self.trigger_budget))
 
+        if self.expert_base == "student" and self._chunk is not None:
+            h = np.asarray(self._chunk["motion_token"], np.float32).shape[1]
+            nxt = np.asarray(self._chunk["motion_token"], np.float32)[0, min(t + 1, h - 1)]
+            self.env.set_base_override(nxt)
         if self._expert_drives:
             self.n_expert += 1
             return (*self.env.step(expert_latent), True)
@@ -918,6 +929,10 @@ def main() -> None:
                              "makes the rule portable across tasks. Negative keeps --dagger-trigger-thr fixed.")
     parser.add_argument("--dagger-trigger-lr", type=float, default=0.02,
                         help="Step size for the budget controller, relative to the signal's own scale.")
+    parser.add_argument("--dagger-expert-base", choices=("reference", "student"), default="reference",
+                        help="What the residual expert composes onto: the reference lookahead token\n"
+                             "(default) or the STUDENT's token, which removes the reference clock from\n"
+                             "the token path and makes the expert a corrector of the student.")
     parser.add_argument("--dagger-rollouts", type=int, default=2, help="DAgger: rollouts per demo motion.")
     parser.add_argument("--dagger-min-steps", type=int, default=50, help="DAgger: discard rollouts shorter than this.")
     parser.add_argument("--grasp-gate", action="store_true", default=False,
@@ -1101,6 +1116,7 @@ def main() -> None:
                               trigger_smooth=args_cli.dagger_trigger_smooth,
                               trigger_budget=args_cli.dagger_trigger_budget,
                               trigger_lr=args_cli.dagger_trigger_lr,
+                              expert_base=args_cli.dagger_expert_base,
                               close_thres=args_cli.dagger_finger_close_thres, seed=args_cli.seed)
         print(f"[DAgger] VLA {args_cli.dagger_vla_checkpoint} drives with P={1-args_cli.dagger_beta:.2f} per "
               f"{args_cli.dagger_chunk}-step chunk; expert labels every state. {len(dagger_motions)} demo motions x "

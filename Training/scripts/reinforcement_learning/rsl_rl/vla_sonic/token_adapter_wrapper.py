@@ -265,8 +265,26 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
 
     # ---------- base-token computation ----------
 
+    def set_base_override(self, tok) -> None:
+        """Use an EXTERNAL token as the residual's base instead of the reference lookahead.
+
+        The residual both OBSERVES the base token and composes its correction onto it, so the
+        override has to replace it in one place to keep those consistent. Passing the student's
+        token here turns the expert from a reference tracker into a corrector of the student,
+        which is the only way to ask whether the reference clock is needed in the token path at
+        all. None restores reference behaviour; unused, this changes nothing.
+        """
+        if tok is None:
+            self._base_override = None
+            return
+        t = torch.as_tensor(tok, device=self._dev, dtype=torch.float32)
+        self._base_override = t.reshape(self.num_envs, TOKEN_TOTAL_DIM)
+
     def _update_base_token(self) -> None:
         """Run the frozen encoder on the current 1.0 s reference lookahead window."""
+        if getattr(self, "_base_override", None) is not None:
+            self._base_token = self._base_override
+            return
         N = self.num_envs
         unw = self.unwrapped
         with torch.no_grad():
