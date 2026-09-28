@@ -238,6 +238,7 @@ TASK_DENSE = False
 # reviewable and revertible before/after training. See REWARD_REWORK_PLAN.md.
 # =========================================================================
 REWORK = os.environ.get("HS_REWORK", "0") == "1"
+NO_CLOSED_OBS = os.environ.get("HS_NO_CLOSED_OBS", "0") == "1"  # withhold the reference grasp schedule from the policy
 
 # ResMimic contact reward / contact-loss termination knobs (#5/#6). Tunable; see plan.
 REWORK_CONTACT_LAMBDA = float(os.environ.get("HS_REWORK_CONTACT_LAMBDA", "5.0"))   # r^c = c_hat * exp(-lambda / f)
@@ -1151,10 +1152,18 @@ class ObservationsCfg:
         if TASK_DENSE:
             current_time = ObsTerm(func=current_time_enc)
         
-        right_hand_state_target_val = ObsTerm(
-            func=hand_state_target)
-        right_hand_state_target_val_1 = ObsTerm(
-            func=hand_state_target_1)
+        # The reference's is_closed schedule, fed to the policy so it knows the grasp phase.
+        # HS_NO_CLOSED_OBS=1 withholds it, forcing closure timing to be DISCOVERED from state and
+        # reward (object_lift w=16, object_approach w=100, object_contact w=2) instead of read off
+        # a clock. The reward may keep using is_closed -- training-time supervision from a clean
+        # reference is fine; what has to go is the POLICY needing a schedule at inference, since
+        # that is what makes the expert unusable on off-nominal states and untransferable to a
+        # task with no reference grasp annotation.
+        if not NO_CLOSED_OBS:
+            right_hand_state_target_val = ObsTerm(
+                func=hand_state_target)
+            right_hand_state_target_val_1 = ObsTerm(
+                func=hand_state_target_1)
 
 
         # Task specific observations:
