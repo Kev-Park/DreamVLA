@@ -379,6 +379,15 @@ KEYPTS_MASK_ALL = [1 for _ in KEYPTS_MASK]
 
 
         
+def hand_state_target_masked(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Constant stand-in for the reference grasp schedule (HS_NO_CLOSED_OBS=1).
+
+    Same shape as hand_state_target, so the policy's observation width is unchanged and a
+    residual trained WITH the schedule can be warm-started and fine-tuned to do without it.
+    """
+    return torch.full((env.scene.num_envs, 1), 0.5, device=env.device)
+
+
 def reset_object_state_rework(env: ManagerBasedRLEnv, env_ids: torch.Tensor,
                               offset=[0.0, 0.0], height: float = 1.0):
     """#4 object reset onto the reference object trajectory (so object-tracking starts consistent).
@@ -1159,11 +1168,16 @@ class ObservationsCfg:
         # reference is fine; what has to go is the POLICY needing a schedule at inference, since
         # that is what makes the expert unusable on off-nominal states and untransferable to a
         # task with no reference grasp annotation.
-        if not NO_CLOSED_OBS:
-            right_hand_state_target_val = ObsTerm(
-                func=hand_state_target)
-            right_hand_state_target_val_1 = ObsTerm(
-                func=hand_state_target_1)
+        # Keep the TERMS under NO_CLOSED_OBS so the observation width -- and therefore an existing
+        # checkpoint's input layer -- stays compatible, and withhold the schedule by feeding a
+        # constant instead. 0.5 rather than 0: zero is a valid is_closed value meaning "pre-grasp",
+        # which would read as "never grasps" rather than "unknown", whereas a constant off the
+        # {0,1} training values is simply an uninformative channel the policy learns to ignore.
+        # This is what makes warm-starting from the reference-trained residual possible.
+        right_hand_state_target_val = ObsTerm(
+            func=hand_state_target_masked if NO_CLOSED_OBS else hand_state_target)
+        right_hand_state_target_val_1 = ObsTerm(
+            func=hand_state_target_masked if NO_CLOSED_OBS else hand_state_target_1)
 
 
         # Task specific observations:
