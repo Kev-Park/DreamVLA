@@ -1014,7 +1014,9 @@ def main():
         _cidx = [_csn.index(n) for n in _trk_names] if all(n in _csn for n in _trk_names) else []
         _trk = {"names": _trk_names, "idx": _tidx, "cidx": _cidx, "seg": [], "mid": [], "step": [],
                 "hand_pos": [], "obj_pos": [], "is_closed": [], "contact_f": [], "root_pos": [], "root_quat": [],
-                "ref_root_pos": []}
+                "ref_root_pos": [], "joint_names": list(_rb.data.joint_names),
+                "computed_torque": [], "applied_torque": [], "joint_pos": [],
+                "effort_limit": _rb.data.joint_effort_limits[0].cpu().numpy()}
         print(f"[dump-track] {len(_tidx)} right-hand bodies: {_trk['names']}")
 
     for _seg_i, _mid in enumerate(_mlist):
@@ -1063,7 +1065,16 @@ def main():
                 _uwt = env.unwrapped
                 _org = _uwt.scene.env_origins[0]
                 _trk["hand_pos"].append((_uwt.scene["robot"].data.body_pos_w[0, _trk["idx"]] - _org).cpu().numpy())
-                _trk["obj_pos"].append((_uwt.scene["object"].data.root_pos_w[0] - _org).cpu().numpy())
+                try:
+                    _trk["obj_pos"].append((_uwt.scene["object"].data.root_pos_w[0] - _org).cpu().numpy())
+                except KeyError:  # MotionOnly scenes have no object
+                    _trk["obj_pos"].append(np.zeros(3, dtype=np.float32))
+                # PD torque at the last physics substep of this control step: pre-clip estimate
+                # vs clipped-to-effort_limit (implicit actuators; used to spot torque saturation).
+                _rbd = _uwt.scene["robot"].data
+                _trk["computed_torque"].append(_rbd.computed_torque[0].cpu().numpy())
+                _trk["applied_torque"].append(_rbd.applied_torque[0].cpu().numpy())
+                _trk["joint_pos"].append(_rbd.joint_pos[0].cpu().numpy())
                 _trk["root_pos"].append((_uwt.scene["robot"].data.root_pos_w[0] - _org).cpu().numpy())
                 _trk["root_quat"].append(_uwt.scene["robot"].data.root_quat_w[0].cpu().numpy())
                 if _trk["cidx"]:
@@ -1130,7 +1141,10 @@ def main():
                  step=np.array(_trk["step"]), hand_pos=np.stack(_trk["hand_pos"]), obj_pos=np.stack(_trk["obj_pos"]),
                  is_closed=np.array(_trk["is_closed"]),
                  root_pos=np.stack(_trk["root_pos"]), root_quat=np.stack(_trk["root_quat"]), ref_root_pos=np.stack(_trk["ref_root_pos"]),
-                 contact_f=(np.stack(_trk["contact_f"]) if _trk["contact_f"] else np.zeros((0, 0))))
+                 contact_f=(np.stack(_trk["contact_f"]) if _trk["contact_f"] else np.zeros((0, 0))),
+                 joint_names=np.array(_trk["joint_names"]), effort_limit=_trk["effort_limit"],
+                 computed_torque=np.stack(_trk["computed_torque"]), applied_torque=np.stack(_trk["applied_torque"]),
+                 joint_pos=np.stack(_trk["joint_pos"]))
         print(f"[dump-track] wrote {args_cli.dump_track}: {len(_trk['step'])} steps")
     env.close()
 
