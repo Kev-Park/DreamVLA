@@ -333,6 +333,12 @@ AUG_CURV_W      = float(os.environ.get("HS_AUG_CURV_W", "5.0"))        # joint c
 aug_palm_path:    torch.Tensor | None = None   # (F,3) p_src(t) + s(t)*delta  (set by refine_arm)
 aug_src_active:   torch.Tensor | None = None   # (F,A) source joints, active columns (set by refine_arm)
 AUG_ORIENT_W    = float(os.environ.get("HS_AUG_ORIENT_W", "40.0"))     # hand rotation matches the source's
+# HS_AUG_REBASE=1 re-points the EXISTING palm terms (Charbonnier target, per-frame palm target,
+# capsule anchor, pointing azimuth) at the translated source palm path. Default 0 = "latband60
+# relocated": those terms keep their base semantics (static grasp point pre-grab, object trajectory
+# post-grab, azimuth toward the object), computed from the SHIFTED object, so the objective
+# landscape is the one that produced the source clip and only the object has moved.
+AUG_REBASE      = os.environ.get("HS_AUG_REBASE", "0") == "1"
 aug_hand_R_src:   torch.Tensor | None = None   # (F,3,3) source hand world rotation (set by refine_arm)
 
 def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_Z, debug=False,
@@ -1093,36 +1099,39 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
             _tt = torch.arange(_n, dtype=torch.float32, device=DEVICE)
             _u = ((_tt - _r0) / (_r1 - _r0)).clamp(0.0, 1.0)
             _s = _u * _u * _u * (_u * (_u * 6.0 - 15.0) + 10.0)          # smootherstep
-            aug_palm_path = _palm_path_of(_src_t, trans, quats) + _s.unsqueeze(1) * _delta.unsqueeze(0)
+            if AUG_PALMTRACK_W > 0 or AUG_REBASE:
+                aug_palm_path = _palm_path_of(_src_t, trans, quats) + _s.unsqueeze(1) * _delta.unsqueeze(0)
 
             # Re-base the EXISTING palm terms onto the same path. Otherwise the Charbonnier
             # (W=30) pulls to `object + nominal grasp offset` while the anchor (W=20) pulls to
             # `p_src + delta`; they disagree by (the source's converged offset - the nominal one),
             # the Charbonnier wins, and the grasp-relative position drifts ~1.5-2 cm. The source
             # palm was already on the source object, so p_src(t)+delta IS the object-correct path.
-            palm_target_traj = aug_palm_path.clone()
-            palm_target = aug_palm_path[grab_idx].clone()
-            capsule_obs_pos = palm_target.clone()
+            if AUG_REBASE:
+                palm_target_traj = aug_palm_path.clone()
+                palm_target = aug_palm_path[grab_idx].clone()
+                capsule_obs_pos = palm_target.clone()
 
             # Pointing azimuth from the SOURCE geometry (target minus the shift), so the pointing
             # term agrees with the orientation anchor instead of rotating the hand toward the
             # displaced object.
-            _pf_s = (palm_target - _delta) - wrist_keypts[_ts]
-            _pf_s = torch.tensor([float(_pf_s[0]), float(_pf_s[1]), 0.0], device=DEVICE)
-            if POINT_YAW_OFFSET != 0.0:
-                _ca, _sa = float(np.cos(POINT_YAW_OFFSET)), float(np.sin(POINT_YAW_OFFSET))
-                _pf_s = torch.tensor([_ca * float(_pf_s[0]) - _sa * float(_pf_s[1]),
-                                      _sa * float(_pf_s[0]) + _ca * float(_pf_s[1]), 0.0], device=DEVICE)
-            point_fixed_dir = _pf_s / _pf_s.norm().clamp(min=1e-6)
+            if AUG_REBASE:
+                _pf_s = (palm_target - _delta) - wrist_keypts[_ts]
+                _pf_s = torch.tensor([float(_pf_s[0]), float(_pf_s[1]), 0.0], device=DEVICE)
+                if POINT_YAW_OFFSET != 0.0:
+                    _ca, _sa = float(np.cos(POINT_YAW_OFFSET)), float(np.sin(POINT_YAW_OFFSET))
+                    _pf_s = torch.tensor([_ca * float(_pf_s[0]) - _sa * float(_pf_s[1]),
+                                          _sa * float(_pf_s[0]) + _ca * float(_pf_s[1]), 0.0], device=DEVICE)
+                point_fixed_dir = _pf_s / _pf_s.norm().clamp(min=1e-6)
 
-            # Source hand world rotation for the orientation anchor.
-            _fk_s = chain.forward_kinematics({n: _src_t[:, i] for i, n in enumerate(joint_names)})
-            _rot_s = quaternion_to_matrix(quats)
-            for _i, (_ln, _tf) in enumerate(_fk_s.items()):
-                if _i == 38:
-                    aug_hand_R_src = torch.bmm(_rot_s, _tf.get_matrix()[:, :3, :3]).detach()
-                    break
-            print(f"[refine-al][aug] palm anchor W={AUG_PALMTRACK_W:.1f} (palm terms re-based), "
+            if AUG_ORIENT_W > 0:                      # source hand rotation for the orientation anchor
+                _fk_s = chain.forward_kinematics({n: _src_t[:, i] for i, n in enumerate(joint_names)})
+                _rot_s = quaternion_to_matrix(quats)
+                for _i, (_ln, _tf) in enumerate(_fk_s.items()):
+                    if _i == 38:
+                        aug_hand_R_src = torch.bmm(_rot_s, _tf.get_matrix()[:, :3, :3]).detach()
+                        break
+            print(f"[refine-al][aug] rebase={int(AUG_REBASE)} palm anchor W={AUG_PALMTRACK_W:.1f}, "
                   f"curvature W={AUG_CURV_W:.1f}, orientation W={AUG_ORIENT_W:.1f}; "
                   f"delta=({float(_delta[0]):+.3f},{float(_delta[1]):+.3f}) ramp {_r0:.0f}->{_r1:.0f}; "
                   f"pinned head={PIN_FIRST_N}")
