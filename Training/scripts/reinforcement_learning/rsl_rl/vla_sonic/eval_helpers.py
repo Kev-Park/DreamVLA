@@ -10,6 +10,7 @@
                                         ``episode_length_s`` and replaces the reference-exhausted
                                         ``time_out`` term (tracking_time_out) by the flat cap; past the
                                         clip end the reference simply holds its last frame.
+* ``flush_render(env)``                -- deliver the current camera frame WITHOUT stepping physics.
 """
 
 from __future__ import annotations
@@ -95,3 +96,15 @@ def apply_episode_scale(env_cfg, scale: float, tag: str) -> None:
         env_cfg.terminations.time_out = DoneTerm(func=_mdp.time_out, time_out=True)
     print(f"[{tag}] --episode-scale {scale}: episode_length_s -> {env_cfg.episode_length_s:.1f} s; "
           f"reference-exhausted time_out replaced by the flat cap (reference holds its last frame afterwards)")
+
+
+def flush_render(env, n: int = 2) -> None:
+    """Flush the RTX pipeline so camera annotators deliver the CURRENT frame, without stepping physics.
+
+    A raw ``simulation_app.update()`` with the timeline playing advances PhysX by one sim.dt
+    (measured: +2 ms at 500 Hz, +5 ms at 200 Hz per call), so the old "2 pumps after every
+    env.step" ran the robot 24-30 ms per 20 ms SONIC control step. ``SimulationContext.render()``
+    performs the same app update with /app/player/playSimulations disabled (SONIC audit 2026-09-29).
+    """
+    for _ in range(n):
+        env.unwrapped.sim.render()

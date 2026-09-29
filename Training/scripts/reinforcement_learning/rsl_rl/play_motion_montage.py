@@ -22,6 +22,7 @@ Modes (same wiring as play_sonic_adapter.py):
 import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
+from vla_sonic.eval_helpers import flush_render  # noqa: E402
 import builtins
 from functools import partial
 from pathlib import Path
@@ -63,9 +64,9 @@ parser.add_argument("--encoder-mode", type=str, default="g1", choices=["g1", "te
                     help="Native .pt only. g1 = full-body joint reference encoder (default). teleop = the "
                          "checkpoint VR 3-point head: reference wrists+torso point and lower-body command; "
                          "SONIC synthesizes the whole body itself.")
-parser.add_argument("--physics-preset", type=str, default="deploy", choices=["deploy", "training"],
-                    help="Physics substep preset (both 50 Hz control): 'deploy' = 500 Hz/dec-10, "
-                         "'training' = 200 Hz/dec-4 (gear_sonic training).")
+parser.add_argument("--physics-preset", type=str, default="training", choices=["training", "deploy"],
+                    help="Physics substep preset (both 50 Hz control): 'training' (default) = 200 Hz/dec-4 "
+                         "(gear_sonic training), 'deploy' = 500 Hz/dec-10.")
 parser.add_argument("--dump-track", type=str, default=None,
                     help="Write an .npz of per-step world positions (env-local) of the right-hand bodies "
                          "(right_hand_*/right_rubber_hand/right_wrist_*) and the object, plus is_closed and "
@@ -757,16 +758,6 @@ def _make_reference_pd_policy(env, joint_map, device):
 # Main.
 # =========================================================================
 
-def _flush_render(env, n: int = 2) -> None:
-    """Flush the RTX pipeline so the camera annotator delivers the CURRENT frame, WITHOUT stepping
-    physics. A raw ``simulation_app.update()`` with the timeline playing advances PhysX by one
-    sim.dt (measured: +2 ms at 500 Hz, +5 ms at 200 Hz per call), so the old 2 pumps/step ran the
-    robot 24-30 ms per 20 ms control step. ``SimulationContext.render()`` does the same app update
-    with /app/player/playSimulations disabled."""
-    for _ in range(n):
-        env.unwrapped.sim.render()
-
-
 def main():
     # Deterministic motion selection. The env draws a RANDOM motion per reset
     # (torch.randint in reset_joints_for_motion); without a fixed seed two runs play
@@ -946,7 +937,7 @@ def main():
     print("[play_sonic_adapter] warm-up env.step + flush to populate camera buffers...")
     zero_action = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
     env.step(zero_action)
-    _flush_render(env)
+    flush_render(env)
 
     # Open the writer AFTER the warm-up so we know the camera is ready.
     if log_dir is not None:
@@ -976,7 +967,7 @@ def main():
     )
     if args_cli.reference_playback:
         _write_reference_pose(env, ref_joint_map, device)  # frame 0 = reference at reset
-        _flush_render(env)
+        flush_render(env)
     if args_cli.reference_pd:
         policy = _make_reference_pd_policy(env, ref_joint_map, device)
 
@@ -1046,7 +1037,7 @@ def main():
                 _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
             if args_cli.camera_track:
                 _aim_camera_at_robot(env, device)
-        _flush_render(env)
+        flush_render(env)
         print(f"[montage] segment {_seg_i + 1}/{len(_mlist)}: motion_id={_mid}")
 
         for _s in range(_seg):
@@ -1096,7 +1087,7 @@ def main():
                 _trk["seg"].append(_seg_i); _trk["mid"].append(int(_mid)); _trk["step"].append(_s)
 
             # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
-            _flush_render(env)
+            flush_render(env)
 
 
             # 3. read + write the frame

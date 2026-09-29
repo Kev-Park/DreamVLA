@@ -71,19 +71,6 @@ def _build_sonic_matched_actuators() -> dict:
     finger joints (finger actuator gains are left at Isaac's defaults; SONIC
     training doesn't specify hand gains).
     """
-    import os
-    # HS_SONIC_ANKLE_2X=1 (SONIC audit A/B, 2026-09-29): ankle stiffness/damping/armature at
-    # 2x 5020, as in gear_sonic training (g1.py:281-283) and deploy (policy_parameters.hpp).
-    # Default off = the 1x setting below. The earlier "1x is better" A/B ran with the raw
-    # app.update() pumps adding physics every step, so it is not conclusive.
-    _ankle_k = 2.0 if os.environ.get("HS_SONIC_ANKLE_2X", "0") == "1" else 1.0
-    if _ankle_k != 1.0:
-        print(f"[actuators] HS_SONIC_ANKLE_2X=1: ankle stiffness/damping/armature x{_ankle_k} ACTIVE")
-    # HS_SONIC_HIP_139=1 (SONIC audit A/B): hip pitch/roll effort limit 139 N.m as in gear_sonic
-    # training (g1.py:248-249) / deploy EFFORT_LIMIT_7520_22; default 88 (MuJoCo XML range).
-    _hip_eff = 139.0 if os.environ.get("HS_SONIC_HIP_139", "0") == "1" else 88.0
-    if _hip_eff != 88.0:
-        print(f"[actuators] HS_SONIC_HIP_139=1: hip pitch/roll effort limit {_hip_eff} ACTIVE")
     return {
         "legs": ImplicitActuatorCfg(
             joint_names_expr=[
@@ -94,8 +81,8 @@ def _build_sonic_matched_actuators() -> dict:
             ],
             effort_limit_sim={
                 ".*_hip_yaw_joint": 88.0,
-                ".*_hip_roll_joint": _hip_eff,   # 88 = MuJoCo XML actuatorfrcrange; 139 = training
-                ".*_hip_pitch_joint": _hip_eff,
+                ".*_hip_roll_joint": 139.0,   # gear_sonic training g1.py:248 (MuJoCo XML says 88)
+                ".*_hip_pitch_joint": 139.0,  # gear_sonic training g1.py:249
                 ".*_knee_joint": 139.0,
             },
             velocity_limit_sim={
@@ -127,14 +114,12 @@ def _build_sonic_matched_actuators() -> dict:
             effort_limit_sim=50.0,
             velocity_limit_sim=37.0,
             joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
-            # 1× STIFFNESS/DAMPING/ARMATURE_5020. EMPIRICAL: although gear_sonic training
-            # (g1.py:281-283) uses 2× for the ankles, the 2× variant was A/B-tested here and
-            # produced worse, more rigid/oscillatory motion under PhysX implicit drives at
-            # 500 Hz; 1× tracks contact more stably and was the best-performing setting.
-            # (Paired with the 500 Hz substep in physics_overrides.py.)
-            stiffness=_ankle_k * _SONIC_STIFFNESS_5020,
-            damping=_ankle_k * _SONIC_DAMPING_5020,
-            armature=_ankle_k * _SONIC_ARMATURE_5020,
+            # 2x STIFFNESS/DAMPING/ARMATURE_5020, as in gear_sonic training (g1.py:281-283) and
+            # deploy (policy_parameters.hpp). An older A/B that preferred 1x was confounded by raw
+            # app.update() pumps adding physics every control step (SONIC audit 2026-09-29).
+            stiffness=2.0 * _SONIC_STIFFNESS_5020,
+            damping=2.0 * _SONIC_DAMPING_5020,
+            armature=2.0 * _SONIC_ARMATURE_5020,
         ),
         "waist_yaw": ImplicitActuatorCfg(
             effort_limit_sim=88,

@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
+from vla_sonic.eval_helpers import flush_render  # noqa: E402
 from vla_sonic.fsq import fsq_lattice_snap
 import builtins
 import os
@@ -608,8 +609,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     # reflects the post-reset pose with a converged (not warm-up) render. Without
     # these pumps every captured frame is the noisy first-bounce warm-up render —
     # see play_sonic_adapter.py, which does the identical flush after each step.
-    simulation_app.update()
-    simulation_app.update()
+    flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
     if not hasattr(env.unwrapped, "n_successes"):
         env.unwrapped.n_successes = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device, dtype=torch.long)
@@ -721,8 +721,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         # Flush the RTX render pipeline so the NEXT iteration's camera read delivers
         # this step's frame (the camera annotator otherwise lags / stays on the warm-up
         # render). Two pumps match the proven play_sonic_adapter.py cadence.
-        simulation_app.update()
-        simulation_app.update()
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
         terminated_flag = bool(torch.as_tensor(terminated).any().item())
         truncated_flag = bool(torch.as_tensor(truncated).any().item())
         if terminated_flag or truncated_flag:

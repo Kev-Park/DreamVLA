@@ -28,6 +28,7 @@ tanh-saturation noise. Only the mean reflects the policy's intent.
 import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
+from vla_sonic.eval_helpers import flush_render  # noqa: E402
 import builtins
 from functools import partial
 from pathlib import Path
@@ -283,8 +284,7 @@ def main():
     print("[play_sonic] warm-up env.step + flush to populate camera buffers...")
     zero_token = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
     env.step(zero_token)
-    _APP.update()
-    _APP.update()
+    flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
     # Open the writer AFTER the warm-up so we know the camera is ready.
     video_folder = Path(log_dir) / "videos" / "play"
@@ -308,8 +308,7 @@ def main():
             obs, _, dones, _ = env.step(actions)
 
         # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
-        _APP.update()
-        _APP.update()
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
         # 3. read + write the frame
         frame = _read_camera_rgb(env, "camera")
