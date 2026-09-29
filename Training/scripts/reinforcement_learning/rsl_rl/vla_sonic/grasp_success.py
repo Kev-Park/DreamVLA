@@ -36,6 +36,24 @@ BOX_LO = np.array([0.082, 0.062, -0.071])   # p05 of the demos' hold phase (palm
 BOX_HI = np.array([0.148, 0.099, -0.005])   # p95
 BOX_MARGIN = 0.020                          # m, added to every face
 
+# --- post-audit (af60v2) calibration ------------------------------------------------------------
+# The box above was calibrated on the pre-audit demos. The af60v2 residual (additive_free, post-
+# audit config 6996378) holds the bottle ~10 cm HIGHER in the palm: object z - palm z is -0.002
+# against the old -0.045, so 97% of its frames sit above the old ceiling and the old box rejects
+# 100% of the episodes. The palm itself is in the same place (palm pos in root frame differs by
+# <5 cm, object absolute height by 8 mm), so this is a different GRASP, not a frame change.
+#
+# Same procedure as the original: p05/p95 of the object's palm-frame position over the hold phase
+# (longest contiguous commanded-closed run, >=25 frames), pooled over episodes that pass rules
+# 1/3/4. Source: 54 clean episodes, 16168 frames, 2026-09-29. Widths are essentially unchanged
+# (x 0.066->0.063, z 0.066->0.058; y widens 0.037->0.057), i.e. an equally tight grasp, sited
+# higher -- the shift is a translation, not a loosening.
+#
+# NOT yet validated against hand labels the way the original was (36/36, 0 FP / 0 FN). Spot-check
+# before trusting it for anything comparative.
+BOX_LO_AF60 = np.array([0.073, 0.041, 0.031])
+BOX_HI_AF60 = np.array([0.136, 0.098, 0.089])
+
 OBJ_REST_Z = 0.946                          # bottle centre at rest on the table (measured)
 BOTTLE_HALF_H = 0.095                       # => table top at ~0.851 m
 TABLE_TOP_Z = OBJ_REST_Z - BOTTLE_HALF_H
