@@ -375,6 +375,35 @@ if REFINE_AFTER_LEADIN and not NO_LEADIN:
 # refine_motions_al.py: swept-quad table, tip/wrist speed-accel-jerk, hard DOF speed limits,
 # laziness, outward-swing approach shaping) -> smooth reaches, no fast punch-through.
 # HS_REFINE_MODE=simple: the lightweight per-frame penetration refine (refine_right_arm_table).
+#
+# HS_GATE_SHAPING=1: don't start shaping the arm until the walking root has reached the place the
+# STATIC (HS_STAND_LOWER) spawn would have put it. With locomotion the refine otherwise owns the
+# whole trajectory and shapes the reach from frame 0, i.e. while the robot is still ~1 m out --
+# which is what made the grasp shaping look like it fired at the spawn point.
+#
+# The trigger needs no new threshold: the static spawn IS the grab-frame root pose after the
+# along/lateral band clamps above, and in locomotion those same clamps are ONE RIGID translation
+# of the whole walk, so the walking root passes through that identical pose at grab_idx. Gating on
+# "along-heading root->object distance has entered the band the static spawn is clamped to" is
+# therefore the same geometric condition, just reached earlier in time.
+#
+# It is expressed through refine_al_29's existing HS_PIN_FIRST_FRAMES, which holds the first N
+# frames out of the decision variables (and is already honoured by the taper bounds, the hard
+# levelness window and the table constraint), so no refine-side change is needed.
+if os.environ.get("HS_GATE_SHAPING", "0") == "1" and not STAND_LOWER and 0 < grab_idx < F:
+    _gate_hi = (float(_along_band.split(",")[1]) if _along_band
+                else float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35")))
+    _d_along_t = (obj_pos[grab_idx, :2] - base_pos[:, :2]) @ _hdg
+    _hit = np.nonzero(_d_along_t[:grab_idx] <= _gate_hi)[0]
+    # Leave the solver a working budget: never pin past grab_idx - HS_GATE_MIN_BUDGET frames.
+    _budget = int(os.environ.get("HS_GATE_MIN_BUDGET", "25"))
+    _gate = int(_hit[0]) if len(_hit) else 0
+    _gate = max(min(_gate, grab_idx - _budget), 0)
+    os.environ["HS_PIN_FIRST_FRAMES"] = str(_gate)
+    print(f"[gate-shaping] root->object along heading enters {_gate_hi:.2f} m at frame "
+          f"{int(_hit[0]) if len(_hit) else -1}; pinning first {_gate} frames "
+          f"(grab_idx={grab_idx}, budget={grab_idx - _gate} frames)")
+
 if REFINE_ARM and 0 < grab_idx < F:
     _mode = os.environ.get("HS_REFINE_MODE", "al")
     if _mode == "al":
