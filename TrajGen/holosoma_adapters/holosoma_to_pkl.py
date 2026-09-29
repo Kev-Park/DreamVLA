@@ -446,6 +446,23 @@ if os.environ.get("HS_GATE_SHAPING", "0") == "1" and not STAND_LOWER and 0 < gra
         _fs = int(_mov[-1]) + 1 if len(_mov) else 0
         _hit = np.array([max(_fs - int(os.environ.get("HS_GATE_STANCE_LEAD", "5")), 0)])
         _gate_hi = float("nan")
+    # HS_GATE_MAX_VEL: additionally require the root to be SLOW at the gate. The stance trigger
+    # alone can still fire mid-stride (the feet are set for that step, but the body is still
+    # travelling at up to 72% of peak walk speed a few frames before the grab), so push the gate
+    # forward until the root drops below this speed. 0 disables. m/s, assuming 20 fps.
+    _vmax = float(os.environ.get("HS_GATE_MAX_VEL", "0"))
+    if _vmax > 0 and len(_hit):
+        _rsp = np.concatenate([[0.0], np.linalg.norm(np.diff(base_pos[:, :2], axis=0), axis=1) * 20.0])
+        _slow = np.nonzero(_rsp[:grab_idx] <= _vmax)[0]
+        _slow = _slow[_slow >= _hit[0]]
+        if len(_slow):
+            if int(_slow[0]) != int(_hit[0]):
+                print(f"[gate-vel] root still at {_rsp[_hit[0]]:.3f} m/s at frame {int(_hit[0])}; "
+                      f"advanced to frame {int(_slow[0])} (<= {_vmax:.3f} m/s)")
+            _hit = np.array([int(_slow[0])])
+        else:
+            print(f"[gate-vel] root never drops to {_vmax:.3f} m/s before grab "
+                  f"(min {_rsp[:grab_idx].min():.3f}); keeping the stance gate")
     else:
         _gate_hi = (float(_along_band.split(",")[1]) if _along_band
                     else float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35")))
