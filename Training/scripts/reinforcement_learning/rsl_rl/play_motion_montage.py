@@ -60,6 +60,12 @@ parser.add_argument("--camera-offset", type=str, default="2.6,2.6,1.4",
                     help="Camera eye offset from the robot root (x,y,z, metres) when --camera-track.")
 parser.add_argument("--camera-look-z", type=float, default=0.9,
                     help="Height above the robot root xy that the camera looks at when --camera-track.")
+parser.add_argument("--camera-view", type=str, default="third", choices=["third", "ego"],
+                    help="Which already-injected camera feeds the video: 'third' (default) = the static "
+                         "kitchen third-person camera; 'ego' = the robot's D435 head camera "
+                         "(torso_link/d435_link), i.e. what the robot sees. --camera-track/-offset/"
+                         "-look-z only aim the third-person camera and are ignored for 'ego', which is "
+                         "rigidly mounted to the torso.")
 parser.add_argument("--encoder-mode", type=str, default="g1", choices=["g1", "teleop"],
                     help="Native .pt only. g1 = full-body joint reference encoder (default). teleop = the "
                          "checkpoint VR 3-point head: reference wrists+torso point and lower-body command; "
@@ -284,7 +290,9 @@ def _inject_cameras(env_cfg) -> None:
             focal_length=7.6, focus_distance=400.0,
             horizontal_aperture=20.0, clipping_range=(0.01, 100.0),
         ),
-        data_types=["rgb"], height=480, width=640,
+        data_types=["rgb"],
+        height=(int(args_cli.render_height) if args_cli.camera_view == "ego" else 480),
+        width=(int(args_cli.render_width) if args_cli.camera_view == "ego" else 640),
         offset=CameraCfg.OffsetCfg(
             pos=(0.05, 0.0, 0.36),
             rot=(0.568, 0.421, -0.421, -0.568), convention="opengl",
@@ -1150,9 +1158,10 @@ def main():
 
 
                 # 3. read + write the frame
-                frame = _read_camera_rgb(env, "camera")
+                _cam_key = "camera_robot" if args_cli.camera_view == "ego" else "camera"
+                frame = _read_camera_rgb(env, _cam_key)
                 if frame is None:
-                    print(f"[WARN] step {timestep}: third-person camera 'camera' returned no frame")
+                    print(f"[WARN] step {timestep}: camera '{_cam_key}' returned no frame")
                 else:
                     if timestep < 5 and _prev_frame is not None:
                         diff = int(np.abs(frame.astype(np.int32) - _prev_frame.astype(np.int32)).max())
