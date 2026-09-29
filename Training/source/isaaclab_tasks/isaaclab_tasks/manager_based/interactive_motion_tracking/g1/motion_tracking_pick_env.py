@@ -79,6 +79,11 @@ def _build_sonic_matched_actuators() -> dict:
     _ankle_k = 2.0 if os.environ.get("HS_SONIC_ANKLE_2X", "0") == "1" else 1.0
     if _ankle_k != 1.0:
         print(f"[actuators] HS_SONIC_ANKLE_2X=1: ankle stiffness/damping/armature x{_ankle_k} ACTIVE")
+    # HS_SONIC_HIP_139=1 (SONIC audit A/B): hip pitch/roll effort limit 139 N.m as in gear_sonic
+    # training (g1.py:248-249) / deploy EFFORT_LIMIT_7520_22; default 88 (MuJoCo XML range).
+    _hip_eff = 139.0 if os.environ.get("HS_SONIC_HIP_139", "0") == "1" else 88.0
+    if _hip_eff != 88.0:
+        print(f"[actuators] HS_SONIC_HIP_139=1: hip pitch/roll effort limit {_hip_eff} ACTIVE")
     return {
         "legs": ImplicitActuatorCfg(
             joint_names_expr=[
@@ -89,8 +94,8 @@ def _build_sonic_matched_actuators() -> dict:
             ],
             effort_limit_sim={
                 ".*_hip_yaw_joint": 88.0,
-                ".*_hip_roll_joint": 88.0,   # MuJoCo XML actuatorfrcrange="-88 88"
-                ".*_hip_pitch_joint": 88.0,  # MuJoCo XML actuatorfrcrange="-88 88"
+                ".*_hip_roll_joint": _hip_eff,   # 88 = MuJoCo XML actuatorfrcrange; 139 = training
+                ".*_hip_pitch_joint": _hip_eff,
                 ".*_knee_joint": 139.0,
             },
             velocity_limit_sim={
