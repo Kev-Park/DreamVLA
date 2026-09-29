@@ -441,9 +441,15 @@ if os.environ.get("HS_GATE_SHAPING", "0") == "1" and not STAND_LOWER and 0 < gra
         _fi = [i for i, l in enumerate(fk) if l in ("left_ankle_roll_link", "right_ankle_roll_link")]
         _fw = (np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local)
                + base_pos[:, None, :])[:, _fi, :2]                      # (F,2,2)
-        _fsp = np.linalg.norm(np.diff(_fw, axis=0), axis=-1)            # (F-1,2)
-        _mov = np.nonzero((_fsp[:grab_idx] > float(os.environ.get("HS_GATE_FOOT_TOL", "0.002"))).any(axis=1))[0]
-        _fs = int(_mov[-1]) + 1 if len(_mov) else 0
+        # Use the CONTACT TRANSITION, not a speed threshold. A planted foot keeps jittering
+        # 0.8-3.8 mm/frame while the pose settles, which a speed test counts as "still stepping"
+        # and pushes the gate ~20 frames past the real footfall. The last frame either foot is
+        # AIRBORNE, plus one, is the final plant by definition and is immune to that jitter.
+        _fz = (np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local)
+               + base_pos[:, None, :])[:, _fi, 2]                       # (F,2) foot heights
+        _down = _fz < (_fz.min() + float(os.environ.get("HS_GATE_CONTACT_BAND", "0.02")))
+        _air = np.nonzero(~_down[:grab_idx].all(axis=1))[0]             # a foot off the ground
+        _fs = int(_air[-1]) + 1 if len(_air) else 0
         _hit = np.array([max(_fs - int(os.environ.get("HS_GATE_STANCE_LEAD", "5")), 0)])
         _gate_hi = float("nan")
     # HS_GATE_MAX_VEL: additionally require the root to be SLOW at the gate. The stance trigger
