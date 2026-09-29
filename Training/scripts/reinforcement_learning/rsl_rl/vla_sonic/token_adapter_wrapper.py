@@ -193,6 +193,7 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         # The token is naturally grid-bounded by the snap in _decode_body_29, so all three
         # modes are safe (they never push the decoder off the codebook). See REWARD_REWORK_PLAN #3.
         #   "additive"       : body = base + residual_scale * tanh(latent)   (anchor to base; current default)
+        #   "additive_free"  : body = base + residual_scale * latent   (UNCLIPPED per-dim offset; no tanh)
         #   "multiplicative" : body = base * (1 + residual_scale * tanh(latent))  (in-family gate; per-dim factor
         #                       in [1-scale, 1+scale]; note near-zero base dims move little)
         #   "multiplicative_free" : body = base * (1 + residual_scale * latent)  (UNCLIPPED per-dim scale
@@ -201,7 +202,8 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         #                       actor head, so the factor starts at exactly 1.0 (pure base passthrough).
         #                       Same caveat as "multiplicative": near-zero base dims move little.)
         #   "unclamped"      : body = base + latent   (raw additive on token; no anchor, relies on the FSQ snap)
-        assert residual_transform in ("additive", "multiplicative", "multiplicative_free", "unclamped"), residual_transform
+        assert residual_transform in ("additive", "additive_free", "multiplicative",
+                                  "multiplicative_free", "unclamped"), residual_transform
         self.residual_transform = residual_transform
 
         # The reference->SONIC-29 name-matched scatter perm (self._ref_to_sonic_perm) is built once
@@ -446,6 +448,14 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         elif self.residual_transform == "multiplicative":
             # in-family per-dimension gate: factor in [1-scale, 1+scale] around the base token.
             body = self._base_token * (1.0 + self.residual_scale * torch.tanh(z))
+        elif self.residual_transform == "additive_free":
+            # body = base + scale * z. Additive analogue of "multiplicative_free": a per-dimension
+            # OFFSET, gained down by residual_scale, with no tanh. Unlike the multiplicative forms
+            # this can move a base-token dimension that sits at zero (a multiplicative factor
+            # cannot), so the residual can express corrections the multiplicative family cannot
+            # reach. Zero-init head => exactly the base token at the start of training. As with
+            # multiplicative_free the FSQ snap's clamp is the only hard bound.
+            body = self._base_token + self.residual_scale * z
         elif self.residual_transform == "multiplicative_free":
             # unclipped per-dim scale factor (1 + scale*z); zero-init head => exactly 1.0 at start.
             # No tanh: the FSQ snap's clamp is the only hard bound.
