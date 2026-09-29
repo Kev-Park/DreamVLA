@@ -71,6 +71,14 @@ def _build_sonic_matched_actuators() -> dict:
     finger joints (finger actuator gains are left at Isaac's defaults; SONIC
     training doesn't specify hand gains).
     """
+    import os
+    # HS_SONIC_ANKLE_2X=1 (SONIC audit A/B, 2026-09-29): ankle stiffness/damping/armature at
+    # 2x 5020, as in gear_sonic training (g1.py:281-283) and deploy (policy_parameters.hpp).
+    # Default off = the 1x setting below. The earlier "1x is better" A/B ran with the raw
+    # app.update() pumps adding physics every step, so it is not conclusive.
+    _ankle_k = 2.0 if os.environ.get("HS_SONIC_ANKLE_2X", "0") == "1" else 1.0
+    if _ankle_k != 1.0:
+        print(f"[actuators] HS_SONIC_ANKLE_2X=1: ankle stiffness/damping/armature x{_ankle_k} ACTIVE")
     return {
         "legs": ImplicitActuatorCfg(
             joint_names_expr=[
@@ -119,9 +127,9 @@ def _build_sonic_matched_actuators() -> dict:
             # produced worse, more rigid/oscillatory motion under PhysX implicit drives at
             # 500 Hz; 1× tracks contact more stably and was the best-performing setting.
             # (Paired with the 500 Hz substep in physics_overrides.py.)
-            stiffness=_SONIC_STIFFNESS_5020,
-            damping=_SONIC_DAMPING_5020,
-            armature=_SONIC_ARMATURE_5020,
+            stiffness=_ankle_k * _SONIC_STIFFNESS_5020,
+            damping=_ankle_k * _SONIC_DAMPING_5020,
+            armature=_ankle_k * _SONIC_ARMATURE_5020,
         ),
         "waist_yaw": ImplicitActuatorCfg(
             effort_limit_sim=88,
