@@ -467,8 +467,12 @@ if os.environ.get("HS_GATE_SHAPING", "0") == "1" and not STAND_LOWER and 0 < gra
                       f"advanced to frame {int(_slow[0])} (<= {_vmax:.3f} m/s)")
             _hit = np.array([int(_slow[0])])
         else:
-            print(f"[gate-vel] root never drops to {_vmax:.3f} m/s before grab "
-                  f"(min {_rsp[:grab_idx].min():.3f}); keeping the stance gate")
+            # report the min over the window actually searched (gate..grab), not the whole clip:
+            # the leading frames are stationary, so a global min reads as self-contradictory.
+            _w = _rsp[int(_hit[0]):grab_idx]
+            print(f"[gate-vel] root never drops to {_vmax:.3f} m/s between the stance gate "
+                  f"(frame {int(_hit[0])}) and the grab (min {_w.min() if len(_w) else float('nan'):.3f} "
+                  f"m/s over that window); keeping the stance gate")
     else:
         _gate_hi = (float(_along_band.split(",")[1]) if _along_band
                     else float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35")))
