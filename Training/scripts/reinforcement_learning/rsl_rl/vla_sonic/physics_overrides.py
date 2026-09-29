@@ -24,14 +24,13 @@ from __future__ import annotations
 
 # Physics substep presets. Both resolve to a 50 Hz control (decoder) rate — which is
 # what SONIC uses in BOTH training and deploy — and differ only in the PhysX substep:
-#   "deploy"   — 500 Hz / decimation-10 (DEFAULT). Matches the real G1's 500 Hz
-#                motor-command/PD rate (g1_deploy_onnx_ref.cpp publish_dt=0.002), so it
-#                best mimics LIVE control, and a finer substep tracks the decoder's
-#                absolute joint targets more crisply (empirically cleaner / less-labored;
-#                200 Hz feels sluggish / "not live").
-#   "training" — 200 Hz / decimation-4. Matches the gear_sonic TRAINING sim substep
-#                (base_env.yaml:30,32). Opt in when you specifically want the env's
-#                integration granularity to equal training (e.g. adapter RL train==eval).
+#   "training" — 200 Hz / decimation-4 (DEFAULT). The gear_sonic TRAINING substep
+#                (base_env.yaml:30,32), i.e. the dynamics the frozen decoder was trained in.
+#   "deploy"   — 500 Hz / decimation-10. The real G1's 500 Hz motor-command rate
+#                (g1_deploy_onnx_ref.cpp publish_dt=0.002). It used to be the default because
+#                it "looked cleaner", but that A/B was confounded: the render/collect scripts
+#                pumped raw simulation_app.update() twice per step, and each pump steps PhysX by
+#                one sim.dt (+10 ms/step at 200 Hz vs +4 ms at 500 Hz). SONIC audit 2026-09-29.
 PHYSICS_PRESETS = {
     "deploy": (1.0 / 500.0, 10),
     "training": (1.0 / 200.0, 4),
@@ -41,7 +40,7 @@ PHYSICS_PRESETS = {
 def apply_sonic_physics_overrides(
     env_cfg,
     *,
-    preset: str = "deploy",
+    preset: str = "training",
     static_friction: float = 1.0,
     dynamic_friction: float = 1.0,
     enable_self_collisions: bool = True,
@@ -51,9 +50,8 @@ def apply_sonic_physics_overrides(
     Wrapped in try/except per term because not every env variant exposes the same paths.
 
     Args:
-        preset: "deploy" (500 Hz/dec-10, default — matches the real robot's 500 Hz motor
-            rate, crispest live-feel motion) or "training" (200 Hz/dec-4 — matches the
-            gear_sonic training sim substep).
+        preset: "training" (200 Hz/dec-4, default — the gear_sonic training substep) or
+            "deploy" (500 Hz/dec-10 — the real robot's motor-command rate).
     """
     # 1. Substep rate: see PHYSICS_PRESETS. Both yield 50 Hz control.
     if preset not in PHYSICS_PRESETS:
@@ -61,13 +59,12 @@ def apply_sonic_physics_overrides(
     sim_dt, decimation = PHYSICS_PRESETS[preset]
     env_cfg.sim.dt = sim_dt
     env_cfg.decimation = decimation
-    try:
-        env_cfg.sim.decimation = decimation
-    except Exception:
-        pass
+    # One render per control step, as gear_sonic (modular_tracking_env_cfg.py:970). SimulationCfg
+    # has no `decimation` field; the env's step count lives on env_cfg.decimation.
+    env_cfg.sim.render_interval = decimation
     actual_step_ms = env_cfg.sim.dt * env_cfg.decimation * 1000.0
     actual_hz = 1.0 / (env_cfg.sim.dt * env_cfg.decimation)
-    note = "matches gear_sonic training" if preset == "training" else "finer substep (empirically cleaner)"
+    note = "matches gear_sonic training" if preset == "training" else "real-robot motor rate, NOT the training substep"
     print(f"[sonic-physics] preset='{preset}': sim.dt={env_cfg.sim.dt}s, decimation={env_cfg.decimation} "
           f"→ control step = {actual_step_ms:.1f} ms ({actual_hz:.1f} Hz) [{note}]")
     if abs(actual_hz - 50.0) > 0.5:

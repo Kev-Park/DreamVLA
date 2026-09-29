@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
+from vla_sonic.eval_helpers import flush_render  # noqa: E402
 import builtins
 import os
 import sys
@@ -419,7 +420,7 @@ def main() -> int:
         print(f"\n[episode {ep}] motion_id={mid}")
         with torch.inference_mode():
             obs, _ = env.reset()                      # wrapper.reset() also seeds the decoder history
-        _APP.update(); _APP.update()
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
         writers: dict[str, VideoWriter] = {}
         if prefix is not None:
@@ -460,7 +461,7 @@ def main() -> int:
                 obs, _rew, dones, _extras = env.step(latent)                   # FSQ snap + decoder inside
             # Flush the RTX render pipeline so the camera annotator delivers THIS step's frame —
             # both for the video and for the ego view the next chunk's obs_adapter() reads.
-            _APP.update(); _APP.update()
+            flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
             for k, w in writers.items():
                 frame = _read_camera_rgb(env, k, verbose=(step == 0))

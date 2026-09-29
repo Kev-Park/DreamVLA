@@ -573,15 +573,15 @@ class MotionLibBase():
 
 
     def _calc_frame_blend(self, time, len, num_frames, dt):
-        time = time.clone()
-        phase = time / len
-        phase = torch.clip(phase, 0.0, 1.0)  # clip time to be within motion length.
-        time[time < 0] = 0
-
-        frame_idx0 = (phase * (num_frames - 1)).long()
-        frame_idx1 = torch.min(frame_idx0 + 1, num_frames - 1)
-        blend = torch.clip((time - frame_idx0 * dt) / dt, 0.0, 1.0) # clip blend to be within 0 and 1
-        
+        # Index frames by time directly. _motion_lengths is num_frames*dt (load_motions), so the
+        # old phase index floor(time/len*(num_frames-1)) lagged time/dt and the clipped blend made
+        # the reference freeze/jump (0x..2.5x playback at 50 Hz, <=0.8 frame lag). SONIC audit
+        # 2026-09-28; `len` is kept for the call signature.
+        last = (num_frames - 1).long()
+        f = torch.clamp(time, min=0.0) / dt
+        frame_idx0 = torch.minimum(f.floor().long(), last)
+        frame_idx1 = torch.minimum(frame_idx0 + 1, last)
+        blend = torch.clip(f - frame_idx0, 0.0, 1.0)
         return frame_idx0, frame_idx1, blend
 
 

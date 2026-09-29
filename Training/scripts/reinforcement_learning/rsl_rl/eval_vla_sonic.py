@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
+from vla_sonic.eval_helpers import flush_render  # noqa: E402
 import builtins
 import os
 import sys
@@ -482,7 +483,7 @@ def main() -> int:
         print(f"\n[episode {ep}] motion_id={mid if mid is not None else 'random'}")
         with torch.inference_mode():
             obs, _ = env.reset()                      # wrapper.reset() also seeds the decoder history
-        _APP.update(); _APP.update()
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
         vla_chunk = None; chunk_step = 0
         g_pred = []; g_cmd_close = []; g_meas = []                       # per-step grasp diagnostics
@@ -521,7 +522,7 @@ def main() -> int:
             with torch.inference_mode():
                 obs, _rew, dones, _extras = env.step(latent)                   # FSQ snap + decoder inside
             g_meas.append(float(robot.data.joint_pos[0, _rf_jids].abs().mean().item()))
-            _APP.update(); _APP.update()
+            flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
             # ---- metrics (env-local frame), read AFTER the step ----
             org = unw.scene.env_origins[0]

@@ -51,10 +51,9 @@ parser.add_argument("--path", type=str, default=None,
 parser.add_argument("--sonic-decoder-onnx", type=str,
                     default=gear_sonic_deploy("policy/release/model_decoder.onnx"),
                     help="Path to the frozen SONIC decoder ONNX (must match training).")
-parser.add_argument("--physics-preset", type=str, default="deploy", choices=["training", "deploy"],
-                    help="Physics substep (both → 50 Hz control). 'deploy' (default) = 500 Hz/dec-10, "
-                         "matches the real G1 motor rate / crispest live motion. 'training' = 200 Hz/dec-4 "
-                         "(gear_sonic training substep; can feel sluggish).")
+parser.add_argument("--physics-preset", type=str, default="training", choices=["training", "deploy"],
+                    help="Physics substep (both → 50 Hz control). 'training' (default) = 200 Hz/dec-4, "
+                         "the gear_sonic training substep. 'deploy' = 500 Hz/dec-10 (real G1 motor rate).")
 # append RSL-RL cli args (gives --checkpoint, --load_run, etc.)
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args

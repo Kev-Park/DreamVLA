@@ -22,6 +22,7 @@ Modes (same wiring as play_sonic_adapter.py):
 import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
+from vla_sonic.eval_helpers import flush_render  # noqa: E402
 import builtins
 from functools import partial
 from pathlib import Path
@@ -67,6 +68,9 @@ parser.add_argument("--no-video", action="store_true", default=False,
                     help="Skip camera capture and video encoding. For data-capture runs (--dump-track) "
                          "the RTX render + per-step annotator flush dominates wall time; disabling it "
                          "makes a 60-clip capture practical.")
+parser.add_argument("--physics-preset", type=str, default="training", choices=["training", "deploy"],
+                    help="Physics substep preset (both 50 Hz control): 'training' (default) = 200 Hz/dec-4 "
+                         "(gear_sonic training), 'deploy' = 500 Hz/dec-10.")
 parser.add_argument("--dump-track", type=str, default=None,
                     help="Write an .npz of per-step world positions (env-local) of the right-hand bodies "
                          "(right_hand_*/right_rubber_hand/right_wrist_*) and the object, plus is_closed and "
@@ -853,7 +857,7 @@ def main():
         log_dir = os.path.dirname(resume_path)
 
     # Match the SONIC decoder's training-time physics — same as train_sonic_adapter.py.
-    apply_sonic_physics_overrides(env_cfg)
+    apply_sonic_physics_overrides(env_cfg, preset=args_cli.physics_preset)
 
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
@@ -978,8 +982,7 @@ def main():
     print("[play_sonic_adapter] warm-up env.step + flush to populate camera buffers...")
     zero_action = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
     env.step(zero_action)
-    _APP.update()
-    _APP.update()
+    flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
     # Open the writer AFTER the warm-up so we know the camera is ready.
     if log_dir is not None:
@@ -1009,8 +1012,7 @@ def main():
     )
     if args_cli.reference_playback:
         _write_reference_pose(env, ref_joint_map, device)  # frame 0 = reference at reset
-        _APP.update()
-        _APP.update()
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
     if args_cli.reference_pd:
         policy = _make_reference_pd_policy(env, ref_joint_map, device)
 
@@ -1093,8 +1095,7 @@ def main():
                 _update_alt_overlay_markers(env, alt_lib, alt_markers, alt_marker_indices, device)
             if args_cli.camera_track:
                 _aim_camera_at_robot(env, device)
-        _APP.update()
-        _APP.update()
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
         print(f"[montage] segment {_seg_i + 1}/{len(_mlist)}: motion_id={_mid}")
 
         for _s in range(_seg):
@@ -1145,8 +1146,7 @@ def main():
 
             if not args_cli.no_video:
                 # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
-                _APP.update()
-                _APP.update()
+                flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
 
                 # 3. read + write the frame

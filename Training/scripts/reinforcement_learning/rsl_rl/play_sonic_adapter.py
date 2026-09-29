@@ -33,6 +33,7 @@ Actions are DETERMINISTIC (actor mean via ``get_inference_policy``).
 import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
+from vla_sonic.eval_helpers import flush_render  # noqa: E402
 import builtins
 from functools import partial
 from pathlib import Path
@@ -683,8 +684,7 @@ def main():
     print("[play_sonic_adapter] warm-up env.step + flush to populate camera buffers...")
     zero_action = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
     env.step(zero_action)
-    _APP.update()
-    _APP.update()
+    flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
     # Open the writer AFTER the warm-up so we know the camera is ready.
     if log_dir is not None:
@@ -714,8 +714,7 @@ def main():
     )
     if args_cli.reference_playback:
         _write_reference_pose(env, ref_joint_map, device)  # frame 0 = reference at reset
-        _APP.update()
-        _APP.update()
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
     if args_cli.reference_pd:
         policy = _make_reference_pd_policy(env, ref_joint_map, device)
 
@@ -754,8 +753,7 @@ def main():
             _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)
 
         # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
-        _APP.update()
-        _APP.update()
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
         # frame diagnostic: resolve robot/object/table world frames + confirm object placement.
         if timestep in (0, 40, 80):

@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
+from vla_sonic.eval_helpers import flush_render  # noqa: E402
 import builtins
 import sys
 import time
@@ -441,11 +442,12 @@ def main() -> int:
         print("[physics] events.physics_material not found — skipping body friction override")
 
     # --- 2b. Physics substep rate -------------------------------------------
-    # 500 Hz (dt=2ms, 10 substeps per 20ms control step) matches MuJoCo's
-    # integration rate and is required for stable contact dynamics.
-    env_cfg.sim.dt = 1.0 / 500.0
-    env_cfg.sim.decimation = 10
-    print("[physics] substep rate: 500 Hz (dt=2 ms, decimation=10)")
+    # 200 Hz / decimation-4 = the gear_sonic training substep (base_env.yaml:30,32). Note the env
+    # field is env_cfg.decimation; the old `env_cfg.sim.decimation = 10` was a silent no-op.
+    env_cfg.sim.dt = 1.0 / 200.0
+    env_cfg.decimation = 4
+    env_cfg.sim.render_interval = 4
+    print("[physics] substep rate: 200 Hz (dt=5 ms, decimation=4) -> 50 Hz control")
 
     # --- 2c. Articulation solver iterations ---------------------------------
     # G1_CFG default is pos=4, vel=4. Increasing position iterations improves
@@ -498,8 +500,7 @@ def main() -> int:
         print(f"\n[episode {ep}]")
         env.reset()
         env.step(zero_action)   # warm-up camera buffer
-        _APP.update()
-        _APP.update()
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
         history.reset()
         prev_utm_body_29 = np.zeros(29, dtype=np.float32)
@@ -688,8 +689,7 @@ def main() -> int:
             _, rew, term, *_ = env.step(env_action)
 
             # Flush RTX render pipeline.
-            _APP.update()
-            _APP.update()
+            flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
             # ----------------------------------------------------------
             # 8h. Video frames.

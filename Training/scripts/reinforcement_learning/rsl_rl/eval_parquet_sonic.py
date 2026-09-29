@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
+from vla_sonic.eval_helpers import flush_render  # noqa: E402
 import builtins
 import sys
 import time
@@ -85,11 +86,10 @@ def _parse_cli() -> argparse.ArgumentParser:
     parser.add_argument("--dynamic-friction", type=float, default=1.0,
                         help="Terrain + robot body dynamic friction coefficient. Default 1.0 matches UTM "
                              "training (gear_sonic). Use 0.5 to match MuJoCo deployment scene friction.")
-    parser.add_argument("--physics-preset", type=str, default="deploy", choices=["training", "deploy"],
-                        help="Physics substep preset (both → 50 Hz control). 'deploy' (default) = "
-                             "500 Hz/decimation-10, matches the real G1's 500 Hz motor rate and gives the "
-                             "crispest live-feel motion. 'training' = 200 Hz/decimation-4, matches the "
-                             "gear_sonic training sim substep (can feel sluggish/labored).")
+    parser.add_argument("--physics-preset", type=str, default="training", choices=["training", "deploy"],
+                        help="Physics substep preset (both → 50 Hz control). 'training' (default) = "
+                             "200 Hz/decimation-4, the gear_sonic training substep. 'deploy' = "
+                             "500 Hz/decimation-10, the real G1's motor-command rate.")
     parser.add_argument("--waist-dof", type=int, default=29, choices=[27, 29],
                         help="Actuated body DOF. 29 (default, strict fidelity) actuates waist_roll/pitch "
                              "to match SONIC's 29-DOF training articulation — requires the 29-DOF+hands USD "
@@ -786,7 +786,12 @@ def main() -> int:
     # finer substep that earlier A/B tests found produced cleaner/less-labored motion.
     _sim_dt, _decim = PHYSICS_PRESETS[args.physics_preset]
     env_cfg.sim.dt = _sim_dt
-    env_cfg.sim.decimation = _decim
+    # The env steps cfg.decimation substeps (step_dt = sim.dt * cfg.decimation). SimulationCfg has
+    # no `decimation` field -- the old `env_cfg.sim.decimation = ...` was a silent no-op that left
+    # decimation at 4 (8 ms steps / 125 Hz control under 'deploy').
+    env_cfg.decimation = _decim
+    env_cfg.sim.render_interval = _decim
+    assert abs(env_cfg.sim.dt * env_cfg.decimation - 0.02) < 1e-9, "SONIC control step must be 20 ms"
     print(f"[physics] preset='{args.physics_preset}': dt={_sim_dt:.5f}s, decimation={_decim} "
           f"→ {1.0 / (_sim_dt * _decim):.0f} Hz control")
 
@@ -1046,8 +1051,7 @@ def main() -> int:
         _grasp_detected_this_episode = False
 
         env.step(zero_action)   # warm-up camera buffer + propagates object pose and heading overrides
-        _APP.update()           # flush warm-up render to annotators
-        _APP.update()
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
         # ---- Initialise the robot in the parquet's MOVING state at the warmup frame ----
         # The dataset is skip-started: frame 0 is already mid-motion (~0.8 m/s, ~8 rad/s
@@ -1216,7 +1220,7 @@ def main() -> int:
                 robot.write_root_velocity_to_sim(
                     torch.zeros((1, 6), device="cuda:0", dtype=torch.float32), env_ids=_eidk)
                 env.unwrapped.sim.forward()
-                _APP.update(); _APP.update()
+                flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
                 if writers:
                     for _key, _w in writers.items():
                         _frame = _read_camera_rgb(env, _key)
@@ -1657,8 +1661,7 @@ def main() -> int:
             # 7i. Flush RTX render pipeline before reading cameras.
             # eval_vla_sonic.py gets this flush for free from VLA inference time;
             # here we must be explicit so the annotators deliver the current frame.
-            _APP.update()
-            _APP.update()
+            flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
             # 7j. Video frames.
             if writers:
