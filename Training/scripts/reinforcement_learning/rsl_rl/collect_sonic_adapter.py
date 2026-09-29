@@ -876,7 +876,7 @@ def main() -> None:
     parser.add_argument("--residual-scale", type=float, default=0.1,
                         help="MUST match the value train_sonic_adapter.py used (current recipe: 0.1).")
     parser.add_argument("--residual-transform", type=str, default="multiplicative_free",
-                        choices=["additive", "multiplicative", "multiplicative_free", "unclamped"],
+                        choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped"],
                         help="MUST match train_sonic_adapter.py (current recipe: multiplicative_free).")
     parser.add_argument("--phys-lift", type=float, default=0.02,
                         help="SUCCESS filter: object must rise >= this (m) above its rest height ... "
