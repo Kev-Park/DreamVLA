@@ -399,7 +399,13 @@ if os.environ.get("HS_GATE_SHAPING", "0") == "1" and not STAND_LOWER and 0 < gra
     _budget = int(os.environ.get("HS_GATE_MIN_BUDGET", "25"))
     _gate = int(_hit[0]) if len(_hit) else 0
     _gate = max(min(_gate, grab_idx - _budget), 0)
-    os.environ["HS_PIN_FIRST_FRAMES"] = str(_gate)
+    # refine_al_29 reads PIN_FIRST_N from the environment at MODULE IMPORT time, and this file
+    # already imported it at the soft-joint-limit clamp far above, so setting the env var here is
+    # too late -- it would silently stay 0 and the gate would be a no-op. Set the module attribute
+    # directly; every use of PIN_FIRST_N inside refine_al_29 is a module-global read at call time.
+    import refine_al_29 as _r29gate
+    _r29gate.PIN_FIRST_N = _gate
+    os.environ["HS_PIN_FIRST_FRAMES"] = str(_gate)   # kept for any later/child import
     print(f"[gate-shaping] root->object along heading enters {_gate_hi:.2f} m at frame "
           f"{int(_hit[0]) if len(_hit) else -1}; pinning first {_gate} frames "
           f"(grab_idx={grab_idx}, budget={grab_idx - _gate} frames)")
