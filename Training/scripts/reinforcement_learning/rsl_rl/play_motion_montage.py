@@ -757,6 +757,16 @@ def _make_reference_pd_policy(env, joint_map, device):
 # Main.
 # =========================================================================
 
+def _flush_render(env, n: int = 2) -> None:
+    """Flush the RTX pipeline so the camera annotator delivers the CURRENT frame, WITHOUT stepping
+    physics. A raw ``simulation_app.update()`` with the timeline playing advances PhysX by one
+    sim.dt (measured: +2 ms at 500 Hz, +5 ms at 200 Hz per call), so the old 2 pumps/step ran the
+    robot 24-30 ms per 20 ms control step. ``SimulationContext.render()`` does the same app update
+    with /app/player/playSimulations disabled."""
+    for _ in range(n):
+        env.unwrapped.sim.render()
+
+
 def main():
     # Deterministic motion selection. The env draws a RANDOM motion per reset
     # (torch.randint in reset_joints_for_motion); without a fixed seed two runs play
@@ -936,8 +946,7 @@ def main():
     print("[play_sonic_adapter] warm-up env.step + flush to populate camera buffers...")
     zero_action = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
     env.step(zero_action)
-    _APP.update()
-    _APP.update()
+    _flush_render(env)
 
     # Open the writer AFTER the warm-up so we know the camera is ready.
     if log_dir is not None:
@@ -967,8 +976,7 @@ def main():
     )
     if args_cli.reference_playback:
         _write_reference_pose(env, ref_joint_map, device)  # frame 0 = reference at reset
-        _APP.update()
-        _APP.update()
+        _flush_render(env)
     if args_cli.reference_pd:
         policy = _make_reference_pd_policy(env, ref_joint_map, device)
 
@@ -1038,8 +1046,7 @@ def main():
                 _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
             if args_cli.camera_track:
                 _aim_camera_at_robot(env, device)
-        _APP.update()
-        _APP.update()
+        _flush_render(env)
         print(f"[montage] segment {_seg_i + 1}/{len(_mlist)}: motion_id={_mid}")
 
         for _s in range(_seg):
@@ -1089,8 +1096,7 @@ def main():
                 _trk["seg"].append(_seg_i); _trk["mid"].append(int(_mid)); _trk["step"].append(_s)
 
             # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
-            _APP.update()
-            _APP.update()
+            _flush_render(env)
 
 
             # 3. read + write the frame
