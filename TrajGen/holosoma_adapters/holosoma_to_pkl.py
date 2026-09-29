@@ -430,10 +430,27 @@ if REFINE_AFTER_LEADIN and not NO_LEADIN:
 # frames out of the decision variables (and is already honoured by the taper bounds, the hard
 # levelness window and the table constraint), so no refine-side change is needed.
 if os.environ.get("HS_GATE_SHAPING", "0") == "1" and not STAND_LOWER and 0 < grab_idx < F:
-    _gate_hi = (float(_along_band.split(",")[1]) if _along_band
-                else float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35")))
-    _d_along_t = (obj_pos[grab_idx, :2] - base_pos[:, :2]) @ _hdg
-    _hit = np.nonzero(_d_along_t[:grab_idx] <= _gate_hi)[0]
+    _gmode = os.environ.get("HS_GATE_MODE", "along")
+    if _gmode == "stance":
+        # Gate on the FEET, not on distance: the last frame either foot is still moving is the
+        # final stance; start shaping HS_GATE_STANCE_LEAD frames before it. The along-heading
+        # trigger fires while the robot is still walking (measured 7-29 frames early) because
+        # closing distance and finishing the step are different events -- the root stops closing
+        # long before the feet are set. `local` is the per-frame link FK from the grounding pass
+        # directly above, so no extra kinematics are needed.
+        _fi = [i for i, l in enumerate(fk) if l in ("left_ankle_roll_link", "right_ankle_roll_link")]
+        _fw = (np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local)
+               + base_pos[:, None, :])[:, _fi, :2]                      # (F,2,2)
+        _fsp = np.linalg.norm(np.diff(_fw, axis=0), axis=-1)            # (F-1,2)
+        _mov = np.nonzero((_fsp[:grab_idx] > float(os.environ.get("HS_GATE_FOOT_TOL", "0.002"))).any(axis=1))[0]
+        _fs = int(_mov[-1]) + 1 if len(_mov) else 0
+        _hit = np.array([max(_fs - int(os.environ.get("HS_GATE_STANCE_LEAD", "5")), 0)])
+        _gate_hi = float("nan")
+    else:
+        _gate_hi = (float(_along_band.split(",")[1]) if _along_band
+                    else float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35")))
+        _d_along_t = (obj_pos[grab_idx, :2] - base_pos[:, :2]) @ _hdg
+        _hit = np.nonzero(_d_along_t[:grab_idx] <= _gate_hi)[0]
     # Leave the solver a working budget: never pin past grab_idx - HS_GATE_MIN_BUDGET frames.
     _budget = int(os.environ.get("HS_GATE_MIN_BUDGET", "25"))
     _gate = int(_hit[0]) if len(_hit) else 0
