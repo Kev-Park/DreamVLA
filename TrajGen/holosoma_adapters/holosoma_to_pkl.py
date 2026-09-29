@@ -304,6 +304,45 @@ fk = chain.forward_kinematics(torch.tensor(joints, dtype=torch.float32))
 local = torch.stack([fk[l].get_matrix()[:, :3, 3] for l in fk], dim=1).numpy()   # (F,L,3)
 mz = (np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local) + base_pos[:, None, :])[:, :, 2].min(axis=1)
 base_pos[:, 2] -= mz
+
+# --- HS_DESLIP=1: remove residual foot slip WITHOUT re-introducing the lean --------------------
+# Tightening the foot-sticking tolerance removes slip but not the root travel the Laplacian cost
+# still demands, so the legs absorb the deficit and the pelvis pitches over (measured 11.6 -> 13.3
+# deg). The tolerance is a single dial trading slip against lean; this is the second dial.
+#
+# Retarget LOOSE (low lean, some slip c(t)), then subtract the accumulated slip from the root:
+#     base(t) -= c(t)  =>  foot_world(t) = foot_loose(t) - c(t) = foot at stance ONSET
+# The feet ride the root rigidly, so the shift cancels the slip EXACTLY while leaving `joints`
+# untouched -- the low-lean leg geometry the loose solve found is preserved. Zero IK; FK is already
+# computed above for grounding.
+if os.environ.get("HS_DESLIP", "0") == "1":
+    _world = np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local) + base_pos[:, None, :]
+    _lk = list(fk)
+    _feet = [i for i, l in enumerate(_lk) if l in ("left_ankle_roll_link", "right_ankle_roll_link")]
+    if len(_feet) == 2:
+        _fz = _world[:, _feet, 2]                      # (F,2) foot heights
+        _fxy = _world[:, _feet, :2]                    # (F,2,2)
+        _stance = _fz < (_fz.min() + float(os.environ.get("HS_DESLIP_Z_TOL", "0.02")))
+        _corr = np.zeros((len(base_pos), 2)); _C = np.zeros(2); _onset = [None, None]
+        for t in range(len(base_pos)):
+            _inc = np.zeros(2); _n = 0
+            for k in (0, 1):
+                if _stance[t, k]:
+                    if _onset[k] is None:
+                        _onset[k] = _fxy[t, k].copy()
+                    _inc += _fxy[t, k] - _onset[k]; _n += 1
+                elif _onset[k] is not None:
+                    # stance ended: bank its drift and re-anchor on the next touchdown
+                    _C += _fxy[t - 1, k] - _onset[k] if t > 0 else 0.0
+                    _onset[k] = None
+            _corr[t] = _C + (_inc / _n if _n else 0.0)
+        base_pos[:, :2] -= _corr
+        _res = float(np.linalg.norm(_corr[-1]))
+        print(f"[deslip] removed {_res*100:.1f} cm of accumulated foot slip from the root "
+              f"(stance z-tol {float(os.environ.get('HS_DESLIP_Z_TOL','0.02'))*100:.0f} cm); "
+              f"joints untouched so the lean is unchanged")
+    else:
+        print(f"[deslip] SKIPPED: expected 2 ankle_roll links, found {len(_feet)}")
 # Ground the object by a CONSTANT shift (the robot's grounding at the grab frame), NOT the per-frame mz.
 # mz swings a few cm as the robot walks (swing/stance foot), so a per-frame shift made the object bob
 # vertically even while it should rest still on the table. A constant shift keeps the object stable and
