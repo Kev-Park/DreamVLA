@@ -661,7 +661,7 @@ def selftest_determinism(env, policy, n_steps: int, motion_id: int, seed: int) -
         obs = out[0] if isinstance(out, tuple) else out
         rec = []
         for _ in range(n_steps):
-            with torch.inference_mode():
+            with torch.no_grad():
                 a = policy(obs)
                 out = env.step(a)
                 obs = out[0]
@@ -708,7 +708,7 @@ def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
     """
     obs, _ = env.reset()
     for _ in range(n_pre):
-        with torch.inference_mode():
+        with torch.no_grad():
             obs, *_ = env.step(policy(obs))
 
     snap = rollout_snapshot(env)
@@ -725,7 +725,7 @@ def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
         o = env.get_observations()
         o = o[0] if isinstance(o, tuple) else o
         for i in range(n_post):
-            with torch.inference_mode():
+            with torch.no_grad():
                 a = policy(o).clone() if actions is None else actions[i]
             acts.append(a.clone())
             out = env.step(a)
