@@ -182,6 +182,16 @@ parser.add_argument(
          "is_closed (frame > grab_idx) trips, RED=open before it. Use with --reference-playback "
          "to check the synthesized switch lines up with the true grip start.")
 parser.add_argument(
+    "--ego", action="store_true", default=False,
+    help="Record the robot's torso-mounted ego camera (scene.camera_robot, d435_link, 640x480) instead "
+         "of the third-person scene camera. Ignores --camera-track/--camera-offset.")
+parser.add_argument(
+    "--overlay-contact-pos", action="store_true", default=False,
+    help="Visualise the object_contact_pos reward geometry: a sphere at the 'palm' point the reward uses "
+         "(right_wrist_yaw_link projected 0.12 m along its x-axis), coloured by the reward value "
+         "r = exp(-|palm-obj|^2/0.12^2) (red 0 -> green 1); a WHITE sphere at the sim object centre; and a "
+         "text line with d, r and the is_closed gate (the reward is free = 1 while open). Render-only viz.")
+parser.add_argument(
     "--ref-motions-path", type=str, default=None,
     help="Override the env's ref_motions_path (dir of reference .pkl files). Use to point "
          "reference-playback at an isolated set (e.g. the holosoma 29-DOF .pkl) without "
@@ -616,6 +626,55 @@ def _update_obj_candidate_markers(env, markers, device, hand_fwd: float = 1.5):
     )
 
 
+# ---------------------------------------------------------------------------------------------
+# object_contact_pos visualisation. Mirrors motion_tracking_pick_env._right_hand_grasp_point /
+# object_contact_pos_reward exactly (wrist_yaw link + 0.12 m along its x-axis; std 0.12 m).
+# ---------------------------------------------------------------------------------------------
+_CP_COLORS = [(0.95, 0.10, 0.10), (0.95, 0.50, 0.05), (0.95, 0.90, 0.05), (0.55, 0.90, 0.10), (0.05, 0.90, 0.20)]
+
+
+def _make_contact_pos_markers():
+    markers = {"obj": sim_utils.SphereCfg(radius=0.02, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 1.0)))}
+    for i, c in enumerate(_CP_COLORS):
+        markers["r%d" % i] = sim_utils.SphereCfg(radius=0.025, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=c))
+    return VisualizationMarkers(VisualizationMarkersCfg(prim_path="/Visuals/contact_pos", markers=markers))
+
+
+def _update_contact_pos_markers(env, markers, device, std: float = 0.12, offset_x: float = 0.12):
+    """Place the reward's palm point (coloured by r) and the object centre for env 0. Returns (d, r, is_closed)."""
+    from isaaclab.utils.math import quat_apply
+    unw = env.unwrapped
+    with torch.inference_mode():
+        robot = unw.scene["robot"]
+        bid = list(robot.data.body_names).index("right_wrist_yaw_link")
+        wpos = robot.data.body_pos_w[0, bid]
+        wquat = robot.data.body_quat_w[0, bid]
+        palm = wpos + quat_apply(wquat.unsqueeze(0), torch.tensor([[offset_x, 0.0, 0.0], ], device=wquat.device))[0]
+        obj = unw.scene["object"].data.root_pos_w[0]
+        d = float(torch.linalg.norm(palm - obj))
+        r = float(torch.exp(torch.tensor(-(d * d) / (std * std))))
+        motion_times = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(device=device, dtype=torch.float32)
+        res = unw.motion_lib.get_motion_state(unw.motion_ids, motion_times)
+        closed = bool(res["is_closed"][0])
+    bucket = min(len(_CP_COLORS) - 1, int(r * len(_CP_COLORS)))
+    markers.visualize(
+        translations=torch.stack([obj.to(device), palm.to(device)], dim=0),
+        marker_indices=torch.tensor([0, 1 + bucket], device=device, dtype=torch.long),
+    )
+    return d, r, closed
+
+
+def _overlay_contact_pos(frame_rgb, d, r, closed):
+    import cv2
+    h = frame_rgb.shape[0]
+    gate = "CLOSED: r counts" if closed else "OPEN: reward free (=1)"
+    txt = "contact_pos  d=%.3f m   r=exp(-d^2/0.12^2)=%.2f   [%s]" % (d, r, gate)
+    col = tuple(int(255 * c) for c in _CP_COLORS[min(len(_CP_COLORS) - 1, int(r * len(_CP_COLORS)))])
+    cv2.putText(frame_rgb, txt, (12, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(frame_rgb, txt, (12, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 1, cv2.LINE_AA)
+    return frame_rgb
+
+
 class VideoWriter:
     """cv2-backed mp4 writer (mp4v codec — self-contained, no ffmpeg dependency)."""
 
@@ -982,6 +1041,10 @@ def main():
     obj_cand_markers = _make_obj_candidate_markers() if args_cli.overlay_obj_candidates else None
     if args_cli.overlay_obj_candidates:
         _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)  # frame 0
+    cp_markers = _make_contact_pos_markers() if args_cli.overlay_contact_pos else None
+    _cp = None
+    if cp_markers is not None:
+        _cp = _update_contact_pos_markers(env, cp_markers, device)
         print(f"[overlay-obj-candidates] YELLOW = synthesized object ref (rest->palm), "
               f"CYAN = hand-FK palm (forward={args_cli.hand_fk_forward})")
 
@@ -1061,6 +1124,8 @@ def main():
                 _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
             if args_cli.overlay_obj_candidates:
                 _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)
+            if cp_markers is not None:
+                _cp = _update_contact_pos_markers(env, cp_markers, device)
 
             if _trk is not None:
                 _uwt = env.unwrapped
@@ -1091,7 +1156,7 @@ def main():
 
 
             # 3. read + write the frame
-            frame = _read_camera_rgb(env, "camera")
+            frame = _read_camera_rgb(env, "camera_robot" if args_cli.ego else "camera")
             if frame is None:
                 print(f"[WARN] step {timestep}: third-person camera 'camera' returned no frame")
             else:
@@ -1126,6 +1191,8 @@ def main():
                     _resc = _uwc.motion_lib.get_motion_state(_uwc.motion_ids, _mtc)
                     _icc = bool(_resc["is_closed"].reshape(-1)[0].item() > 0.5)
                     frame = _overlay_contact(frame, _icc)
+                if _cp is not None:
+                    frame = _overlay_contact_pos(frame, *_cp)
                 writer.write(_overlay(frame, label))
 
             timestep += 1
