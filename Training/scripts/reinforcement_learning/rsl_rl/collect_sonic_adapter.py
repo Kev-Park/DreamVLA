@@ -609,7 +609,15 @@ def rollout_snapshot(env) -> dict:
 def rollout_restore(env, snap: dict) -> None:
     """Inverse of rollout_snapshot. Order matters: reset_to zeroes the clock, so restore after it."""
     u = env.unwrapped
-    u.reset_to(snap["scene"], env_ids=None, is_relative=False)
+    # Deliberately NOT ManagerBasedEnv.reset_to(): that calls _reset_idx() first, which fires the
+    # reset EVENTS -- teleporting the robot to the reference pose -- before the saved state is
+    # written back. Two teleports in one frame leave PhysX with contact penetration it resolves as a
+    # large impulse on the next step, which is why identical actions from a bit-exact restored state
+    # still diverged (joint_vel by 11.5 rad/s at frame 0). Writing the scene state directly skips
+    # the events and the intermediate pose entirely.
+    env_ids = torch.arange(u.num_envs, dtype=torch.int64, device=u.device)
+    u.scene.reset_to(snap["scene"], env_ids, is_relative=False)
+    u.sim.forward()
     for name in _SNAP_ENV_TENSORS:
         cur, saved = getattr(u, name, None), snap.get(name)
         if cur is not None and saved is not None:
