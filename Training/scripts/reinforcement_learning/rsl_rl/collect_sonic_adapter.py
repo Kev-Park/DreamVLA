@@ -395,7 +395,7 @@ class DaggerDriver:
     def __init__(self, env, vla_policy, obs_adapter, *, beta: float, chunk: int, close_thres: float, seed: int,
                  diagnostics: bool = False, trigger: str = "stochastic", trigger_thr: float = 0.551,
                  trigger_smooth: int = 15, trigger_budget: float = -1.0, trigger_lr: float = 0.02,
-                 expert_base: str = "reference"):
+                 expert_base: str = "reference", takeover_at: int | None = None):
         self.env = env; self.vla = vla_policy; self.obs_adapter = obs_adapter
         self.beta = float(beta); self.chunk = int(chunk); self.close_thres = float(close_thres)
         self.rng = np.random.default_rng(seed)
@@ -421,6 +421,11 @@ class DaggerDriver:
         # base. The override is set one step AHEAD because the wrapper refreshes the base token
         # at the end of env.step, and that refreshed value is what the next observation carries.
         self.expert_base = str(expert_base)
+        # Failure-conditioned rescue: a ONE-WAY handover at this frame. None = the trigger/beta
+        # rules decide instead. The VLA is still queried while the student drives, and (under
+        # expert_base='student') afterwards too, since its token is the residual's base.
+        self.takeover_at = takeover_at
+        self.n_frames = 0
         self.trigger_budget = float(trigger_budget)      # <0 disables (fixed threshold)
         self.trigger_lr = float(trigger_lr)
         self._dis_mean = None                            # EMA of the disagreement, sets the step scale
@@ -475,12 +480,13 @@ class DaggerDriver:
     def begin_episode(self):
         self._chunk = None; self._chunk_step = self.chunk; self._expert_drives = True
         self.n_expert = 0; self.n_vla = 0; self._dis_win = []; self.n_trig_eval = 0
+        self.n_frames = 0
 
     def step(self, expert_latent: torch.Tensor, expert_tok=None):
         """Advance the env one step; returns (obs, rew, dones, extras, expert_drove: bool)."""
         if self._chunk_step >= self.chunk:                               # re-plan boundary
             self._chunk_step = 0
-            if self.trigger == "disagree" or self.expert_base == "student":
+            if self.trigger == "disagree" or self.expert_base == "student" or self.takeover_at is not None:
                 # Always re-plan: the VLA's token is needed every step -- as the comparison term
                 # for the trigger, and/or as the residual's base.
                 out = self.vla.get_action(self.obs_adapter())
@@ -491,6 +497,10 @@ class DaggerDriver:
                     out = self.vla.get_action(self.obs_adapter())
                     self._chunk = out[0] if isinstance(out, tuple) else out
         t = self._chunk_step; self._chunk_step += 1
+        frame = self.n_frames; self.n_frames += 1
+        if self.takeover_at is not None:
+            # one-way: the student owns [0, k), the expert owns [k, end)
+            self._expert_drives = frame >= self.takeover_at
 
         if self.trigger == "disagree":
             if self._chunk is None or expert_tok is None:
@@ -765,6 +775,26 @@ def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
     return ok
 
 
+def score_written_episode(path, box: str) -> tuple[bool, dict]:
+    """4-rule verdict on a written episode, reusing the same path as the offline filter.
+
+    box: "af60" for the post-audit calibration, "preaudit" for the original. This is explicit on
+    purpose -- the pre-audit box rejects 100% of post-audit grasps (the bottle sits ~10 cm higher in
+    the palm), which would make every rollout read as a failure and trigger a rescue every time.
+    """
+    import h5py
+    from vla_sonic.grasp_success import score, BOX_LO, BOX_HI, BOX_LO_AF60, BOX_HI_AF60
+    lo, hi = (BOX_LO_AF60, BOX_HI_AF60) if box == "af60" else (BOX_LO, BOX_HI)
+    with h5py.File(str(path), "r", locking=False) as h:
+        g = h["data/demo_0"]
+        r = score(g["obs/object_pos"][()], g["obs/object_quat"][()],
+                  g["obs/robot0_root_pos_w"][()], g["obs/robot0_root_quat_w"][()],
+                  g["teleop/right_wrist"][()], box_lo=lo, box_hi=hi)
+    why = [t for t, cond in (("fell", r["fallen_height"]), ("horiz", r["fallen_horizontal"]),
+                             ("slip", r["slipping"]), ("notbox", not r["in_box_at_end"])) if cond]
+    return bool(r["success"]), {"why": "+".join(why) or "-", "max_tilt": float(r["max_tilt"])}
+
+
 def dagger_closed_pose(demo_root: str, max_files: int = 8) -> np.ndarray:
     """Mean measured right-finger pose (collector joint order) over closed-command frames of the demos."""
     import h5py
@@ -794,6 +824,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     # of being re-derived offline (which would recover only the un-adapted base token).
     token_history: list[np.ndarray] = []
     dagger_mask: list[bool] = []                                     # expert drove this step?
+    is_closed_hist: list[bool] = []                                  # reference grasp phase per frame
     diag_hist: list[dict] = []                                       # per-frame VLA uncertainty signals
     gate_hist: list[bool] = []                                       # grasp gate latched this step?
     if dagger is not None:
@@ -872,6 +903,16 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
             raise RuntimeError("camera_robot.data.output missing 'rgb'.")
         camera_frames.append(_frame_to_uint8_rgb(camera_output["rgb"][0].cpu().numpy()))
         if state_on:
+            # Reference grasp phase, so grab_idx (where the reference closes) comes out of the
+            # rollout itself -- the rescue samples its takeover frame k from [0, grab_idx).
+            try:
+                _u = env.unwrapped
+                _mt = (_u.episode_length_buf * _u.step_dt
+                       + _u.start_motion_times.to(device=_u.device, dtype=torch.float32))
+                _mr = _u.motion_lib.get_motion_state(_u.motion_ids, _mt)
+                is_closed_hist.append(bool(_mr["is_closed"][0].item() > 0.5))
+            except Exception:
+                is_closed_hist.append(False)
             st = _capture_rollout_state(env, actions)
             if dagger is not None:
                 # label = the expert's finger COMMAND as a pose (measured fingers follow the driver, not the expert)
@@ -1045,6 +1086,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         "max_lift_m": float(max_lift),
         "object_rest_z": float(obj_rest_z) if obj_rest_z is not None else float("nan"),
         "toppled_any": bool(toppled_any),
+        "grab_idx": (int(np.argmax(is_closed_hist)) if any(is_closed_hist) else -1),
         "legacy_lift_success": bool(had_any_lift),
         "lift_thres": float(lift_thres),
         "success_n_successes": success_n_successes,
@@ -1168,6 +1210,15 @@ def main() -> None:
                              "makes the rule portable across tasks. Negative keeps --dagger-trigger-thr fixed.")
     parser.add_argument("--dagger-trigger-lr", type=float, default=0.02,
                         help="Step size for the budget controller, relative to the signal's own scale.")
+    parser.add_argument("--dagger-rescue", action="store_true", default=False,
+                        help="Failure-conditioned expert rescue. The student drives the whole episode; if it\n"
+                             "FAILS the 4-rule criterion, an independent second rollout hands over to the\n"
+                             "expert at k ~ U[0, grab_idx) and only that one is kept. Requires\n"
+                             "--dagger-rescue-box and forbids the grasp gate (the residual's own finger head\n"
+                             "supplies the grasp label).")
+    parser.add_argument("--dagger-rescue-box", choices=("preaudit", "af60"), default=None,
+                        help="Palm-box calibration for the failure verdict. Explicit on purpose: the wrong\n"
+                             "one rejects every episode and rescues every rollout.")
     parser.add_argument("--dagger-expert-base", choices=("reference", "student"), default="reference",
                         help="What the residual expert composes onto: the reference lookahead token\n"
                              "(default) or the STUDENT's token, which removes the reference clock from\n"
@@ -1349,6 +1400,14 @@ def main() -> None:
         obs_adapter = ObsToPolicyAdapter(env, ObsAdapterConfig(language_instruction="pick up the mustard bottle",
                                                                robot_model=SimpleG1RobotModel.build(),
                                                                camera_scene_key="camera_robot"))
+        if args_cli.dagger_rescue:
+            if args_cli.dagger_rescue_box is None:
+                raise SystemExit("--dagger-rescue requires --dagger-rescue-box {preaudit,af60}: the wrong calibration rejects every episode and rescues every rollout.")
+            if grasp_gate is not None:
+                raise SystemExit("--dagger-rescue forbids the grasp gate -- the residual's own finger head supplies the grasp label. Drop --grasp-gate.")
+            if abs(float(args_cli.dagger_beta)) > 1e-9:
+                print("[rescue] forcing --dagger-beta 0: the student must drive all of pass A")
+                args_cli.dagger_beta = 0.0
         dagger = DaggerDriver(env, vla, obs_adapter, beta=args_cli.dagger_beta, chunk=args_cli.dagger_chunk,
                               diagnostics=args_cli.dagger_diagnostics,
                               trigger=args_cli.dagger_trigger, trigger_thr=args_cli.dagger_trigger_thr,
@@ -1447,6 +1506,82 @@ def main() -> None:
                     break
                 continue
             tried += 1
+
+            if args_cli.dagger_rescue:
+                # ---- pass A: the student drove the whole episode (beta forced to 0) -------------
+                # Written first so the verdict comes from the same 4-rule path as the offline
+                # filter, rather than a second in-memory implementation that could drift from it.
+                passA_name = f"_passA__motion_{motion_id:03d}{suffix}.hdf5"
+                final_name = f"sonic_adapter__{motion_tag}__motion_{motion_id:03d}{suffix}.hdf5"
+
+                def _write(name, cam, rs, mt, tp, extra):
+                    md = {
+                        "motion_reference": motion_tag, "motion_id": int(motion_id),
+                        "success_index": written, "skip_start_frames": args_cli.skip_start_frames,
+                        "start_pregrab_margin_s": args_cli.start_pregrab_margin,
+                        "residual_scale": args_cli.residual_scale,
+                        "residual_transform": args_cli.residual_transform,
+                        "sonic_pt": str(args_cli.sonic_pt) if args_cli.sonic_pt else None,
+                        "encoder_mode": args_cli.encoder_mode, "waist_dof": int(args_cli.waist_dof),
+                        "checkpoint": str(resume_path), **mt, **extra,
+                    }
+                    recorder.write_rollout(name, frames=np.stack(cam, axis=0),
+                                           raw_state=rs if args_cli.state_on else None,
+                                           metadata=md, teleop=tp,
+                                           env_args=_build_env_args(env, task_name=args_cli.task))
+                    return recorder.output_dir / name
+
+                pA = _write(passA_name, camera_frames, raw_state, meta, teleop_payload,
+                            {"rescue": {"pass": "A", "takeover_at": None}})
+                okA, whyA = score_written_episode(pA, args_cli.dagger_rescue_box)
+                grab_idx = int(meta.get("grab_idx", -1))
+                print(f"[rescue] motion {motion_id}: pass A 4-rule {'PASS' if okA else 'FAIL'} "
+                      f"({whyA['why']}), grab_idx={grab_idx}, steps={meta['num_steps']}")
+
+                if okA:
+                    os.replace(pA, recorder.output_dir / final_name)
+                    written += 1
+                    print(f"[rescue] WROTE student success {written} -> {final_name}")
+                    continue
+
+                # ---- pass B: independent sibling, expert takes over at k -----------------------
+                pA.unlink(missing_ok=True)
+                if grab_idx <= 0:
+                    rejected_nograsp += 1
+                    print(f"[rescue] SKIP motion {motion_id}: no reference grasp frame "
+                          f"(grab_idx={grab_idx}), nowhere to sample k from")
+                    continue
+                k = int(np.random.default_rng(args_cli.seed + motion_id * 7919 + rollout_idx).integers(0, grab_idx))
+                print(f"[rescue] motion {motion_id}: re-rolling with expert takeover at k={k} "
+                      f"of grab_idx={grab_idx} (expert_base={args_cli.dagger_expert_base})")
+                dagger.takeover_at = k
+                try:
+                    camB, rsB, metaB, tpB = _run_rollout_adapter(
+                        env, policy, simulation_app=simulation_app, max_steps=args_cli.rollout_length,
+                        state_on=bool(args_cli.state_on), real_time=bool(args_cli.real_time),
+                        reset_at_start=True, lift_thres=float(args_cli.lift_thres),
+                        phys_lift=float(args_cli.phys_lift), phys_radius=float(args_cli.phys_radius),
+                        phys_steps=int(args_cli.phys_steps), dagger=dagger,
+                        dagger_closed_pose_arr=dagger_closed, grasp_gate=None, gate_drives=False,
+                    )
+                except Exception as exc:
+                    errored += 1
+                    print(f"[rescue] motion {motion_id}: pass B raised {type(exc).__name__}: {exc}")
+                    dagger.takeover_at = None
+                    if not simulation_app.is_running():
+                        break
+                    continue
+                dagger.takeover_at = None
+                pB = _write(final_name, camB, rsB, metaB, tpB,
+                            {"rescue": {"pass": "B", "takeover_at": int(k), "grab_idx": grab_idx,
+                                        "passA_success": False, "passA_why": whyA["why"],
+                                        "expert_base": args_cli.dagger_expert_base}})
+                okB, whyB = score_written_episode(pB, args_cli.dagger_rescue_box)
+                written += 1
+                print(f"[rescue] WROTE rescue {written} -> {final_name} "
+                      f"(4-rule {'PASS' if okB else 'FAIL'}: {whyB['why']}; "
+                      f"expert drove {metaB['dagger']['expert_steps']}/{metaB['num_steps']})")
+                continue
 
             # DAgger: keep everything long enough to carry labels (failures are the point).
             if dagger is not None:
