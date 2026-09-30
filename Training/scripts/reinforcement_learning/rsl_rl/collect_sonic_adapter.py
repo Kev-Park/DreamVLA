@@ -549,16 +549,44 @@ _SNAP_WRAPPER_TENSORS = ("_h_jp", "_h_jv", "_h_la", "_h_av", "_h_gv", "_base_tok
 _SNAP_ENV_TENSORS = ("episode_length_buf", "start_motion_times", "motion_ids")
 
 
+def _wrapper_owning(env, attr: str):
+    """Find the wrapper in the chain that actually owns `attr`.
+
+    The decoder history lives on TokenActionDecoderVecEnvWrapper, which may sit several wrappers
+    below the object the collector holds. Resolving it by walking the chain (rather than assuming
+    `env` owns it) is what stops the snapshot from silently skipping the most important state.
+    """
+    seen = set()
+    node = env
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        if attr in vars(node):
+            return node
+        node = getattr(node, "env", None)
+    return None
+
+
 def rollout_snapshot(env) -> dict:
     """Everything needed to resume this rollout exactly at the current frame."""
     u = env.unwrapped
     snap = {"scene": u.scene.get_state(is_relative=False)}
+    missing = []
     for name in _SNAP_ENV_TENSORS:
         t = getattr(u, name, None)
         snap[name] = t.clone() if t is not None else None
     for name in _SNAP_WRAPPER_TENSORS:
-        t = getattr(env, name, None)
+        owner = _wrapper_owning(env, name)
+        t = getattr(owner, name, None) if owner is not None else None
+        if t is None:
+            missing.append(name)
         snap[name] = t.clone() if t is not None else None
+    snap["_owners"] = {n: type(_wrapper_owning(env, n)).__name__ if _wrapper_owning(env, n) else None
+                       for n in _SNAP_WRAPPER_TENSORS}
+    if missing:
+        raise RuntimeError(
+            f"rollout_snapshot could not find {missing} on any wrapper in the chain -- the decoder "
+            f"history would be silently skipped and the stitch would be invalid. "
+            f"owners found: {snap['_owners']}")
     # The policy observation contains last_action (ObsTerm(func=mdp.last_action)), and _reset_idx
     # zeroes these -- without them the first post-restore observation is wrong and the rollout
     # diverges on the very first step rather than drifting.
@@ -587,9 +615,12 @@ def rollout_restore(env, snap: dict) -> None:
         if cur is not None and saved is not None:
             cur.copy_(saved)
     for name in _SNAP_WRAPPER_TENSORS:
-        cur, saved = getattr(env, name, None), snap.get(name)
-        if cur is not None and saved is not None:
-            cur.copy_(saved)
+        owner = _wrapper_owning(env, name)
+        cur = getattr(owner, name, None) if owner is not None else None
+        saved = snap.get(name)
+        if cur is None or saved is None:
+            raise RuntimeError(f"rollout_restore: {name} unavailable at restore time")
+        cur.copy_(saved)
     am = getattr(u, "action_manager", None)
     if am is not None and snap.get("_am_action") is not None:
         am._action.copy_(snap["_am_action"])
@@ -622,6 +653,13 @@ def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
             obs, *_ = env.step(policy(obs))
 
     snap = rollout_snapshot(env)
+    print(f"[selftest-restore] history owners: {snap['_owners']}")
+    at_snap = {
+        "object_pos": env.unwrapped.scene["object"].data.root_pos_w[0].clone(),
+        "root_pos": env.unwrapped.scene["robot"].data.root_pos_w[0].clone(),
+        "joint_pos": env.unwrapped.scene["robot"].data.joint_pos[0].clone(),
+        "joint_vel": env.unwrapped.scene["robot"].data.joint_vel[0].clone(),
+    }
 
     def run(tag, actions=None):
         rec, acts = [], []
@@ -644,24 +682,15 @@ def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
         return rec, acts
 
     traj_a, acts = run("A")
-    # what the state looks like at the snapshot, before and after the restore, so a bad restore is
-    # visible immediately rather than only through its downstream effect
-    pre = {k: v.clone() for k, v in (
-        ("object_pos", env.unwrapped.scene["object"].data.root_pos_w[0]),
-        ("root_pos", env.unwrapped.scene["robot"].data.root_pos_w[0]),
-        ("joint_pos", env.unwrapped.scene["robot"].data.joint_pos[0]))}
     rollout_restore(env, snap)
-    post = {k: v.clone() for k, v in (
-        ("object_pos", env.unwrapped.scene["object"].data.root_pos_w[0]),
-        ("root_pos", env.unwrapped.scene["robot"].data.root_pos_w[0]),
-        ("joint_pos", env.unwrapped.scene["robot"].data.joint_pos[0]))}
     print(f"[selftest-restore] {n_pre} pre-steps, {n_post} post-steps, identical actions replayed")
-    print("[selftest-restore] restore fidelity AT the snapshot (end-of-A state vs restored state):")
-    for k in pre:
-        print(f"    {k:11s} |end_of_A - restored| max {float((pre[k] - post[k]).abs().max()):.3e}")
-    print("[selftest-restore] snapshot vs end-of-A (is the snapshot itself the right frame?):")
-    for k, sk in (("object_pos", None),):
-        pass
+    print("[selftest-restore] restore fidelity: state AT the snapshot vs state after restore")
+    for k, v in at_snap.items():
+        cur = {"object_pos": env.unwrapped.scene["object"].data.root_pos_w[0],
+               "root_pos": env.unwrapped.scene["robot"].data.root_pos_w[0],
+               "joint_pos": env.unwrapped.scene["robot"].data.joint_pos[0],
+               "joint_vel": env.unwrapped.scene["robot"].data.joint_vel[0]}[k]
+        print(f"    {k:11s} max {float((v - cur).abs().max()):.3e}")
     traj_b, _ = run("B", actions=acts)
 
     print("[selftest-restore] per-component divergence over the replayed segment:")
