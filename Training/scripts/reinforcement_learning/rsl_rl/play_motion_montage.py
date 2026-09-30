@@ -244,7 +244,8 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 # SONIC adapter wiring (same as train_sonic_adapter.py)
 from vla_sonic.token_action_wrapper import load_frozen_decoder
 from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
-from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+from vla_sonic.physics_overrides import (apply_sonic_physics_overrides,
+                                          apply_object_mass_override, apply_hand_gain_override)
 from vla_sonic.robot_29dof import apply_29dof_waist_override
 from vla_sonic.adapter_actor_critic import AdapterActorCritic
 
@@ -866,6 +867,12 @@ def main():
 
     # Match the SONIC decoder's training-time physics — same as train_sonic_adapter.py.
     apply_sonic_physics_overrides(env_cfg, preset=args_cli.physics_preset)
+    # The object-mass and hand-gain overrides are DEFAULT ON (physics_overrides.py), but the
+    # montage renderer never invoked them, so rendered clips silently ran the stock mass and
+    # hand gains while collect/eval/play_vla used the overridden ones -- i.e. the videos did
+    # not show the physics the rest of the pipeline was using.
+    apply_object_mass_override(env_cfg)
+    apply_hand_gain_override(env_cfg)
 
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
