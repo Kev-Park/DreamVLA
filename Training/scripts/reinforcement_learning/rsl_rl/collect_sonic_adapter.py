@@ -395,7 +395,7 @@ class DaggerDriver:
     def __init__(self, env, vla_policy, obs_adapter, *, beta: float, chunk: int, close_thres: float, seed: int,
                  diagnostics: bool = False, trigger: str = "stochastic", trigger_thr: float = 0.551,
                  trigger_smooth: int = 15, trigger_budget: float = -1.0, trigger_lr: float = 0.02,
-                 expert_base: str = "reference", takeover_at: int | None = None):
+                 expert_base: str = "reference", takeover_at: int | None = None, blend: int = 0):
         self.env = env; self.vla = vla_policy; self.obs_adapter = obs_adapter
         self.beta = float(beta); self.chunk = int(chunk); self.close_thres = float(close_thres)
         self.rng = np.random.default_rng(seed)
@@ -425,6 +425,12 @@ class DaggerDriver:
         # rules decide instead. The VLA is still queried while the student drives, and (under
         # expert_base='student') afterwards too, since its token is the residual's base.
         self.takeover_at = takeover_at
+        # Handover blend: for `blend` frames after takeover_at, execute a smoothstep mix of the
+        # student's and expert's tokens instead of switching instantly. A hard switch between two
+        # token streams that disagree (median 0.55 L2) is a step in the commanded target, and the
+        # autoregressive decoder turned it into a 3-4x joint-speed spike that knocked the bottle
+        # within 4-7 frames in every measured rescue. 0 = hard switch (previous behaviour).
+        self.blend = max(0, int(blend))
         self.n_frames = 0
         self.trigger_budget = float(trigger_budget)      # <0 disables (fixed threshold)
         self.trigger_lr = float(trigger_lr)
@@ -498,9 +504,11 @@ class DaggerDriver:
                     self._chunk = out[0] if isinstance(out, tuple) else out
         t = self._chunk_step; self._chunk_step += 1
         frame = self.n_frames; self.n_frames += 1
+        in_blend = False
         if self.takeover_at is not None:
             # one-way: the student owns [0, k), the expert owns [k, end)
             self._expert_drives = frame >= self.takeover_at
+            in_blend = self.blend > 0 and self.takeover_at <= frame < self.takeover_at + self.blend
 
         if self.trigger == "disagree":
             if self._chunk is None or expert_tok is None:
@@ -530,7 +538,7 @@ class DaggerDriver:
             h = np.asarray(self._chunk["motion_token"], np.float32).shape[1]
             nxt = np.asarray(self._chunk["motion_token"], np.float32)[0, min(t + 1, h - 1)]
             self.env.set_base_override(nxt)
-        if self._expert_drives:
+        if self._expert_drives and not in_blend:
             self.n_expert += 1
             return (*self.env.step(expert_latent), True)
         tok = np.asarray(self._chunk["motion_token"], np.float32)[0, t]
@@ -540,6 +548,18 @@ class DaggerDriver:
         rh = np.asarray(self._chunk["right_hand_joints"], np.float32)[0, t]
         composed = torch.zeros((1, 65), device=expert_latent.device, dtype=torch.float32)
         composed[0, :64] = torch.as_tensor(tok, device=expert_latent.device)
+        if in_blend and expert_tok is not None:
+            # smoothstep: zero slope at both ends, so velocity stays continuous entering AND
+            # leaving the window (linear would trade one jerk for two smaller ones)
+            a = (frame - self.takeover_at + 1) / float(self.blend)
+            a = a * a * (3.0 - 2.0 * a)
+            mixed = (1.0 - a) * tok + a * np.asarray(expert_tok, np.float32)
+            composed[0, :64] = torch.as_tensor(mixed, device=expert_latent.device)
+            # finger channel is binary: hand it to the expert at k (measured finger pose was
+            # identical before/after k in every failed rescue -- the lurch was body-side)
+            composed[0, 64] = -1.0 if float(expert_latent[0, 64].item()) < 0 else 1.0
+            self.n_expert += 1
+            return (*self.env.step_composed(composed), True)
         composed[0, 64] = -1.0 if float(np.abs(rh).mean()) > self.close_thres else 1.0
         self.n_vla += 1
         return (*self.env.step_composed(composed), False)
@@ -1216,6 +1236,10 @@ def main() -> None:
                              "expert at k ~ U[0, grab_idx) and only that one is kept. Requires\n"
                              "--dagger-rescue-box and forbids the grasp gate (the residual's own finger head\n"
                              "supplies the grasp label).")
+    parser.add_argument("--dagger-rescue-blend", type=int, default=0,
+                        help="Frames over which to smoothstep-blend from the student token to the expert "
+                             "token after takeover (0 = hard switch). A hard switch lurched 3-4x and "
+                             "knocked the bottle within 4-7 frames in every measured rescue.")
     parser.add_argument("--dagger-rescue-box", choices=("preaudit", "af60"), default=None,
                         help="Palm-box calibration for the failure verdict. Explicit on purpose: the wrong\n"
                              "one rejects every episode and rescues every rollout.")
@@ -1415,6 +1439,7 @@ def main() -> None:
                               trigger_budget=args_cli.dagger_trigger_budget,
                               trigger_lr=args_cli.dagger_trigger_lr,
                               expert_base=args_cli.dagger_expert_base,
+                              blend=args_cli.dagger_rescue_blend,
                               close_thres=args_cli.dagger_finger_close_thres, seed=args_cli.seed)
         print(f"[DAgger] VLA {args_cli.dagger_vla_checkpoint} drives with P={1-args_cli.dagger_beta:.2f} per "
               f"{args_cli.dagger_chunk}-step chunk; expert labels every state. {len(dagger_motions)} demo motions x "
@@ -1575,7 +1600,8 @@ def main() -> None:
                 pB = _write(final_name, camB, rsB, metaB, tpB,
                             {"rescue": {"pass": "B", "takeover_at": int(k), "grab_idx": grab_idx,
                                         "passA_success": False, "passA_why": whyA["why"],
-                                        "expert_base": args_cli.dagger_expert_base}})
+                                        "expert_base": args_cli.dagger_expert_base,
+                                        "blend": int(args_cli.dagger_rescue_blend)}})
                 okB, whyB = score_written_episode(pB, args_cli.dagger_rescue_box)
                 written += 1
                 print(f"[rescue] WROTE rescue {written} -> {final_name} "
