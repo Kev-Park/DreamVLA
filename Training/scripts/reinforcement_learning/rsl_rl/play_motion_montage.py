@@ -630,11 +630,12 @@ def _update_obj_candidate_markers(env, markers, device, hand_fwd: float = 1.5):
 # object_contact_pos visualisation. Mirrors motion_tracking_pick_env._right_hand_grasp_point /
 # object_contact_pos_reward exactly (wrist_yaw link + 0.12 m along its x-axis; std 0.12 m).
 # ---------------------------------------------------------------------------------------------
-_CP_COLORS = [(0.95, 0.10, 0.10), (0.95, 0.50, 0.05), (0.95, 0.90, 0.05), (0.55, 0.90, 0.10), (0.05, 0.90, 0.20)]
+_CP_COLORS = [(0.95, 0.10, 0.10), (0.95, 0.10, 0.85), (0.55, 0.15, 0.95), (0.15, 0.35, 0.95), (0.05, 0.90, 0.95)]  # r: 0 red -> 1 cyan
 
 
 def _make_contact_pos_markers():
-    markers = {"obj": sim_utils.SphereCfg(radius=0.02, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 1.0)))}
+    markers = {"obj": sim_utils.SphereCfg(radius=0.02, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 1.0))),
+               "obj_top": sim_utils.SphereCfg(radius=0.022, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 1.0)))}
     for i, c in enumerate(_CP_COLORS):
         markers["r%d" % i] = sim_utils.SphereCfg(radius=0.025, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=c))
     return VisualizationMarkers(VisualizationMarkersCfg(prim_path="/Visuals/contact_pos", markers=markers))
@@ -657,9 +658,10 @@ def _update_contact_pos_markers(env, markers, device, std: float = 0.12, offset_
         res = unw.motion_lib.get_motion_state(unw.motion_ids, motion_times)
         closed = bool(res["is_closed"][0])
     bucket = min(len(_CP_COLORS) - 1, int(r * len(_CP_COLORS)))
+    top = obj.clone(); top[2] += 0.11                                   # visible locator above the (hidden) centre sphere
     markers.visualize(
-        translations=torch.stack([obj.to(device), palm.to(device)], dim=0),
-        marker_indices=torch.tensor([0, 1 + bucket], device=device, dtype=torch.long),
+        translations=torch.stack([obj.to(device), top.to(device), palm.to(device)], dim=0),
+        marker_indices=torch.tensor([0, 1, 2 + bucket], device=device, dtype=torch.long),
     )
     return d, r, closed
 
@@ -667,11 +669,13 @@ def _update_contact_pos_markers(env, markers, device, std: float = 0.12, offset_
 def _overlay_contact_pos(frame_rgb, d, r, closed):
     import cv2
     h = frame_rgb.shape[0]
-    gate = "CLOSED: r counts" if closed else "OPEN: reward free (=1)"
-    txt = "contact_pos  d=%.3f m   r=exp(-d^2/0.12^2)=%.2f   [%s]" % (d, r, gate)
+    gate = "CLOSED - r counts" if closed else "OPEN - reward free (=1)"
+    l1 = "contact_pos: d=%.3f m  r=exp(-d^2/0.12^2)=%.2f" % (d, r)
+    l2 = "[%s]   sphere: red 0 -> cyan 1 = r;  white = object" % gate
     col = tuple(int(255 * c) for c in _CP_COLORS[min(len(_CP_COLORS) - 1, int(r * len(_CP_COLORS)))])
-    cv2.putText(frame_rgb, txt, (12, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
-    cv2.putText(frame_rgb, txt, (12, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 1, cv2.LINE_AA)
+    for y, txt, c in ((h - 34, l1, col), (h - 12, l2, (255, 255, 255))):
+        cv2.putText(frame_rgb, txt, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(frame_rgb, txt, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1, cv2.LINE_AA)
     return frame_rgb
 
 
