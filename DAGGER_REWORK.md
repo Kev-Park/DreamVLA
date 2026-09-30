@@ -75,6 +75,10 @@ Corrective content therefore scales with `k`: a rescue at k≈0 is nearly pure d
 - On failure, keep **only** the stitched (rescued) episode. Keeping the failed student pass would
   feed the filter something it rejects anyway.
 - `k` upper bound is `grab_idx`.
+- **Reference origin: sample from the pre-existing references used in the fine-tune.** Decided by the
+  user 2026-09-30. `--dagger-demo-root <fine-tune demo set>` restricts the sweep to those motion ids
+  and pairs every student rollout (and its rescue) with that clip, which is what the residual then
+  supervises against. No fresh references, no residual-training-set references.
 - **Expert labels come from the residual acting on the paired reference** (`expert_base=reference`),
   not on the student's base token. Decided by the user 2026-09-30. The residual is pi*(s, t) for
   the reference clip the episode is paired with; the student's token never enters the label path.
@@ -87,10 +91,8 @@ Corrective content therefore scales with `k`: a rescue at k≈0 is nearly pure d
 
 ## TO REVIEW
 
-1. **Reference origin.** Defaulted to the **VLA fine-tuning reference set**. Alternatives: the
-   residual's own training set, or freshly sampled references. Note the expert degrades off its
-   training conditions (measured: 50.0% vs the student's 51.9% when run at physics it never trained
-   on), so novel references would give degraded labels.
+1. ~~Reference origin~~ -- **settled 2026-09-30, see above** (sample from the references already used
+   in the fine-tune; this is what `--dagger-demo-root` does).
 2. **Cross-iteration aggregation.** Classic DAgger grows D across iterations, and this pipeline has
    done that implicitly (base + dagger1 + dagger2 -> 250 episodes). Confirm the next fine-tune
    trains on af60v2 demos **+** the rescued set rather than the rescued set alone.
