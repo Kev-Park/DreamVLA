@@ -16,7 +16,36 @@ rescue**. Both older modes stay in the code, flag-gated and off, so the arms rem
    from a frame `k ~ Uniform[episode_start, grab_idx)`, as a stand-in for "where the student began
    drifting off-distribution".
 
-### Mechanics: snapshot, branch, stitch
+### Mechanics: two independent passes (MEASURED 2026-09-30)
+
+The environment does **not** reproduce. Two identical rollouts -- same motion, same seed, full reset
+each time, expert-driven with no VLA involved -- diverge immediately:
+
+```
+joint_pos   max 2.940e-02   first frame over 1e-6: 0
+root_pos    max 1.910e-03   first frame over 1e-6: 0
+object_pos  max 1.405e-03   first frame over 1e-6: 104
+growth: f0=5.11e-04  f4=7.61e-03  f19=2.78e-02  f119=4.87e-03
+```
+
+Frame-0 divergence of 5.11e-04 rad is too large for one step of float noise, so something differs at
+reset beyond what `_set_all_seeds` covers. It is bounded rather than chaotic -- peaking near 1.7 deg
+and pulled back by the tracking controller -- so rollouts are *similar*, just not identical.
+
+Therefore **exact reproduction of a failed student rollout is impossible**, and both earlier plans
+are dead: the snapshot/stitch (which also failed its own gate at 0.48 rad) and the deterministic
+re-roll (seeding the VLA cannot help when the env alone will not reproduce).
+
+**What is implemented instead:** on pass-A failure, run an INDEPENDENT pass B where the student
+drives to `k` and the expert takes over. Pass B's student segment is a sibling sample, not a
+reproduction. This is sound for DAgger, which requires states drawn from the learner's distribution
+rather than one specific trajectory -- and at ~1.7 deg peak deviation the sibling is a close one.
+
+Cost: two full rollouts per failed episode. No snapshot machinery, no determinism requirement.
+
+`--dagger-selftest-determinism` and `--dagger-selftest-restore` are kept as the record of why.
+
+### Superseded: snapshot, branch, stitch
 
 `k` is sampled *before* the rollout and the sim state snapshotted there, so failure detection costs
 one full student rollout and the rescue only a partial one (`k -> end`) rather than two full passes.
