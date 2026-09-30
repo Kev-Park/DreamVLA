@@ -15,7 +15,8 @@ Sister script to ``train_sonic.py``, implementing residual policy learning in to
 Differences vs train_sonic.py:
   - The frozen SONIC G1 encoder runs in the wrapper each step on the 1.0 s reference
     lookahead; its 64-D token is appended to the policy obs AND used as the base the
-    policy's 64-D residual is added to (tanh-bounded by --residual-scale).
+    policy's 64-D residual is added to (scaled by --residual-scale; the default
+    additive_free transform applies no tanh).
   - The policy is a small MLP (default [256, 128]) with a ZERO-INIT output layer —
     step-0 behavior is exact zero-shot SONIC playback; PPO learns a task delta.
   - Reference-tracking reward terms are scaled by --tracking-scale (default 1.0 —
@@ -77,13 +78,13 @@ parser.add_argument(
     help="Path to the frozen SONIC encoder ONNX (model_encoder.onnx).",
 )
 parser.add_argument(
-    "--residual-scale", type=float, default=0.3,
+    "--residual-scale", type=float, default=0.1,
     help="Hard bound on the token residual: token = base + scale*tanh(policy_out). "
          "FSQ token channels live in roughly [-1, 1], so 0.3 allows substantial local "
          "correction while structurally anchoring behavior to the frozen SONIC base.",
 )
 parser.add_argument(
-    "--residual-transform", type=str, default="additive",
+    "--residual-transform", type=str, default="additive_free",
     choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped"],
     help="How the policy latent transforms the frozen base TOKEN (the FSQ snap re-bounds it "
          "either way, so all are safe). additive = base + scale*tanh(z) (anchor, current). "

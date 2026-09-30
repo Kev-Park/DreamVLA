@@ -42,6 +42,17 @@ HAND_STIFFNESS = float(os.environ.get("HS_HAND_STIFFNESS", "15"))   # was 5.0
 HAND_EFFORT    = float(os.environ.get("HS_HAND_EFFORT", "10"))      # was 3.0
 HAND_VELOCITY  = float(os.environ.get("HS_HAND_VELOCITY", "3"))     # was 1.0
 
+# mustard_bottle.usd authors physxRigidBody:maxAngularVelocity = 100 DEG/S (= 1.75 rad/s). A bottle
+# of this height topples at sqrt(3g/L) ~ 12 rad/s ~ 700 deg/s, so the authored clamp slowed every
+# knock-over by ~7x -- the "object falls in slow motion" artifact. Every RigidBodyPropertiesCfg
+# field defaults to None ("use the USD value"), so a bare cfg (or none at all) let the clamp pass
+# straight through, and no mass/gain override could reach it: tipping rate is mass-independent
+# (alpha = g*r/k^2, and the USD sets diagonalInertia=(0,0,0) => derive inertia from geometry).
+# 1000 deg/s is above what a real topple needs while still bounding the solver. See locomotion
+# d2ae153, which fixed only the legacy cuboid site; the UsdFileCfg sites below are the ones the
+# pick/HOI envs actually spawn.
+OBJ_MAX_ANGVEL = 1000.0  # deg/s
+
 
 # =========================================================================
 # SONIC-matched actuator configuration.
@@ -1265,7 +1276,7 @@ class MySceneCfg(MySceneCfgBase):
         init_state=RigidObjectCfg.InitialStateCfg(pos=[0.35, 0.40, 1.0413], rot=[1, 0, 0, 0]),
         spawn=sim_utils.CuboidCfg(
             size=(.05, .05, 0.2),collision_props=sim_utils.CollisionPropertiesCfg(),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=OBJ_MAX_ANGVEL),
             mass_props=sim_utils.MassPropertiesCfg(mass=OBJ_MASS),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0., 0.2, 0.6), metallic=0.3),
             physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -1361,6 +1372,7 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
                 usd_path=self.object_usd_path,
                 scale=(1.0, 1.0, 1.5),
                 mass_props=sim_utils.MassPropertiesCfg(mass=OBJ_MASS),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=OBJ_MAX_ANGVEL),
             ),
         )
 
@@ -1436,6 +1448,7 @@ class G1PickPlayEnvCfg(G1InteractiveBaseEnvCfg):
                 usd_path="assets/mustard_bottle.usd",
                 scale=(1., 1., 1.5),
                 mass_props=sim_utils.MassPropertiesCfg(mass=OBJ_MASS),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=OBJ_MAX_ANGVEL),
             ),
         )
         # self.scene.terrain = None
@@ -1599,6 +1612,7 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
                     usd_path="assets/mustard_bottle.usd",
                     scale=(1.0, 1.0, 1.5),
                     mass_props=sim_utils.MassPropertiesCfg(mass=OBJ_MASS),
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=OBJ_MAX_ANGVEL),
                 ),
             )
             print("[G1PickBinaryFingers] object = mustard_bottle.usd (HS_OBJ=cuboid reverts to legacy cuboid)")
@@ -1780,6 +1794,7 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
                 usd_path=self.object_usd_path,
                 scale=(1.0, 1.0, 1.5),
                 mass_props=sim_utils.MassPropertiesCfg(mass=OBJ_MASS),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=OBJ_MAX_ANGVEL),
             ),
         )
         # Third-person + torso-ego cameras (same configs as G1PickCamEnvCfg).

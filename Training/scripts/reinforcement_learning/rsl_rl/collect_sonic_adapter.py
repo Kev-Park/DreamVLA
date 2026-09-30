@@ -875,7 +875,7 @@ def main() -> None:
                         help="Native .pt only; must match training (g1 = full-body reference encoder).")
     parser.add_argument("--residual-scale", type=float, default=0.1,
                         help="MUST match the value train_sonic_adapter.py used (current recipe: 0.1).")
-    parser.add_argument("--residual-transform", type=str, default="multiplicative_free",
+    parser.add_argument("--residual-transform", type=str, default="additive_free",
                         choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped"],
                         help="MUST match train_sonic_adapter.py (current recipe: multiplicative_free).")
     parser.add_argument("--phys-lift", type=float, default=0.02,

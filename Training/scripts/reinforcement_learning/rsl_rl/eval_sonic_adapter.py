@@ -73,9 +73,9 @@ parser.add_argument(
 parser.add_argument("--sonic-encoder-onnx", type=str,
                     default=gear_sonic_deploy("policy/release/model_encoder.onnx"),
                     help="Path to the frozen SONIC encoder ONNX (must match training).")
-parser.add_argument("--residual-scale", type=float, default=0.3,
+parser.add_argument("--residual-scale", type=float, default=0.1,
                     help="Residual bound — MUST match the value used by train_sonic_adapter.py.")
-parser.add_argument("--residual-transform", type=str, default="additive",
+parser.add_argument("--residual-transform", type=str, default="additive_free",
                     choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped"],
                     help="Token residual transform — MUST match train_sonic_adapter.py for this checkpoint.")
 parser.add_argument("--zero-residual", action="store_true", default=False,

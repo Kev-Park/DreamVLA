@@ -100,11 +100,11 @@ parser.add_argument(
     help="Path to the frozen SONIC encoder ONNX (must match training).",
 )
 parser.add_argument(
-    "--residual-scale", type=float, default=0.3,
+    "--residual-scale", type=float, default=0.1,
     help="Residual bound — MUST match the value used by train_sonic_adapter.py.",
 )
 parser.add_argument(
-    "--residual-transform", type=str, default="additive",
+    "--residual-transform", type=str, default="additive_free",
     choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped"],
     help="Token residual transform — MUST match train_sonic_adapter.py for this checkpoint.",
 )
