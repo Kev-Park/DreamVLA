@@ -1264,7 +1264,13 @@ class MySceneCfg(MySceneCfgBase):
         init_state=RigidObjectCfg.InitialStateCfg(pos=[0.35, 0.40, 1.0413], rot=[1, 0, 0, 0]),
         spawn=sim_utils.CuboidCfg(
             size=(.05, .05, 0.2),collision_props=sim_utils.CollisionPropertiesCfg(),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            # mustard_bottle.usd authors physxRigidBody:maxAngularVelocity = 100 DEG/S
+            # (= 1.75 rad/s). A bottle of this height topples at sqrt(3g/L) ~ 12 rad/s ~ 700 deg/s,
+            # so the authored clamp slowed every knock-over by ~7x -- the object tipped in slow
+            # motion. Every RigidBodyPropertiesCfg field defaults to None ("use the USD value"),
+            # so the clamp passed straight through untouched and no mass/gain override could
+            # affect it (tipping rate is mass-independent: alpha = g*r/k^2).
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=1000.0),
             mass_props=sim_utils.MassPropertiesCfg(mass=.1),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0., 0.2, 0.6), metallic=0.3),
             physics_material=sim_utils.RigidBodyMaterialCfg(
