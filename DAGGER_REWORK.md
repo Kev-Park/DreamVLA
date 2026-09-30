@@ -129,18 +129,37 @@ Mechanism validated:
 | `expert_base=student` | 0/2 pass | **0/2 pass** |
 | `expert_base=reference` | 0/2 pass | **0/2 pass** |
 
-So `expert_base` is NOT the explanation (to-review item 3 is answered negatively for both settings at
-this n). The diagnosis is the one recorded above under label validity: the residual is **pi*(s, t)**,
-a reference tracker whose base token is indexed by motion time. Handing over at k=151 of grab_idx=178
-puts the reference clock 85% of the way to the grasp while the student -- which scores **0/60** on
-eval -- has already drifted far off it. The expert cannot recover a phase it is no longer aligned
-with, and its own competence gate (`ee_body_pos`, 0.25 m) marks exactly that boundary.
+So `expert_base` is NOT the explanation (item 3 answered negatively for both settings at this n).
 
-**The rescue design presupposes a student that is sometimes right.** With pass A failing every time,
-there is no successful student behaviour to preserve and the expert must recover from an arbitrarily
-drifted state. The blocker is therefore NOT the DAgger design but the student: the af60v2 GR00T
-fine-tune scored 0/60 (see `results/vla_eval/README.md`). Fixing that comes first; the rescue
-machinery is ready and waiting behind it.
+**Measured cause (2026-09-30): the handover itself.** An earlier draft blamed phase drift -- the
+residual being pi*(s,t) and the student being off-schedule by k. That was a hypothesis stated as a
+diagnosis, and the recorded episodes refute it. At the takeover frame in all four rescues the bottle
+was upright (0.0-0.8 deg) and unmoved (<=0.6 cm), and the robot was 3-6 cm from the reference root --
+inside the 0.25 m competence gate and comparable to the 7.3 cm median of expert-driven rollouts. The
+student handed over a GOOD state.
+
+What happens next is a lurch. Body joint speed jumps 3-4x in the first five frames after k
+(pre-k mean 0.8-1.25 rad/s; post-k max 3.2-4.4) and the bottle is displaced within 4-7 frames in three
+of four episodes; in the fourth (k near grab_idx) it is knocked at the reference grasp instead.
+Fingers are not involved -- measured finger pose is identical before and after k in every case.
+
+Mechanism: the VLA and the expert emit DIFFERENT tokens for the same state (the disagreement signal,
+median 0.55 L2). A hard switch between token streams mid-motion is a step change in the commanded
+target, and the SONIC decoder is autoregressive, so a step in token space becomes a jerk in joint
+space. Uniform k up to grab_idx puts that jerk near the bottle exactly when it is most damaging.
+
+The same expert succeeds 130/164 in this env when it drives from frame 0. It is 0/4 from a handover.
+The design presupposes a student that is sometimes right AND a handover that does not itself cause
+the failure; the second is the defect the smoke test found.
+
+**Candidate fixes, in order of generality:**
+- **Blend the handover.** Interpolate from the student's token to the expert's over N frames
+  (10-20, i.e. 0.2-0.4 s) instead of a hard switch. Standard controller-handoff practice; attacks the
+  mechanism directly.
+- **Hand over where the streams agree.** Choose k where the expert/VLA disagreement is locally small,
+  so the step is small. The signal already exists (`vla_expert_token_l2`).
+- **Keep k away from the bottle.** Constrain handover to frames where the hand is >X cm from the
+  object. Safe but forfeits corrective coverage near the grasp.
 
 Two follow-ups this suggests, beyond the existing list:
 
