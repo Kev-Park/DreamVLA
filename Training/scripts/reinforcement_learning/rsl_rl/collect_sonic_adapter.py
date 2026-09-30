@@ -647,6 +647,57 @@ def rollout_restore(env, snap: dict) -> None:
         u.obs_buf = om.compute(update_history=False)
 
 
+def selftest_determinism(env, policy, n_steps: int, motion_id: int, seed: int) -> bool:
+    """Two identical rollouts (same motion, same seed, full reset each time) -- do they match?
+
+    Reports per-component divergence and the first frame that exceeds 1e-6, plus the growth profile,
+    which distinguishes "one state is wrong" (jumps immediately) from "chaotic amplification of
+    float noise" (starts tiny and grows).
+    """
+    def one_pass():
+        _set_all_seeds(seed)
+        env.unwrapped._forced_motion_id = int(motion_id)
+        out = env.reset()
+        obs = out[0] if isinstance(out, tuple) else out
+        rec = []
+        for _ in range(n_steps):
+            with torch.inference_mode():
+                a = policy(obs)
+                out = env.step(a)
+                obs = out[0]
+            u = env.unwrapped
+            rec.append({
+                "joint_pos": u.scene["robot"].data.joint_pos[0].clone(),
+                "root_pos": u.scene["robot"].data.root_pos_w[0].clone(),
+                "object_pos": u.scene["object"].data.root_pos_w[0].clone(),
+            })
+        return rec
+
+    pa = one_pass()
+    pb = one_pass()
+
+    print(f"[selftest-determinism] motion {motion_id}, seed {seed}, {n_steps} steps, two full resets")
+    worst = 0.0
+    for k in pa[0]:
+        d = torch.stack([(x[k] - y[k]).abs().max() for x, y in zip(pa, pb)])
+        first = int((d > 1e-6).nonzero()[0].item()) if (d > 1e-6).any() else -1
+        worst = max(worst, float(d.max()))
+        print(f"    {k:11s} max {float(d.max()):.3e}   first frame over 1e-6: {first}")
+    # growth profile: an immediate jump means a state differs; slow growth means float chaos
+    dj = torch.stack([(x["joint_pos"] - y["joint_pos"]).abs().max() for x, y in zip(pa, pb)])
+    idx = [0, min(4, n_steps - 1), min(9, n_steps - 1), min(19, n_steps - 1), n_steps - 1]
+    print("    joint_pos divergence by frame: " +
+          "  ".join(f"f{i}={float(dj[i]):.2e}" for i in sorted(set(idx))))
+    ok = worst < 1e-6
+    print(f"[selftest-determinism] max |A-B| = {worst:.3e}")
+    if ok:
+        print("[selftest-determinism] PASS -- identical rollouts reproduce; exact re-roll is viable")
+    else:
+        print("[selftest-determinism] FAIL -- identical rollouts diverge; the rescue must accept an "
+              "independent sibling rollout rather than reproducing the failed one")
+    return ok
+
+
 def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
     """Prove the restore is exact: run n_post steps from a snapshot twice, applying the SAME recorded
     actions both times, and require the trajectories to match bit-for-bit.
@@ -1092,6 +1143,11 @@ def main() -> None:
                         help="Record per-frame VLA uncertainty signals (FSQ lattice residual, expert/VLA token "
                              "disagreement, pooled VLM embedding) into obs/. Logging only: control is unchanged.")
     parser.add_argument("--dagger-chunk", type=int, default=8, help="DAgger: VLA re-plan cadence (eval parity).")
+    parser.add_argument("--dagger-selftest-determinism", type=int, default=None, metavar="N_STEPS",
+                        help="Roll the same motion twice with the same seed (full reset each time) and report\n"
+                             "whether the trajectories are identical, then exit. Gates the deterministic\n"
+                             "re-roll approach: if two identical rollouts diverge, exact reproduction of a\n"
+                             "failed student rollout is impossible.")
     parser.add_argument("--dagger-selftest-restore", type=int, nargs=2, default=None,
                         metavar=("N_PRE", "N_POST"),
                         help="Run the snapshot/restore self-test (N_PRE steps, snapshot, then N_POST steps\n"
@@ -1322,6 +1378,13 @@ def main() -> None:
     total_motions = int(env.unwrapped.total_motions)
     print(f"[INFO] motion library = {total_motions} motions; target = {target_successes} successful "
           f"trajectories (each motion tried once, deterministic policy).")
+
+    if args_cli.dagger_selftest_determinism is not None:
+        lo = args_cli.motion_range[0] if args_cli.motion_range else 0
+        ok = selftest_determinism(env, policy, int(args_cli.dagger_selftest_determinism),
+                                  motion_id=int(lo), seed=int(args_cli.seed))
+        simulation_app.close()
+        raise SystemExit(0 if ok else 1)
 
     if args_cli.dagger_selftest_restore is not None:
         n_pre, n_post = args_cli.dagger_selftest_restore
