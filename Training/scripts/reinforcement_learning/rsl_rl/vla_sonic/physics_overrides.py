@@ -57,8 +57,8 @@ def apply_object_mass_override(env_cfg, mass: float | None = None) -> float | No
     import os
 
     if mass is None:
-        raw = os.environ.get("HS_OBJ_MASS", "").strip()
-        if not raw:
+        raw = os.environ.get("HS_OBJ_MASS", "0.603").strip()      # DEFAULT: measured mustard mass
+        if not raw:                      # explicitly blank => opt OUT of the override
             return None
         mass = float(raw)
     try:
@@ -187,16 +187,16 @@ def apply_hand_gain_override(env_cfg, stiffness: float | None = None, damping: f
     import os
 
     if stiffness is None:
-        raw = os.environ.get("HS_HAND_STIFFNESS", "").strip()
+        raw = os.environ.get("HS_HAND_STIFFNESS", "15").strip()   # DEFAULT
         stiffness = float(raw) if raw else None
     if damping is None:
         raw = os.environ.get("HS_HAND_DAMPING", "").strip()
         damping = float(raw) if raw else None
     if effort is None:
-        raw = os.environ.get("HS_HAND_EFFORT", "").strip()
+        raw = os.environ.get("HS_HAND_EFFORT", "10").strip()      # DEFAULT
         effort = float(raw) if raw else None
     if velocity is None:
-        raw = os.environ.get("HS_HAND_VELOCITY", "").strip()
+        raw = os.environ.get("HS_HAND_VELOCITY", "3").strip()     # DEFAULT
         velocity = float(raw) if raw else None
     if stiffness is None and damping is None and effort is None and velocity is None:
         return None
