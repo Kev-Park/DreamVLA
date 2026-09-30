@@ -559,6 +559,22 @@ def rollout_snapshot(env) -> dict:
     for name in _SNAP_WRAPPER_TENSORS:
         t = getattr(env, name, None)
         snap[name] = t.clone() if t is not None else None
+    # The policy observation contains last_action (ObsTerm(func=mdp.last_action)), and _reset_idx
+    # zeroes these -- without them the first post-restore observation is wrong and the rollout
+    # diverges on the very first step rather than drifting.
+    am = getattr(u, "action_manager", None)
+    snap["_am_action"] = am._action.clone() if am is not None else None
+    snap["_am_prev_action"] = am._prev_action.clone() if am is not None else None
+    # Any observation terms configured with history_length > 0 keep circular buffers that
+    # _reset_idx clears.
+    om = getattr(u, "observation_manager", None)
+    hist = {}
+    for grp, terms in getattr(om, "_group_obs_term_history_buffer", {}).items():
+        for tname, buf in terms.items():
+            b = getattr(buf, "buffer", None)
+            if b is not None:
+                hist[(grp, tname)] = b.clone()
+    snap["_obs_history"] = hist
     return snap
 
 
@@ -574,6 +590,22 @@ def rollout_restore(env, snap: dict) -> None:
         cur, saved = getattr(env, name, None), snap.get(name)
         if cur is not None and saved is not None:
             cur.copy_(saved)
+    am = getattr(u, "action_manager", None)
+    if am is not None and snap.get("_am_action") is not None:
+        am._action.copy_(snap["_am_action"])
+        am._prev_action.copy_(snap["_am_prev_action"])
+    om = getattr(u, "observation_manager", None)
+    for (grp, tname), saved in (snap.get("_obs_history") or {}).items():
+        try:
+            buf = om._group_obs_term_history_buffer[grp][tname]
+            buf.buffer.copy_(saved)
+        except (AttributeError, KeyError):
+            pass
+    # reset_to computed obs_buf with the clock still zeroed and last_action cleared, so it is stale
+    # by construction. Recompute now that everything above is back in place; update_history=False so
+    # the restored history buffers are not advanced by the recompute itself.
+    if om is not None:
+        u.obs_buf = om.compute(update_history=False)
 
 
 def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
