@@ -132,6 +132,18 @@ APPROACH_PROPORTIONAL = os.environ.get("HS_APPROACH_PROPORTIONAL", "0") == "1"
 # the taper window starting at taper_start -- so the wall acts alone first, and the pull arrives
 # together with the wall's release.
 PULL_DELAY = os.environ.get("HS_PULL_DELAY", "0") == "1"
+# HS_GEO_AUTHORITY=1: scale the shared push/pull authority by the ROOT's distance to the grasp
+# target instead of leaving it on a pure frame schedule. The schedule fractions (taper_start =
+# 0.203*grab_idx, taper_end = 0.710*grab_idx) were calibrated on the STATIC stitch, where the root
+# is frozen at the grab pose so EVERY milestone sees the same 0.35 m standoff. Under locomotion the
+# same fractions land at 0.93-1.16 m (measured over 3 clips) and one clip finishes its taper still
+# 0.655 m out -- the walls and the palm spring reach full strength while the hand is a metre from
+# the table, which is what makes the arm reach mid-walk. Keying authority to distance makes it
+# position-INVARIANT: full at the static standoff, faded to nothing far away, whichever frame the
+# robot arrives on. GEO_REF is the static standoff the weights were tuned at.
+GEO_AUTHORITY = os.environ.get("HS_GEO_AUTHORITY", "0") == "1"
+GEO_REF = float(os.environ.get("HS_GEO_REF", "0.35"))
+GEO_FAR = float(os.environ.get("HS_GEO_FAR", "0.90"))
 PULL_RAMP_FRAC = float(os.environ.get("HS_PULL_RAMP_FRAC", "0.5"))   # fade-in length as a fraction of (taper_end - taper_start)
 PULL_FLOOR = float(os.environ.get("HS_PULL_FLOOR", "0.0"))           # residual pull strength during the hold (0 = wall acts entirely alone)
 APPROACH_LEAD_FRAC = float(os.environ.get("HS_APPROACH_LEAD_FRAC", "0.290"))
@@ -853,6 +865,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 else:
                     ramp_end = max(min(grab_idx - 40, taper_start, n_trans), 1)
                 pre_ramp = _smooth01(frame_ids / float(ramp_end))
+                _geo = None
+                if GEO_AUTHORITY and palm_target is not None:
+                    _gt0 = (palm_target_traj[1:]
+                            if palm_target_traj is not None else palm_target.unsqueeze(0))
+                    _droot = torch.norm(trans[1:, :2] - _gt0[:, :2], dim=1)
+                    _geo = torch.clamp((GEO_FAR - _droot) / max(GEO_FAR - GEO_REF, 1e-6), 0.0, 1.0)
+                    _geo = _geo[:pre_ramp.shape[0]]
+                    if _geo.shape[0] < pre_ramp.shape[0]:      # target traj shorter than the ramp
+                        _geo = torch.cat([_geo, _geo.new_ones(pre_ramp.shape[0] - _geo.shape[0])])
+                    pre_ramp = pre_ramp * _geo
                 if palm_target is not None:
                     # PULL = saturating spring (Charbonnier, knee PULL_RADIUS): force
                     # W*d/sqrt(d^2+R^2) is MONOTONE in d -> stiffness >= 0 everywhere, so the
@@ -874,7 +896,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                         # PULL_RAMP_FRAC of the taper window. The walls keep pre_ramp (above).
                         _plen = max(PULL_RAMP_FRAC * float(taper_end - taper_start), 1.0)
                         _pf = _smooth01((frame_ids - float(taper_start)) / _plen)
-                        pull_ramp[:n_trans] = PULL_FLOOR + (1.0 - PULL_FLOOR) * _pf
+                        _pr = PULL_FLOOR + (1.0 - PULL_FLOOR) * _pf
+                        if _geo is not None:
+                            _pr = _pr * _geo[:_pr.shape[0]]    # same geometric authority as the walls
+                        pull_ramp[:n_trans] = _pr
                     else:
                         pull_ramp[:n_trans] = pre_ramp                  # pre-grab: ramp; grab on: full
                     cost2[1:] += pull_ramp * spring
