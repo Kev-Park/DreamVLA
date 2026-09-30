@@ -122,49 +122,51 @@ Mechanism validated:
 | one-way takeover at k | expert drove 348/499 and 272/499, consistent with the sampled k |
 | pass A discarded, pass B kept | only the final filenames remain on disk |
 
-### Efficacy: the rescue produced NO successes -- and the cause is upstream
+### Efficacy: every rescue failed -- because the env changed under the expert (RESOLVED 2026-09-30)
 
-| arm | pass A (student) | rescue |
+All rescue arms on 09-30 (smoke, blend 15, early-k, k=0, k=0 without the VLA query) produced 1/25
+successes. Two earlier drafts of this section blamed phase drift, then a handover lurch. Both were
+wrong: the discriminating run was **expert from frame 0 through the DAgger path = 1/8**, against a
+paired **15/16 for the same expert, same motions, same flags, in pure-demo mode** -- and the failing
+episodes track the reference identically (root deviation 2.8-4.3 cm at f100 in both) right up to the
+grasp, where the bottle is knocked off instead of lifted.
+
+The measured right-hand joints differ: demos close to ~0.4 rad at grasp+20 and ~1.0 rad at +80; every
+rescue run hits 1.2 rad by +20. Same command sign, different hand dynamics. Cause:
+
+| commit (09-29 evening) | change | af60v2 trained/collected with |
 |---|---|---|
-| `expert_base=student` | 0/2 pass | **0/2 pass** |
-| `expert_base=reference` | 0/2 pass | **0/2 pass** |
+| `b78cacb` | `OBJ_MASS` 0.1 -> **0.603 kg**; hand effort/velocity/stiffness 3/1/5 -> **10/3/15** | 0.1 kg, 3/1/5 |
+| `c27441e` | object `max_angular_velocity` USD clamp (100 deg/s) -> **1000** | 100 |
+| `0b232d5` | startup mass draw `add(0.0,0.4)` -> `add(-0.2,0.2)` about `OBJ_MASS` | U[0.1,0.5] kg |
 
-So `expert_base` is NOT the explanation (item 3 answered negatively for both settings at this n).
+`isaaclab_tasks` loads from the main checkout `~/kevin/DreamVLA`; the fast-forward at 02:35 UTC 09-30
+(pulling the collector work) brought these defaults in. The af60v2 demos (09-29 13:42-18:49 UTC) and
+the af60v2 GR00T eval (22:06-22:34 UTC) both predate it and are valid; every rescue run postdates it and
+drove an expert trained at 0.1 kg / 3-1-5 against a 6x heavier bottle with a 3x faster hand. Pass A
+(student 0%), `expert_base` (0/N both), the "lurch" and the blend result were all measured under this
+mismatch and say nothing about the design.
 
-**Measured cause (2026-09-30): the handover itself.** An earlier draft blamed phase drift -- the
-residual being pi*(s,t) and the student being off-schedule by k. That was a hypothesis stated as a
-diagnosis, and the recorded episodes refute it. At the takeover frame in all four rescues the bottle
-was upright (0.0-0.8 deg) and unmoved (<=0.6 cm), and the robot was 3-6 cm from the reference root --
-inside the 0.25 m competence gate and comparable to the 7.3 cm median of expert-driven rollouts. The
-student handed over a GOOD state.
+Not a code defect in the rescue path: the per-step expert path (`dagger.step` -> `env.step(latent)`)
+is the pure-demo path; `expert_token` is pure; the decoder history is re-seeded from motion_lib on
+every reset; `st["action"][64]` edits a CPU copy. The blend is also not degenerate: it removed the
+handover jerk (speed spike 3.5-4.6x -> 1.0-1.3x) with 4-7 cm tracking error throughout.
 
-What happens next is a lurch. Body joint speed jumps 3-4x in the first five frames after k
-(pre-k mean 0.8-1.25 rad/s; post-k max 3.2-4.4) and the bottle is displaced within 4-7 frames in three
-of four episodes; in the fourth (k near grab_idx) it is knocked at the reference grasp instead.
-Fingers are not involved -- measured finger pose is identical before and after k in every case.
+**Re-run under the expert's physics** (`rescue_op_*`, 09-30 18:52 UTC): the A/B env vars restore it
+exactly -- `HS_HAND_STIFFNESS=5 HS_HAND_EFFORT=3 HS_HAND_VELOCITY=1 HS_OBJ_MAX_ANGVEL=100
+HS_OBJ_MASS=0.3` (add(-0.2,0.2) about 0.3 = the old U[0.1,0.5] draw). Arms: k=0 machinery check;
+k~U[0,grab_idx) hard switch on reference base; same on student base; same + 15-frame blend. Results go
+in `results/vla_eval/README.md`.
 
-Mechanism: the VLA and the expert emit DIFFERENT tokens for the same state (the disagreement signal,
-median 0.55 L2). A hard switch between token streams mid-motion is a step change in the commanded
-target, and the SONIC decoder is autoregressive, so a step in token space becomes a jerk in joint
-space. Uniform k up to grab_idx puts that jerk near the bottle exactly when it is most damaging.
-
-The same expert succeeds 130/164 in this env when it drives from frame 0. It is 0/4 from a handover.
-The design presupposes a student that is sometimes right AND a handover that does not itself cause
-the failure; the second is the defect the smoke test found.
-
-**Candidate fixes, in order of generality:**
-- **Blend the handover.** Interpolate from the student's token to the expert's over N frames
-  (10-20, i.e. 0.2-0.4 s) instead of a hard switch. Standard controller-handoff practice; attacks the
-  mechanism directly.
-- **Hand over where the streams agree.** Choose k where the expert/VLA disagreement is locally small,
-  so the step is small. The signal already exists (`vla_expert_token_l2`).
-- **Keep k away from the bottle.** Constrain handover to frames where the hand is >X cm from the
-  object. Safe but forfeits corrective coverage near the grasp.
-
-Two follow-ups this suggests, beyond the existing list:
+Follow-ups this adds to the list:
 
 9. **Bias `k` earlier.** Uniform sampling over `[0, grab_idx)` lands late often (two of two draws at
    85%), and late handover is where recovery is least possible. An earlier-weighted distribution
    would hand over while the student is still near the reference.
 10. **Gate the collection on the student.** Refuse to collect if the student's success rate on the
     reference set is ~0: the run can only produce failures, which the filter then discards.
+11. **Pin the physics to the expert.** A residual checkpoint is only valid under the env defaults it
+    was trained with. Until `mid_expert` (0.603 kg / 10-3-15 / clamp 1000) exists, every af60v2 run
+    -- demo collection, rescue, GR00T eval -- must set the five env vars above, and the collector
+    should record the effective hand gains / mass / clamp in `metadata_json` so a mismatch is visible
+    in the data rather than found by bisection.
