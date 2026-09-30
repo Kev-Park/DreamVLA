@@ -1240,6 +1240,10 @@ def main() -> None:
                         help="Frames over which to smoothstep-blend from the student token to the expert "
                              "token after takeover (0 = hard switch). A hard switch lurched 3-4x and "
                              "knocked the bottle within 4-7 frames in every measured rescue.")
+    parser.add_argument("--dagger-rescue-k-frac", type=float, default=1.0,
+                        help="Sample the takeover frame from U[0, k_frac * grab_idx). 1.0 = uniform up to the "
+                             "reference grasp (original rule); smaller hands over earlier, before the hand "
+                             "reaches the bottle.")
     parser.add_argument("--dagger-rescue-box", choices=("preaudit", "af60"), default=None,
                         help="Palm-box calibration for the failure verdict. Explicit on purpose: the wrong\n"
                              "one rejects every episode and rescues every rollout.")
@@ -1576,7 +1580,10 @@ def main() -> None:
                     print(f"[rescue] SKIP motion {motion_id}: no reference grasp frame "
                           f"(grab_idx={grab_idx}), nowhere to sample k from")
                     continue
-                k = int(np.random.default_rng(args_cli.seed + motion_id * 7919 + rollout_idx).integers(0, grab_idx))
+                # k ~ U[0, k_frac * grab_idx). k_frac=1 is the original uniform-to-grab rule; a small
+                # k_frac hands over early, while the hand is still away from the bottle.
+                k_hi = max(1, int(round(float(args_cli.dagger_rescue_k_frac) * grab_idx)))
+                k = int(np.random.default_rng(args_cli.seed + motion_id * 7919 + rollout_idx).integers(0, k_hi))
                 print(f"[rescue] motion {motion_id}: re-rolling with expert takeover at k={k} "
                       f"of grab_idx={grab_idx} (expert_base={args_cli.dagger_expert_base})")
                 dagger.takeover_at = k
@@ -1601,7 +1608,8 @@ def main() -> None:
                             {"rescue": {"pass": "B", "takeover_at": int(k), "grab_idx": grab_idx,
                                         "passA_success": False, "passA_why": whyA["why"],
                                         "expert_base": args_cli.dagger_expert_base,
-                                        "blend": int(args_cli.dagger_rescue_blend)}})
+                                        "blend": int(args_cli.dagger_rescue_blend),
+                                        "k_frac": float(args_cli.dagger_rescue_k_frac)}})
                 okB, whyB = score_written_episode(pB, args_cli.dagger_rescue_box)
                 written += 1
                 print(f"[rescue] WROTE rescue {written} -> {final_name} "
