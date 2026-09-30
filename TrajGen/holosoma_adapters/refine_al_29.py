@@ -170,6 +170,17 @@ APPROACH_Z_CLEARANCE = float(os.environ.get("HS_APPROACH_Z_CLEARANCE", "-0.03"))
 # its own smootherstep over the remaining (1 - lag) of the window, still reaching +GATE_END_SLACK
 # at te. 0 = legacy (y and z release together). Encodes "commit leftward first, rise later".
 APPROACH_Z_LAG_FRAC = float(os.environ.get("HS_APPROACH_Z_LAG_FRAC", "0"))
+# z-ceiling SCHEDULE, independent of the y-wall: "start,end" as fractions of the post-pin budget
+# (same convention as LEAD/WINDOW). The ceiling holds at APPROACH_Z_CLEARANCE until start*budget and
+# rises on its own smootherstep to +GATE_END_SLACK at end*budget. Takes precedence over Z_LAG_FRAC.
+# Motivation: with WINDOW 0.35 / LAG 0.5 the ceiling rose over ~9 frames (0.45 s) -- the hand
+# popped up to the bottle's centre height while still in front of it. No existing knob slows the
+# rise without also releasing the y-wall earlier (the centre-seeking that causes the knock).
+# "0.65,1.0" doubles the rise span and ends it AT the grasp instead of LEAD_FRAC before it.
+_zsched = os.environ.get("HS_APPROACH_Z_SCHED", "").strip()
+APPROACH_Z_SCHED = tuple(float(v) for v in _zsched.split(",")) if _zsched else None
+if APPROACH_Z_SCHED is not None:
+    assert len(APPROACH_Z_SCHED) == 2 and 0.0 <= APPROACH_Z_SCHED[0] < APPROACH_Z_SCHED[1] <= 1.0,         f"HS_APPROACH_Z_SCHED must be 'start,end' with 0<=start<end<=1, got {_zsched!r}"
 DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))
 LAZINESS_W = float(os.environ.get("HS_LAZINESS_W", "1.0"))                     # rest-pose (INIT) L1 prior weight, [0, grab-40), decaying (1-t/L)^2; 0 disables                      # downward-velocity penalty weight (pre-grab)
 GATE_END_SLACK = float(os.environ.get("HS_GATE_END_SLACK", "0.05"))              # gate line ends this far PAST the object (m)
@@ -832,7 +843,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 _sline = 1.0 - (1.0 - _sline) ** APPROACH_EASE_OUT
             x_clear_t = (1.0 - _sline) * APPROACH_X_STANDOFF + _sline * (-GATE_END_SLACK)
             y_clear_t = (1.0 - _sline) * APPROACH_GATE_CLEARANCE + _sline * (-GATE_END_SLACK)
-            if APPROACH_Z_LAG_FRAC > 0:
+            if APPROACH_Z_SCHED is not None:
+                # own window for z: [start, end] fractions of the post-pin budget, clamped into the
+                # pre-grab frame range and kept strictly increasing.
+                _av_z = max(grab_idx - PIN_FIRST_N, 1)
+                _zs = float(max(min(PIN_FIRST_N + int(round(_av_z * APPROACH_Z_SCHED[0])), _n_pre - 1), 1))
+                _ze = float(max(min(PIN_FIRST_N + int(round(_av_z * APPROACH_Z_SCHED[1])), _n_pre), int(_zs) + 1))
+                _sz = _smooth01((frame_pre - _zs) / float(max(_ze - _zs, 1.0)))
+                if APPROACH_EASE_OUT != 1.0:
+                    _sz = 1.0 - (1.0 - _sz) ** APPROACH_EASE_OUT
+            elif APPROACH_Z_LAG_FRAC > 0:
                 _zs = taper_start + APPROACH_Z_LAG_FRAC * float(taper_end - taper_start)
                 _sz = _smooth01((frame_pre - _zs) / float(max(taper_end - _zs, 1.0)))
                 if APPROACH_EASE_OUT != 1.0:
@@ -1097,7 +1117,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     fv = float(g_curr.max()) if g_curr is not None else -1.0
     fvl = float(_last_g_level.max()) if _last_g_level is not None else -1.0
     _xe = (obj_grab_x - TABLE_EDGE_BEHIND_OBJECT - TABLE_X_MARGIN) if (TABLE_EDGE_ANCHOR == "object" and obj_grab_x is not None) else float(grab_pos[0] + OFFSET_X - TABLE_X_MARGIN)
-    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} point_yaw={POINT_YAW_OFFSET:+.2f} ease_out={APPROACH_EASE_OUT:.1f} "
+    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} point_yaw={POINT_YAW_OFFSET:+.2f} z_sched={APPROACH_Z_SCHED} z_lag={APPROACH_Z_LAG_FRAC} ease_out={APPROACH_EASE_OUT:.1f} "
           f"AL {'converged' if converged else 'maxiter'} "
           f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} "
           f"final_jlim_viol={float(_last_g_jlim.max()) if _last_g_jlim is not None else -1.0:.2e}rad "
