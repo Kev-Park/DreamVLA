@@ -32,6 +32,16 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder
 from isaaclab_tasks.utils.repo_paths import sibling
 
+# --- Grasp physics (defaults ARE the accepted config; env vars exist only to A/B them) --------
+# 0.603 kg is the real YCB 006_mustard_bottle mass; the scene used to spawn it at 0.1 kg, so the
+# policy was lifting an object 6x lighter than the one it is meant to transfer to. The hand
+# actuators were Isaac's G1_MINIMAL_CFG defaults (stiffness 5 / effort 3 / velocity 1) -- SONIC
+# never actuates the fingers, but they are too weak to hold the corrected mass.
+OBJ_MASS       = float(os.environ.get("HS_OBJ_MASS", "0.603"))      # was 0.1
+HAND_STIFFNESS = float(os.environ.get("HS_HAND_STIFFNESS", "15"))   # was 5.0
+HAND_EFFORT    = float(os.environ.get("HS_HAND_EFFORT", "10"))      # was 3.0
+HAND_VELOCITY  = float(os.environ.get("HS_HAND_VELOCITY", "3"))     # was 1.0
+
 
 # =========================================================================
 # SONIC-matched actuator configuration.
@@ -200,9 +210,9 @@ def _build_sonic_matched_actuators() -> dict:
                 "right_hand_thumb_1_joint",
                 "right_hand_thumb_2_joint",
             ],
-            effort_limit_sim=3.0,
-            velocity_limit_sim=1.0,
-            stiffness=5.0,
+            effort_limit_sim=HAND_EFFORT,
+            velocity_limit_sim=HAND_VELOCITY,
+            stiffness=HAND_STIFFNESS,
             damping=1.25,
             armature={
                 "left_hand_index_.*": 0.001,
@@ -1256,7 +1266,7 @@ class MySceneCfg(MySceneCfgBase):
         spawn=sim_utils.CuboidCfg(
             size=(.05, .05, 0.2),collision_props=sim_utils.CollisionPropertiesCfg(),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=.1),
+            mass_props=sim_utils.MassPropertiesCfg(mass=OBJ_MASS),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0., 0.2, 0.6), metallic=0.3),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="max",
@@ -1350,7 +1360,7 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
             spawn=sim_utils.UsdFileCfg(
                 usd_path=self.object_usd_path,
                 scale=(1.0, 1.0, 1.5),
-                mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+                mass_props=sim_utils.MassPropertiesCfg(mass=OBJ_MASS),
             ),
         )
 
@@ -1425,7 +1435,7 @@ class G1PickPlayEnvCfg(G1InteractiveBaseEnvCfg):
             spawn=sim_utils.UsdFileCfg(
                 usd_path="assets/mustard_bottle.usd",
                 scale=(1., 1., 1.5),
-                mass_props=sim_utils.MassPropertiesCfg(mass=.1),
+                mass_props=sim_utils.MassPropertiesCfg(mass=OBJ_MASS),
             ),
         )
         # self.scene.terrain = None
@@ -1588,7 +1598,7 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
                 spawn=sim_utils.UsdFileCfg(
                     usd_path="assets/mustard_bottle.usd",
                     scale=(1.0, 1.0, 1.5),
-                    mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+                    mass_props=sim_utils.MassPropertiesCfg(mass=OBJ_MASS),
                 ),
             )
             print("[G1PickBinaryFingers] object = mustard_bottle.usd (HS_OBJ=cuboid reverts to legacy cuboid)")
@@ -1769,7 +1779,7 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
             spawn=sim_utils.UsdFileCfg(
                 usd_path=self.object_usd_path,
                 scale=(1.0, 1.0, 1.5),
-                mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+                mass_props=sim_utils.MassPropertiesCfg(mass=OBJ_MASS),
             ),
         )
         # Third-person + torso-ego cameras (same configs as G1PickCamEnvCfg).
