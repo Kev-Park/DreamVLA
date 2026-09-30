@@ -414,7 +414,12 @@ class EventCfg(EventCfgBase):
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("object"),
-            "mass_distribution_params": (0.0, 0.4),
+            # SYMMETRIC about the spawn mass. This was (0.0, 0.4) with operation="add", so the
+            # sampled mass was spawn + U(0, 0.4) -- the spawn value was a FLOOR, not the mass.
+            # With HS_OBJ_MASS=0.603 (the real YCB mustard) that gave 0.603-1.003 kg, mean 0.803,
+            # i.e. ~33% heavy on average and up to 66% heavy. Centred, the spawn mass IS the mean:
+            # 0.603 +- 0.2 -> 0.403-0.803 kg, mean 0.603.
+            "mass_distribution_params": (-0.2, 0.2),
             "operation": "add",
         },
     )
