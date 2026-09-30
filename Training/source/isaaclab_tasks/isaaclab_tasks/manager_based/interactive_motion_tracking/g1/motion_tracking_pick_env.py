@@ -51,7 +51,7 @@ HAND_VELOCITY  = float(os.environ.get("HS_HAND_VELOCITY", "3"))     # was 1.0
 # 1000 deg/s is above what a real topple needs while still bounding the solver. See locomotion
 # d2ae153, which fixed only the legacy cuboid site; the UsdFileCfg sites below are the ones the
 # pick/HOI envs actually spawn.
-OBJ_MAX_ANGVEL = 1000.0  # deg/s
+OBJ_MAX_ANGVEL = float(os.environ.get("HS_OBJ_MAX_ANGVEL", "1000.0"))  # deg/s; 100 = the old USD clamp
 
 
 # =========================================================================
