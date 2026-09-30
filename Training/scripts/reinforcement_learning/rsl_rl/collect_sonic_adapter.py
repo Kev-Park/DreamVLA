@@ -535,6 +535,94 @@ class DaggerDriver:
         return (*self.env.step_composed(composed), False)
 
 
+# --- rollout snapshot / restore ------------------------------------------------------------------
+# The DAgger rework needs to resume a rollout exactly at frame k: the student runs to completion to
+# decide whether it failed, and only then does the expert re-drive [k, end). Replaying the student
+# segment instead is not an option -- GR00T's action head samples from torch.randn, so a replay
+# diverges from the rollout that actually failed.
+#
+# ManagerBasedEnv.reset_to() applies a scene state, but it calls _reset_idx() FIRST, which re-runs
+# the reset EVENTS and zeroes episode_length_buf. The physics state is then overwritten, but the
+# reference clock (episode_length_buf / start_motion_times / motion_ids) and the SONIC decoder's
+# autoregressive history are not -- so they are saved and restored explicitly.
+_SNAP_WRAPPER_TENSORS = ("_h_jp", "_h_jv", "_h_la", "_h_av", "_h_gv", "_base_token")
+_SNAP_ENV_TENSORS = ("episode_length_buf", "start_motion_times", "motion_ids")
+
+
+def rollout_snapshot(env) -> dict:
+    """Everything needed to resume this rollout exactly at the current frame."""
+    u = env.unwrapped
+    snap = {"scene": u.scene.get_state(is_relative=False)}
+    for name in _SNAP_ENV_TENSORS:
+        t = getattr(u, name, None)
+        snap[name] = t.clone() if t is not None else None
+    for name in _SNAP_WRAPPER_TENSORS:
+        t = getattr(env, name, None)
+        snap[name] = t.clone() if t is not None else None
+    return snap
+
+
+def rollout_restore(env, snap: dict) -> None:
+    """Inverse of rollout_snapshot. Order matters: reset_to zeroes the clock, so restore after it."""
+    u = env.unwrapped
+    u.reset_to(snap["scene"], env_ids=None, is_relative=False)
+    for name in _SNAP_ENV_TENSORS:
+        cur, saved = getattr(u, name, None), snap.get(name)
+        if cur is not None and saved is not None:
+            cur.copy_(saved)
+    for name in _SNAP_WRAPPER_TENSORS:
+        cur, saved = getattr(env, name, None), snap.get(name)
+        if cur is not None and saved is not None:
+            cur.copy_(saved)
+
+
+def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
+    """Prove the restore is exact: run n_post steps from a snapshot twice, applying the SAME recorded
+    actions both times, and require the trajectories to match bit-for-bit.
+
+    Replaying recorded actions (rather than re-querying the policy) isolates the environment restore
+    from policy determinism -- if these two segments differ, the snapshot is missing state, and any
+    stitched episode would carry a silent discontinuity at k.
+    """
+    obs, _ = env.reset()
+    for _ in range(n_pre):
+        with torch.inference_mode():
+            obs, *_ = env.step(policy(obs))
+
+    snap = rollout_snapshot(env)
+
+    def run(tag, actions=None):
+        rec, acts = [], []
+        o = env.get_observations()
+        o = o[0] if isinstance(o, tuple) else o
+        for i in range(n_post):
+            with torch.inference_mode():
+                a = policy(o).clone() if actions is None else actions[i]
+            acts.append(a.clone())
+            out = env.step(a)
+            o = out[0]
+            u = env.unwrapped
+            rec.append(torch.cat([
+                u.scene["object"].data.root_pos_w[0].flatten(),
+                u.scene["robot"].data.root_pos_w[0].flatten(),
+                u.scene["robot"].data.joint_pos[0].flatten(),
+            ]).clone())
+        return torch.stack(rec), acts
+
+    traj_a, acts = run("A")
+    rollout_restore(env, snap)
+    traj_b, _ = run("B", actions=acts)
+
+    dev = (traj_a - traj_b).abs()
+    max_dev = float(dev.max())
+    first_bad = int((dev.max(dim=1).values > 1e-6).nonzero()[0].item()) if (dev.max(dim=1).values > 1e-6).any() else -1
+    print(f"[selftest-restore] {n_pre} pre-steps, {n_post} post-steps, identical actions replayed")
+    print(f"[selftest-restore] max |A-B| = {max_dev:.3e}   first frame over 1e-6: {first_bad}")
+    ok = max_dev < 1e-6
+    print(f"[selftest-restore] {'PASS -- restore is exact; the stitch is safe' if ok else 'FAIL -- snapshot is missing state; DO NOT stitch'}")
+    return ok
+
+
 def dagger_closed_pose(demo_root: str, max_files: int = 8) -> np.ndarray:
     """Mean measured right-finger pose (collector joint order) over closed-command frames of the demos."""
     import h5py
@@ -913,6 +1001,11 @@ def main() -> None:
                         help="Record per-frame VLA uncertainty signals (FSQ lattice residual, expert/VLA token "
                              "disagreement, pooled VLM embedding) into obs/. Logging only: control is unchanged.")
     parser.add_argument("--dagger-chunk", type=int, default=8, help="DAgger: VLA re-plan cadence (eval parity).")
+    parser.add_argument("--dagger-selftest-restore", type=int, nargs=2, default=None,
+                        metavar=("N_PRE", "N_POST"),
+                        help="Run the snapshot/restore self-test (N_PRE steps, snapshot, then N_POST steps\n"
+                             "replayed twice with identical actions) and exit. The failure-rescue mode stitches\n"
+                             "a student segment to an expert segment across a restore, so this must PASS first.")
     parser.add_argument("--dagger-trigger", choices=("stochastic", "disagree"), default="stochastic",
                         help="Who drives: 'stochastic' = the original beta coin-flip per chunk; 'disagree' = the\n"
                              "expert drives whenever its token differs from the VLA's by more than\n"
@@ -1138,6 +1231,12 @@ def main() -> None:
     total_motions = int(env.unwrapped.total_motions)
     print(f"[INFO] motion library = {total_motions} motions; target = {target_successes} successful "
           f"trajectories (each motion tried once, deterministic policy).")
+
+    if args_cli.dagger_selftest_restore is not None:
+        n_pre, n_post = args_cli.dagger_selftest_restore
+        ok = selftest_restore(env, policy, int(n_pre), int(n_post))
+        simulation_app.close()
+        raise SystemExit(0 if ok else 1)
 
     written = 0
     tried = 0
