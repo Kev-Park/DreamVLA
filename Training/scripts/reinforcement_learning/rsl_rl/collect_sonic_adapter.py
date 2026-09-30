@@ -634,23 +634,45 @@ def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
             out = env.step(a)
             o = out[0]
             u = env.unwrapped
-            rec.append(torch.cat([
-                u.scene["object"].data.root_pos_w[0].flatten(),
-                u.scene["robot"].data.root_pos_w[0].flatten(),
-                u.scene["robot"].data.joint_pos[0].flatten(),
-            ]).clone())
-        return torch.stack(rec), acts
+            rec.append({
+                "object_pos": u.scene["object"].data.root_pos_w[0].clone(),
+                "object_quat": u.scene["object"].data.root_quat_w[0].clone(),
+                "root_pos": u.scene["robot"].data.root_pos_w[0].clone(),
+                "joint_pos": u.scene["robot"].data.joint_pos[0].clone(),
+                "joint_vel": u.scene["robot"].data.joint_vel[0].clone(),
+            })
+        return rec, acts
 
     traj_a, acts = run("A")
+    # what the state looks like at the snapshot, before and after the restore, so a bad restore is
+    # visible immediately rather than only through its downstream effect
+    pre = {k: v.clone() for k, v in (
+        ("object_pos", env.unwrapped.scene["object"].data.root_pos_w[0]),
+        ("root_pos", env.unwrapped.scene["robot"].data.root_pos_w[0]),
+        ("joint_pos", env.unwrapped.scene["robot"].data.joint_pos[0]))}
     rollout_restore(env, snap)
+    post = {k: v.clone() for k, v in (
+        ("object_pos", env.unwrapped.scene["object"].data.root_pos_w[0]),
+        ("root_pos", env.unwrapped.scene["robot"].data.root_pos_w[0]),
+        ("joint_pos", env.unwrapped.scene["robot"].data.joint_pos[0]))}
+    print(f"[selftest-restore] {n_pre} pre-steps, {n_post} post-steps, identical actions replayed")
+    print("[selftest-restore] restore fidelity AT the snapshot (end-of-A state vs restored state):")
+    for k in pre:
+        print(f"    {k:11s} |end_of_A - restored| max {float((pre[k] - post[k]).abs().max()):.3e}")
+    print("[selftest-restore] snapshot vs end-of-A (is the snapshot itself the right frame?):")
+    for k, sk in (("object_pos", None),):
+        pass
     traj_b, _ = run("B", actions=acts)
 
-    dev = (traj_a - traj_b).abs()
-    max_dev = float(dev.max())
-    first_bad = int((dev.max(dim=1).values > 1e-6).nonzero()[0].item()) if (dev.max(dim=1).values > 1e-6).any() else -1
-    print(f"[selftest-restore] {n_pre} pre-steps, {n_post} post-steps, identical actions replayed")
-    print(f"[selftest-restore] max |A-B| = {max_dev:.3e}   first frame over 1e-6: {first_bad}")
-    ok = max_dev < 1e-6
+    print("[selftest-restore] per-component divergence over the replayed segment:")
+    worst = 0.0
+    for k in traj_a[0]:
+        d = torch.stack([(a[k] - b[k]).abs().max() for a, b in zip(traj_a, traj_b)])
+        first = int((d > 1e-6).nonzero()[0].item()) if (d > 1e-6).any() else -1
+        worst = max(worst, float(d.max()))
+        print(f"    {k:11s} max {float(d.max()):.3e}   first frame over 1e-6: {first}")
+    ok = worst < 1e-6
+    print(f"[selftest-restore] max |A-B| = {worst:.3e}")
     print(f"[selftest-restore] {'PASS -- restore is exact; the stitch is safe' if ok else 'FAIL -- snapshot is missing state; DO NOT stitch'}")
     return ok
 
