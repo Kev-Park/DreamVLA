@@ -1370,6 +1370,10 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
             spawn=sim_utils.UsdFileCfg(
                 usd_path=self.object_usd_path,
                 scale=(1.0, 1.0, 1.5),
+                # Lift the USD's authored maxAngularVelocity=100 deg/s clamp (see the cuboid
+                # site above). This UsdFileCfg REPLACES that cuboid, so without this line the
+                # bottle tips ~7x slow in every env derived from here -- including Pick-HOI.
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=1000.0),
                 mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
             ),
         )
@@ -1445,6 +1449,10 @@ class G1PickPlayEnvCfg(G1InteractiveBaseEnvCfg):
             spawn=sim_utils.UsdFileCfg(
                 usd_path="assets/mustard_bottle.usd",
                 scale=(1., 1., 1.5),
+                # Lift the USD's authored maxAngularVelocity=100 deg/s clamp (see the cuboid
+                # site above). This UsdFileCfg REPLACES that cuboid, so without this line the
+                # bottle tips ~7x slow in every env derived from here -- including Pick-HOI.
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=1000.0),
                 mass_props=sim_utils.MassPropertiesCfg(mass=.1),
             ),
         )
@@ -1608,6 +1616,10 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
                 spawn=sim_utils.UsdFileCfg(
                     usd_path="assets/mustard_bottle.usd",
                     scale=(1.0, 1.0, 1.5),
+                    # Lift the USD's authored maxAngularVelocity=100 deg/s clamp (see the cuboid site).
+                    # This UsdFileCfg REPLACES that cuboid, so without this line the bottle tips ~7x
+                    # slow in every env derived from here -- Pick-HOI included.
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=1000.0),
                     mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
                 ),
             )
@@ -1789,6 +1801,10 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
             spawn=sim_utils.UsdFileCfg(
                 usd_path=self.object_usd_path,
                 scale=(1.0, 1.0, 1.5),
+                # Lift the USD's authored maxAngularVelocity=100 deg/s clamp (see the cuboid
+                # site above). This UsdFileCfg REPLACES that cuboid, so without this line the
+                # bottle tips ~7x slow in every env derived from here -- including Pick-HOI.
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=1000.0),
                 mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
             ),
         )
