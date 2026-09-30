@@ -94,6 +94,14 @@ def apply_sonic_physics_overrides(
             "deploy" (500 Hz/dec-10 — the real robot's motor-command rate).
     """
     # 1. Substep rate: see PHYSICS_PRESETS. Both yield 50 Hz control.
+    # HS_PHYSICS_PRESET overrides the caller's choice so an already-trained checkpoint can be
+    # re-evaluated at the other substep (the pre-audit "deploy" runs vs the locked-in "training"
+    # one). Inert when unset.
+    import os as _os
+    _env_preset = _os.environ.get("HS_PHYSICS_PRESET", "").strip()
+    if _env_preset:
+        print(f"[sonic-physics] HS_PHYSICS_PRESET: preset '{preset}' -> '{_env_preset}'")
+        preset = _env_preset
     if preset not in PHYSICS_PRESETS:
         raise ValueError(f"unknown physics preset '{preset}'; choose from {list(PHYSICS_PRESETS)}")
     sim_dt, decimation = PHYSICS_PRESETS[preset]
