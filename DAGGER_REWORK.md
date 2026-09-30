@@ -162,8 +162,9 @@ handover jerk (speed spike 3.5-4.6x -> 1.0-1.3x) with 4-7 cm tracking error thro
 **Re-run under the expert's physics** (`rescue_op_*`, 09-30 18:52 UTC): the A/B env vars restore it
 exactly -- `HS_HAND_STIFFNESS=5 HS_HAND_EFFORT=3 HS_HAND_VELOCITY=1 HS_OBJ_MAX_ANGVEL=100
 HS_OBJ_MASS=0.3` (add(-0.2,0.2) about 0.3 = the old U[0.1,0.5] draw). Arms: k=0 machinery check;
-k~U[0,grab_idx) hard switch on reference base; same on student base; same + 15-frame blend. Results go
-in `results/vla_eval/README.md`.
+k~U[0,grab_idx) hard switch on reference base; same on student base; same + 15-frame blend. Results in
+`results/vla_eval/README.md`: k=0 3/5, hard switch 5/8, blend 6/8; 11 rescued episodes converted to
+LeRobot cleanly. **Plumbing validated end to end, expert-agnostic.**
 
 Follow-ups this adds to the list:
 

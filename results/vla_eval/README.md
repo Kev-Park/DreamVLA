@@ -116,3 +116,22 @@ Two design facts found by measurement, both in `collect_sonic_adapter.py`:
    `--dagger-trigger-budget`, which targets the budget and self-calibrates the threshold.
 2. Committing the decision every frame gave 79 control switches/episode vs ~31 for stochastic
    beta; decisions now commit at re-plan boundaries so both arms switch at the same rate.
+
+### DAgger rescue plumbing validation (2026-09-30, af60v2 expert under its own physics)
+
+Physics pinned to the expert's training config (`HS_OBJ_MASS=0.3 HS_HAND_STIFFNESS=5 HS_HAND_EFFORT=3
+HS_HAND_VELOCITY=1 HS_OBJ_MAX_ANGVEL=100`); student = `af60v2_run01/checkpoint-10000` (pass A failed on
+every motion, as expected from its 0/60 eval); `--dagger-rescue-box af60`, seed 0, one rollout per motion.
+Success rates here are a plumbing check, not a design result -- see DAGGER_REWORK.md.
+
+| arm | motions | rescued PASS | notes |
+|---|---|---|---|
+| k=0 (expert every frame; machinery check) | 0,2,3,4,5 | 3/5 | pure-demo paired baseline on the same motions 15/16 across 3 seeds |
+| k~U[0,grab_idx), hard switch, reference base | 0,2-8 | 5/8 | k = 151/227/193/63/61/106/31/116; `expert_steps = 499-k` in every episode |
+| same + 15-frame smoothstep blend | 0,2-8 | 6/8 | identical k per motion (deterministic seed); the one extra pass is motion 3 |
+
+Datasets `rescue_op_{k0,ref,refb15}`; offline 4-rule filter kept 11 rescued passes (ref + refb15) ->
+`rescue_op_agg/lerobot/rescue_op_smoke` = 11 episodes / 5489 frames, converter exit 0, `action.motion_token`
+from the recorded executed token. Every stage of the rescue path -- pass A written and scored through the
+offline filter, discarded on FAIL, `grab_idx` from the rollout, k sampled below it, one-way takeover,
+pass B written with `rescue` metadata, filter, aggregate, conversion -- behaved as specified.
