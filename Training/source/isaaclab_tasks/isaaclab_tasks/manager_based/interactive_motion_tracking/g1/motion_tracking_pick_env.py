@@ -433,12 +433,18 @@ def reset_object_state_rework(env: ManagerBasedRLEnv, env_ids: torch.Tensor,
 class EventCfg(EventCfgBase):
     """Configuration for events."""
 
+    # Startup mass randomisation, CENTRED on OBJ_MASS. The range used to be (0.0, 0.4) "add",
+    # which was one-sided: with the 0.1 kg spawn it meant 0.1-0.5 kg, and once the spawn became the
+    # real 0.603 kg it meant 0.603-1.003 kg -- every env heavier than the bottle being modelled.
+    # +/-0.2 keeps the same 0.4 kg spread but centres it, so OBJ_MASS is the mean rather than the
+    # floor. mode="startup" means one draw per env for the whole run (not per episode), and
+    # `object_mass` is an ObsTerm in PolicyCfg, so the policy observes whichever mass it got.
     add_object_mass = EventTerm(
         func=mdp.randomize_rigid_body_mass,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("object"),
-            "mass_distribution_params": (0.0, 0.4),
+            "mass_distribution_params": (-0.2, 0.2),
             "operation": "add",
         },
     )
