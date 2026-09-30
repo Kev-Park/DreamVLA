@@ -219,7 +219,8 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 # SONIC wrappers (imported after app launch; depend on onnx2torch + isaaclab_rl)
 from vla_sonic.token_action_wrapper import load_frozen_decoder
 from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
-from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+from vla_sonic.physics_overrides import (apply_sonic_physics_overrides, apply_object_mass_override,
+                                         apply_hand_gain_override)
 from vla_sonic.robot_29dof import apply_29dof_waist_override
 from vla_sonic.adapter_actor_critic import AdapterActorCritic
 
@@ -387,6 +388,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # Match the SONIC decoder's training-time physics.
     apply_sonic_physics_overrides(env_cfg)
+    # Object mass and hand gains, which now DEFAULT to the measured/tuned values
+    # (0.603 kg; stiffness 15, effort 10, velocity 3). collect_sonic_adapter.py and
+    # play_motion_montage.py already applied these, so omitting them here trained the
+    # residual against a 0.1 kg bottle and a soft hand while its demos, its renders and
+    # its references were all produced at the real values.
+    apply_object_mass_override(env_cfg)
+    apply_hand_gain_override(env_cfg)
 
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
