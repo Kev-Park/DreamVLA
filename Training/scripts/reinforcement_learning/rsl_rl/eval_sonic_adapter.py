@@ -349,6 +349,9 @@ def main():
     # palm-object distance at max lift, min palm-object distance while lifted, min object up-cos
     # while lifted) for auditing the hold/topple criteria against renders.
     DUMP_EPS = os.environ.get("HS_EVAL_DUMP_EPS", "")
+    FORCE_FINGER_REF = os.environ.get("HS_EVAL_FORCE_FINGER_REF", "0") == "1"  # diagnostic: finger = reference is_closed
+    if FORCE_FINGER_REF:
+        print("[eval] HS_EVAL_FORCE_FINGER_REF=1: the policy's finger scalar is OVERRIDDEN by the reference grasp schedule")
     per_env_d_at_maxlift = torch.zeros(num_envs, device=device)
     per_env_min_d_lifted = torch.full((num_envs,), 9.0, device=device)
     per_env_min_upcos_lifted = torch.ones(num_envs, device=device)
@@ -513,6 +516,14 @@ def main():
         per_env_motion_id.copy_(env.unwrapped.motion_ids)
         with torch.inference_mode():
             actions = policy(obs).clone()
+            if FORCE_FINGER_REF:
+                # Diagnostic: replace the policy's finger scalar with the REFERENCE grasp schedule
+                # (BinaryJointPositionAction convention: action < 0 = close). Isolates "the policy
+                # closes late" from "the arm is in the wrong place".
+                _u = env.unwrapped
+                _mt = _u.episode_length_buf * _u.step_dt + _u.start_motion_times.to(device=_u.device, dtype=torch.float32)
+                _ic = _u.motion_lib.get_motion_state(_u.motion_ids, _mt)["is_closed"].bool().reshape(-1)
+                actions[:, -1] = torch.where(_ic, -1.0, 1.0).to(actions.dtype)
             obs, _, dones, extras = env.step(actions)
         # HS_EVAL_APP_PUMPS=N: A/B diagnostic -- N raw simulation_app.update() calls per step, as the
         # collector / montage / VLA scripts do to flush camera frames (suspected to advance PhysX).
