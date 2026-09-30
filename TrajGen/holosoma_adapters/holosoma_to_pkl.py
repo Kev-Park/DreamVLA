@@ -452,10 +452,15 @@ if os.environ.get("HS_GATE_SHAPING", "0") == "1" and not STAND_LOWER and 0 < gra
         _fs = int(_air[-1]) + 1 if len(_air) else 0
         _hit = np.array([max(_fs - int(os.environ.get("HS_GATE_STANCE_LEAD", "5")), 0)])
         _gate_hi = float("nan")
-    # HS_GATE_MAX_VEL: additionally require the root to be SLOW at the gate. The stance trigger
-    # alone can still fire mid-stride (the feet are set for that step, but the body is still
-    # travelling at up to 72% of peak walk speed a few frames before the grab), so push the gate
-    # forward until the root drops below this speed. 0 disables. m/s, assuming 20 fps.
+    else:
+        _gate_hi = (float(_along_band.split(",")[1]) if _along_band
+                    else float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35")))
+        _d_along_t = (obj_pos[grab_idx, :2] - base_pos[:, :2]) @ _hdg
+        _hit = np.nonzero(_d_along_t[:grab_idx] <= _gate_hi)[0]
+    # HS_GATE_MAX_VEL: additionally require the root to be SLOW at the gate. Either trigger can
+    # still fire mid-stride (the feet are set for that step, but the body is still travelling at
+    # up to 72% of peak walk speed a few frames before the grab), so push the gate forward until
+    # the root drops below this speed. 0 disables. m/s, assuming 20 fps.
     _vmax = float(os.environ.get("HS_GATE_MAX_VEL", "0"))
     if _vmax > 0 and len(_hit):
         _rsp = np.concatenate([[0.0], np.linalg.norm(np.diff(base_pos[:, :2], axis=0), axis=1) * 20.0])
@@ -473,11 +478,6 @@ if os.environ.get("HS_GATE_SHAPING", "0") == "1" and not STAND_LOWER and 0 < gra
             print(f"[gate-vel] root never drops to {_vmax:.3f} m/s between the stance gate "
                   f"(frame {int(_hit[0])}) and the grab (min {_w.min() if len(_w) else float('nan'):.3f} "
                   f"m/s over that window); keeping the stance gate")
-    else:
-        _gate_hi = (float(_along_band.split(",")[1]) if _along_band
-                    else float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35")))
-        _d_along_t = (obj_pos[grab_idx, :2] - base_pos[:, :2]) @ _hdg
-        _hit = np.nonzero(_d_along_t[:grab_idx] <= _gate_hi)[0]
     # Leave the solver a working budget: never pin past grab_idx - HS_GATE_MIN_BUDGET frames.
     _budget = int(os.environ.get("HS_GATE_MIN_BUDGET", "25"))
     _gate = int(_hit[0]) if len(_hit) else 0
