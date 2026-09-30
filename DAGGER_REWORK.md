@@ -75,6 +75,12 @@ Corrective content therefore scales with `k`: a rescue at k≈0 is nearly pure d
 - On failure, keep **only** the stitched (rescued) episode. Keeping the failed student pass would
   feed the filter something it rejects anyway.
 - `k` upper bound is `grab_idx`.
+- **Expert labels come from the residual acting on the paired reference** (`expert_base=reference`),
+  not on the student's base token. Decided by the user 2026-09-30. The residual is pi*(s, t) for
+  the reference clip the episode is paired with; the student's token never enters the label path.
+- **Scope of validation: plumbing, expert-agnostic.** The rework is validated when the collect ->
+  4-rule score -> rescue -> write -> filter/convert path behaves correctly, not by the rescue success
+  rate of any particular expert (af60v2 is only usable under its own physics, see below).
 - Success/failure uses the **4-rule criterion with the hand-calibrated palm box**, with the
   calibration chosen *explicitly* per config (the pre-audit box rejects 100% of post-audit
   episodes, which would make every rollout read as a failure and trigger a rescue every time).
@@ -88,10 +94,9 @@ Corrective content therefore scales with `k`: a rescue at k≈0 is nearly pure d
 2. **Cross-iteration aggregation.** Classic DAgger grows D across iterations, and this pipeline has
    done that implicitly (base + dagger1 + dagger2 -> 250 episodes). Confirm the next fine-tune
    trains on af60v2 demos **+** the rescued set rather than the rescued set alone.
-3. **`expert_base` for the rescue segment.** Defaulted to **student** (residual composed onto the
-   VLA's token) per instruction. Measured caution: in the three-way test that arm scored **5/54 =
-   9.3%** against the student's own 51.9%, while native mode (residual on the reference base token)
-   scored 50.0%. If rescue success comes back near 9%, switch to `reference`.
+3. ~~`expert_base` for the rescue segment~~ -- **settled 2026-09-30, see above** (the residual acts
+   on the paired reference; `--dagger-expert-base reference` is the default and the only supported
+   configuration for the rework; the `student` value stays only as an A/B knob).
 4. **`k` upper bound.** Fixed at `grab_idx` for now. Revisit once the failure distribution is known:
    the observed modes are dominated by slipping and toppling, which occur at or after the grasp, so
    a pre-grab-only takeover never demonstrates rescuing the lift.
