@@ -492,11 +492,19 @@ class DaggerDriver:
         """Advance the env one step; returns (obs, rew, dones, extras, expert_drove: bool)."""
         if self._chunk_step >= self.chunk:                               # re-plan boundary
             self._chunk_step = 0
-            if self.trigger == "disagree" or self.expert_base == "student" or self.takeover_at is not None:
-                # Always re-plan: the VLA's token is needed every step -- as the comparison term
-                # for the trigger, and/or as the residual's base.
+            # Only query the VLA when some frame of the coming chunk actually uses its token: the
+            # student is still driving (frame < k), a blend is pending (frame < k + blend), the
+            # residual composes onto the student's token, or the disagreement trigger is on. With
+            # k=0 and no blend the token is never used, and querying anyway ran a 3B forward every
+            # 8 frames during pure expert control -- something pure-demo mode never does.
+            need_vla = (self.trigger == "disagree" or self.expert_base == "student"
+                        or (self.takeover_at is not None
+                            and self.n_frames < self.takeover_at + self.blend))
+            if need_vla:
                 out = self.vla.get_action(self.obs_adapter())
                 self._chunk = out[0] if isinstance(out, tuple) else out
+            elif self.takeover_at is not None:
+                pass                                     # expert-only from here on; no chunk needed
             else:
                 self._expert_drives = bool(self.rng.random() < self.beta)
                 if not self._expert_drives:
