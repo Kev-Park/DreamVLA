@@ -107,3 +107,45 @@ Corrective content therefore scales with `k`: a rescue at k≈0 is nearly pure d
 8. **`mid_expert` retrain** (deferred). Retrain the residual at deployment physics
    (`HS_OBJ_MASS=0.603 HS_HAND_STIFFNESS=15 HS_HAND_EFFORT=10 HS_HAND_VELOCITY=3`). The current
    expert trained at 0.1 kg / 5-3-1 and is run at neither.
+
+## BUILT AND VALIDATED (2026-09-30)
+
+`--dagger-rescue` is implemented in `collect_sonic_adapter.py` and exercised on real rollouts.
+Mechanism validated:
+
+| behaviour | evidence |
+|---|---|
+| preconditions guarded | `forcing --dagger-beta 0`; `--dagger-rescue-box` required; grasp gate forbidden |
+| `grab_idx` from pass A itself | 178 and 266 on two motions; no extra reset needed |
+| `k ~ U[0, grab_idx)` | k=151/178 and 227/266; sampling verified to vary (85/47/85/89/40/24/77/13% across motions) |
+| 4-rule verdict drives the branch | pass A FAIL -> pass B every time |
+| one-way takeover at k | expert drove 348/499 and 272/499, consistent with the sampled k |
+| pass A discarded, pass B kept | only the final filenames remain on disk |
+
+### Efficacy: the rescue produced NO successes -- and the cause is upstream
+
+| arm | pass A (student) | rescue |
+|---|---|---|
+| `expert_base=student` | 0/2 pass | **0/2 pass** |
+| `expert_base=reference` | 0/2 pass | **0/2 pass** |
+
+So `expert_base` is NOT the explanation (to-review item 3 is answered negatively for both settings at
+this n). The diagnosis is the one recorded above under label validity: the residual is **pi*(s, t)**,
+a reference tracker whose base token is indexed by motion time. Handing over at k=151 of grab_idx=178
+puts the reference clock 85% of the way to the grasp while the student -- which scores **0/60** on
+eval -- has already drifted far off it. The expert cannot recover a phase it is no longer aligned
+with, and its own competence gate (`ee_body_pos`, 0.25 m) marks exactly that boundary.
+
+**The rescue design presupposes a student that is sometimes right.** With pass A failing every time,
+there is no successful student behaviour to preserve and the expert must recover from an arbitrarily
+drifted state. The blocker is therefore NOT the DAgger design but the student: the af60v2 GR00T
+fine-tune scored 0/60 (see `results/vla_eval/README.md`). Fixing that comes first; the rescue
+machinery is ready and waiting behind it.
+
+Two follow-ups this suggests, beyond the existing list:
+
+9. **Bias `k` earlier.** Uniform sampling over `[0, grab_idx)` lands late often (two of two draws at
+   85%), and late handover is where recovery is least possible. An earlier-weighted distribution
+   would hand over while the student is still near the reference.
+10. **Gate the collection on the student.** Refuse to collect if the student's success rate on the
+    reference set is ~0: the run can only produce failures, which the filter then discards.
