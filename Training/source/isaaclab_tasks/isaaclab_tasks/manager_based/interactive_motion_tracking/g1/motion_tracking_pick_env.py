@@ -257,6 +257,11 @@ REWORK_HEIGHT_BACKSTOP = float(os.environ.get("HS_REWORK_HEIGHT_BACKSTOP", "0.2"
 # Forward-projection factor for the grasp PALM (= render CYAN, = refine_al_29 HAND_FWD). The synthesized
 # object reference tracks this palm post-grasp. MUST match refine_al_29.HAND_FWD baked into the dataset.
 REWORK_HAND_FWD = float(os.environ.get("HS_REWORK_HAND_FWD", "1.5"))
+# Closure-match (right-hand binary match vs the reference is_closed schedule) weight, HOI env only.
+# Port of g1 e9be33f. Was 0.3: under the 15/10/3 hand af60v4 learned to close ~1.5 s LATE (closing
+# on time punched the bottle and cost arm-tracking reward; 0.3/step was too cheap to stop it).
+# Forcing the schedule at eval took that checkpoint 0.8% -> 74% held, so this term must be able to win.
+REWORK_HAND_MATCH_W = float(os.environ.get("HS_REWORK_HAND_MATCH_W", "1.0"))
 REWORK_OBJ_W = float(os.environ.get("HS_REWORK_OBJ_W", "2.0"))  # #4 object_tracking weight (env-tunable; 2.0 matches ResMimic)
 REWORK_HYBRID_RARM = os.environ.get("HS_REWORK_HYBRID_RARM", "0") == "1"  # #3 LadderMan hybrid: relax right-arm tracking so the task limb can deviate
 # GLOBAL (world-frame) whole-body keypoint tracking instead of the SONIC-native root-relative term.
@@ -1995,7 +2000,7 @@ class PickHOIRewardsCfg(MotionTrackRewardsCfg):
                     "std": 0.4, "keypt_idxs": HOI_RARM_KEYPT_IDXS})
 
     # finger open/close tracking (swapped to the binary-match variant by the parent env)
-    right_hand_state_target_reward_val = RewTerm(func=right_hand_state_target_reward, weight=0.3)
+    right_hand_state_target_reward_val = RewTerm(func=right_hand_state_target_reward, weight=REWORK_HAND_MATCH_W)
     # object-as-reference tracking (point-cloud form under HS_REWORK_OBJ_PC=1),
     # contact-gated by the reference is_closed flag when HS_REWORK_OBJ_GATE=1.
     object_tracking = RewTerm(func=object_tracking_reward, weight=REWORK_OBJ_W,
