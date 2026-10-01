@@ -241,6 +241,13 @@ PALM_NORMAL_SIGN = float(os.environ.get("HS_PALM_NORMAL_SIGN", "+1"))   # palm f
 #   of the hand (fingers-at-bottle leaves the palm facing away); the --overlay-palm-normal render showed
 #   it. Driving -y at the object pushed the knuckles into the bottle, which is why P1-P3 scored worse.
 PALM_REACH = float(os.environ.get("HS_PALM_REACH", "0.07"))             # m: bottle radius + palm half-thickness
+# HS_PALM_WALLS=1 (palm-normal mode only): the approach walls (y-wall, z-ceiling, x-wall) act on the
+# PALM point instead of the fingertip. With the palm square to the bottle the fingers are tangent,
+# so the tip (hand + 0.22 x) sweeps sideways into the y-wall / x-wall and the solver holds the hand
+# back rather than violate them -- P1-P6 parked the hand origin 15-16 cm out instead of PALM_REACH.
+# The table swept-quad and the tip dynamics terms stay on the tip: fingers still must not hit the
+# table, and tip jerk is still the physical quantity.
+PALM_WALLS = os.environ.get("HS_PALM_WALLS", "0") == "1"
 # Yaw offset (rad) applied to the fixed pointing bearing about world z. Positive = counter-
 # clockwise from above = toward the robot's LEFT = inward for the right hand. The default bearing
 # aims the fingertip axis straight at the target, so the thumb leads the slide-in and is the first
@@ -884,9 +891,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             x_gate_t = _obj_x - x_clear_t                                   # moving X line -> ends slack PAST obj
             y_gate_t = _obj_y - y_clear_t                                   # moving Y line -> ends slack LEFT of obj
             z_gate_t = _obj_z + z_clear_t                                   # moving Z line -> ends slack ABOVE obj
-            hand_x = transformed_tip[1:grab_idx, 0]                         # (G-1,) tip forward pos
-            hand_y = transformed_tip[1:grab_idx, 1]                         # (G-1,) tip lateral pos
-            hand_z = transformed_tip[1:grab_idx, 2]                         # (G-1,) tip height
+            _wall_pt = palm_world if (PALM_NORMAL and PALM_WALLS) else transformed_tip   # see PALM_WALLS
+            hand_x = _wall_pt[1:grab_idx, 0]                                # (G-1,) wall-point forward pos
+            hand_y = _wall_pt[1:grab_idx, 1]                                # (G-1,) wall-point lateral pos
+            hand_z = _wall_pt[1:grab_idx, 2]                                # (G-1,) wall-point height
             approach_pen = (_gate_pen(torch.relu(hand_y - y_gate_t))
                             + _gate_pen(torch.relu(hand_z - z_gate_t)))
             if APPROACH_X_STANDOFF > 0:
@@ -1139,7 +1147,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     fv = float(g_curr.max()) if g_curr is not None else -1.0
     fvl = float(_last_g_level.max()) if _last_g_level is not None else -1.0
     _xe = (obj_grab_x - TABLE_EDGE_BEHIND_OBJECT - TABLE_X_MARGIN) if (TABLE_EDGE_ANCHOR == "object" and obj_grab_x is not None) else float(grab_pos[0] + OFFSET_X - TABLE_X_MARGIN)
-    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} point_yaw={POINT_YAW_OFFSET:+.2f} z_sched={APPROACH_Z_SCHED} z_lag={APPROACH_Z_LAG_FRAC} palm_normal={PALM_NORMAL} palm_reach={PALM_REACH} ease_out={APPROACH_EASE_OUT:.1f} "
+    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} point_yaw={POINT_YAW_OFFSET:+.2f} z_sched={APPROACH_Z_SCHED} z_lag={APPROACH_Z_LAG_FRAC} palm_normal={PALM_NORMAL} palm_reach={PALM_REACH} palm_walls={PALM_WALLS} point_w={POINT_W} ease_out={APPROACH_EASE_OUT:.1f} "
           f"AL {'converged' if converged else 'maxiter'} "
           f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} "
           f"final_jlim_viol={float(_last_g_jlim.max()) if _last_g_jlim is not None else -1.0:.2e}rad "
