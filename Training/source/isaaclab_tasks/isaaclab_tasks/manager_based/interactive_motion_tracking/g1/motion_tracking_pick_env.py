@@ -39,7 +39,7 @@ from isaaclab_tasks.utils.repo_paths import sibling
 # never actuates the fingers, but they are too weak to hold the corrected mass.
 OBJ_MASS       = float(os.environ.get("HS_OBJ_MASS", "0.603"))      # was 0.1
 HAND_STIFFNESS = float(os.environ.get("HS_HAND_STIFFNESS", "15"))   # was 5.0
-HAND_EFFORT    = float(os.environ.get("HS_HAND_EFFORT", "10"))      # was 3.0
+HAND_EFFORT    = float(os.environ.get("HS_HAND_EFFORT", "3"))       # 10 (2026-09-29 -> 09-30) pinched the bottle out: stiffness 15 x effort 10 = 7.5 N.m hold torque; 3 caps it at the old ~2.5
 HAND_VELOCITY  = float(os.environ.get("HS_HAND_VELOCITY", "3"))     # was 1.0
 
 # mustard_bottle.usd authors physxRigidBody:maxAngularVelocity = 100 DEG/S (= 1.75 rad/s). A bottle
