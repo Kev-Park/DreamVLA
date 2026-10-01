@@ -193,7 +193,8 @@ def apply_hand_gain_override(env_cfg, stiffness: float | None = None, damping: f
         raw = os.environ.get("HS_HAND_DAMPING", "").strip()
         damping = float(raw) if raw else None
     if effort is None:
-        raw = os.environ.get("HS_HAND_EFFORT", "10").strip()      # DEFAULT
+        raw = os.environ.get("HS_HAND_EFFORT", "3").strip()       # DEFAULT -- g1 ff6fb63 (af60v6): effort 10 with
+        #   stiffness 15 = 7.5 N.m hold torque and pinched the bottle out; 3 caps it at the old ~2.5 N.m
         effort = float(raw) if raw else None
     if velocity is None:
         raw = os.environ.get("HS_HAND_VELOCITY", "3").strip()     # DEFAULT

@@ -188,7 +188,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--overlay-palm-normal", action="store_true", default=False,
-    help="Draw the sim hand PALM NORMAL as a dotted MAGENTA vector (hand -y, the axis refine_al_29 "
+    help="Draw the sim hand PALM NORMAL as a dotted MAGENTA vector (hand +y, the axis refine_al_29 "
          "HS_PALM_NORMAL mode aims at the bottle) and the FINGER axis as a short dotted ORANGE vector "
          "(hand +x, what the legacy pointing term aims). Read from right_wrist_yaw_link, which shares "
          "the rubber-hand frame (identity child rotation in the URDF). Pure viz.")
@@ -687,6 +687,7 @@ def _update_obj_candidate_markers(env, markers, device, hand_fwd: float = 1.5):
 _PN_NORMAL_T = (0.02, 0.05, 0.08, 0.11, 0.14)      # m along the palm normal
 _PN_FINGER_T = (0.04, 0.08, 0.12)                   # m along the fingertip axis
 _PN_HAND_OFFSET = (0.0536, 0.0030, 0.0022)          # right_rubber_hand origin in the wrist_yaw frame
+_PN_SIGN = float(os.environ.get("HS_PALM_NORMAL_SIGN", "+1"))   # palm face = hand +y; same knob as refine_al_29
 
 
 def _make_palm_normal_markers():
@@ -720,7 +721,7 @@ def _update_palm_normal_markers(env, markers, device, body_idx: int):
         pos = robot.data.body_pos_w[0, body_idx]
         R = _quat_wxyz_to_mat(robot.data.body_quat_w[0, body_idx])
         hand = pos + R @ torch.tensor(_PN_HAND_OFFSET, device=device, dtype=pos.dtype)
-        normal = -R[:, 1]
+        normal = _PN_SIGN * R[:, 1]                       # palm normal (+y by default)
         finger = R[:, 0]
         pts = [hand + t * normal for t in _PN_NORMAL_T] + [hand + t * finger for t in _PN_FINGER_T]
         idx = [0] * len(_PN_NORMAL_T) + [1] * len(_PN_FINGER_T)
@@ -1105,7 +1106,7 @@ def main():
     palm_normal_markers = _make_palm_normal_markers() if args_cli.overlay_palm_normal else None
     if palm_normal_markers is not None:
         _pn_idx = list(env.unwrapped.scene["robot"].data.body_names).index("right_wrist_yaw_link")
-        print(f"[overlay-palm-normal] MAGENTA = palm normal (hand -y), ORANGE = finger axis (hand +x); body idx {_pn_idx}")
+        print(f"[overlay-palm-normal] MAGENTA = palm normal (hand {'+' if _PN_SIGN > 0 else '-'}y), ORANGE = finger axis (hand +x); body idx {_pn_idx}")
     if args_cli.overlay_obj_candidates:
         _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)  # frame 0
         print(f"[overlay-obj-candidates] YELLOW = synthesized object ref (rest->palm), "

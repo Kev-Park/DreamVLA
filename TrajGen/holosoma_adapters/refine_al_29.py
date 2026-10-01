@@ -236,7 +236,10 @@ POINT_FIXED = os.environ.get("HS_POINT_FIXED", "1") == "1"                   # O
 # lands on the bottle side with the fingers tangent, which cannot front-knock. LEVEL still pins
 # hand-z vertical, so all three rotational DOF are determined.
 PALM_NORMAL = os.environ.get("HS_PALM_NORMAL", "0") == "1"
-PALM_NORMAL_SIGN = float(os.environ.get("HS_PALM_NORMAL_SIGN", "-1"))   # hand -y faces the bottle (measured)
+PALM_NORMAL_SIGN = float(os.environ.get("HS_PALM_NORMAL_SIGN", "+1"))   # palm face is hand +y. The -1 first
+#   committed came from a FK probe showing -y partly toward the bottle on the best refs -- that was the BACK
+#   of the hand (fingers-at-bottle leaves the palm facing away); the --overlay-palm-normal render showed
+#   it. Driving -y at the object pushed the knuckles into the bottle, which is why P1-P3 scored worse.
 PALM_REACH = float(os.environ.get("HS_PALM_REACH", "0.07"))             # m: bottle radius + palm half-thickness
 # Yaw offset (rad) applied to the fixed pointing bearing about world z. Positive = counter-
 # clockwise from above = toward the robot's LEFT = inward for the right hand. The default bearing
