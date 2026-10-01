@@ -684,8 +684,10 @@ def _update_obj_candidate_markers(env, markers, device, hand_fwd: float = 1.5):
 # vector out of the palm and +x as a shorter one along the fingers, so palm-vs-bottle correspondence
 # is visible in an egocentric render.
 # =========================================================================
-_PN_NORMAL_T = (0.02, 0.05, 0.08, 0.11, 0.14)      # m along the palm normal
-_PN_FINGER_T = (0.04, 0.08, 0.12)                   # m along the fingertip axis
+_PN_NORMAL_T = (0.04, 0.08, 0.12, 0.16, 0.20, 0.24)  # m along the palm normal; starts past the palm surface
+_PN_FINGER_T = (0.06, 0.12, 0.18)                     # m along the fingertip axis
+# Dots start >= 4 cm out and are 1.8 cm: at 2 cm / 1.2 cm the chain sat inside the hand mesh and the
+# ego camera (which sees the BACK of the right hand) hid the palm-side vector almost entirely.
 _PN_HAND_OFFSET = (0.0536, 0.0030, 0.0022)          # right_rubber_hand origin in the wrist_yaw frame
 _PN_SIGN = float(os.environ.get("HS_PALM_NORMAL_SIGN", "+1"))   # palm face = hand +y; same knob as refine_al_29
 
@@ -694,9 +696,9 @@ def _make_palm_normal_markers():
     cfg = VisualizationMarkersCfg(
         prim_path="/Visuals/palm_normal",
         markers={
-            "normal": sim_utils.SphereCfg(radius=0.012,
+            "normal": sim_utils.SphereCfg(radius=0.018,
                                           visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.1, 0.9))),
-            "finger": sim_utils.SphereCfg(radius=0.010,
+            "finger": sim_utils.SphereCfg(radius=0.014,
                                           visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.55, 0.0))),
         },
     )
