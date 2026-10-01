@@ -257,6 +257,17 @@ REWORK_HEIGHT_BACKSTOP = float(os.environ.get("HS_REWORK_HEIGHT_BACKSTOP", "0.2"
 # Forward-projection factor for the grasp PALM (= render CYAN, = refine_al_29 HAND_FWD). The synthesized
 # object reference tracks this palm post-grasp. MUST match refine_al_29.HAND_FWD baked into the dataset.
 REWORK_HAND_FWD = float(os.environ.get("HS_REWORK_HAND_FWD", "1.5"))
+# PALM-NORMAL object reference (HS_REWORK_PALM_NORMAL=1): post-grasp the object reference sits
+# PALM_REACH out along the reference hand's +y (the palm face) instead of HAND_FWD along the fingers.
+# Must be set when training on references built with refine_al_29 HS_PALM_NORMAL=1, which pulls the
+# palm-face point onto the object; with the legacy forward-projected point the env would declare
+# the object ~10-15 cm out past the fingertips and reward the residual for holding it there.
+# The reference hand's +y is derived from keypoints: the rubber hand sits at +0.0536 m along the
+# wrist-yaw link's x with identity rotation, so (hand - wrist_yaw) IS hand +x in world; the LEVEL
+# term holds hand z vertical (hard, <= 0.03); hence +y = up x x. Same reach/sign knobs as the refine.
+REWORK_PALM_NORMAL = os.environ.get("HS_REWORK_PALM_NORMAL", "0") == "1"
+REWORK_PALM_REACH = float(os.environ.get("HS_REWORK_PALM_REACH", os.environ.get("HS_PALM_REACH", "0.07")))
+REWORK_PALM_SIGN = float(os.environ.get("HS_PALM_NORMAL_SIGN", "+1"))
 # Closure-match (right-hand binary match vs the reference is_closed schedule) weight, HOI env only.
 # Port of g1 e9be33f. Was 0.3: under the 15/10/3 hand af60v4 learned to close ~1.5 s LATE (closing
 # on time punched the bottle and cost arm-tracking reward; 0.3/step was too cheap to stop it).
@@ -503,7 +514,17 @@ def _synth_object_ref_pos(motion_res, hand_fwd: float = REWORK_HAND_FWD):
     forward-projected PALM = global_keypts[-1] + hand_fwd*(global_keypts[-1] - global_keypts[-2])
     (= render CYAN, = where refine_al_29 drives the palm). Returns None if fields are missing."""
     gk = motion_res["global_keypts"]                                             # (N,39,3) env-local
-    palm = gk[:, -1, :] + hand_fwd * (gk[:, -1, :] - gk[:, -2, :])               # forward-projected grasp point
+    if REWORK_PALM_NORMAL:
+        # palm FACE: hand origin + reach along hand +y, with +y = up x (hand - wrist_yaw)/|.| -- see
+        # REWORK_PALM_NORMAL above. Matches refine_al_29 HS_PALM_NORMAL's pull point.
+        xax = gk[:, -1, :] - gk[:, -2, :]
+        xax = xax / xax.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        up = torch.zeros_like(xax); up[:, 2] = 1.0
+        yax = torch.cross(up, xax, dim=-1)
+        yax = yax / yax.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        palm = gk[:, -1, :] + REWORK_PALM_REACH * REWORK_PALM_SIGN * yax
+    else:
+        palm = gk[:, -1, :] + hand_fwd * (gk[:, -1, :] - gk[:, -2, :])           # forward-projected grasp point
     if "object_poses" in motion_res:
         rest = motion_res["object_poses"][:, :3]                                 # object rest (static pre-grab)
     elif motion_res.get("grab_pos") is not None:

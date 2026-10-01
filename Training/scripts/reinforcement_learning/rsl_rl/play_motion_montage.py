@@ -664,7 +664,16 @@ def _update_obj_candidate_markers(env, markers, device, hand_fwd: float = 1.5):
         gk = res["global_keypts"].to(device) + origin.unsqueeze(1)                  # (N, 39, 3)
         hand = gk[:, -1, :]                                                         # right_rubber_hand (wrist/palm-base)
         wrist = gk[:, -2, :]                                                        # right_wrist_yaw
-        palm = hand + hand_fwd * (hand - wrist)                                     # forward-projected grasp point (CYAN)
+        if os.environ.get("HS_REWORK_PALM_NORMAL", "0") == "1":
+            # palm FACE, same derivation as motion_tracking_pick_env._synth_object_ref_pos:
+            # +x = (hand - wrist)/|.|, +y = up x +x (LEVEL keeps hand z vertical), palm = hand + reach*y
+            _x = (hand - wrist); _x = _x / _x.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+            _up = torch.zeros_like(_x); _up[:, 2] = 1.0
+            _y = torch.cross(_up, _x, dim=-1); _y = _y / _y.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+            _reach = float(os.environ.get("HS_REWORK_PALM_REACH", os.environ.get("HS_PALM_REACH", "0.07")))
+            palm = hand + _reach * float(os.environ.get("HS_PALM_NORMAL_SIGN", "+1")) * _y        # palm-face point (CYAN)
+        else:
+            palm = hand + hand_fwd * (hand - wrist)                                 # forward-projected grasp point (CYAN)
         obj_rest = res["object_poses"][:, :3].to(device) + origin                  # holosoma object (static pre-grab)
         is_closed = res["is_closed"].to(device).float().unsqueeze(-1)              # (N, 1); 1 = post-grasp
         # SYNTHESIZED object ref (YELLOW): rest until grasp, then track the palm.
