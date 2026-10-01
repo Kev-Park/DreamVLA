@@ -187,6 +187,12 @@ parser.add_argument(
          "YELLOW = synthesized object ref (object rest until grasp, then tracks the palm). Render-only viz.",
 )
 parser.add_argument(
+    "--overlay-palm-normal", action="store_true", default=False,
+    help="Draw the sim hand PALM NORMAL as a dotted MAGENTA vector (hand -y, the axis refine_al_29 "
+         "HS_PALM_NORMAL mode aims at the bottle) and the FINGER axis as a short dotted ORANGE vector "
+         "(hand +x, what the legacy pointing term aims). Read from right_wrist_yaw_link, which shares "
+         "the rubber-hand frame (identity child rotation in the URDF). Pure viz.")
+parser.add_argument(
     "--hand-fk-forward", type=float, default=1.5,
     help="Forward projection factor for the CYAN palm marker: palm = hand + f*(hand - wrist) along the "
          "wrist->hand axis (right_rubber_hand's origin sits at the wrist/palm-base). Larger = further toward "
@@ -670,6 +676,58 @@ def _update_obj_candidate_markers(env, markers, device, hand_fwd: float = 1.5):
     )
 
 
+# =========================================================================
+# Palm-normal overlay (--overlay-palm-normal). The refine grasp geometry lives in the
+# right_rubber_hand frame: +x = fingertip axis, -y = palm face (measured), +z kept vertical by the
+# LEVEL term. In the sim articulation the hand is attached to right_wrist_yaw_link with identity
+# rotation and a 0.0536 m x-offset, so that link quaternion IS the hand frame. Draw -y as a dotted
+# vector out of the palm and +x as a shorter one along the fingers, so palm-vs-bottle correspondence
+# is visible in an egocentric render.
+# =========================================================================
+_PN_NORMAL_T = (0.02, 0.05, 0.08, 0.11, 0.14)      # m along the palm normal
+_PN_FINGER_T = (0.04, 0.08, 0.12)                   # m along the fingertip axis
+_PN_HAND_OFFSET = (0.0536, 0.0030, 0.0022)          # right_rubber_hand origin in the wrist_yaw frame
+
+
+def _make_palm_normal_markers():
+    cfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/palm_normal",
+        markers={
+            "normal": sim_utils.SphereCfg(radius=0.012,
+                                          visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.1, 0.9))),
+            "finger": sim_utils.SphereCfg(radius=0.010,
+                                          visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.55, 0.0))),
+        },
+    )
+    return VisualizationMarkers(cfg)
+
+
+def _quat_wxyz_to_mat(q):
+    """(4,) wxyz -> (3,3) rotation, torch."""
+    w, x, y, z = q
+    return torch.stack([
+        torch.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)]),
+        torch.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)]),
+        torch.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]),
+    ])
+
+
+def _update_palm_normal_markers(env, markers, device, body_idx: int):
+    """Dotted palm-normal (-y, magenta) and finger-axis (+x, orange) vectors from the sim hand, env 0."""
+    unw = env.unwrapped
+    robot = unw.scene["robot"]
+    with torch.inference_mode():
+        pos = robot.data.body_pos_w[0, body_idx]
+        R = _quat_wxyz_to_mat(robot.data.body_quat_w[0, body_idx])
+        hand = pos + R @ torch.tensor(_PN_HAND_OFFSET, device=device, dtype=pos.dtype)
+        normal = -R[:, 1]
+        finger = R[:, 0]
+        pts = [hand + t * normal for t in _PN_NORMAL_T] + [hand + t * finger for t in _PN_FINGER_T]
+        idx = [0] * len(_PN_NORMAL_T) + [1] * len(_PN_FINGER_T)
+    markers.visualize(translations=torch.stack(pts, dim=0),
+                      marker_indices=torch.tensor(idx, device=device, dtype=torch.long))
+
+
 class VideoWriter:
     """cv2-backed mp4 writer (mp4v codec — self-contained, no ffmpeg dependency)."""
 
@@ -1044,6 +1102,10 @@ def main():
 
     # Object-reference candidate markers (#4 diagnostic).
     obj_cand_markers = _make_obj_candidate_markers() if args_cli.overlay_obj_candidates else None
+    palm_normal_markers = _make_palm_normal_markers() if args_cli.overlay_palm_normal else None
+    if palm_normal_markers is not None:
+        _pn_idx = list(env.unwrapped.scene["robot"].data.body_names).index("right_wrist_yaw_link")
+        print(f"[overlay-palm-normal] MAGENTA = palm normal (hand -y), ORANGE = finger axis (hand +x); body idx {_pn_idx}")
     if args_cli.overlay_obj_candidates:
         _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)  # frame 0
         print(f"[overlay-obj-candidates] YELLOW = synthesized object ref (rest->palm), "
@@ -1136,6 +1198,8 @@ def main():
                 _update_alt_overlay_markers(env, alt_lib, alt_markers, alt_marker_indices, device)
             if args_cli.overlay_obj_candidates:
                 _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)
+            if palm_normal_markers is not None:
+                _update_palm_normal_markers(env, palm_normal_markers, device, _pn_idx)
 
             if _trk is not None:
                 _uwt = env.unwrapped
