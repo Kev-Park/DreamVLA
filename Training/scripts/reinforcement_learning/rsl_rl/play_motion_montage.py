@@ -1154,7 +1154,13 @@ def main():
         _cidx = [_csn.index(n) for n in _trk_names] if all(n in _csn for n in _trk_names) else []
         _trk = {"names": _trk_names, "idx": _tidx, "cidx": _cidx, "seg": [], "mid": [], "step": [],
                 "hand_pos": [], "obj_pos": [], "is_closed": [], "contact_f": [], "root_pos": [], "root_quat": [],
-                "ref_root_pos": [], "joint_pos": [], "ref_joint_pos": [], "ref_root_quat": []}
+                "ref_root_pos": [], "joint_pos": [], "ref_joint_pos": [], "ref_root_quat": [],
+                # behaviour-comparison fields
+                "hand_quat": [], "hand_lin_vel": [], "obj_quat": [], "obj_lin_vel": [], "obj_ang_vel": [],
+                "action": [], "finger_q": [], "ref_obj_pose": [], "done": []}
+        _fjn = [n for n in _rb.data.joint_names if re.match(r"right_hand_.*_joint", n)]
+        _trk["fidx"] = [list(_rb.data.joint_names).index(n) for n in _fjn]
+        _trk["finger_names"] = _fjn
         # articulation joint indices in motion_lib.joint_names order, so robot and reference
         # joint vectors are directly comparable
         try:
@@ -1234,6 +1240,16 @@ def main():
                 _trk["ref_joint_pos"].append(_rst["dof_pos"].reshape(len(_uwt.motion_ids), -1)[0].cpu().numpy())
                 _trk["ref_root_quat"].append(_rst["root_rot"].reshape(-1, 4)[0].cpu().numpy())
                 _trk["seg"].append(_seg_i); _trk["mid"].append(int(_mid)); _trk["step"].append(_s)
+                _rd = _uwt.scene["robot"].data; _od = _uwt.scene["object"].data
+                _trk["hand_quat"].append(_rd.body_quat_w[0, _trk["idx"]].cpu().numpy())            # (10,4) wxyz
+                _trk["hand_lin_vel"].append(_rd.body_lin_vel_w[0, _trk["idx"]].cpu().numpy())      # (10,3)
+                _trk["obj_quat"].append(_od.root_quat_w[0].cpu().numpy())
+                _trk["obj_lin_vel"].append(_od.root_lin_vel_w[0].cpu().numpy())
+                _trk["obj_ang_vel"].append(_od.root_ang_vel_w[0].cpu().numpy())
+                _trk["action"].append(actions[0].detach().float().cpu().numpy())                  # raw policy output (residual + hand cmd)
+                _trk["finger_q"].append(_rd.joint_pos[0, _trk["fidx"]].cpu().numpy())
+                _trk["ref_obj_pose"].append(_rst["object_poses"].reshape(-1, 7)[0].cpu().numpy() if "object_poses" in _rst else np.zeros(7, dtype=np.float32))
+                _trk["done"].append(bool(dones.reshape(-1)[0].item()))
 
             if not args_cli.no_video:
                 # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
@@ -1294,7 +1310,13 @@ def main():
                  root_pos=np.stack(_trk["root_pos"]), root_quat=np.stack(_trk["root_quat"]), ref_root_pos=np.stack(_trk["ref_root_pos"]),
                  contact_f=(np.stack(_trk["contact_f"]) if _trk["contact_f"] else np.zeros((0, 0))),
                  joint_pos=np.stack(_trk["joint_pos"]), ref_joint_pos=np.stack(_trk["ref_joint_pos"]),
-                 ref_root_quat=np.stack(_trk["ref_root_quat"]))
+                 ref_root_quat=np.stack(_trk["ref_root_quat"]),
+                 hand_quat=np.stack(_trk["hand_quat"]), hand_lin_vel=np.stack(_trk["hand_lin_vel"]),
+                 obj_quat=np.stack(_trk["obj_quat"]), obj_lin_vel=np.stack(_trk["obj_lin_vel"]),
+                 obj_ang_vel=np.stack(_trk["obj_ang_vel"]), action=np.stack(_trk["action"]),
+                 finger_q=np.stack(_trk["finger_q"]), finger_names=np.array(_trk["finger_names"]),
+                 ref_obj_pose=np.stack(_trk["ref_obj_pose"]), done=np.array(_trk["done"]),
+                 clip_files=np.array([str(x) for x in getattr(env.unwrapped.motion_lib, "_motion_data_load", [])]))
         print(f"[dump-track] wrote {args_cli.dump_track}: {len(_trk['step'])} steps")
     env.close()
 

@@ -256,6 +256,7 @@ _OBJ_LOCAL_PTS = torch.tensor([[sx * 0.025, sy * 0.025, sz * 0.10] for sx in (-1
 REWORK_HEIGHT_BACKSTOP = float(os.environ.get("HS_REWORK_HEIGHT_BACKSTOP", "0.2")) # smaller root-height backstop (<0.3)
 # Forward-projection factor for the grasp PALM (= render CYAN, = refine_al_29 HAND_FWD). The synthesized
 # object reference tracks this palm post-grasp. MUST match refine_al_29.HAND_FWD baked into the dataset.
+OBJ_MAX_ANGVEL = float(os.environ.get("HS_OBJ_MAX_ANGVEL", "1000.0"))  # deg/s; 100 = the old USD clamp (port of g1 a4e35c9)
 REWORK_HAND_FWD = float(os.environ.get("HS_REWORK_HAND_FWD", "1.5"))
 # PALM-NORMAL object reference (HS_REWORK_PALM_NORMAL=1): post-grasp the object reference sits
 # PALM_REACH out along the reference hand's +y (the palm face) instead of HAND_FWD along the fingers.
@@ -1301,7 +1302,7 @@ class MySceneCfg(MySceneCfgBase):
             # motion. Every RigidBodyPropertiesCfg field defaults to None ("use the USD value"),
             # so the clamp passed straight through untouched and no mass/gain override could
             # affect it (tipping rate is mass-independent: alpha = g*r/k^2).
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=1000.0),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=OBJ_MAX_ANGVEL),
             mass_props=sim_utils.MassPropertiesCfg(mass=.1),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0., 0.2, 0.6), metallic=0.3),
             physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -1399,7 +1400,7 @@ class G1PickCamEnvCfg(G1InteractiveBaseEnvCfg):
                 # Lift the USD's authored maxAngularVelocity=100 deg/s clamp (see the cuboid
                 # site above). This UsdFileCfg REPLACES that cuboid, so without this line the
                 # bottle tips ~7x slow in every env derived from here -- including Pick-HOI.
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=1000.0),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=OBJ_MAX_ANGVEL),
                 mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
             ),
         )
@@ -1478,7 +1479,7 @@ class G1PickPlayEnvCfg(G1InteractiveBaseEnvCfg):
                 # Lift the USD's authored maxAngularVelocity=100 deg/s clamp (see the cuboid
                 # site above). This UsdFileCfg REPLACES that cuboid, so without this line the
                 # bottle tips ~7x slow in every env derived from here -- including Pick-HOI.
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=1000.0),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=OBJ_MAX_ANGVEL),
                 mass_props=sim_utils.MassPropertiesCfg(mass=.1),
             ),
         )
@@ -1645,7 +1646,7 @@ class G1PickBinaryFingersEnvCfg(G1PickEnvCfg):
                     # Lift the USD's authored maxAngularVelocity=100 deg/s clamp (see the cuboid site).
                     # This UsdFileCfg REPLACES that cuboid, so without this line the bottle tips ~7x
                     # slow in every env derived from here -- Pick-HOI included.
-                    rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=1000.0),
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=OBJ_MAX_ANGVEL),
                     mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
                 ),
             )
@@ -1830,7 +1831,7 @@ class G1PickCamBinaryFingersEnvCfg(G1PickBinaryFingersEnvCfg):
                 # Lift the USD's authored maxAngularVelocity=100 deg/s clamp (see the cuboid
                 # site above). This UsdFileCfg REPLACES that cuboid, so without this line the
                 # bottle tips ~7x slow in every env derived from here -- including Pick-HOI.
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=1000.0),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(max_angular_velocity=OBJ_MAX_ANGVEL),
                 mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
             ),
         )
