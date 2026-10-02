@@ -360,12 +360,13 @@ def main():
         _kp_list = list(zip(_FULL_BODY_KEYPT_IDXS, _FULL_BODY_NAMES)) + [(37, "right_wrist_yaw_link"), (38, "right_rubber_hand")]
         _kp_pairs = [(k, _bn.index(n)) for k, n in _kp_list if n in _bn]
         _KP_NAMES = {k: n for k, n in _kp_list}
-        _kp_idx = torch.tensor([k for k, _ in _kp_pairs], device=device)
-        _bd_idx = torch.tensor([b for _, b in _kp_pairs], device=device)
+        _kp_idx = torch.tensor([k for k, _ in _kp_pairs], device=device, dtype=torch.long)
+        _bd_idx = torch.tensor([b for _, b in _kp_pairs], device=device, dtype=torch.long)
         _names_m = [_KP_NAMES[k] for k, _ in _kp_pairs]
-        _rarm = torch.tensor([i for i, n in enumerate(_names_m) if n.startswith("right_") and ("shoulder" in n or "elbow" in n or "wrist" in n or "rubber" in n)], device=device)
-        _rhand = torch.tensor([i for i, n in enumerate(_names_m) if n == "right_rubber_hand"], device=device)
-        _relb = torch.tensor([i for i, n in enumerate(_names_m) if n == "right_elbow_link"], device=device)
+        _li = lambda xs: torch.tensor(xs, device=device, dtype=torch.long)
+        _rarm = _li([i for i, n in enumerate(_names_m) if n.startswith("right_") and ("shoulder" in n or "elbow" in n or "wrist" in n)])
+        _rhand = _li([i for i, n in enumerate(_names_m) if n == "right_wrist_yaw_link"])   # end of arm (no rubber_hand body)
+        _relb = _li([i for i, n in enumerate(_names_m) if n == "right_elbow_link"])
         _trk = {ph: {k: 0.0 for k in ("body", "rarm", "hand", "elbow", "root_xy", "n")} for ph in ("approach", "closed")}
         print(f"[eval] HS_EVAL_TRACK=1: {len(_kp_pairs)}/{len(_kp_list)} keypoints mapped; right_hand={len(_rhand)} right_arm={len(_rarm)}")  # diagnostic: finger = reference is_closed
     if FORCE_FINGER_REF:
@@ -880,7 +881,7 @@ def main():
             print("  [TRACK] mean |sim - ref| per step (m), env-local:")
             for _ph, _d in _trk.items():
                 _n = max(_d["n"], 1)
-                print(f"    {_ph:8s}  body {_d['body']/_n:.4f}  right_arm {_d['rarm']/_n:.4f}  right_elbow {_d['elbow']/_n:.4f}  right_hand {_d['hand']/_n:.4f}  root_xy {_d['root_xy']/_n:.4f}  (n={_d['n']})")
+                print(f"    {_ph:8s}  body {_d['body']/_n:.4f}  right_arm {_d['rarm']/_n:.4f}  right_elbow {_d['elbow']/_n:.4f}  right_wrist {_d['hand']/_n:.4f}  root_xy {_d['root_xy']/_n:.4f}  (n={_d['n']})")
         print(f"  [FAILCLASS] per-episode failure taxonomy (root_tol={ROOT_TOL} m, knock_win={KNOCK_WIN} steps):")
         for c in _CLASSES:
             n = fc_counts[c]
