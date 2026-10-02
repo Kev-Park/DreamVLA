@@ -349,7 +349,25 @@ def main():
     # palm-object distance at max lift, min palm-object distance while lifted, min object up-cos
     # while lifted) for auditing the hold/topple criteria against renders.
     DUMP_EPS = os.environ.get("HS_EVAL_DUMP_EPS", "")
-    FORCE_FINGER_REF = os.environ.get("HS_EVAL_FORCE_FINGER_REF", "0") == "1"  # diagnostic: finger = reference is_closed
+    FORCE_FINGER_REF = os.environ.get("HS_EVAL_FORCE_FINGER_REF", "0") == "1"
+    # HS_EVAL_TRACK=1: per-step reference-tracking error (sim body vs motion_lib global_keypts, both
+    # env-local), split by grasp phase. Diagnostic only.
+    TRACK = os.environ.get("HS_EVAL_TRACK", "0") == "1"
+    if TRACK:
+        from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
+        _rb = env.unwrapped.scene["robot"]; _bn = list(_rb.data.body_names)
+        # 39 keypoints; _FULL_BODY_* gives 26 of them, + right_wrist_yaw (37) and right_rubber_hand (38).
+        _kp_list = list(zip(_FULL_BODY_KEYPT_IDXS, _FULL_BODY_NAMES)) + [(37, "right_wrist_yaw_link"), (38, "right_rubber_hand")]
+        _kp_pairs = [(k, _bn.index(n)) for k, n in _kp_list if n in _bn]
+        _KP_NAMES = {k: n for k, n in _kp_list}
+        _kp_idx = torch.tensor([k for k, _ in _kp_pairs], device=device)
+        _bd_idx = torch.tensor([b for _, b in _kp_pairs], device=device)
+        _names_m = [_KP_NAMES[k] for k, _ in _kp_pairs]
+        _rarm = torch.tensor([i for i, n in enumerate(_names_m) if n.startswith("right_") and ("shoulder" in n or "elbow" in n or "wrist" in n or "rubber" in n)], device=device)
+        _rhand = torch.tensor([i for i, n in enumerate(_names_m) if n == "right_rubber_hand"], device=device)
+        _relb = torch.tensor([i for i, n in enumerate(_names_m) if n == "right_elbow_link"], device=device)
+        _trk = {ph: {k: 0.0 for k in ("body", "rarm", "hand", "elbow", "root_xy", "n")} for ph in ("approach", "closed")}
+        print(f"[eval] HS_EVAL_TRACK=1: {len(_kp_pairs)}/{len(_kp_list)} keypoints mapped; right_hand={len(_rhand)} right_arm={len(_rarm)}")  # diagnostic: finger = reference is_closed
     if FORCE_FINGER_REF:
         print("[eval] HS_EVAL_FORCE_FINGER_REF=1: the policy's finger scalar is OVERRIDDEN by the reference grasp schedule")
     per_env_d_at_maxlift = torch.zeros(num_envs, device=device)
@@ -547,6 +565,19 @@ def main():
         motion_res = env.unwrapped.motion_lib.get_motion_state(env.unwrapped.motion_ids, motion_times)
         is_closed = motion_res["is_closed"].bool()
         lifted = (bottle_z > lift_thres) & is_closed
+        if TRACK:
+            with torch.inference_mode():
+                _org = env.unwrapped.scene.env_origins
+                _sim = _rb.data.body_pos_w[:, _bd_idx, :] - _org.unsqueeze(1)
+                _ref = motion_res["global_keypts"][:, _kp_idx, :]
+                _e = torch.linalg.norm(_sim - _ref, dim=-1)                                   # (N, K)
+                _rxy = torch.linalg.norm(_rb.data.root_pos_w[:, :2] - _org[:, :2] - motion_res["root_pos"][:, :2], dim=-1)
+                for _ph, _m in (("approach", ~is_closed), ("closed", is_closed)):
+                    if _m.any():
+                        _d = _trk[_ph]; _d["n"] += int(_m.sum())
+                        _d["body"] += float(_e[_m].mean(1).sum()); _d["rarm"] += float(_e[_m][:, _rarm].mean(1).sum())
+                        _d["hand"] += float(_e[_m][:, _rhand].mean(1).sum()); _d["elbow"] += float(_e[_m][:, _relb].mean(1).sum())
+                        _d["root_xy"] += float(_rxy[_m].sum())
 
         held = torch.zeros(num_envs, device=device, dtype=torch.bool)
         if REWORK and HAS_OBJECT:
@@ -845,6 +876,11 @@ def main():
     print(f"    (env.n_successes.sum() — uses the env reward's height_thres)")
     if FAILCLASS:
         print(f"")
+        if TRACK:
+            print("  [TRACK] mean |sim - ref| per step (m), env-local:")
+            for _ph, _d in _trk.items():
+                _n = max(_d["n"], 1)
+                print(f"    {_ph:8s}  body {_d['body']/_n:.4f}  right_arm {_d['rarm']/_n:.4f}  right_elbow {_d['elbow']/_n:.4f}  right_hand {_d['hand']/_n:.4f}  root_xy {_d['root_xy']/_n:.4f}  (n={_d['n']})")
         print(f"  [FAILCLASS] per-episode failure taxonomy (root_tol={ROOT_TOL} m, knock_win={KNOCK_WIN} steps):")
         for c in _CLASSES:
             n = fc_counts[c]
