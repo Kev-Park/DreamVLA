@@ -22,6 +22,11 @@ walls, grasp offset and limits are read from the environment by refine_al_29 at 
       --shifts "0,0.06; 0,-0.06; 0.05,0; -0.05,0"
 
   --grid FWD_MIN,FWD_MAX,N_FWD,LEFT_MIN,LEFT_MAX,N_LEFT   generates the shift list instead
+  --sample N [--fwd-range lo,hi --left-range lo,hi --seed S]  draws N shifts PER CLIP, uniform in the
+      box, re-drawing any that --lat-band rejects so every clip gets N variants (seeded per clip).
+
+HS_HOLD_IN_SOLVE=1: keep the input clip's grab hold in the timeline and solve WITH it
+(refine_arm hold_len), instead of stripping it, re-solving and splicing it back afterwards.
 """
 import argparse
 import os
@@ -100,6 +105,10 @@ def main():
     ap.add_argument("--shifts", default="", help='"fwd,left; fwd,left; ..." in metres, heading frame')
     ap.add_argument("--grid", default="", help="FWD_MIN,FWD_MAX,N_FWD,LEFT_MIN,LEFT_MAX,N_LEFT")
     ap.add_argument("--ids", default="", help="comma-separated clip ids (default: every pick_*.pkl)")
+    ap.add_argument("--sample", type=int, default=0, help="draw N shifts per clip instead of --shifts/--grid")
+    ap.add_argument("--fwd-range", default="-0.04,0.04", help="--sample forward range lo,hi (metres)")
+    ap.add_argument("--left-range", default="-0.05,0.05", help="--sample lateral range lo,hi (metres)")
+    ap.add_argument("--seed", type=int, default=0, help="--sample seed (combined with the clip name)")
     ap.add_argument("--lat-band", default="", help='"lo,hi" reject a variant whose root->object lateral '
                                                    "offset at grab falls outside this band (metres, + = left)")
     args = ap.parse_args()
@@ -110,9 +119,16 @@ def main():
         names = [f"pick_{i.strip()}.pkl" for i in args.ids.split(",")]
     else:
         names = sorted(n for n in os.listdir(in_dir) if n.startswith("pick_") and n.endswith(".pkl"))
-    shifts = parse_shifts(args)
+    shifts = parse_shifts(args) if not args.sample else []
     band = tuple(float(v) for v in args.lat_band.split(",")) if args.lat_band else None
-    print(f"[augment] {len(names)} clips x {len(shifts)} shifts -> {out_dir}")
+    fr = tuple(float(v) for v in args.fwd_range.split(","))
+    lr = tuple(float(v) for v in args.left_range.split(","))
+    hold_in_solve = os.environ.get("HS_HOLD_IN_SOLVE", "0") == "1"
+    if args.sample:
+        print(f"[augment] {len(names)} clips x {args.sample} SAMPLED shifts (fwd {fr}, left {lr}, seed {args.seed}) -> {out_dir}")
+    else:
+        print(f"[augment] {len(names)} clips x {len(shifts)} shifts -> {out_dir}")
+    print(f"[augment] grab hold: {'IN-SOLVE (kept in the timeline)' if hold_in_solve else 'stripped, re-solved, spliced back'}")
 
     n_ok = n_skip = 0
     for name in names:
@@ -135,13 +151,39 @@ def main():
         if F > 0 and not np.allclose(joints0[grab_idx], joints0[grab_idx + F], atol=1e-6):
             print(f"  {name}: no {F}-frame grab hold detected at {grab_idx}; refining as-is")
             F = 0
+        if hold_in_solve:
+            # Keep the hold: the refine sees it and holds the arm stationary across it (hold_len).
+            hold_len, F = F, 0
+        else:
+            hold_len = 0
         j_src = _unfreeze(joints0, grab_idx, F) if F else joints0
         bp = _unfreeze(base_pos, grab_idx, F) if F else base_pos
         bq = _unfreeze(base_quat, grab_idx, F) if F else base_quat
 
-        for (fwd, left) in shifts:
+        if args.sample:
+            # Uniform draws in the box; re-draw any the lateral band rejects (bounded attempts).
+            rng = np.random.default_rng([args.seed, int("".join(c for c in name if c.isdigit()) or 0)])
+            clip_shifts, tries = [], 0
+            while len(clip_shifts) < args.sample and tries < 50 * args.sample:
+                tries += 1
+                f_, l_ = float(rng.uniform(*fr)), float(rng.uniform(*lr))
+                d2 = _heading_delta(yaw, f_, l_)
+                lat = float(np.dot(obj0[grab_idx, :2] + d2 - base_pos[grab_idx, :2], lat_ax))
+                if band is not None and not (band[0] <= lat <= band[1]):
+                    continue
+                clip_shifts.append((f_, l_))
+            if len(clip_shifts) < args.sample:
+                print(f"  {name}: only {len(clip_shifts)}/{args.sample} draws inside the lateral band after {tries} tries")
+        else:
+            clip_shifts = shifts
+
+        for (fwd, left) in clip_shifts:
             tag = f"f{int(round(fwd * 1000)):+d}l{int(round(left * 1000)):+d}".replace("+", "p").replace("-", "m")
             out_name = f"{name[:-4]}_{tag}.pkl"
+            if args.sample:                       # mm-rounded sampled tags could collide; keep every draw
+                _k = 1
+                while os.path.exists(os.path.join(out_dir, out_name)):
+                    out_name = f"{name[:-4]}_{tag}_{_k}.pkl"; _k += 1
             obj = obj0.copy()
             delta2 = _heading_delta(yaw, fwd, left)
             obj[:, :2] += delta2[None, :]
@@ -156,7 +198,7 @@ def main():
             joints = refine_al_29.refine_arm(
                 j_src.copy(), bp, bq, obj_ref[grab_idx, :3], grab_idx, fps=20.0,
                 obj_traj=obj_ref[:, :3],
-                src_joints=j_src, palm_shift=np.array([delta2[0], delta2[1], 0.0]))
+                src_joints=j_src, palm_shift=np.array([delta2[0], delta2[1], 0.0]), hold_len=hold_len)
             if not bool(np.isfinite(joints).all()):
                 print(f"  {out_name}: SKIP non-finite refine output")
                 n_skip += 1
