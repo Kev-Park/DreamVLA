@@ -54,6 +54,16 @@ BOX_MARGIN = 0.020                          # m, added to every face
 BOX_LO_AF60 = np.array([0.073, 0.041, 0.031])
 BOX_HI_AF60 = np.array([0.136, 0.098, 0.089])
 
+# --- af60v7 calibration (hands 15/3/3, 0.603 kg; 2026-10-03) --------------------------------------
+# af60v7 seats the bottle lower in the palm than af60v2: its hold-phase z p05 is 0.006 against the
+# AF60 floor of 0.031, so the AF60 box rejected 17 of 162 af60v7 demos on rule 2 ALONE (every other
+# rule passed). Same procedure as above; source: 143 clean af60v7 episodes, 42456 frames. x is
+# unchanged, y narrows (0.057 -> 0.031), z shifts down ~2.5 cm with a similar width (0.058 -> 0.072).
+# Re-scoring the af60v7 GR00T evals with this box changes nothing (every failure also trips rule 1, 3
+# or 4); it only affects which expert episodes enter training.
+BOX_LO_AF60V7 = np.array([0.078, 0.054, 0.006])
+BOX_HI_AF60V7 = np.array([0.137, 0.084, 0.078])
+
 OBJ_REST_Z = 0.946                          # bottle centre at rest on the table (measured)
 BOTTLE_HALF_H = 0.095                       # => table top at ~0.851 m
 TABLE_TOP_Z = OBJ_REST_Z - BOTTLE_HALF_H

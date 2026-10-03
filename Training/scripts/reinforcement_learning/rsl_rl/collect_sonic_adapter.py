@@ -806,13 +806,13 @@ def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
 def score_written_episode(path, box: str) -> tuple[bool, dict]:
     """4-rule verdict on a written episode, reusing the same path as the offline filter.
 
-    box: "af60" for the post-audit calibration, "preaudit" for the original. This is explicit on
+    box: "af60" for the post-audit calibration, "af60v7" for the af60v7 grasp, "preaudit" for the original. This is explicit on
     purpose -- the pre-audit box rejects 100% of post-audit grasps (the bottle sits ~10 cm higher in
     the palm), which would make every rollout read as a failure and trigger a rescue every time.
     """
     import h5py
-    from vla_sonic.grasp_success import score, BOX_LO, BOX_HI, BOX_LO_AF60, BOX_HI_AF60
-    lo, hi = (BOX_LO_AF60, BOX_HI_AF60) if box == "af60" else (BOX_LO, BOX_HI)
+    from vla_sonic.grasp_success import score, BOX_LO, BOX_HI, BOX_LO_AF60, BOX_HI_AF60, BOX_LO_AF60V7, BOX_HI_AF60V7
+    lo, hi = {"af60": (BOX_LO_AF60, BOX_HI_AF60), "af60v7": (BOX_LO_AF60V7, BOX_HI_AF60V7)}.get(box, (BOX_LO, BOX_HI))
     with h5py.File(str(path), "r", locking=False) as h:
         g = h["data/demo_0"]
         r = score(g["obs/object_pos"][()], g["obs/object_quat"][()],
@@ -1252,7 +1252,7 @@ def main() -> None:
                         help="Sample the takeover frame from U[0, k_frac * grab_idx). 1.0 = uniform up to the "
                              "reference grasp (original rule); smaller hands over earlier, before the hand "
                              "reaches the bottle.")
-    parser.add_argument("--dagger-rescue-box", choices=("preaudit", "af60"), default=None,
+    parser.add_argument("--dagger-rescue-box", choices=("preaudit", "af60", "af60v7"), default=None,
                         help="Palm-box calibration for the failure verdict. Explicit on purpose: the wrong\n"
                              "one rejects every episode and rescues every rollout.")
     parser.add_argument("--dagger-expert-base", choices=("reference", "student"), default="reference",
@@ -1438,7 +1438,7 @@ def main() -> None:
                                                                camera_scene_key="camera_robot"))
         if args_cli.dagger_rescue:
             if args_cli.dagger_rescue_box is None:
-                raise SystemExit("--dagger-rescue requires --dagger-rescue-box {preaudit,af60}: the wrong calibration rejects every episode and rescues every rollout.")
+                raise SystemExit("--dagger-rescue requires --dagger-rescue-box {preaudit,af60,af60v7}: the wrong calibration rejects every episode and rescues every rollout.")
             if grasp_gate is not None:
                 raise SystemExit("--dagger-rescue forbids the grasp gate -- the residual's own finger head supplies the grasp label. Drop --grasp-gate.")
             if abs(float(args_cli.dagger_beta)) > 1e-9:
