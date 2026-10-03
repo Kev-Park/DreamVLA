@@ -6,9 +6,9 @@ For each clip id present in both pools:
   2. from there on the lower body and root are HELD at the footfall pose (legs + root frozen), and
      the clip is EXTENDED: TRANSITION frames, then the static clip from its hand-motion onset to
      its end (approach, grab hold, lift) -- so the static approach plays at its own timing;
-  3. waist + right arm come from the static clip (blended in over TRANSITION frames from the
-     walking pose); the right arm is re-solved by IK so the right_rubber_hand follows the static
-     clip's hand pose (position + orientation) expressed relative to the bottle and robot heading,
+  3. waist + right arm are re-solved by IK (blended in over TRANSITION frames from the walking
+     pose) so the right_rubber_hand follows the static clip's hand pose (position + orientation)
+     and the torso its torso orientation, both expressed relative to the bottle and robot heading,
      then re-anchored onto the walking clip's bottle and footfall heading;
   4. object poses: walking object until the stitch, then the static clip's object trajectory
      under the same re-anchoring; grab_idx moves to the stitched grab (its FREEZE_FOR hold is
@@ -30,7 +30,7 @@ TRANSITION = 15            # frames (20 fps) to blend waist/right arm from the w
 ONSET_MOVE = 0.03          # m, static hand displacement from its rest pose that marks the approach onset
 PLANT_BAND, PLANT_SPEED = 0.02, 0.005
 MAX_POS_ERR, MAX_YAW_ERR = 0.10, np.radians(15.0)
-IK_ITERS = 400
+IK_ITERS = 800
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 URDF = os.path.join(_HERE, "..", "..", "Training", "HumanoidVerse", "humanoidverse", "data", "robots", "g1", "g1_29dof.urdf")
@@ -70,11 +70,11 @@ def load(f, chain):
              Q=Q, O=np.asarray(d["object_poses"], dtype=np.float64), g=int(d["grab_idx"]))
     fk = chain.forward_kinematics(torch.tensor(c["J"], dtype=torch.float32))
     Rr = quat_to_R(Q)
-    for name, key in (("left_ankle_roll_link", "la"), ("right_ankle_roll_link", "ra"), (HAND, "hand")):
+    for name, key in (("left_ankle_roll_link", "la"), ("right_ankle_roll_link", "ra"), (HAND, "hand"),
+                      ("torso_link", "torso")):
         M = fk[name].get_matrix().double().numpy()
         c[key] = np.einsum("nij,nj->ni", Rr, M[:, :3, 3]) + c["P"]
-        if key == "hand":
-            c["handR"] = Rr @ M[:, :3, :3]
+        c[key + "R"] = Rr @ M[:, :3, :3]
     return c
 
 
@@ -97,29 +97,38 @@ def body_offset(c, k, w):
     return np.array([r @ F, r @ L]), np.arctan2(F[0] * b[1] - F[1] * b[0], F @ b)
 
 
-def solve_arm(chain, lim, Jfix, q0, root_P, root_R, tgt_p, tgt_R):
-    """Right-arm IK for a batch of frames; Jfix supplies legs/waist/left arm (N,29)."""
+def solve_upper(chain, lim, Jfix, q0, root_P, root_R, tgt_p, tgt_R, torso_R):
+    """Waist + right-arm IK for a batch of frames (q = [waist 3, right arm 7]); Jfix supplies legs and
+    left arm (N,29). The walking footfall pelvis is not level (roll/pitch up to ~9 deg) while the
+    static clip's is, so the waist is solved too, toward the static clip's TORSO orientation: the
+    torso then stands as it did in the static clip and the arm reproduces its reach."""
     J = torch.tensor(Jfix, dtype=torch.float32)
     q = torch.tensor(q0, dtype=torch.float32).clone().requires_grad_(True)
     q_init = q.detach().clone()
     Rr = torch.tensor(root_R, dtype=torch.float32); Pr = torch.tensor(root_P, dtype=torch.float32)
     tp = torch.tensor(tgt_p, dtype=torch.float32); tR = torch.tensor(tgt_R, dtype=torch.float32)
-    lo, hi = (torch.tensor(x[RARM], dtype=torch.float32) for x in lim)
+    tT = torch.tensor(torso_R, dtype=torch.float32)
+    idx = list(range(12, 15)) + list(range(22, 29))
+    lo, hi = (torch.tensor(x[idx], dtype=torch.float32) for x in lim)
     opt = torch.optim.Adam([q], lr=0.02)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, IK_ITERS, eta_min=1e-3)
     for _ in range(IK_ITERS):
-        Jf = torch.cat([J[:, :22], q], dim=1)
-        M = chain.forward_kinematics(Jf)[HAND].get_matrix()
+        Jf = torch.cat([J[:, :12], q[:, :3], J[:, 15:22], q[:, 3:]], dim=1)
+        fk = chain.forward_kinematics(Jf)
+        M = fk[HAND].get_matrix()
         p = torch.einsum("nij,nj->ni", Rr, M[:, :3, 3]) + Pr
         R = Rr @ M[:, :3, :3]
+        RT = Rr @ fk["torso_link"].get_matrix()[:, :3, :3]
         e_p = ((p - tp) ** 2).sum(-1)
         e_r = 3.0 - (R * tR).sum((-1, -2))                      # = 2(1 - cos angle)
+        e_t = 3.0 - (RT * tT).sum((-1, -2))
         smooth = ((q[2:] - 2 * q[1:-1] + q[:-2]) ** 2).sum(-1).mean() if len(q) > 2 else q.sum() * 0
-        loss = (100.0 * e_p + 1.0 * e_r).mean() + 1e-3 * ((q - q_init) ** 2).sum(-1).mean() + 10.0 * smooth
-        opt.zero_grad(); loss.backward(); opt.step()
+        loss = (1000.0 * e_p + 10.0 * e_r + 1.0 * e_t).mean() + 1e-3 * ((q - q_init) ** 2).sum(-1).mean() + 10.0 * smooth
+        opt.zero_grad(); loss.backward(); opt.step(); sched.step()
         with torch.no_grad():
             q.copy_(torch.max(torch.min(q, hi), lo))
-    ang = torch.arccos(torch.clamp((2.0 - e_r.detach()) / 2.0, -1, 1))
-    return q.detach().double().numpy(), e_p.detach().sqrt().numpy(), ang.numpy()
+    ang = lambda e: torch.arccos(torch.clamp((2.0 - e.detach()) / 2.0, -1, 1)).numpy()
+    return q.detach().double().numpy(), e_p.detach().sqrt().numpy(), ang(e_r), ang(e_t)
 
 
 def smoothstep(n):
@@ -149,19 +158,19 @@ def stitch(w, s, chain, lim):
     n_new = TRANSITION + len(seg)
     tgt_p = np.concatenate([np.repeat(mp(s["hand"][on:on + 1]), TRANSITION, 0), mp(s["hand"][seg])])
     tgt_R = np.concatenate([np.repeat(Rz @ s["handR"][on:on + 1], TRANSITION, 0), Rz @ s["handR"][seg]])
+    tor_R = np.concatenate([np.repeat(Rz @ s["torsoR"][on:on + 1], TRANSITION, 0), Rz @ s["torsoR"][seg]])
 
-    # body over the new section: legs/root/left arm held at the footfall, waist from the static clip
+    # body over the new section: legs/root/left arm held at the footfall; waist + right arm by IK
     Jn = np.repeat(w["J"][fw:fw + 1], n_new, 0)
-    Jn[TRANSITION:, WAIST] = s["J"][seg][:, WAIST]
-    Jn[:TRANSITION, WAIST] = s["J"][on, WAIST]
-    q0 = np.concatenate([np.repeat(s["J"][on:on + 1, RARM], TRANSITION, 0), s["J"][seg][:, RARM]])
+    up = np.concatenate([s["J"][:, WAIST], s["J"][:, RARM]], 1)
+    q0 = np.concatenate([np.repeat(up[on:on + 1], TRANSITION, 0), up[seg]])
     Pn = np.repeat(w["P"][fw:fw + 1], n_new, 0); Qn = np.repeat(w["Q"][fw:fw + 1], n_new, 0)
     # IK the static path (incl. the held start pose); the transition is then blended in joint space
-    qa, ep, er = solve_arm(chain, lim, Jn, q0, Pn, quat_to_R(Qn), tgt_p, tgt_R)
+    qa, ep, er, et = solve_upper(chain, lim, Jn, q0, Pn, quat_to_R(Qn), tgt_p, tgt_R, tor_R)
     b = smoothstep(TRANSITION)[:, None]
-    Jn[:, RARM] = qa
-    Jn[:TRANSITION, RARM] = (1 - b) * w["J"][fw, RARM] + b * qa[TRANSITION]
-    Jn[:TRANSITION, WAIST] = (1 - b) * w["J"][fw, WAIST] + b * s["J"][on, WAIST]
+    q_w = np.concatenate([w["J"][fw, WAIST], w["J"][fw, RARM]])
+    qa[:TRANSITION] = (1 - b) * q_w + b * qa[TRANSITION]
+    Jn[:, WAIST] = qa[:, :3]; Jn[:, RARM] = qa[:, 3:]
 
     On = np.concatenate([np.repeat(w["O"][fw:fw + 1], TRANSITION, 0),
                          np.concatenate([mp(s["O"][seg, :3]), quat_mul(qz, s["O"][seg, 3:])], 1)])
@@ -173,6 +182,7 @@ def stitch(w, s, chain, lim):
                 ik_pos_cm=100 * float(ep[TRANSITION:k_g + 1].max()),
                 ik_pos_cm_post=100 * float(ep[k_g:].max()),
                 ik_rot_deg=float(np.degrees(er[TRANSITION:k_g + 1].max())),
+                torso_deg=float(np.degrees(et[TRANSITION:].max())),
                 obj_jump_cm=100 * float(np.linalg.norm(On[TRANSITION, :3] - w["O"][fw, :3])))
     pkl = {"global_pose": jaxlie.SE3.from_rotation_and_translation(jaxlie.SO3(jnp.array(Q)), jnp.array(P)),
            "joints": torch.tensor(J, dtype=torch.float32),
@@ -195,8 +205,8 @@ def main():
     if ids:
         names = [n for n in names if n.split("_")[1] in ids or n in ids]
     os.makedirs(odir, exist_ok=True)
-    print("%-9s %4s %4s %5s %6s %9s %9s %9s %11s %10s %8s" % ("clip", "ff", "on", "dpos", "dyaw", "len",
-          "grab", "ik_pos_cm", "ik_post_cm", "ik_rot_deg", "objjump"))
+    print("%-9s %4s %4s %5s %6s %9s %9s %9s %11s %10s %9s %8s" % ("clip", "ff", "on", "dpos", "dyaw", "len",
+          "grab", "ik_pos_cm", "ik_post_cm", "ik_rot_deg", "torso_deg", "objjump"))
     nw = 0
     for n in names:
         pkl, info = stitch(load(W[n], chain), load(S[n], chain), chain, lim)
@@ -207,10 +217,10 @@ def main():
         with open(os.path.join(odir, n + ".pkl"), "wb") as f:
             pickle.dump(pkl, f)
         nw += 1
-        print("%-9s %4d %4d %5.1f %6.1f %3d->%3d %3d->%3d %9.2f %11.2f %10.1f %8.2f" % (
+        print("%-9s %4d %4d %5.1f %6.1f %3d->%3d %3d->%3d %9.2f %11.2f %10.1f %9.1f %8.2f" % (
             n, info["footfall"], info["onset"], 100 * info["dpos"], info["dyaw"], info["n_old"], info["n_new"],
             info["g_old"], info["g_new"], info["ik_pos_cm"], info["ik_pos_cm_post"], info["ik_rot_deg"],
-            info["obj_jump_cm"]))
+            info["torso_deg"], info["obj_jump_cm"]))
     print("wrote %d/%d clips -> %s" % (nw, len(names), odir))
 
 
