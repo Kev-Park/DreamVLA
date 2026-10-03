@@ -172,6 +172,13 @@ parser.add_argument(
          "reference vs the unparsed retarget it came from). Motion ids are matched by position "
          "in the sorted file list, so both dirs must hold the same pick_<id>.pkl set.")
 parser.add_argument(
+    "--overlay-ref-align-grab", action="store_true", default=False,
+    help="With --overlay-ref-path: match the comparison clip by FILE NAME (not list position), shift "
+         "it in time so its grab frame coincides with the primary's, and move it rigidly about the "
+         "bottle (yaw by the root-heading difference at the grab, translate its grab-time object "
+         "onto the primary's). The overlay is then drawn in the bottle + root-heading frame used to "
+         "compare a stitched walking pick against its static source clip.")
+parser.add_argument(
     "--overlay-ref", action="store_true", default=True,
     help="Draw the tracked REFERENCE motion as an overlay on top of the (physics) residual "
          "playback: 39 spheres at the reference link world positions, updated every frame "
@@ -589,15 +596,39 @@ def _load_alt_motion_lib(env, path, device):
     return lib
 
 
+def _yaw_wxyz(q):
+    return torch.atan2(2 * (q[..., 0] * q[..., 3] + q[..., 1] * q[..., 2]),
+                       1 - 2 * (q[..., 2] ** 2 + q[..., 3] ** 2))
+
+
 def _update_alt_overlay_markers(env, lib, markers, marker_indices, device):
-    """Draw the comparison dataset's keypoints at the same motion time as the primary."""
+    """Draw the comparison dataset's keypoints at the same motion time as the primary, or -- with
+    --overlay-ref-align-grab -- grab-aligned in the bottle + root-heading frame."""
     unw = env.unwrapped
     with torch.inference_mode():
         t = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
             device=device, dtype=torch.float32)
-        ids = torch.clamp(unw.motion_ids, max=lib.num_motions() - 1)
-        res = lib.get_motion_state(ids, t)
-        gk = res["global_keypts"].to(device) + unw.scene.env_origins.unsqueeze(1)
+        if not args_cli.overlay_ref_align_grab:
+            ids = torch.clamp(unw.motion_ids, max=lib.num_motions() - 1)
+            res = lib.get_motion_state(ids, t)
+            gk = res["global_keypts"].to(device) + unw.scene.env_origins.unsqueeze(1)
+        else:
+            if not hasattr(lib, "_name_to_id"):
+                lib._name_to_id = {os.path.basename(str(f)): i for i, f in enumerate(lib._motion_data_load)}
+            pml = unw.motion_lib
+            pid = unw.motion_ids[:1]
+            aid = torch.tensor([lib._name_to_id[os.path.basename(str(pml._motion_data_load[int(pid)]))]],
+                               device=device, dtype=torch.long)
+            pg = pml.switch_idxs[pid] * pml._motion_dt[pid]          # primary grab time (s)
+            ag = lib.switch_idxs[aid] * lib._motion_dt[aid]          # comparison grab time (s)
+            rp = pml.get_motion_state(pid, pg); ra = lib.get_motion_state(aid, ag)
+            dyaw = _yaw_wxyz(rp["root_rot"]) - _yaw_wxyz(ra["root_rot"])
+            c, s_ = torch.cos(dyaw), torch.sin(dyaw)
+            Rz = torch.stack([torch.cat([c, -s_, torch.zeros_like(c)]), torch.cat([s_, c, torch.zeros_like(c)]),
+                              torch.tensor([0.0, 0.0, 1.0], device=device)]).to(device)
+            a_anchor = ra["object_poses"][0, :3]; p_anchor = rp["object_poses"][0, :3]
+            res = lib.get_motion_state(aid, torch.clamp(t[:1] - pg + ag, min=0.0))
+            gk = ((res["global_keypts"][0] - a_anchor) @ Rz.T + p_anchor).unsqueeze(0)                 + unw.scene.env_origins[:1].unsqueeze(1)
     markers.visualize(translations=gk[0],
                       marker_indices=torch.tensor(marker_indices, device=device, dtype=torch.long))
 
