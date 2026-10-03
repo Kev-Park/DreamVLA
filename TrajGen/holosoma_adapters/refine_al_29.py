@@ -983,13 +983,19 @@ def _palm_path_of(joints_t, trans, quats):
 
 
 def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0, verbose=False, obj_traj=None,
-               src_joints=None, palm_shift=None):
+               src_joints=None, palm_shift=None, hold_len=0):
     """AL right-arm refinement on the CORE motion (before Adapter B's grab-hold/lead-in).
 
     joints (F,29) JointNamesOrder-29, base_pos (F,3), base_quat (F,4 wxyz), grab_pos_obj (3,)
     holosoma object xyz, grab_idx_in int. Returns refined joints (F,29) numpy with only the
     right-arm cols (22-28) changed. Runs on DEVICE (GPU strongly recommended: ~12k Adam steps).
     Logic is verbatim from refine_motions_al.py's per-motion setup + AL outer/inner loop.
+
+    hold_len > 0 (HS_HOLD_IN_SOLVE): the caller has ALREADY inserted a hold_len-frame grab hold at
+    grab_idx (frames grab_idx .. grab_idx+hold_len identical in the inputs). The arm is then kept
+    stationary over that window INSIDE the solve -- projected onto its window mean after every Adam
+    step, like the lead-in pin -- so the speed/accel/jerk terms shape the deceleration into the stop
+    and the acceleration out of it, instead of the hold being spliced in after the refine.
     """
     global target_joint_angles, active_joint_names, inactive_joint_ids, joint_names
     global fk_results_ref, grab_idx, grab_pos, capsule_obs_pos, ref_dists, traj_fps_hz
@@ -1138,6 +1144,12 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
 
     joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone())
     _pinned_head = (joint_angles.detach()[:PIN_FIRST_N].clone() if PIN_FIRST_N > 0 else None)
+    _h0, _h1 = int(grab_idx), int(grab_idx) + int(hold_len) + 1           # hold window [_h0, _h1)
+    _hold_on = int(hold_len) > 0 and _h1 <= joint_angles.shape[0]
+    if _hold_on:
+        with torch.no_grad():
+            joint_angles[_h0:_h1] = joint_angles[_h0:_h1].mean(0, keepdim=True)
+        print(f"[refine-al] hold-in-solve: arm held stationary over frames {_h0}..{_h1 - 1} ({hold_len} hold frames)")
 
     # --- Augmented Lagrangian optimisation (outer: dual/rho update; inner: Adam) ---
     lambda_table = torch.zeros(joint_angles.shape[0], device=DEVICE)
@@ -1166,6 +1178,10 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
                 # a penalty; the frames simply are not decision variables any more).
                 with torch.no_grad():
                     joint_angles[:PIN_FIRST_N] = _pinned_head
+            if _hold_on:
+                # Exact projection onto "arm stationary over the hold window" (zero arm velocity).
+                with torch.no_grad():
+                    joint_angles[_h0:_h1] = joint_angles[_h0:_h1].mean(0, keepdim=True)
         g_curr = _last_g_t
         g_curr_wrist = _last_g_cap_wrist
         g_curr_dof_speed = _last_g_dof_speed

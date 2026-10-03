@@ -340,14 +340,6 @@ if REFINE_AFTER_LEADIN and not NO_LEADIN:
 # refine_motions_al.py: swept-quad table, tip/wrist speed-accel-jerk, hard DOF speed limits,
 # laziness, outward-swing approach shaping) -> smooth reaches, no fast punch-through.
 # HS_REFINE_MODE=simple: the lightweight per-frame penetration refine (refine_right_arm_table).
-if REFINE_ARM and 0 < grab_idx < F:
-    _mode = os.environ.get("HS_REFINE_MODE", "al")
-    if _mode == "al":
-        import refine_al_29
-        joints = refine_al_29.refine_arm(joints, base_pos, base_quat, obj_pos[grab_idx], grab_idx, fps=20.0, obj_traj=obj_pos)
-    else:
-        joints = refine_right_arm_table(joints, base_pos, base_quat, grab_idx, chain)
-
 # --- FREEZE_FOR grab hold (length-preserving) ---
 def freeze_hold(a):
     # len(a), not the load-time F: under HS_REFINE_AFTER_LEADIN the lead-in is already prepended
@@ -357,8 +349,28 @@ def freeze_hold(a):
         a[grab_idx + FREEZE_FOR:] = a[grab_idx:n - FREEZE_FOR]
         a[grab_idx:grab_idx + FREEZE_FOR] = a[grab_idx]
     return a
-base_pos = freeze_hold(base_pos); base_quat = freeze_hold(base_quat); joints = freeze_hold(joints)
-obj_pos = freeze_hold(obj_pos); obj_quat = freeze_hold(obj_quat)   # keep the object aligned with the grab-hold
+
+# HS_HOLD_IN_SOLVE=1: insert the grab hold BEFORE the AL refine and let the solver hold the arm
+# stationary across it (refine_arm hold_len), so the arm decelerates into and accelerates out of the
+# stop smoothly. Default (unset) is the original order: refine, then splice the hold in afterwards --
+# the solver never sees the stop, which leaves a ~4 cm/frame -> 0 -> ~4 cm/frame palm discontinuity.
+HOLD_IN_SOLVE = os.environ.get("HS_HOLD_IN_SOLVE", "0") == "1" and FREEZE_FOR > 0
+if HOLD_IN_SOLVE:
+    base_pos = freeze_hold(base_pos); base_quat = freeze_hold(base_quat); joints = freeze_hold(joints)
+    obj_pos = freeze_hold(obj_pos); obj_quat = freeze_hold(obj_quat)
+
+if REFINE_ARM and 0 < grab_idx < F:
+    _mode = os.environ.get("HS_REFINE_MODE", "al")
+    if _mode == "al":
+        import refine_al_29
+        joints = refine_al_29.refine_arm(joints, base_pos, base_quat, obj_pos[grab_idx], grab_idx, fps=20.0, obj_traj=obj_pos,
+                                         hold_len=FREEZE_FOR if HOLD_IN_SOLVE else 0)
+    else:
+        joints = refine_right_arm_table(joints, base_pos, base_quat, grab_idx, chain)
+
+if not HOLD_IN_SOLVE:
+    base_pos = freeze_hold(base_pos); base_quat = freeze_hold(base_quat); joints = freeze_hold(joints)
+    obj_pos = freeze_hold(obj_pos); obj_quat = freeze_hold(obj_quat)   # keep the object aligned with the grab-hold
 
 # --- legacy path: lead-in AFTER the refine (unchanged when HS_REFINE_AFTER_LEADIN=0) ---
 if not NO_LEADIN and not REFINE_AFTER_LEADIN:
