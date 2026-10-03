@@ -1,8 +1,10 @@
 """Stitch a static-spawn pick (e.g. Holosoma_Pick_29_latband60) hand trajectory into a walking pick.
 
 For each clip id present in both pools:
-  1. keep the walking clip up to its FINAL FOOTFALL (first frame from which both ankles stay
-     planted through the grab: within 2 cm of their lowest height and moving < 5 mm/frame);
+  1. keep the walking clip's legs/root/waist up to its FINAL FOOTFALL (first frame from which both
+     ankles stay planted through the grab: within 2 cm of their lowest height and moving < 5 mm/frame);
+     its right arm is replaced by the static clip's pre-reach arm (lead-in, then rest pose), because
+     the walking reference reaches for the bottle while still stepping;
   2. from there on the lower body and root are HELD at the footfall pose (legs + root frozen), and
      the clip is EXTENDED: TRANSITION frames, then the static clip from its hand-motion onset to
      its end (approach, grab hold, lift) -- so the static approach plays at its own timing;
@@ -30,7 +32,7 @@ TRANSITION = 15            # frames (20 fps) to blend waist/right arm from the w
 ONSET_MOVE = 0.03          # m, static hand displacement from its rest pose that marks the approach onset
 PLANT_BAND, PLANT_SPEED = 0.02, 0.005
 MAX_POS_ERR, MAX_YAW_ERR = 0.10, np.radians(15.0)
-IK_ITERS = 800
+IK_ITERS = 1200
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 URDF = os.path.join(_HERE, "..", "..", "Training", "HumanoidVerse", "humanoidverse", "data", "robots", "g1", "g1_29dof.urdf")
@@ -123,7 +125,7 @@ def solve_upper(chain, lim, Jfix, q0, root_P, root_R, tgt_p, tgt_R, torso_R):
         e_r = 3.0 - (R * tR).sum((-1, -2))                      # = 2(1 - cos angle)
         e_t = 3.0 - (RT * tT).sum((-1, -2))
         smooth = ((q[2:] - 2 * q[1:-1] + q[:-2]) ** 2).sum(-1).mean() if len(q) > 2 else q.sum() * 0
-        loss = (1000.0 * e_p + 10.0 * e_r + 1.0 * e_t).mean() + 1e-3 * ((q - q_init) ** 2).sum(-1).mean() + 10.0 * smooth
+        loss = (1000.0 * e_p + 30.0 * e_r + 1.0 * e_t).mean() + 1e-3 * ((q - q_init) ** 2).sum(-1).mean() + 10.0 * smooth
         opt.zero_grad(); loss.backward(); opt.step(); sched.step()
         with torch.no_grad():
             q.copy_(torch.max(torch.min(q, hi), lo))
@@ -168,13 +170,19 @@ def stitch(w, s, chain, lim):
     # IK the static path (incl. the held start pose); the transition is then blended in joint space
     qa, ep, er, et = solve_upper(chain, lim, Jn, q0, Pn, quat_to_R(Qn), tgt_p, tgt_R, tor_R)
     b = smoothstep(TRANSITION)[:, None]
-    q_w = np.concatenate([w["J"][fw, WAIST], w["J"][fw, RARM]])
+    # walking phase: the right arm follows the STATIC clip's own pre-reach arm (its lead-in, then its
+    # rest pose held until the footfall). The walking reference's arm already reaches for the bottle
+    # while still stepping, and kinematic replay showed that reach sweeping through the bottle before
+    # the footfall in 17/57 clips; the static approach starts from this rest pose anyway.
+    Jw = w["J"][:fw].copy()
+    Jw[:, RARM] = s["J"][np.minimum(np.arange(fw), on), RARM]
+    q_w = np.concatenate([w["J"][fw, WAIST], s["J"][min(fw, on), RARM]])
     qa[:TRANSITION] = (1 - b) * q_w + b * qa[TRANSITION]
     Jn[:, WAIST] = qa[:, :3]; Jn[:, RARM] = qa[:, 3:]
 
     On = np.concatenate([np.repeat(w["O"][fw:fw + 1], TRANSITION, 0),
                          np.concatenate([mp(s["O"][seg, :3]), quat_mul(qz, s["O"][seg, 3:])], 1)])
-    J = np.concatenate([w["J"][:fw], Jn]); P = np.concatenate([w["P"][:fw], Pn])
+    J = np.concatenate([Jw, Jn]); P = np.concatenate([w["P"][:fw], Pn])
     Q = np.concatenate([w["Q"][:fw], Qn]); O = np.concatenate([w["O"][:fw], On])
     g_new = fw + TRANSITION + (gs - on)
     k_g = g_new - fw
