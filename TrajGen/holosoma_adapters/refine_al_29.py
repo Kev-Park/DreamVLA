@@ -229,6 +229,12 @@ HAND_TORSO_SEGMENT_RADIUS = 0.04
 TORSO_CYLINDER_TOP_EXTENSION = 0.35
 TORSO_COLLISIONS_ENABLED = False
 HAND_APPROACH_SOFT_WEIGHT = float(os.environ.get("HS_HAND_APPROACH_W", "3000.0")) # rightward-gate bias
+# HS_GATE_FADE_FRAMES=K (default 0 = off): fade the approach-gate weight 1 -> 0 (smootherstep) over the
+# last K frames before grab_idx. Measured (causal ablation, 6 clips): with the gates active right up to
+# grab_idx the refined arm parks ~11 frames early and then lunges into the grab frame (0.51 rad/frame
+# vs 0.09 in the raw retarget); with the gates off the lunge disappears and the palm pull alone brings
+# the hand in at the raw speed. The palm pull is NOT faded.
+GATE_FADE_FRAMES = int(os.environ.get("HS_GATE_FADE_FRAMES", "0"))
 
 WRIST_GRAB_CHARB_WEIGHT = float(os.environ.get("HS_CHARB_W", "30.0")) # palm-to-object Charbonnier weight (final approach + hold)
 # (Charbonnier knee removed in v13 — the Gaussian-well pull's quadratic basin IS the landing zone.)
@@ -940,6 +946,11 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                     cost2[1:] += pull_ramp * spring
 
                 approach_term = HAND_APPROACH_SOFT_WEIGHT * pre_ramp * approach_pen
+                if GATE_FADE_FRAMES > 0:
+                    # frame_ids = 1 .. grab_idx-1; weight 1 until grab_idx-K, smootherstep to 0 at grab_idx-1
+                    _f0 = float(grab_idx - GATE_FADE_FRAMES)
+                    _fade = 1.0 - _smooth01((frame_ids - _f0) / float(max(GATE_FADE_FRAMES - 1, 1)))
+                    approach_term = approach_term * _fade
                 cost2[1:grab_idx] += approach_term
                 approach_soft_contrib += torch.sum(approach_term) * inv_n_frames
         else:
