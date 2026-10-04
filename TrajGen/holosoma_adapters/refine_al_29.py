@@ -235,6 +235,13 @@ HAND_APPROACH_SOFT_WEIGHT = float(os.environ.get("HS_HAND_APPROACH_W", "3000.0")
 # vs 0.09 in the raw retarget); with the gates off the lunge disappears and the palm pull alone brings
 # the hand in at the raw speed. The palm pull is NOT faded.
 GATE_FADE_FRAMES = int(os.environ.get("HS_GATE_FADE_FRAMES", "0"))
+# HS_HOLD_DECEL_FRAMES=D / HS_HOLD_DECEL_W=W (only with an in-solve hold; D=0 = off): penalise arm joint
+# speed over the D frames before the hold, weight ramping 0 -> W (smootherstep) at the frame before the
+# stop. The gate fade alone only PERMITS the arm to slow down; with shifted objects it still arrived at
+# the stop above the 6 rad/s cap (58% of variants at fade 10, 22% at fade 15, always at grab_idx-1).
+HOLD_DECEL_FRAMES = int(os.environ.get("HS_HOLD_DECEL_FRAMES", "0"))
+HOLD_DECEL_W = float(os.environ.get("HS_HOLD_DECEL_W", "300.0"))
+_HOLD_LEN_ACTIVE = 0          # set by refine_arm when an in-solve hold is active
 
 WRIST_GRAB_CHARB_WEIGHT = float(os.environ.get("HS_CHARB_W", "30.0")) # palm-to-object Charbonnier weight (final approach + hold)
 # (Charbonnier knee removed in v13 — the Gaussian-well pull's quadratic basin IS the landing zone.)
@@ -422,6 +429,14 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     # joint_angles are in rad/frame, so convert with current trajectory FPS.
     dt = 1.0 / float(traj_fps_hz)
     joint_speed_rad_s = torch.abs(joint_angles[1:] - joint_angles[:-1]) / dt  # (T-1, 7)
+    hold_decel = torch.zeros((), device=joint_angles.device, dtype=joint_angles.dtype)
+    if _HOLD_LEN_ACTIVE > 0 and HOLD_DECEL_FRAMES > 0:
+        # velocities v[t] = q[t+1]-q[t] for t in [grab_idx-D, grab_idx-1]: the D steps arriving at the hold
+        _d0 = max(int(grab_idx) - HOLD_DECEL_FRAMES, 1)
+        _v = joint_angles[_d0 + 1:grab_idx + 1] - joint_angles[_d0:grab_idx]            # rad/frame
+        _tt = torch.arange(_v.shape[0], device=joint_angles.device, dtype=joint_angles.dtype)
+        _r = _smooth01((_tt + 1.0) / float(max(_v.shape[0], 1)))                          # -> 1 at grab-1
+        hold_decel = HOLD_DECEL_W * (_r * (_v ** 2).sum(dim=1)).sum() / float(joint_angles.shape[0])
     dof_limit_vec = torch.tensor(
         [RIGHT_ARM_SPEED_LIMITS[name] for name in active_joint_names],
         device=joint_angles.device,
@@ -957,7 +972,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             continue
 
     mean_cost2 = torch.mean(cost2)
-    total_cost = l2_cost + mean_cost2 + dof_speed_hard_cost + jlim_hard_cost + wband_hard_cost + aug_curv
+    total_cost = l2_cost + mean_cost2 + dof_speed_hard_cost + jlim_hard_cost + wband_hard_cost + aug_curv + hold_decel
     _last_cost_terms = {
         "total": total_cost.detach(),
         "l2": l2_cost.detach(),
@@ -1011,7 +1026,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     global target_joint_angles, active_joint_names, inactive_joint_ids, joint_names
     global fk_results_ref, grab_idx, grab_pos, capsule_obs_pos, ref_dists, traj_fps_hz
     global active_joint_ids, init_joint_angles, palm_target, palm_target_traj, jlim_lo, jlim_hi, obj_grab_x
-    global aug_palm_path, aug_src_active, aug_hand_R_src
+    global aug_palm_path, aug_src_active, aug_hand_R_src, _HOLD_LEN_ACTIVE
 
     joint_names = JOINT_NAMES_29
     init_joint_angles = INIT_29
@@ -1157,10 +1172,12 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     _pinned_head = (joint_angles.detach()[:PIN_FIRST_N].clone() if PIN_FIRST_N > 0 else None)
     _h0, _h1 = int(grab_idx), int(grab_idx) + int(hold_len) + 1           # hold window [_h0, _h1)
     _hold_on = int(hold_len) > 0 and _h1 <= joint_angles.shape[0]
+    _HOLD_LEN_ACTIVE = int(hold_len) if _hold_on else 0
     if _hold_on:
         with torch.no_grad():
             joint_angles[_h0:_h1] = joint_angles[_h0:_h1].mean(0, keepdim=True)
-        print(f"[refine-al] hold-in-solve: arm held stationary over frames {_h0}..{_h1 - 1} ({hold_len} hold frames)")
+        print(f"[refine-al] hold-in-solve: arm held stationary over frames {_h0}..{_h1 - 1} ({hold_len} hold frames)"
+              f"{f'; decel D={HOLD_DECEL_FRAMES} W={HOLD_DECEL_W:g}' if HOLD_DECEL_FRAMES > 0 else ''}")
 
     # --- Augmented Lagrangian optimisation (outer: dual/rho update; inner: Adam) ---
     lambda_table = torch.zeros(joint_angles.shape[0], device=DEVICE)
