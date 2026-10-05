@@ -1,18 +1,24 @@
-"""Merge N shard LeRobot datasets (v2.1) into one.
+"""Merge LeRobot v2.1 shard datasets into the dataset a single-process conversion would have written.
 
-    python merge_lerobot.py --shards SHARD0 SHARD1 ... --out MERGED [--name NAME]
+    python merge_lerobot.py --shards SHARD0 SHARD1 ... --out MERGED
 
-Why merging is not just renaming files:
-  * every episode parquet carries an ``episode_index`` column and a GLOBAL ``index`` column;
-    both must be rewritten, or the merged dataset silently mislabels frames.
-  * ``meta/stats.json`` carries q01/q99, which CANNOT be aggregated from ``episodes_stats.jsonl``
-    (those hold only count/max/mean/min/std). GR00T normalises on exactly those percentiles, so
-    this script deliberately does NOT write stats.json -- run gr00t's own ``generate_stats()`` on
-    the merged root afterwards, which recomputes them from the merged parquet the same way a
-    single-process conversion would (see gr00t/data/stats.py:92).
+The shards must come from convert_isaac_hdf5_to_lerobot.py run over CONTIGUOUS slices of the same
+sorted input list, given here in input order (convert_sharded.sh does exactly that). The converter
+sorts its inputs globally, so concatenating such shards reproduces the single-process episode order,
+and the only thing that differs is the numbering -- every shard starts at episode 0 / frame 0. Per
+episode this rewrites:
+  * the parquet's ``episode_index`` and global ``index`` columns, written back with the same
+    ``datasets.Dataset.to_parquet`` writer LeRobot uses (same schema + embedded HF features);
+  * the video's file name (copied byte for byte, never re-encoded);
+  * its episodes.jsonl / episodes_stats.jsonl lines -- the stats of ``episode_index`` and ``index``
+    are recomputed with LeRobot's own ``compute_episode_stats`` on the offset arrays, built exactly
+    as the exporter builds them, so they match bit for bit;
+and writes info.json with the merged totals via LeRobot's ``write_json``.
 
-Everything else -- episodes.jsonl, episodes_stats.jsonl, tasks.jsonl, info.json totals -- is a
-concatenate-and-renumber.
+stats.json and relative_stats.json are deliberately NOT written (and never copied from a shard):
+the converter does not write them; GR00T's generate_stats()/generate_rel_stats() compute them from
+the parquet at fine-tune time over the WHOLE dataset. A shard's copy would carry that shard's
+q01/q99 and be accepted as valid, silently mis-normalising training.
 """
 
 from __future__ import annotations
@@ -20,106 +26,94 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from pathlib import Path
 
-import pandas as pd
+import datasets
+import jsonlines
+import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+from lerobot.common.datasets.compute_stats import compute_episode_stats
+from lerobot.common.datasets.utils import serialize_dict, write_json
 
 
-def read_jsonl(p: Path) -> list[dict]:
-    if not p.exists():
-        return []
-    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+def _jsonl(p: Path) -> list[dict]:
+    with jsonlines.open(p) as r:
+        return list(r)
 
 
-def write_jsonl(p: Path, rows: list[dict]) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--shards", nargs="+", required=True, help="shard dataset roots, in order")
-    ap.add_argument("--out", required=True)
-    args = ap.parse_args()
-
-    shards = [Path(s).expanduser() for s in args.shards]
-    out = Path(args.out).expanduser()
+def merge(shards: list[Path], out: Path) -> None:
     if out.exists():
-        shutil.rmtree(out)
-    (out / "data" / "chunk-000").mkdir(parents=True)
+        sys.exit(f"{out} exists; refusing to overwrite")
+    infos = [json.loads((s / "meta" / "info.json").read_text()) for s in shards]
+    base = infos[0]
+    for s, inf in zip(shards, infos):
+        for k in ("features", "fps", "codebase_version", "robot_type", "chunks_size", "script_config",
+                  "data_path", "video_path"):
+            if inf.get(k) != base.get(k):
+                sys.exit(f"{s}: info['{k}'] differs from shard 0 -- not shards of one conversion")
+        if inf.get("discarded_episode_indices"):
+            sys.exit(f"{s}: has discarded episodes; merging those is not supported")
+        if (s / "meta" / "tasks.jsonl").read_bytes() != (shards[0] / "meta" / "tasks.jsonl").read_bytes():
+            sys.exit(f"{s}: tasks.jsonl differs from shard 0")
+
+    feats, chunks_size = base["features"], base["chunks_size"]
+    data_tpl, video_tpl = base["data_path"], base.get("video_path")
+    video_keys = [k for k, v in feats.items() if v["dtype"] == "video"]
+    stat_feats = {k: {**feats[k], "shape": tuple(feats[k]["shape"])} for k in ("episode_index", "index")}
+
     (out / "meta").mkdir(parents=True)
+    shutil.copy2(shards[0] / "meta" / "tasks.jsonl", out / "meta" / "tasks.jsonl")
+    if (shards[0] / "meta" / "modality.json").exists():
+        shutil.copy2(shards[0] / "meta" / "modality.json", out / "meta" / "modality.json")
+    ep_w = jsonlines.open(out / "meta" / "episodes.jsonl", "w")
+    st_w = jsonlines.open(out / "meta" / "episodes_stats.jsonl", "w")
 
-    base_info = json.loads((shards[0] / "meta" / "info.json").read_text())
-    data_tpl = base_info["data_path"]          # e.g. data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet
-    video_tpl = base_info.get("video_path")
-    video_keys = [k for k, v in base_info["features"].items() if v.get("dtype") == "video"]
-
-    ep_rows: list[dict] = []
-    stat_rows: list[dict] = []
-    tasks: list[dict] = []
-    task_seen: dict[str, int] = {}
-    new_idx = 0
-    global_index = 0
-    total_frames = 0
-
-    for sh in shards:
-        s_eps = {r["episode_index"]: r for r in read_jsonl(sh / "meta" / "episodes.jsonl")}
-        s_stats = {r["episode_index"]: r for r in read_jsonl(sh / "meta" / "episodes_stats.jsonl")}
-        for t in read_jsonl(sh / "meta" / "tasks.jsonl"):
-            if t["task"] not in task_seen:
-                task_seen[t["task"]] = len(tasks)
-                tasks.append({"task_index": len(tasks), "task": t["task"]})
-
-        for old_idx in sorted(s_eps):
-            src = sh / data_tpl.format(episode_chunk=0, episode_index=old_idx)
-            df = pd.read_parquet(src)
-            n = len(df)
-            df["episode_index"] = new_idx
-            df["index"] = range(global_index, global_index + n)     # GLOBAL frame index
-            if "task_index" in df.columns:
-                # single-task datasets here, but remap defensively via the episode's task name
-                tname = s_eps[old_idx]["tasks"][0]
-                df["task_index"] = task_seen[tname]
-            dst = out / data_tpl.format(episode_chunk=0, episode_index=new_idx)
+    g_ep = g_frame = 0
+    for s in shards:
+        eps = sorted(_jsonl(s / "meta" / "episodes.jsonl"), key=lambda e: e["episode_index"])
+        sts = {e["episode_index"]: e["stats"] for e in _jsonl(s / "meta" / "episodes_stats.jsonl")}
+        for e in eps:
+            li, n = e["episode_index"], e["length"]
+            src = s / data_tpl.format(episode_chunk=li // chunks_size, episode_index=li)
+            dst = out / data_tpl.format(episode_chunk=g_ep // chunks_size, episode_index=g_ep)
             dst.parent.mkdir(parents=True, exist_ok=True)
-            df.to_parquet(dst, index=False)
-
-            for key in video_keys:
-                vs = sh / video_tpl.format(episode_chunk=0, video_key=key, episode_index=old_idx)
-                vd = out / video_tpl.format(episode_chunk=0, video_key=key, episode_index=new_idx)
+            tbl = pq.read_table(src)
+            if tbl.num_rows != n:
+                sys.exit(f"{src}: {tbl.num_rows} rows but episodes.jsonl says {n}")
+            ep_arr = np.full((n,), g_ep)                      # exactly as the exporter builds them
+            ix_arr = np.arange(g_frame, g_frame + n)
+            for col, arr in (("episode_index", ep_arr), ("index", ix_arr)):
+                i = tbl.schema.get_field_index(col)
+                f = tbl.schema.field(i)
+                tbl = tbl.set_column(i, f, pa.array(arr, type=f.type))
+            datasets.Dataset(tbl).to_parquet(str(dst))
+            for vk in video_keys:
+                vs = s / video_tpl.format(episode_chunk=li // chunks_size, video_key=vk, episode_index=li)
+                vd = out / video_tpl.format(episode_chunk=g_ep // chunks_size, video_key=vk, episode_index=g_ep)
                 vd.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(vs, vd)
+            ep_w.write({"episode_index": g_ep, "tasks": e["tasks"], "length": n})
+            fresh = serialize_dict(compute_episode_stats({"episode_index": ep_arr, "index": ix_arr}, stat_feats))
+            st_w.write({"episode_index": g_ep, "stats": {k: fresh.get(k, v) for k, v in sts[li].items()}})
+            g_ep += 1
+            g_frame += n
+    ep_w.close()
+    st_w.close()
 
-            row = dict(s_eps[old_idx]); row["episode_index"] = new_idx
-            ep_rows.append(row)
-            if old_idx in s_stats:
-                srow = dict(s_stats[old_idx]); srow["episode_index"] = new_idx
-                stat_rows.append(srow)
-
-            new_idx += 1
-            global_index += n
-            total_frames += n
-
-    write_jsonl(out / "meta" / "episodes.jsonl", ep_rows)
-    write_jsonl(out / "meta" / "episodes_stats.jsonl", stat_rows)
-    write_jsonl(out / "meta" / "tasks.jsonl", tasks)
-    for extra in ("modality.json", "relative_stats.json"):
-        src = shards[0] / "meta" / extra
-        if src.exists():
-            shutil.copy2(src, out / "meta" / extra)
-
-    info = dict(base_info)
-    info["total_episodes"] = new_idx
-    info["total_frames"] = total_frames
-    info["total_videos"] = new_idx * max(len(video_keys), 1)
-    info["total_tasks"] = len(tasks)
-    info["total_chunks"] = 1
-    info["splits"] = {"train": f"0:{new_idx}"}
-    (out / "meta" / "info.json").write_text(json.dumps(info, indent=4))
-
-    print(f"[merge] {len(shards)} shards -> {new_idx} episodes, {total_frames} frames -> {out}")
-    print("[merge] stats.json intentionally NOT written -- run gr00t generate_stats() on this root")
+    info = dict(base)
+    info.update(total_episodes=g_ep, total_frames=g_frame, total_videos=g_ep * len(video_keys),
+                total_chunks=(g_ep - 1) // chunks_size + 1 if g_ep else 0,
+                splits={"train": f"0:{g_ep}"}, discarded_episode_indices=[])
+    write_json(info, out / "meta" / "info.json")
+    print(f"[merge] {len(shards)} shards -> {g_ep} episodes / {g_frame} frames -> {out}")
+    print("[merge] stats.json / relative_stats.json intentionally absent: GR00T generates them at fine-tune time")
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--shards", nargs="+", required=True, help="shard dataset roots, in input order")
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args()
+    merge([Path(s).expanduser() for s in a.shards], Path(a.out).expanduser())
