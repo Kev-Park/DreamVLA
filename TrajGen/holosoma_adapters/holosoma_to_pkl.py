@@ -406,6 +406,9 @@ pkl = {"global_pose": global_pose, "joints": torch.tensor(joints, dtype=torch.fl
        "global_position": torch.tensor(base_pos, dtype=torch.float32),
        "grab_pos": grab_pos, "grab_idx": grab_idx, "grab_pos_is_object": True,
        "object_poses": torch.tensor(object_poses, dtype=torch.float32)}
+if HOLD_IN_SOLVE and REFINE_ARM and os.environ.get("HS_REFINE_MODE", "al") == "al" and         getattr(sys.modules.get("refine_al_29"), "LAST_POINT_ORIGIN", None) is not None:
+    # pointing origin the refine used (raw-retarget wrist at release start); augment_shift re-aims from it
+    pkl["point_origin"] = np.asarray(sys.modules["refine_al_29"].LAST_POINT_ORIGIN, dtype=np.float32)
 with open(out_base + ".pkl", "wb") as f:
     pickle.dump(pkl, f)
 _wr = np.linalg.norm(joints[:, 13]) if DOF == 29 else 0.0

@@ -242,6 +242,7 @@ GATE_FADE_FRAMES = int(os.environ.get("HS_GATE_FADE_FRAMES", "0"))
 HOLD_DECEL_FRAMES = int(os.environ.get("HS_HOLD_DECEL_FRAMES", "0"))
 HOLD_DECEL_W = float(os.environ.get("HS_HOLD_DECEL_W", "300.0"))
 _HOLD_LEN_ACTIVE = 0          # set by refine_arm when an in-solve hold is active
+LAST_POINT_ORIGIN = None      # pointing origin used by the last refine_arm call (saved to the pkl by holosoma_to_pkl)
 
 WRIST_GRAB_CHARB_WEIGHT = float(os.environ.get("HS_CHARB_W", "30.0")) # palm-to-object Charbonnier weight (final approach + hold)
 # (Charbonnier knee removed in v13 — the Gaussian-well pull's quadratic basin IS the landing zone.)
@@ -1015,7 +1016,7 @@ def _palm_path_of(joints_t, trans, quats):
 
 
 def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0, verbose=False, obj_traj=None,
-               src_joints=None, palm_shift=None, hold_len=0):
+               src_joints=None, palm_shift=None, hold_len=0, point_origin=None):
     """AL right-arm refinement on the CORE motion (before Adapter B's grab-hold/lead-in).
 
     joints (F,29) JointNamesOrder-29, base_pos (F,3), base_quat (F,4 wxyz), grab_pos_obj (3,)
@@ -1032,7 +1033,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     global target_joint_angles, active_joint_names, inactive_joint_ids, joint_names
     global fk_results_ref, grab_idx, grab_pos, capsule_obs_pos, ref_dists, traj_fps_hz
     global active_joint_ids, init_joint_angles, palm_target, palm_target_traj, jlim_lo, jlim_hi, obj_grab_x
-    global aug_palm_path, aug_src_active, aug_hand_R_src, _HOLD_LEN_ACTIVE
+    global aug_palm_path, aug_src_active, aug_hand_R_src, _HOLD_LEN_ACTIVE, LAST_POINT_ORIGIN
 
     joint_names = JOINT_NAMES_29
     init_joint_angles = INIT_29
@@ -1097,7 +1098,14 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     # release-start (taper_start) to the object target. Raw reference => constant, no feedback.
     global point_fixed_dir
     _ts = max(max(min(grab_idx - APPROACH_TAPER_LEAD, grab_idx - 1), 1) - APPROACH_TAPER_WINDOW, 1)
-    _pf = palm_target - wrist_keypts[_ts]
+    # point_origin (IK augmentation of an in-solve-hold clip): reuse the BASE solve's origin -- the RAW
+    # retarget wrist at _ts, saved in the base pkl -- instead of the refined wrist this solve is handed.
+    # Re-aiming from the refined wrist rotated the pointing target 24-30 deg on the clips whose variants
+    # all failed (vs 3-15 deg on clips that never failed), demanding ~0.6 rad of extra wrist roll.
+    _po = (torch.tensor(np.asarray(point_origin), dtype=torch.float32, device=DEVICE).reshape(3)
+           if point_origin is not None else wrist_keypts[_ts])
+    LAST_POINT_ORIGIN = _po.detach().cpu().numpy().copy()
+    _pf = palm_target - _po
     _pf = torch.tensor([float(_pf[0]), float(_pf[1]), 0.0], device=DEVICE)
     if POINT_YAW_OFFSET != 0.0:
         _ca, _sa = float(np.cos(POINT_YAW_OFFSET)), float(np.sin(POINT_YAW_OFFSET))

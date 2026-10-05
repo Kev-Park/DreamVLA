@@ -198,7 +198,8 @@ def main():
             joints = refine_al_29.refine_arm(
                 j_src.copy(), bp, bq, obj_ref[grab_idx, :3], grab_idx, fps=20.0,
                 obj_traj=obj_ref[:, :3],
-                src_joints=j_src, palm_shift=np.array([delta2[0], delta2[1], 0.0]), hold_len=hold_len)
+                src_joints=j_src, palm_shift=np.array([delta2[0], delta2[1], 0.0]), hold_len=hold_len,
+                point_origin=d.get("point_origin"))
             if not bool(np.isfinite(joints).all()):
                 print(f"  {out_name}: SKIP non-finite refine output")
                 n_skip += 1
@@ -213,6 +214,8 @@ def main():
                    "grab_pos": torch.tensor(obj[max(0, grab_idx - lead), :3], dtype=torch.float32),
                    "grab_idx": grab_idx, "grab_pos_is_object": True,
                    "object_poses": torch.tensor(obj, dtype=torch.float32)}
+            if d.get("point_origin") is not None:
+                pkl["point_origin"] = np.asarray(d["point_origin"], dtype=np.float32)
             with open(os.path.join(out_dir, out_name), "wb") as f:
                 pickle.dump(pkl, f)
             n_ok += 1
