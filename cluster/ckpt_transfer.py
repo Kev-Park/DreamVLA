@@ -63,7 +63,7 @@ def pack(ckpt, out, prefixes):
     save_file(packed, os.path.join(out, PACKED), metadata={"format": "pt"})
     for name in os.listdir(ckpt):                      # configs, statistics, trainer state ...
         src = os.path.join(ckpt, name)
-        if name.endswith(".safetensors") or name == INDEX:
+        if name.endswith(".safetensors"):              # the index is copied verbatim, shards are rebuilt
             continue
         (shutil.copytree if os.path.isdir(src) else shutil.copy2)(src, os.path.join(out, name))
     json.dump({"index": index, "sha256": hashes, "packed_keys": sorted(packed),
@@ -97,7 +97,6 @@ def unpack(pack_dir, base, out):
             sys.exit(f"sha256 mismatch on {len(bad)} tensors (e.g. {bad[:3]}): the base checkpoint's "
                      f"frozen weights differ from the original's -- refusing to write a checkpoint")
         save_file(tensors, os.path.join(out, shard), metadata=man["shard_metadata"].get(shard) or {"format": "pt"})
-    json.dump(index, open(os.path.join(out, INDEX), "w"), indent=2)
     for name in os.listdir(pack_dir):
         src = os.path.join(pack_dir, name)
         if name in (PACKED, MANIFEST):
