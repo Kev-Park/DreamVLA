@@ -23,6 +23,7 @@ Clips whose footfall body pose is further than MAX_POS_ERR / MAX_YAW_ERR from th
 usage: python stitch_static_approach.py <walk_pool> <static_pool> <out_pool> [pick_id ...] [--hand-shift fwd,left,up]
   --hand-shift (cm): offset the hand target in the bottle + heading frame, ramped in over the approach
   (calibrated from a residual that grasps reliably; the bottle reference is unchanged).
+  --hand-shift-table table.csv: the same, per clip (columns clip,fwd,left,up in cm); --hand-shift is the fallback.
 pools are directory names under ~/kevin/ref_motions (REF_MOTIONS_DIR overrides) or paths.
 """
 import os, sys, glob, pickle
@@ -222,6 +223,15 @@ def main():
         i = argv.index("--hand-shift")
         HAND_SHIFT = np.array([float(v) for v in argv[i + 1].split(",")]) / 100.0
         del argv[i:i + 2]
+    shift_table = None
+    if "--hand-shift-table" in argv:
+        # per-clip hand-target shift: csv with columns clip,fwd,left,up (cm, bottle + footfall-heading frame);
+        # clips absent from the table fall back to --hand-shift (default none).
+        import csv
+        i = argv.index("--hand-shift-table")
+        shift_table = {r["clip"]: np.array([float(r["fwd"]), float(r["left"]), float(r["up"])]) / 100.0
+                       for r in csv.DictReader(open(argv[i + 1]))}
+        del argv[i:i + 2]
     wdir, sdir, odir = pool_dir(argv[0]), pool_dir(argv[1]), pool_dir(argv[2])
     ids = argv[3:]
     if np.any(HAND_SHIFT):
@@ -237,7 +247,10 @@ def main():
     print("%-9s %4s %4s %5s %6s %9s %9s %9s %11s %10s %9s %8s" % ("clip", "ff", "on", "dpos", "dyaw", "len",
           "grab", "ik_pos_cm", "ik_post_cm", "ik_rot_deg", "torso_deg", "objjump"))
     nw = 0
+    default_shift = HAND_SHIFT.copy()
     for n in names:
+        if shift_table is not None:
+            HAND_SHIFT = shift_table.get(n, default_shift)
         pkl, info = stitch(load(W[n], chain), load(S[n], chain), chain, lim)
         if pkl is None:
             print("%-9s %4d %4d %5.1f %6.1f  SKIPPED (footfall body pose off the static spawn)"
