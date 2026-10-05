@@ -11,51 +11,35 @@
 ~0.5 min/episode, on a box with **104 CPUs** that sit idle throughout. LeRobot 0.1.0 also defaults
 to **`libsvtav1` at CRF 30**; AV1 is far slower than H.264 and is the likely inner bottleneck.
 
-## The approach: shard the conversion, DON'T merge the datasets
+## The approach (VALIDATED 2026-10-05): shard the conversion, then merge exactly
 
-GR00T already accepts multiple dataset roots. In `gr00t/experiment/launch_finetune.py`:
+    cluster/convert_sharded.sh <the converter's own arguments> [--shards 8]
 
-```python
-"datasets": [{"dataset_paths": [ft_config.dataset_path], "mix_ratio": 1.0, ...}]
-```
+`convert_sharded.sh` lists the inputs exactly as the converter does (`sorted(root.glob('**/*.hdf5'))`),
+splits them into N **contiguous** slices, runs N converters in parallel and merges the shards in
+order with `merge_lerobot.py`. Because the converter sorts globally, the shards concatenated in
+order reproduce the single-process episode order; the merge only renumbers `episode_index` / `index`
+(parquet rewritten with LeRobot's own `datasets.to_parquet`, the two columns' episode stats recomputed
+with LeRobot's `compute_episode_stats`) and moves video files unchanged. It prints the same
+`[done] wrote N frames across M episode(s)` line, so it is a drop-in for chain scripts.
 
-`dataset_paths` is a **list** -- the CLI just wraps a single `--dataset-path` into it. So the plan is:
+**Validation** (24 rollouts of the af60v7 round-5 aggregate, 4 shards vs one process, `verify_merge.py`):
+every parquet, video and meta file byte-identical, and GR00T's generated `stats.json` /
+`relative_stats.json` byte-identical. Wall clock 809 s vs 1491 s on a box at load ~110 (other users).
 
-1. split the filtered HDF5 set into N disjoint directories (symlinks are fine),
-2. run N converters in parallel, producing N independent LeRobot datasets,
-3. train with all N paths in `dataset_paths`.
+### Why NOT train on the shards directly via `dataset_paths`
 
-Expected ~N x speedup (8 shards: 78 min -> ~10 min).
+Checked in `gr00t/data/dataset/sharded_mixture_dataset.py::merge_statistics`: across datasets GR00T
+pools mean/std correctly (length-weighted) but sets **q01 = min of the per-dataset q01s and q99 = max
+of the q99s** -- a conservative envelope, not the union's percentiles. GR00T normalises on q01/q99,
+so N shard datasets would be scaled differently from one dataset. Merging avoids this.
 
-### Why NOT merge the shard datasets into one
+### stats.json / relative_stats.json
 
-Merging looks easy because `meta/episodes_stats.jsonl` holds per-episode stats, so episodes and
-their stats can be concatenated and renumbered. It is a trap:
-
-* `meta/stats.json` carries **`q01` and `q99`**, but per-episode stats only carry
-  `count/max/mean/min/std`. **Percentiles cannot be aggregated from per-episode summaries.**
-* GR00T normalises with **q01/q99 percentile clipping**, so a naively merged dataset gets silently
-  wrong normalisation statistics -- worse than a slow conversion, because nothing errors.
-
-Recomputing q01/q99 from the merged parquet is possible (numeric columns only, no video, so it is
-cheap), but the multi-path route avoids the problem entirely and touches no dataset internals.
-
-## BEFORE USING THIS: verify how GR00T combines stats across datasets
-
-**Unverified as of 2026-09-21.** If GR00T computes normalisation **per dataset** rather than over
-the union, then sharding changes the input scaling and any run using it is NOT comparable to a run
-trained on a single dataset. That would confound exactly the kind of A/B these rounds exist to make.
-
-To check: find where the data loader builds its statistics (the module path differs from upstream in
-the `Kev-Park/Isaac-GR00T` fork -- `grep -rn "q01\|statistics" gr00t/` and follow `dataset_paths`),
-and confirm the stats are computed over the concatenation. Until that is confirmed, use sharding
-only for runs where a fresh baseline is also being measured.
-
-## Remaining piece
-
-The CLI exposes only `--dataset-path` (singular). Either add a `--dataset-paths` option to
-`launch_finetune.py` in the fork (local edit -> push -> pull, as for every repo), or drive the
-config directly from a wrapper that sets `data.datasets[0].dataset_paths` to the shard list.
+The converter never writes them; GR00T's `generate_stats()` / `generate_rel_stats()` compute them from
+the parquet at fine-tune time over the whole dataset. `merge_lerobot.py` therefore writes neither and
+**never copies a shard's** -- the previous version copied shard 0's `relative_stats.json`, which GR00T
+would have accepted as valid and used to normalise relative actions with one shard's statistics.
 
 ## Not recommended: changing the codec
 
