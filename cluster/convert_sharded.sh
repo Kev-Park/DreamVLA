@@ -31,7 +31,8 @@ done
 DEST=$OUT; [ -n "$NAME" ] && [[ "$OUT" != *"$NAME" ]] && DEST=$OUT/$NAME
 [ -e "$DEST" ] && { echo "[sharded] $DEST exists; refusing to overwrite" >&2; exit 2; }
 source "$VENV/bin/activate"
-TMP=$(mktemp -d "${DEST%/}.shards.XXXX")
+mkdir -p "$(dirname "$DEST")" || exit 1
+TMP=$(mktemp -d "${DEST%/}.shards.XXXX") && [ -n "$TMP" ] && [ -d "$TMP" ] || { echo "[sharded] cannot create a work dir beside $DEST" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 # --- 1+2. list exactly like the converter, split contiguously ---------------------------------
