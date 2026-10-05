@@ -20,7 +20,9 @@ The left arm is frozen in both pools (holosoma_to_pkl freeze_left_arm) and is he
 Clips whose footfall body pose is further than MAX_POS_ERR / MAX_YAW_ERR from the static spawn
 (bottle-relative) are skipped: the static hand path would then be a different reach.
 
-usage: python stitch_static_approach.py <walk_pool> <static_pool> <out_pool> [pick_id ...]
+usage: python stitch_static_approach.py <walk_pool> <static_pool> <out_pool> [pick_id ...] [--hand-shift fwd,left,up]
+  --hand-shift (cm): offset the hand target in the bottle + heading frame, ramped in over the approach
+  (calibrated from a residual that grasps reliably; the bottle reference is unchanged).
 pools are directory names under ~/kevin/ref_motions (REF_MOTIONS_DIR overrides) or paths.
 """
 import os, sys, glob, pickle
@@ -33,6 +35,7 @@ ONSET_MOVE = 0.03          # m, static hand displacement from its rest pose that
 PLANT_BAND, PLANT_SPEED = 0.02, 0.005
 MAX_POS_ERR, MAX_YAW_ERR = 0.10, np.radians(15.0)
 IK_ITERS = 1200
+HAND_SHIFT = np.zeros(3)   # metres (fwd, left, up); set by --hand-shift fwd,left,up in cm
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 URDF = os.path.join(_HERE, "..", "..", "Training", "HumanoidVerse", "humanoidverse", "data", "robots", "g1", "g1_29dof.urdf")
@@ -161,6 +164,16 @@ def stitch(w, s, chain, lim):
     tgt_p = np.concatenate([np.repeat(mp(s["hand"][on:on + 1]), TRANSITION, 0), mp(s["hand"][seg])])
     tgt_R = np.concatenate([np.repeat(Rz @ s["handR"][on:on + 1], TRANSITION, 0), Rz @ s["handR"][seg]])
     tor_R = np.concatenate([np.repeat(Rz @ s["torsoR"][on:on + 1], TRANSITION, 0), Rz @ s["torsoR"][seg]])
+    if np.any(HAND_SHIFT):
+        # Calibrated hand-target offset (bottle + footfall-heading frame: fwd, left, up), ramped in with a
+        # smoothstep from the static clip's hand onset to its grab and held through hold + lift. The bottle
+        # reference is NOT moved. Purpose: make the walking playback put the hand where a residual that
+        # grasps reliably (af60v7) puts it, so tracking the reference and grasping agree.
+        yw = yaw_of(w["Q"][fw])
+        dvec = HAND_SHIFT[0] * np.array([np.cos(yw), np.sin(yw), 0.0]) +                HAND_SHIFT[1] * np.array([-np.sin(yw), np.cos(yw), 0.0]) + HAND_SHIFT[2] * np.array([0.0, 0.0, 1.0])
+        t = np.clip((seg - on) / max(gs - on, 1), 0.0, 1.0)
+        ramp = np.concatenate([np.zeros(TRANSITION), t * t * (3 - 2 * t)])
+        tgt_p = tgt_p + ramp[:, None] * dvec[None, :]
 
     # body over the new section: legs/root/left arm held at the footfall; waist + right arm by IK
     Jn = np.repeat(w["J"][fw:fw + 1], n_new, 0)
@@ -201,10 +214,18 @@ def stitch(w, s, chain, lim):
 
 
 def main():
-    if len(sys.argv) < 4:
+    if len([a for a in sys.argv[1:] if not a.startswith("--")]) < 3:
         sys.exit(__doc__)
-    wdir, sdir, odir = pool_dir(sys.argv[1]), pool_dir(sys.argv[2]), pool_dir(sys.argv[3])
-    ids = sys.argv[4:]
+    global HAND_SHIFT
+    argv = sys.argv[1:]
+    if "--hand-shift" in argv:
+        i = argv.index("--hand-shift")
+        HAND_SHIFT = np.array([float(v) for v in argv[i + 1].split(",")]) / 100.0
+        del argv[i:i + 2]
+    wdir, sdir, odir = pool_dir(argv[0]), pool_dir(argv[1]), pool_dir(argv[2])
+    ids = argv[3:]
+    if np.any(HAND_SHIFT):
+        print("hand target shift (fwd, left, up) = %s cm" % (100 * HAND_SHIFT))
     chain = pk.build_chain_from_urdf(open(URDF, "rb").read()).to(dtype=torch.float32)
     lim = [np.asarray(x, dtype=np.float64) for x in chain.get_joint_limits()]
     W = {os.path.basename(f)[:-4]: f for f in glob.glob(os.path.join(wdir, "pick_*.pkl"))}
