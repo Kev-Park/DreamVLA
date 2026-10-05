@@ -454,8 +454,14 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     # tracking. g >= 0 per (frame, joint), same dual/rho machinery as the speed constraint.
     if WRIST_BAND > 0:
         # [ABS] Option B-HARD: wrist yaw (col 6) / roll (col 4) neutral band, PRE-GRAB only.
-        _wb = (torch.relu(joint_angles[:grab_idx, 6].abs() - WRIST_BAND)
-               + torch.relu(joint_angles[:grab_idx, 4].abs() - WRIST_BAND))
+        # With an in-solve hold the band stays on THROUGH the hold (to grab_idx+hold_len+1): the hold
+        # pose is frozen, so a band that switched off at grab_idx would demand the post-band wrist
+        # rotation in the single step into the hold (0.6 rad vs the 0.3 rad/frame cap on 25/60 clips
+        # -> jointly infeasible with the speed cap). Released after the hold, the rotation happens over
+        # several speed-capped frames of the lift instead.
+        _wb_end = min(int(grab_idx) + (_HOLD_LEN_ACTIVE + 1 if _HOLD_LEN_ACTIVE > 0 else 0), joint_angles.shape[0])
+        _wb = (torch.relu(joint_angles[:_wb_end, 6].abs() - WRIST_BAND)
+               + torch.relu(joint_angles[:_wb_end, 4].abs() - WRIST_BAND))
         g_wband = _wb.reshape(-1)
         _last_g_wband = g_wband.detach()
         wband_hard_cost = torch.mean(al_penalty(g_wband, lam_vec=lambda_wband))
