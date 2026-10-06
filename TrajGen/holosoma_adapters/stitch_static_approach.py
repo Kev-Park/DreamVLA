@@ -24,6 +24,7 @@ usage: python stitch_static_approach.py <walk_pool> <static_pool> <out_pool> [pi
   --hand-shift (cm): offset the hand target in the bottle + heading frame, ramped in over the approach
   (calibrated from a residual that grasps reliably; the bottle reference is unchanged).
   --hand-shift-table table.csv: the same, per clip (columns clip,fwd,left,up in cm); --hand-shift is the fallback.
+  --shift-ramp-frames N: ramp the shift in only over the last N frames before the grab (default: whole approach).
 pools are directory names under ~/kevin/ref_motions (REF_MOTIONS_DIR overrides) or paths.
 """
 import os, sys, glob, pickle
@@ -37,6 +38,7 @@ PLANT_BAND, PLANT_SPEED = 0.02, 0.005
 MAX_POS_ERR, MAX_YAW_ERR = 0.10, np.radians(15.0)
 IK_ITERS = 1200
 HAND_SHIFT = np.zeros(3)   # metres (fwd, left, up); set by --hand-shift fwd,left,up in cm
+SHIFT_RAMP_FRAMES = None   # None = ramp the shift over the whole approach; N = only over the last N frames (--shift-ramp-frames)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 URDF = os.path.join(_HERE, "..", "..", "Training", "HumanoidVerse", "humanoidverse", "data", "robots", "g1", "g1_29dof.urdf")
@@ -172,7 +174,14 @@ def stitch(w, s, chain, lim):
         # grasps reliably (af60v7) puts it, so tracking the reference and grasping agree.
         yw = yaw_of(w["Q"][fw])
         dvec = HAND_SHIFT[0] * np.array([np.cos(yw), np.sin(yw), 0.0]) +                HAND_SHIFT[1] * np.array([-np.sin(yw), np.cos(yw), 0.0]) + HAND_SHIFT[2] * np.array([0.0, 0.0, 1.0])
-        t = np.clip((seg - on) / max(gs - on, 1), 0.0, 1.0)
+        if SHIFT_RAMP_FRAMES is None:
+            t = np.clip((seg - on) / max(gs - on, 1), 0.0, 1.0)            # ramp over the whole approach
+        else:
+            # LATE ramp: the approach follows the unshifted (clear) path and the shift comes in only over
+            # the last SHIFT_RAMP_FRAMES before the grab. With the whole-approach ramp the lowered/advanced
+            # hand swept the bottle 1.5-2.8 s before the close (fingertips at body height while the
+            # reference wrist was still 17-21 cm out), and slow approaches dwelt there longest.
+            t = np.clip((seg - (gs - SHIFT_RAMP_FRAMES)) / max(SHIFT_RAMP_FRAMES, 1), 0.0, 1.0)
         ramp = np.concatenate([np.zeros(TRANSITION), t * t * (3 - 2 * t)])
         tgt_p = tgt_p + ramp[:, None] * dvec[None, :]
 
@@ -217,8 +226,12 @@ def stitch(w, s, chain, lim):
 def main():
     if len([a for a in sys.argv[1:] if not a.startswith("--")]) < 3:
         sys.exit(__doc__)
-    global HAND_SHIFT
+    global HAND_SHIFT, SHIFT_RAMP_FRAMES
     argv = sys.argv[1:]
+    if "--shift-ramp-frames" in argv:
+        i = argv.index("--shift-ramp-frames")
+        SHIFT_RAMP_FRAMES = int(argv[i + 1])
+        del argv[i:i + 2]
     if "--hand-shift" in argv:
         i = argv.index("--hand-shift")
         HAND_SHIFT = np.array([float(v) for v in argv[i + 1].split(",")]) / 100.0
@@ -235,7 +248,8 @@ def main():
     wdir, sdir, odir = pool_dir(argv[0]), pool_dir(argv[1]), pool_dir(argv[2])
     ids = argv[3:]
     if np.any(HAND_SHIFT):
-        print("hand target shift (fwd, left, up) = %s cm" % (100 * HAND_SHIFT))
+        print("hand target shift (fwd, left, up) = %s cm, ramp = %s" % (100 * HAND_SHIFT,
+              "whole approach" if SHIFT_RAMP_FRAMES is None else "last %d frames" % SHIFT_RAMP_FRAMES))
     chain = pk.build_chain_from_urdf(open(URDF, "rb").read()).to(dtype=torch.float32)
     lim = [np.asarray(x, dtype=np.float64) for x in chain.get_joint_limits()]
     W = {os.path.basename(f)[:-4]: f for f in glob.glob(os.path.join(wdir, "pick_*.pkl"))}
