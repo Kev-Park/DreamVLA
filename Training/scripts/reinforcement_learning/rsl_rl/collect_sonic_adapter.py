@@ -685,6 +685,77 @@ def rollout_restore(env, snap: dict) -> None:
         u.obs_buf = om.compute(update_history=False)
 
 
+def replay_token_test(env, simulation_app, root: str, n_eps: int, seed: int, out_json: str) -> None:
+    """Does a 3-frame median filter of the expert's token labels change what the robot DOES?
+
+    For each recorded expert demo (pure demos only: their obs/motion_token is the token that was
+    executed), reset to the same motion and seed and execute the recorded token + finger command
+    frame by frame, three ways: raw, raw again (the simulator is not deterministic, so raw-vs-raw is
+    the noise floor), and with each token dimension median-filtered over 3 frames (removes single-
+    frame A->B->A blips; values stay on the FSQ grid). Reports 4-rule success per variant and how far
+    each replay's joint / object trajectories drift from the first raw replay.
+    """
+    import glob, json as _json, re
+    import h5py
+    from vla_sonic.grasp_success import score, BOX_LO_AF60V7, BOX_HI_AF60V7
+
+    def med3(tok):
+        out = tok.copy()
+        out[1:-1] = np.median(np.stack([tok[:-2], tok[1:-1], tok[2:]]), axis=0)
+        return out
+
+    files = [f for f in sorted(glob.glob(os.path.join(os.path.expanduser(root), "**", "*.hdf5"), recursive=True))
+             if "_passA" not in f][:n_eps]
+    u = env.unwrapped
+    results = []
+    for f in files:
+        mid = int(re.search(r"motion_(\d+)", os.path.basename(f)).group(1))
+        with h5py.File(f, "r", locking=False) as h:
+            g = h["data/demo_0"]
+            tok = g["obs/motion_token"][()].astype(np.float32)
+            fin = g["actions"][()][:, 64].astype(np.float32)
+            md = _json.loads(h.attrs["metadata_json"])
+        if md.get("dagger") or md.get("rescue"):
+            continue
+        variants = {"raw_a": tok, "raw_b": tok, "med3": med3(tok)}
+        traj = {}
+        for name, tk in variants.items():
+            u._forced_motion_id = mid
+            _set_all_seeds(seed + mid * 10)
+            with torch.inference_mode():
+                env.reset()
+            jp, op, oq, rp, rq, rw = [], [], [], [], [], []
+            for t in range(len(tk)):
+                c = torch.zeros((1, 65), device=u.device, dtype=torch.float32)
+                c[0, :64] = torch.as_tensor(tk[t], device=u.device)
+                c[0, 64] = -1.0 if fin[t] < 0 else 1.0
+                with torch.inference_mode():
+                    _, _, dones, _ = env.step_composed(c)
+                r = u.scene["robot"].data; o = u.scene["object"].data
+                jp.append(r.joint_pos[0, :29].cpu().numpy()); op.append(o.root_pos_w[0].cpu().numpy() - u.scene.env_origins[0].cpu().numpy())
+                oq.append(o.root_quat_w[0].cpu().numpy()); rp.append(r.root_pos_w[0].cpu().numpy() - u.scene.env_origins[0].cpu().numpy())
+                rq.append(r.root_quat_w[0].cpu().numpy()); rw.append(_capture_teleop_frame(env)["right_wrist"].numpy())
+                if bool(dones[0]) and t < len(tk) - 1:
+                    break
+            a = [np.asarray(x) for x in (op, oq, rp, rq, rw)]
+            sc = score(*a, box_lo=BOX_LO_AF60V7, box_hi=BOX_HI_AF60V7)
+            traj[name] = dict(jp=np.asarray(jp), op=a[0], ok=bool(sc["success"]), n=len(jp))
+        n = min(v["n"] for v in traj.values())
+        ref = traj["raw_a"]
+        row = {"file": os.path.basename(f), "motion": mid, "frames": n,
+               "ok": {k: v["ok"] for k, v in traj.items()},
+               "joint_dev_vs_raw_a_deg": {k: float(np.degrees(np.abs(v["jp"][:n] - ref["jp"][:n]).max())) for k, v in traj.items() if k != "raw_a"},
+               "joint_dev_mean_deg": {k: float(np.degrees(np.abs(v["jp"][:n] - ref["jp"][:n]).mean())) for k, v in traj.items() if k != "raw_a"},
+               "obj_end_dev_cm": {k: float(100 * np.linalg.norm(v["op"][n - 1] - ref["op"][n - 1])) for k, v in traj.items() if k != "raw_a"},
+               "labels_changed_frac": float((variants["med3"] != tok).mean())}
+        results.append(row)
+        print(f"[replay] m{mid}: ok {row['ok']} | joint dev vs raw_a (max deg) {row['joint_dev_vs_raw_a_deg']} | "
+              f"obj end dev cm {row['obj_end_dev_cm']} | med3 changed {100*row['labels_changed_frac']:.1f}% of label entries", flush=True)
+        with open(out_json, "w") as fh:
+            _json.dump(results, fh, indent=1)
+    print(f"[replay] done: {len(results)} episodes -> {out_json}")
+
+
 def selftest_determinism(env, policy, n_steps: int, motion_id: int, seed: int) -> bool:
     """Two identical rollouts (same motion, same seed, full reset each time) -- do they match?
 
@@ -1213,6 +1284,10 @@ def main() -> None:
                         help="Record per-frame VLA uncertainty signals (FSQ lattice residual, expert/VLA token "
                              "disagreement, pooled VLM embedding) into obs/. Logging only: control is unchanged.")
     parser.add_argument("--dagger-chunk", type=int, default=8, help="DAgger: VLA re-plan cadence (eval parity).")
+    parser.add_argument("--replay-token-test", type=str, default=None, metavar="DEMO_DIR",
+                        help="Diagnostic, then exit: replay recorded expert demo tokens raw / raw again / "
+                             "3-frame-median-filtered and compare outcomes (see replay_token_test).")
+    parser.add_argument("--replay-token-n", type=int, default=20, help="episodes for --replay-token-test")
     parser.add_argument("--dagger-selftest-determinism", type=int, default=None, metavar="N_STEPS",
                         help="Roll the same motion twice with the same seed (full reset each time) and report\n"
                              "whether the trajectories are identical, then exit. Gates the deterministic\n"
@@ -1474,6 +1549,12 @@ def main() -> None:
     total_motions = int(env.unwrapped.total_motions)
     print(f"[INFO] motion library = {total_motions} motions; target = {target_successes} successful "
           f"trajectories (each motion tried once, deterministic policy).")
+
+    if args_cli.replay_token_test is not None:
+        replay_token_test(env, simulation_app, args_cli.replay_token_test, int(args_cli.replay_token_n),
+                          int(args_cli.seed), os.path.join(args_cli.output_directory, "replay_token_test.json"))
+        simulation_app.close()
+        raise SystemExit(0)
 
     if args_cli.dagger_selftest_determinism is not None:
         lo = args_cli.motion_range[0] if args_cli.motion_range else 0
