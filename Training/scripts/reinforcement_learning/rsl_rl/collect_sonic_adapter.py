@@ -715,6 +715,8 @@ def replay_token_test(env, simulation_app, root: str, n_eps: int, seed: int, out
             tok = g["obs/motion_token"][()].astype(np.float32)
             fin = g["actions"][()][:, 64].astype(np.float32)
             md = _json.loads(h.attrs["metadata_json"])
+            rec_jp = g["obs/robot0_joint_pos"][()][:, :29]
+            rec_op = g["obs/object_pos"][()]
         if md.get("dagger") or md.get("rescue"):
             continue
         variants = {"raw_a": tok, "raw_b": tok, "med3": med3(tok)}
@@ -747,7 +749,14 @@ def replay_token_test(env, simulation_app, root: str, n_eps: int, seed: int, out
                "joint_dev_vs_raw_a_deg": {k: float(np.degrees(np.abs(v["jp"][:n] - ref["jp"][:n]).max())) for k, v in traj.items() if k != "raw_a"},
                "joint_dev_mean_deg": {k: float(np.degrees(np.abs(v["jp"][:n] - ref["jp"][:n]).mean())) for k, v in traj.items() if k != "raw_a"},
                "obj_end_dev_cm": {k: float(100 * np.linalg.norm(v["op"][n - 1] - ref["op"][n - 1])) for k, v in traj.items() if k != "raw_a"},
-               "labels_changed_frac": float((variants["med3"] != tok).mean())}
+               "labels_changed_frac": float((variants["med3"] != tok).mean()),
+               # sanity: how closely does a raw replay reproduce the RECORDED demo?
+               "raw_vs_recording_joint_mean_deg": [float(np.degrees(np.abs(ref["jp"][:n] - rec_jp[o:o + n]).mean())) for o in (-1, 0, 1)
+                                                   if 0 <= o and o + n <= len(rec_jp)] + ([float(np.degrees(np.abs(ref["jp"][1:n] - rec_jp[:n - 1]).mean()))]),
+               "recorded_obj_moved_cm": float(100 * np.linalg.norm(rec_op[:, :2] - rec_op[0, :2], axis=1).max()),
+               "replay_obj_moved_cm": float(100 * np.linalg.norm(ref["op"][:n, :2] - ref["op"][0, :2], axis=1).max()),
+               "rec_obj0": [float(x) for x in rec_op[0]], "replay_obj0": [float(x) for x in ref["op"][0]],
+               "tok_shape": list(tok.shape), "rec_len": int(len(rec_jp))}
         results.append(row)
         print(f"[replay] m{mid}: ok {row['ok']} | joint dev vs raw_a (max deg) {row['joint_dev_vs_raw_a_deg']} | "
               f"obj end dev cm {row['obj_end_dev_cm']} | med3 changed {100*row['labels_changed_frac']:.1f}% of label entries", flush=True)
