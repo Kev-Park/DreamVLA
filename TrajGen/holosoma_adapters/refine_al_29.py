@@ -79,6 +79,11 @@ TABLE_EDGE_BEHIND_OBJECT = 0.05
 # frozen-SONIC render showed the real dex-hand fingertips reaching the table where the 0.15 point
 # cleared it, so the default is now 0.22 (HS_HAND_TIP_OFFSET overrides).
 HAND_TIP_OFFSET = float(os.environ.get("HS_HAND_TIP_OFFSET", "0.22"))
+# Table-constraint fingertip point, separate from HAND_TIP_OFFSET (which also drives the approach walls
+# and the tip-dynamics terms). Projecting only this point further along the hand x-axis buys extra
+# table clearance for the real dex-hand fingers without moving the approach shaping. Defaults to
+# HAND_TIP_OFFSET, which reproduces every existing dataset.
+TABLE_TIP_OFFSET = float(os.environ.get("HS_TABLE_TIP_OFFSET", str(HAND_TIP_OFFSET)))
 # Forward-projection factor for the GRASP PALM target: palm = rubber_hand + HAND_FWD*(rubber_hand - wrist_yaw).
 # The AL loop drives THIS palm point (not the wrist) to the object, so the palm — the grasp point the
 # render draws as CYAN and the synthesized object ref tracks — lands on the object at grasp (no teleport).
@@ -659,6 +664,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             transformed_tip = torch.bmm(tip_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z  # final hand position
             # Hand joint origin in world frame — forms the other edge of the swept quad
             transformed_hand_orig = torch.bmm(hand_pos.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
+            if TABLE_TIP_OFFSET != HAND_TIP_OFFSET:
+                _ttip = hand_pos + torch.bmm(hand_rot, torch.tensor([TABLE_TIP_OFFSET, 0., 0.], device=DEVICE).view(1, 3, 1)
+                                             .expand(hand_rot.shape[0], -1, -1)).squeeze(-1)
+                table_tip = torch.bmm(_ttip.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
+            else:
+                table_tip = transformed_tip
 
             # Forward-projected PALM (grasp point) in world frame, same formula as the render's CYAN:
             # palm = rubber_hand + HAND_FWD * (rubber_hand - wrist_yaw). Driven to the object below.
@@ -864,8 +875,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
 
             # [ABS] Per-frame table collision — hard constraint via AL (g_t >= 0)
             # Enforce over the full trajectory.
-            table_gi = transformed_tip.shape[0]
-            g_t = table_collision_cost(transformed_tip, transformed_hand_orig, table_gi)
+            table_gi = table_tip.shape[0]
+            g_t = table_collision_cost(table_tip, transformed_hand_orig, table_gi)
             _last_g_t = g_t.detach()          # expose to outer AL loop (no-graph copy) for hard optimization
             table_term = al_penalty(g_t, lam_vec=lambda_table, rho_override=rho_al_table)
             cost2[:table_gi] += table_term
@@ -1276,7 +1287,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     fv = float(g_curr.max()) if g_curr is not None else -1.0
     fvl = float(_last_g_level.max()) if _last_g_level is not None else -1.0
     _xe = (obj_grab_x - TABLE_EDGE_BEHIND_OBJECT - TABLE_X_MARGIN) if (TABLE_EDGE_ANCHOR == "object" and obj_grab_x is not None) else float(grab_pos[0] + OFFSET_X - TABLE_X_MARGIN)
-    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} point_yaw={POINT_YAW_OFFSET:+.2f} ease_out={APPROACH_EASE_OUT:.1f} "
+    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} table_tip={TABLE_TIP_OFFSET:.2f} point_yaw={POINT_YAW_OFFSET:+.2f} ease_out={APPROACH_EASE_OUT:.1f} "
           f"AL {'converged' if converged else 'maxiter'} "
           f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} "
           f"final_jlim_viol={float(_last_g_jlim.max()) if _last_g_jlim is not None else -1.0:.2e}rad "
