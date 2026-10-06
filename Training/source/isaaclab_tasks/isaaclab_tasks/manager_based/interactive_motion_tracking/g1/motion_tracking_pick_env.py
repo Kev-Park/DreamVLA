@@ -287,6 +287,20 @@ REWORK_GLOBAL_TRACK = os.environ.get("HS_REWORK_GLOBAL_TRACK", "0") == "1"
 REWORK_GLOBAL_ORI = os.environ.get("HS_REWORK_GLOBAL_ORI", "0") == "1"
 REWORK_RARM_W = float(os.environ.get("HS_REWORK_RARM_W", "0.5"))  # right-arm relative-tracking weight when hybrid on (LadderMan omega/2)
 REWORK_OBJ_GATE = os.environ.get("HS_REWORK_OBJ_GATE", "0") == "1"  # #2 gate object reward by reference contact (is_closed): c_hat*r + (1-c_hat)
+# HS_REWORK_CLOSE_ON_ARRIVAL=1: the close is tied to the HAND ARRIVING, not only to the reference clock.
+# A per-env latch trips the first step the sim palm point (wrist + 0.12 m along hand x, the contact
+# reward's grasp point) is within HS_REWORK_ARRIVE_D of the bottle while the bottle is upright, and
+# stays set until reset. The finger open->closed ramp then starts at min(arrival, reference grab), and
+# the object-reward gates open at arrival too (the synthesized object reference still says REST until
+# the reference grab, so an early grasp is rewarded for holding the bottle still, not for lifting it).
+# Motivation (2026-10-06 failure analysis): trained policies touched the bottle 1.5-2.8 s before the
+# reference close and loitered with open fingers; the close itself never deviated from the reference
+# (+1..+2 steps) because the hand-state term pins it and the object terms are gated to the reference.
+REWORK_CLOSE_ON_ARRIVAL = os.environ.get("HS_REWORK_CLOSE_ON_ARRIVAL", "0") == "1"
+REWORK_ARRIVE_D = float(os.environ.get("HS_REWORK_ARRIVE_D", "0.08"))   # m, palm point -> object centre
+if REWORK_CLOSE_ON_ARRIVAL:
+    print(f"[G1PickHOI] HS_REWORK_CLOSE_ON_ARRIVAL=1: finger close ramp + object gates re-anchored to hand arrival "
+          f"(palm point < {REWORK_ARRIVE_D:.2f} m, bottle upright)")
 REWORK_CONTACT_POS = os.environ.get("HS_REWORK_CONTACT_POS", "0") == "1"  # LadderMan position contact reward + pos contact-loss termination
 REWORK_CONTACT_POS_W = float(os.environ.get("HS_REWORK_CONTACT_POS_W", "2.0"))
 REWORK_CONTACT_POS_STD = float(os.environ.get("HS_REWORK_CONTACT_POS_STD", "0.12"))
@@ -613,7 +627,7 @@ def object_tracking_reward(env: ManagerBasedRLEnv, pos_std: float = 0.1, ori_std
         # LadderMan-style contact gating: only require object tracking when the reference says
         # contact is required (is_closed = post-grab hold phase); free (=1) otherwise so the
         # approach phase is not spuriously shaped. c_hat is the ORACLE reference indicator.
-        c_hat = motion_res["is_closed"].float()
+        c_hat = _gate_with_arrival(env, motion_res["is_closed"])
         r = c_hat * r + (1.0 - c_hat)
     return r
 
@@ -642,6 +656,72 @@ def object_contact_reward(env: ManagerBasedRLEnv,
     return c_hat * torch.exp(-lam / (f + 1e-3))
 
 
+def _arrival_latch(env):
+    """(arrived (N,) bool, arrival_frame (N,) float) under HS_REWORK_CLOSE_ON_ARRIVAL. Updated once per
+    env step; cleared on episode reset (episode_length_buf == 0). arrival_frame is in reference-motion
+    FRAME units (same units as motion_lib.switch_idxs) so the hand-state ramp can be re-anchored to it."""
+    n = env.scene.num_envs
+    if not hasattr(env, "_arrived") or env._arrived.shape[0] != n:
+        env._arrived = torch.zeros(n, dtype=torch.bool, device=env.device)
+        env._arrival_frame = torch.full((n,), 1e9, device=env.device)
+        env._arrival_stamp = -1
+        env._arrival_wrist_id = env.scene["robot"].find_bodies("right_wrist_yaw_link")[0][0]
+    if env._arrival_stamp != int(env.common_step_counter):
+        env._arrival_stamp = int(env.common_step_counter)
+        fresh = env.episode_length_buf == 0
+        env._arrived[fresh] = False
+        env._arrival_frame[fresh] = 1e9
+        robot = env.scene["robot"]; obj: RigidObject = env.scene["object"]
+        hand = robot.data.body_pos_w[:, env._arrival_wrist_id, :] - env.scene.env_origins
+        hq = robot.data.body_quat_w[:, env._arrival_wrist_id, :]
+        xax = torch.zeros_like(hand); xax[:, 0] = 1.0
+        palm = hand + math_utils.quat_apply(hq, xax) * 0.12
+        obj_pos = obj.data.root_pos_w - env.scene.env_origins
+        q = obj.data.root_quat_w
+        upright = (1.0 - 2.0 * (q[:, 1] ** 2 + q[:, 2] ** 2)) > 0.7071      # tilt < 45 deg
+        near = torch.norm(palm - obj_pos, dim=1) < REWORK_ARRIVE_D
+        motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+            device=env.device, dtype=torch.float32)
+        frame = motion_times / env.motion_lib._motion_dt[env.motion_ids]
+        trip = near & upright & ~env._arrived
+        env._arrival_frame[trip] = frame[trip]
+        env._arrived |= trip
+    return env._arrived, env._arrival_frame
+
+
+def _gate_with_arrival(env, is_closed):
+    """Object-reward gate: reference is_closed OR hand arrived (when the flag is on)."""
+    if not REWORK_CLOSE_ON_ARRIVAL:
+        return is_closed.float()
+    arrived, _ = _arrival_latch(env)
+    return (is_closed | arrived).float()
+
+
+def right_hand_state_target_reward_arrival(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """right_hand_state_target_reward with the open->closed ramp re-anchored to the EARLIER of the
+    reference grab frame and the arrival frame (+ ramp width), so the policy is rewarded for closing
+    within _RIGHT_HAND_TRANSITION_FRAMES of the hand reaching the bottle instead of loitering open."""
+    import isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env as _mte
+    asset = env.scene["robot"]
+    if not hasattr(env, "_right_finger_joint_ids"):
+        name_to_idx = {n: i for i, n in enumerate(asset.data.joint_names)}
+        env._right_finger_joint_ids = torch.tensor([name_to_idx[n] for n in _mte._RIGHT_FINGER_NAMES],
+                                                   device=env.device, dtype=torch.long)
+        env._right_finger_open_pose = torch.tensor(_mte._RIGHT_FINGER_OPEN_POSE, device=env.device, dtype=torch.float32)
+        env._right_finger_closed_pose = torch.tensor(_mte._RIGHT_FINGER_CLOSED_POSE, device=env.device, dtype=torch.float32)
+    W = float(_mte._RIGHT_HAND_TRANSITION_FRAMES)
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32)
+    current_frame = motion_times / env.motion_lib._motion_dt[env.motion_ids]
+    switch_frame = env.motion_lib.switch_idxs[env.motion_ids]
+    arrived, arrival_frame = _arrival_latch(env)
+    switch_eff = torch.where(arrived, torch.minimum(switch_frame, arrival_frame + W), switch_frame)
+    alpha = torch.clamp((current_frame - (switch_eff - W)) / W, 0.0, 1.0).unsqueeze(1)
+    target = alpha * env._right_finger_closed_pose.unsqueeze(0) + (1.0 - alpha) * env._right_finger_open_pose.unsqueeze(0)
+    actual = asset.data.joint_pos[:, env._right_finger_joint_ids]
+    return torch.exp(-torch.sum(torch.abs(actual - target), dim=1) / _mte._RIGHT_HAND_REWARD_SCALE)
+
+
 def _right_hand_grasp_point(env, asset_cfg, offset_x):
     """Robot right-hand grasp point = wrist link position forward-projected offset_x along its x-axis."""
     robot = env.scene[asset_cfg.name]
@@ -665,7 +745,7 @@ def object_contact_pos_reward(env: ManagerBasedRLEnv,
     r = torch.exp(-d2 / (std * std))
     motion_res, ok = _rework_motion_res(env)
     if ok:
-        c_hat = motion_res["is_closed"].float()
+        c_hat = _gate_with_arrival(env, motion_res["is_closed"])
         r = c_hat * r + (1.0 - c_hat)
     return r
 
@@ -2022,7 +2102,9 @@ class PickHOIRewardsCfg(MotionTrackRewardsCfg):
                     "std": 0.4, "keypt_idxs": HOI_RARM_KEYPT_IDXS})
 
     # finger open/close tracking (swapped to the binary-match variant by the parent env)
-    right_hand_state_target_reward_val = RewTerm(func=right_hand_state_target_reward, weight=REWORK_HAND_MATCH_W)
+    right_hand_state_target_reward_val = RewTerm(
+        func=right_hand_state_target_reward_arrival if REWORK_CLOSE_ON_ARRIVAL else right_hand_state_target_reward,
+        weight=REWORK_HAND_MATCH_W)
     # object-as-reference tracking (point-cloud form under HS_REWORK_OBJ_PC=1),
     # contact-gated by the reference is_closed flag when HS_REWORK_OBJ_GATE=1.
     object_tracking = RewTerm(func=object_tracking_reward, weight=REWORK_OBJ_W,
