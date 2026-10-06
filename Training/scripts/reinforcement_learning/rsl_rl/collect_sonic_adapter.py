@@ -896,7 +896,12 @@ def score_written_episode(path, box: str) -> tuple[bool, dict]:
     """
     import h5py
     from vla_sonic.grasp_success import score, BOX_LO, BOX_HI, BOX_LO_AF60, BOX_HI_AF60, BOX_LO_AF60V7, BOX_HI_AF60V7
-    lo, hi = {"af60": (BOX_LO_AF60, BOX_HI_AF60), "af60v7": (BOX_LO_AF60V7, BOX_HI_AF60V7)}.get(box, (BOX_LO, BOX_HI))
+    if box.startswith("file:"):                    # a box calibrated from an expert's own demos (calibrate_box.py)
+        import json as _json
+        _b = _json.load(open(box[5:]))
+        lo, hi = np.asarray(_b["lo"], dtype=np.float64), np.asarray(_b["hi"], dtype=np.float64)
+    else:
+        lo, hi = {"af60": (BOX_LO_AF60, BOX_HI_AF60), "af60v7": (BOX_LO_AF60V7, BOX_HI_AF60V7)}.get(box, (BOX_LO, BOX_HI))
     with h5py.File(str(path), "r", locking=False) as h:
         g = h["data/demo_0"]
         r = score(g["obs/object_pos"][()], g["obs/object_quat"][()],
@@ -1340,7 +1345,7 @@ def main() -> None:
                         help="Sample the takeover frame from U[0, k_frac * grab_idx). 1.0 = uniform up to the "
                              "reference grasp (original rule); smaller hands over earlier, before the hand "
                              "reaches the bottle.")
-    parser.add_argument("--dagger-rescue-box", choices=("preaudit", "af60", "af60v7"), default=None,
+    parser.add_argument("--dagger-rescue-box", type=str, default=None,
                         help="Palm-box calibration for the failure verdict. Explicit on purpose: the wrong\n"
                              "one rejects every episode and rescues every rollout.")
     parser.add_argument("--dagger-expert-base", choices=("reference", "student"), default="reference",
@@ -1525,8 +1530,10 @@ def main() -> None:
                                                                robot_model=SimpleG1RobotModel.build(),
                                                                camera_scene_key="camera_robot"))
         if args_cli.dagger_rescue:
-            if args_cli.dagger_rescue_box is None:
-                raise SystemExit("--dagger-rescue requires --dagger-rescue-box {preaudit,af60,af60v7}: the wrong calibration rejects every episode and rescues every rollout.")
+            _box = args_cli.dagger_rescue_box
+            if _box is None or not (_box in ("preaudit", "af60", "af60v7") or (_box.startswith("file:") and os.path.isfile(_box[5:]))):
+                raise SystemExit("--dagger-rescue requires --dagger-rescue-box preaudit | af60 | af60v7 | file:<calibrated box json>: "
+                                 "the wrong calibration rejects every episode and rescues every rollout.")
             if grasp_gate is not None:
                 raise SystemExit("--dagger-rescue forbids the grasp gate -- the residual's own finger head supplies the grasp label. Drop --grasp-gate.")
             if abs(float(args_cli.dagger_beta)) > 1e-9:
