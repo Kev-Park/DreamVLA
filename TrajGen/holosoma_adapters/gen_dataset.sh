@@ -11,6 +11,10 @@ gpu=$1; out=$2; shift 2
 #                       per-frame XY window; foot sticking is relative to the previous frame,
 #                       so a tighter window slows accumulated drift over a clip.
 #   HS_INPUT_DIR      : Adapter A output / holosoma --data-path (default: pooled ~/kevin/hs_input).
+#   HS_RESULTS        : OmniControl results.npy for Adapter A (default: TrajGen/sample/Pick_sim/results.npy,
+#                       the seed-10 batch latband60 came from). A new generation batch reuses ids 0..N-1,
+#                       so set HS_INPUT_DIR and HS_NPZ_DIR to batch-specific dirs as well, or it
+#                       overwrites the pooled pick_<id> intermediates of the existing references.
 #   HOLOSOMA_DIR      : holosoma checkout to retarget with. Defaults to a holosoma worktree
 #                       beside THIS checkout if one exists, else the shared ~/kevin/holosoma.
 #                       Set it to run a variant retargeter without moving anything.
@@ -72,7 +76,7 @@ done
 mkdir -p "$out"
 LOG_DIR="$out/_logs"; mkdir -p "$LOG_DIR"
 for id in "$@"; do
-  ( source "$HS_ACT" hsretargeting; python "$SCRIPT_DIR/export_to_holosoma.py" "$id" ) > "$LOG_DIR/A_$id.log" 2>&1 || { echo "$id ADAPTERA_FAIL"; continue; }
+  ( source "$HS_ACT" hsretargeting; python "$SCRIPT_DIR/export_to_holosoma.py" "$id" ${HS_RESULTS:+"$HS_RESULTS"} ) > "$LOG_DIR/A_$id.log" 2>&1 || { echo "$id ADAPTERA_FAIL"; continue; }
   NPZ_DIR=${HS_NPZ_DIR:-$(pooled hs_pick_out)}; mkdir -p "$NPZ_DIR"
   OUT=$NPZ_DIR/pick_${id}_original.npz; rm -f "$OUT"
   # CoM static-stability barrier flags (empty unless HS_COM_MODE is set)
