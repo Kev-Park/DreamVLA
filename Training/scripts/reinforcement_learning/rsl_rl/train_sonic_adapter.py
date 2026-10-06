@@ -478,7 +478,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         _update_counter = {"n": 0}
         _orig_update = runner.alg.update
 
+        # A resumed run continues a finished schedule: hold the end clamp instead of restarting the
+        # 0.3 hold (which would re-open exploration noise the original run had already annealed away).
+        _resumed = bool(agent_cfg.resume)
+
         def _current_std_max() -> float:
+            if _resumed:
+                return _STD_MAX_END
             n = _update_counter["n"]
             if n <= _anneal_start:
                 return _STD_MAX_START
@@ -504,6 +510,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             return info
 
         runner.alg.update = _update_with_std_clamp
+        if _resumed:
+            print(f"[train_sonic_adapter] resumed run: std clamp held at {_STD_MAX_END} (end of the original schedule)")
         print(f"[train_sonic_adapter] installed ANNEALED std clamp: "
               f"hold {_STD_MAX_START} until iter {_anneal_start}, "
               f"anneal → {_STD_MAX_END} by iter {_anneal_end}, min={_STD_MIN}")
