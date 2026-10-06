@@ -451,6 +451,32 @@ def main():
     per_env_grab_step = torch.full((num_envs,), -1, device=device, dtype=torch.long)
     per_env_root_err_grab = torch.full((num_envs,), -1.0, device=device)
     per_env_root_fwd_grab = torch.zeros(num_envs, device=device)
+    # Timing + table-contact diagnostics (FAILCLASS + DUMP_EPS): first/last step the object is in
+    # hand (lifted >= 2 cm within PHYS_R of the palm), whether it is in hand at episode end, and
+    # right-hand/wrist contact with the TABLE = net contact force on a hand body that is away from
+    # the object (> TABLE_OBJ_CLEAR), over the table footprint and within TABLE_Z_BAND of its top.
+    per_env_first_inhand = torch.full((num_envs,), -1, device=device, dtype=torch.long)
+    per_env_last_inhand = torch.full((num_envs,), -1, device=device, dtype=torch.long)
+    per_env_inhand_now = torch.zeros(num_envs, device=device, dtype=torch.bool)
+    per_env_first_table = torch.full((num_envs,), -1, device=device, dtype=torch.long)
+    per_env_table_steps = torch.zeros(num_envs, device=device, dtype=torch.long)
+    per_env_table_pre = torch.zeros(num_envs, device=device, dtype=torch.long)   # before the reference grab
+    _tbl = None
+    if FAILCLASS and DUMP_EPS:
+        try:
+            _cs = env.unwrapped.scene.sensors["contact_forces"]
+            _tb_ids, _tb_names = _cs.find_bodies("right_(hand_.*|wrist_.*)")
+            _rb_ids = env.unwrapped.scene["robot"].find_bodies(list(_tb_names), preserve_order=True)[0]   # same order as the sensor
+            _kc = env.unwrapped.cfg.scene.kitchen
+            _kp = _kc.init_state.pos; _ks = getattr(_kc.spawn, "size", (1.0, 2.0, 0.8))
+            _tbl = dict(cs=_cs, ids=_tb_ids, rids=_rb_ids, x0=_kp[0] - _ks[0] / 2, top=_kp[2] + _ks[2] / 2,
+                        f=float(os.environ.get("HS_EVAL_TABLE_FORCE", "1.0")),
+                        clear=float(os.environ.get("HS_EVAL_TABLE_OBJ_CLEAR", "0.10")),
+                        band=float(os.environ.get("HS_EVAL_TABLE_Z_BAND", "0.06")))
+            print(f"[eval] table-contact diag: {len(_tb_ids)} sensor bodies / {len(_rb_ids)} robot bodies, table x>={_tbl['x0']:.2f} top z={_tbl['top']:.2f}")
+            assert len(_tb_ids) == len(_rb_ids), "sensor/robot body lists differ"
+        except Exception as _e:
+            print(f"[eval] table-contact diag unavailable: {_e}"); _tbl = None
 
     obs_out = env.get_observations()
     obs = obs_out[0] if isinstance(obs_out, tuple) else obs_out
@@ -647,6 +673,20 @@ def main():
                 per_env_min_d_lifted = torch.where(_lift2, torch.minimum(per_env_min_d_lifted, _d), per_env_min_d_lifted)
                 per_env_min_upcos_lifted = torch.where(_lift2 & _near, torch.minimum(per_env_min_upcos_lifted, up_z), per_env_min_upcos_lifted)
             per_env_tilt_inhand |= toppled_now & _in_hand & valid
+            if FAILCLASS and DUMP_EPS:
+                _ih = _in_hand & valid
+                per_env_first_inhand = torch.where(_ih & (per_env_first_inhand < 0), per_env_steps, per_env_first_inhand)
+                per_env_last_inhand = torch.where(_ih, per_env_steps, per_env_last_inhand)
+                per_env_inhand_now = torch.where(valid, _in_hand, per_env_inhand_now)
+                if _tbl is not None:
+                    _fn = torch.linalg.norm(_tbl["cs"].data.net_forces_w[:, _tbl["ids"], :], dim=-1)            # (N,B)
+                    _bp = env.unwrapped.scene["robot"].data.body_pos_w[:, _tbl["rids"], :] - env.unwrapped.scene.env_origins.unsqueeze(1)
+                    _away = torch.linalg.norm(_bp - obj_pos_w.unsqueeze(1), dim=-1) > _tbl["clear"]
+                    _over = (_bp[..., 0] >= _tbl["x0"] - 0.03) & (_bp[..., 2] <= _tbl["top"] + _tbl["band"])
+                    _tc = ((_fn > _tbl["f"]) & _away & _over).any(dim=1) & valid
+                    per_env_first_table = torch.where(_tc & (per_env_first_table < 0), per_env_steps, per_env_first_table)
+                    per_env_table_steps += _tc.long()
+                    per_env_table_pre += (_tc & (per_env_grab_step < 0)).long()
             toppled_now = toppled_now & ~_in_hand
         if valid.any():
             per_env_had_any_lift |= lifted & valid
@@ -737,7 +777,11 @@ def main():
                                        int(per_env_first_topple[idx].item()) if FAILCLASS else -1,
                                        int(per_env_grab_step[idx].item()) if FAILCLASS else -1,
                                        int(per_env_steps[idx].item()) if FAILCLASS else -1,
-                                       int(idx), float(_obj_mass[idx].item()) if _obj_mass is not None else float("nan")))
+                                       int(idx), float(_obj_mass[idx].item()) if _obj_mass is not None else float("nan"),
+                                       int(per_env_first_touch[idx].item()) if FAILCLASS else -1,
+                                       int(per_env_first_inhand[idx].item()), int(per_env_last_inhand[idx].item()),
+                                       int(bool(per_env_inhand_now[idx].item())), int(per_env_first_table[idx].item()),
+                                       int(per_env_table_steps[idx].item()), int(per_env_table_pre[idx].item())))
                 if _touched: completed_touched += 1
                 if _toppled: completed_toppled += 1
                 if not _held_ok:
@@ -805,6 +849,9 @@ def main():
                 per_env_grab_step[done_idxs] = -1
                 per_env_root_err_grab[done_idxs] = -1.0
                 per_env_root_fwd_grab[done_idxs] = 0.0
+                per_env_first_inhand[done_idxs] = -1; per_env_last_inhand[done_idxs] = -1
+                per_env_inhand_now[done_idxs] = False; per_env_first_table[done_idxs] = -1
+                per_env_table_steps[done_idxs] = 0; per_env_table_pre[done_idxs] = 0
 
         just_reset_mask = dones_bool
         if _ee_attr is not None and _ee_attr.get("cur") is not None:
@@ -969,7 +1016,8 @@ def main():
     if DUMP_EPS and ep_records:
         _arr = np.array(ep_records, dtype=np.float64)
         np.savez(DUMP_EPS, records=_arr, columns=np.array(["mid", "held5", "held2", "toppled", "tilt_inhand", "touched",
-                 "max_lift", "d_at_maxlift", "min_d_lifted", "min_upcos_lifted", "first_topple", "grab_step", "ep_len", "env", "obj_mass"]))
+                 "max_lift", "d_at_maxlift", "min_d_lifted", "min_upcos_lifted", "first_topple", "grab_step", "ep_len", "env", "obj_mass",
+                 "first_touch", "first_inhand", "last_inhand", "end_inhand", "first_table", "table_steps", "table_steps_pregrab"]))
         print(f"[eval] wrote per-episode records: {DUMP_EPS} ({len(ep_records)} episodes)")
     env.close()
 
