@@ -741,11 +741,15 @@ def replay_token_test(env, simulation_app, root: str, n_eps: int, seed: int, out
                     break
             a = [np.asarray(x) for x in (op, oq, rp, rq, rw)]
             sc = score(*a, box_lo=BOX_LO_AF60V7, box_hi=BOX_HI_AF60V7)
-            traj[name] = dict(jp=np.asarray(jp), op=a[0], ok=bool(sc["success"]), n=len(jp))
+            why = [k for k in ("fallen_height", "fallen_horizontal", "slipping") if sc[k]] + ([] if sc["in_box_at_end"] else ["not_in_box"])
+            traj[name] = dict(jp=np.asarray(jp), op=a[0], ok=bool(sc["success"]), n=len(jp), why=why)
+            if name == "raw_a":
+                np.savez(out_json.replace(".json", f"_m{mid}_raw_a.npz"), obj_pos=a[0], obj_quat=a[1], root_pos=a[2], root_quat=a[3], wrist=a[4])
         n = min(v["n"] for v in traj.values())
         ref = traj["raw_a"]
         row = {"file": os.path.basename(f), "motion": mid, "frames": n,
                "ok": {k: v["ok"] for k, v in traj.items()},
+               "why": {k: v["why"] for k, v in traj.items()},
                "joint_dev_vs_raw_a_deg": {k: float(np.degrees(np.abs(v["jp"][:n] - ref["jp"][:n]).max())) for k, v in traj.items() if k != "raw_a"},
                "joint_dev_mean_deg": {k: float(np.degrees(np.abs(v["jp"][:n] - ref["jp"][:n]).mean())) for k, v in traj.items() if k != "raw_a"},
                "obj_end_dev_cm": {k: float(100 * np.linalg.norm(v["op"][n - 1] - ref["op"][n - 1])) for k, v in traj.items() if k != "raw_a"},
