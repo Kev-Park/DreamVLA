@@ -109,6 +109,11 @@ parser.add_argument(
     help="Token residual transform — MUST match train_sonic_adapter.py for this checkpoint.",
 )
 parser.add_argument(
+    "--clean", action="store_true", default=False,
+    help="Presentation render: no text label, no reference-keypoint spheres, no stability markers, and a "
+         "high-quality ffmpeg writer (libx264 crf 14, preset slow) instead of cv2 mp4v.",
+)
+parser.add_argument(
     "--fire-grasp", action="store_true", default=False,
     help="With --zero-residual: fire the right-hand grasp on the reference schedule (closed once the reference's "
          "is_closed trips, open before) instead of leaving the fingers open. Render-only.",
@@ -210,6 +215,9 @@ args_cli = parser.parse_args()
 
 # this script always renders → cameras must be on
 args_cli.enable_cameras = True
+if args_cli.clean:
+    args_cli.overlay_ref = False
+    args_cli.no_stability = True
 
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -698,6 +706,24 @@ class VideoWriter:
         self.frame_count = 0
 
     def write(self, frame_rgb):
+        if args_cli.clean:   # high-quality path: raw RGB frames piped to ffmpeg (libx264 crf 14)
+            if self._writer is None:
+                import shutil
+                import subprocess
+                h, w = frame_rgb.shape[:2]
+                exe = shutil.which("ffmpeg")
+                if exe is None:
+                    import imageio_ffmpeg
+                    exe = imageio_ffmpeg.get_ffmpeg_exe()
+                self._writer = subprocess.Popen(
+                    [exe, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
+                     "-r", str(self._fps), "-i", "-", "-c:v", "libx264", "-preset", "slow", "-crf", "14",
+                     "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(self.path)],
+                    stdin=subprocess.PIPE)
+                print(f"[video] writer opened {w}x{h} @ {self._fps} fps → {self.path}")
+            self._writer.stdin.write(np.ascontiguousarray(frame_rgb).tobytes())
+            self.frame_count += 1
+            return
         frame_bgr = self._cv2.cvtColor(frame_rgb, self._cv2.COLOR_RGB2BGR)
         if self._writer is None:
             h, w = frame_bgr.shape[:2]
@@ -707,7 +733,10 @@ class VideoWriter:
         self.frame_count += 1
 
     def close(self):
-        if self._writer is not None:
+        if self._writer is not None and args_cli.clean:
+            self._writer.stdin.close()
+            self._writer.wait()
+        elif self._writer is not None:
             self._writer.release()
         print(f"[video] {self.path.name}: {self.frame_count} frames written")
 
@@ -1208,7 +1237,7 @@ def main():
                     frame = _overlay_contact(frame, _icc)
                 if _cp is not None:
                     frame = _overlay_contact_pos(frame, *_cp)
-                writer.write(_overlay(frame, label))
+                writer.write(frame if args_cli.clean else _overlay(frame, label))
 
             timestep += 1
 
