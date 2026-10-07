@@ -1,7 +1,7 @@
 #!/bin/bash -l
 # GR00T (unitree_g1_sonic) fine-tune on Adroit -- ONE A100 80GB, no DeepSpeed sharding.
 #
-#   sbatch cluster/adroit/gr00t_finetune.sbatch <lerobot-dataset-dir> [run-name]
+#   sbatch cluster/adroit/gr00t_finetune.sbatch <lerobot-dataset-dir> [run-name] [max-steps (default 10000)]
 #   sbatch cluster/adroit/gr00t_finetune.sbatch ~/kevin/datasets/latband60_dagger2_agg latband60_dagger2_adroit
 #
 # WHY ONE GPU IS ENOUGH (and simpler than biped's 2x5090): 3.15B params bf16 ~6.3 GB resident;
@@ -44,7 +44,7 @@
 #SBATCH --mem=96G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=gpu80          # REQUIRED: plain gpu:1 hands out a MIG slice
-#SBATCH --time=23:59:00             # ~7-11 h expected for 10k steps on one A100
+#SBATCH --time=23:59:00             # measured ~3.5 it/s on one A100 80GB: 10k steps ~50 min, 27k ~2.2 h
 #SBATCH --output=%x-%j.out
 #SBATCH --mail-type=begin
 #SBATCH --mail-type=end
@@ -54,6 +54,7 @@
 set -eo pipefail                    # NOT -u: the module function trips on unbound vars
 DS=${1:?usage: sbatch gr00t_finetune.sbatch <lerobot-dataset-dir> [run-name]}
 RUN=${2:-$(basename "$DS")_adroit}
+STEPS=${3:-10000}
 OUT=$HOME/kevin/checkpoints
 GR=$HOME/kevin/Isaac-GR00T
 
@@ -69,7 +70,7 @@ export http_proxy=http://127.0.0.1:8899
 export https_proxy=$http_proxy HTTP_PROXY=$http_proxy HTTPS_PROXY=$http_proxy
 
 echo "node=$(hostname)  gpu=$(nvidia-smi -L | head -1)"
-echo "dataset=$DS  run=$RUN  out=$OUT"
+echo "dataset=$DS  run=$RUN  steps=$STEPS  out=$OUT"
 echo "CUDA_HOME=$CUDA_HOME  python=$GR/.venv/bin/python"
 
 cd "$GR"
@@ -82,7 +83,7 @@ exec .venv/bin/python gr00t/experiment/launch_finetune.py \
   --dataloader-num-workers 8 \
   --output-dir "$OUT" \
   --experiment-name "$RUN" \
-  --max-steps 10000 \
+  --max-steps "$STEPS" \
   --save-steps 1000 \
   --save-total-limit 2 \
   --save-only-model \
