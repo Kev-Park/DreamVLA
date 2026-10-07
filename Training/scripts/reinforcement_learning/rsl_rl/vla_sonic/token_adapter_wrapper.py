@@ -267,8 +267,26 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
 
     # ---------- base-token computation ----------
 
+    def set_base_override(self, tok) -> None:
+        """Use an EXTERNAL token as the residual's base instead of the reference lookahead.
+
+        The residual both OBSERVES the base token and composes its correction onto it, so the
+        override has to replace it in one place to keep those consistent. Passing the student's
+        token here turns the expert from a reference tracker into a corrector of the student,
+        which is the only way to ask whether the reference clock is needed in the token path at
+        all. None restores reference behaviour; unused, this changes nothing.
+        """
+        if tok is None:
+            self._base_override = None
+            return
+        t = torch.as_tensor(tok, device=self._dev, dtype=torch.float32)
+        self._base_override = t.reshape(self.num_envs, TOKEN_TOTAL_DIM)
+
     def _update_base_token(self) -> None:
         """Run the frozen encoder on the current 1.0 s reference lookahead window."""
+        if getattr(self, "_base_override", None) is not None:
+            self._base_token = self._base_override
+            return
         N = self.num_envs
         unw = self.unwrapped
         with torch.no_grad():
@@ -418,9 +436,11 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         self._update_base_token()
         return self._append_base_token(obs), extras
 
-    def step(self, latent: torch.Tensor):
+    def compose(self, latent: torch.Tensor) -> torch.Tensor:
+        """Residual composition on the TOKEN for the CURRENT state: (N,65) residual latent ->
+        (N,65) [composed body token (pre-snap) | finger scalar]. Pure function of the cached base
+        token; does not step. ``snap`` puts the body part on the FSQ grid = the executed token."""
         latent = latent.to(self._dev)
-        # Residual composition on the TOKEN (FSQ snap in _decode_body_29 re-bounds it either way).
         z = latent[:, :TOKEN_TOTAL_DIM]
         if self.residual_transform == "additive":
             # hard tanh bound keeps the token within residual_scale of the frozen base — anchor.
@@ -442,7 +462,28 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
             body = self._base_token * (1.0 + self.residual_scale * z)
         else:  # "unclamped": raw additive on the token, no anchor (safe due to the FSQ snap).
             body = self._base_token + z
-        composed = torch.cat([body, latent[:, TOKEN_TOTAL_DIM:]], dim=1)
+        return torch.cat([body, latent[:, TOKEN_TOTAL_DIM:]], dim=1)
+
+    @staticmethod
+    def snap(token: torch.Tensor) -> torch.Tensor:
+        """FSQ-lattice snap (step 1/16, 32 levels) -- identical to the one applied before the decoder."""
+        half_width = 16.0
+        return torch.clamp(torch.round(token * half_width) / half_width, min=-1.0, max=(half_width - 1.0) / half_width)
+
+    def expert_token(self, latent: torch.Tensor) -> torch.Tensor:
+        """(N,64) token the residual policy's latent WOULD execute at the current state (DAgger label)."""
+        return self.snap(self.compose(latent)[:, :TOKEN_TOTAL_DIM]).detach()
+
+    def step_composed(self, composed: torch.Tensor):
+        """Step with an already-composed (N,65) [token | finger] latent, bypassing the residual
+        composition -- used when another controller (e.g. a VLA) drives the robot while the
+        residual only supplies labels. The base token is refreshed afterwards as in ``step``."""
+        obs, rew, dones, extras = super().step(composed.to(self._dev))
+        self._update_base_token()
+        return self._append_base_token(obs), rew, dones, extras
+
+    def step(self, latent: torch.Tensor):
+        composed = self.compose(latent)
 
         obs, rew, dones, extras = super().step(composed)
 

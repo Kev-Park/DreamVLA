@@ -38,6 +38,7 @@ import argparse
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 from vla_sonic.eval_helpers import flush_render  # noqa: E402
+from vla_sonic.fsq import fsq_lattice_snap
 import builtins
 import os
 import time
@@ -294,8 +295,643 @@ def _find_latest_adapter_checkpoint(log_root: Path) -> str:
     return str(ckpts[-1])
 
 
+class GraspGate:
+    """Dynamic (motion-id-free) pre-grasp trigger: is the object inside the hand's closing volume?
+
+        rel = R_palm^T (p_object - p_palm)          # object in the PALM frame
+        fire <=> lo <= rel <= hi   (elementwise)    # anisotropic box, calibrated on the demos
+
+    ``R_palm``/``p_palm`` are the right wrist-yaw link's world pose; the box defaults are the demos'
+    hold-phase p05/p95 (latband60_v1, 54 demos: x [0.082,0.151] y [0.062,0.099] z [-0.071,-0.004])
+    padded by ``pad``. Latches after ``hold`` consecutive in-box frames and releases only after the
+    object has been outside a doubled box for ``release`` consecutive frames (a genuine drop), so the
+    binary finger command cannot chatter. Depends on NO reference clock and NO motion id.
+    """
+
+    LO = np.array([0.082, 0.062, -0.071])       # demos' hold-phase p05 (palm frame, m)
+    HI = np.array([0.151, 0.099, -0.004])       # demos' hold-phase p95
+    # The box fixes the object's BEARING + DISTANCE in hand axes but leaves the hand's ROLL about the
+    # palm->object axis free (spin the hand about that line and rel is unchanged) -- for an upright
+    # bottle that is the difference between wrapping its circumference and closing along its axis.
+    # The demos pin it (hold phase: angle(palm z, up) 9.5 +- 7.6 deg, p95 22 deg; roll -8 +- 8.5 deg),
+    # so one dot product guards the DOF the box ignores, still with no reference and no motion id.
+    UP_MAX_DEG = 35.0
+
+    def __init__(self, env, *, pad: float = 0.03, hold: int = 3, release: int = 25, up_max_deg: float = UP_MAX_DEG,
+                 stall: int = 0, stall_eps: float = 0.002):
+        # ADAPTIVE (constant-free) timing: instead of a fixed dwell from box entry, fire once the
+        # APPROACH PLATEAUS -- d_center's running minimum has not improved by more than stall_eps for
+        # `stall` frames ("I am at my closest and getting no closer"). A fast approach plateaus early,
+        # a slow one late, so the rule follows each clip's own pace. Offline on the 54 demos this
+        # tracks the per-clip close time far better than any dwell (k=15: 69% within +-25 frames,
+        # IQR 25 wide, vs dwell-50's 59% / IQR 42). stall=0 disables it (pure dwell).
+        self.stall, self.stall_eps = int(stall), float(stall_eps)
+        self.mid = 0.5 * ((self.LO - pad) + (self.HI + pad))
+        self.lo = self.LO - pad; self.hi = self.HI + pad
+        self.cos_up_min = float(np.cos(np.radians(up_max_deg))) if up_max_deg < 180.0 else -1.0
+        self.up_max_deg = float(up_max_deg)
+        mid = 0.5 * (self.lo + self.hi); half = 0.5 * (self.hi - self.lo)
+        self.rel_lo, self.rel_hi = mid - 2.0 * half, mid + 2.0 * half      # release box (2x)
+        self.hold, self.release = int(hold), int(release)
+        u = env.unwrapped
+        self._robot = u.scene["robot"]; self._obj = u.scene["object"]
+        self._bid = self._robot.find_bodies("right_wrist_yaw_link")[0][0]
+        self.reset()
+
+    def reset(self):
+        self.latched = False; self._in = 0; self._out = 0
+        self._dmin = float("inf"); self._since_improve = 0
+
+    def _palm(self):
+        q = self._robot.data.body_quat_w[0, self._bid]                      # wxyz
+        w, x, y, z = (float(v) for v in q)
+        R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                      [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                      [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+        p_palm = self._robot.data.body_pos_w[0, self._bid].detach().cpu().numpy()
+        p_obj = self._obj.data.root_pos_w[0].detach().cpu().numpy()
+        return R.T @ (p_obj - p_palm), R                                    # env origin cancels
+
+    def rel(self) -> np.ndarray:
+        return self._palm()[0]
+
+    def __call__(self) -> bool:
+        r, R = self._palm()
+        upright = bool(R[2, 2] >= self.cos_up_min)                          # angle(palm z, world up)
+        d_center = float(np.linalg.norm(r - self.mid))
+        if d_center < self._dmin - self.stall_eps:
+            self._dmin = d_center; self._since_improve = 0                  # still closing in
+        else:
+            self._since_improve += 1
+        if not self.latched:
+            in_box = upright and bool(np.all((r >= self.lo) & (r <= self.hi)))
+            plateaued = self._since_improve >= self.stall if self.stall > 0 else True
+            self._in = self._in + 1 if (in_box and plateaued) else 0
+            if self._in >= self.hold:
+                self.latched = True; self._out = 0
+        else:
+            self._out = 0 if bool(np.all((r >= self.rel_lo) & (r <= self.rel_hi))) else self._out + 1
+            if self._out >= self.release:
+                self.latched = False; self._in = 0
+        return self.latched
+
+
+class DaggerDriver:
+    """DAgger relabelling: a VLA drives the robot (with probability 1-beta per re-plan chunk; the
+    residual expert drives otherwise) while the RESIDUAL supplies the label for EVERY visited state.
+
+    Per step the collector computes the expert's latent a_exp = residual(obs) and records
+      * obs/motion_token           = env.expert_token(a_exp): the FSQ token the expert WOULD execute
+                                     at this state (not the token that was actually executed),
+      * actions                    = a_exp (65-D: residual latent + finger scalar),
+      * teleop/finger_joints/right = the expert's finger COMMAND as a joint pose: the demo set's mean
+                                     measured closed-on-bottle pose when a_exp[64] < 0, zeros otherwise
+                                     (the measured fingers stay open while the VLA drives, so they
+                                     cannot serve as the label here).
+    The env's own terminations end a rollout (ee_body_pos = the expert's 0.25 m validity gate);
+    rollouts are kept regardless of task success (they are supposed to contain failures).
+    """
+
+    def __init__(self, env, vla_policy, obs_adapter, *, beta: float, chunk: int, close_thres: float, seed: int,
+                 diagnostics: bool = False, trigger: str = "stochastic", trigger_thr: float = 0.551,
+                 trigger_smooth: int = 15, trigger_budget: float = -1.0, trigger_lr: float = 0.02,
+                 expert_base: str = "reference", takeover_at: int | None = None, blend: int = 0):
+        self.env = env; self.vla = vla_policy; self.obs_adapter = obs_adapter
+        self.beta = float(beta); self.chunk = int(chunk); self.close_thres = float(close_thres)
+        self.rng = np.random.default_rng(seed)
+        self.diagnostics = bool(diagnostics)
+        # Intervention rule. "stochastic" is the original beta coin-flip per re-plan chunk.
+        # "disagree" hands control to the expert exactly where it would act differently from the
+        # VLA -- measured, not predicted, and free because DAgger already evaluates the expert at
+        # every visited state in order to relabel it. Unlike a reference-tracking margin it needs
+        # no reference trajectory, so it carries over to any task that has an expert at all.
+        self.trigger = str(trigger)
+        self.trigger_thr = float(trigger_thr)
+        self.trigger_smooth = max(1, int(trigger_smooth))
+        # A FIXED threshold cannot be calibrated offline: intervening changes the very
+        # distribution it is measured on. Calibrated on beta=0 rollouts (median 0.551) it spent
+        # only 9.4% of frames on the expert once it was actually driving, because the expert
+        # steers the rollout back into agreement. Targeting a BUDGET instead removes the
+        # constant entirely -- Robbins-Monro on the indicator drives P(d > thr) -> budget, so the
+        # threshold self-calibrates to whatever task, policy and embodiment it is run on, and the
+        # knob you set is the one comparable to beta.
+        # "student": the residual composes onto the VLA's token instead of the reference's, so
+        # the expert becomes a corrector of the student rather than a reference tracker. The VLA
+        # is then queried every chunk regardless of who drives, since its token is needed as the
+        # base. The override is set one step AHEAD because the wrapper refreshes the base token
+        # at the end of env.step, and that refreshed value is what the next observation carries.
+        self.expert_base = str(expert_base)
+        # Failure-conditioned rescue: a ONE-WAY handover at this frame. None = the trigger/beta
+        # rules decide instead. The VLA is still queried while the student drives, and (under
+        # expert_base='student') afterwards too, since its token is the residual's base.
+        self.takeover_at = takeover_at
+        # Handover blend: for `blend` frames after takeover_at, execute a smoothstep mix of the
+        # student's and expert's tokens instead of switching instantly. A hard switch between two
+        # token streams that disagree (median 0.55 L2) is a step in the commanded target, and the
+        # autoregressive decoder turned it into a 3-4x joint-speed spike that knocked the bottle
+        # within 4-7 frames in every measured rescue. 0 = hard switch (previous behaviour).
+        self.blend = max(0, int(blend))
+        self.n_frames = 0
+        self.trigger_budget = float(trigger_budget)      # <0 disables (fixed threshold)
+        self.trigger_lr = float(trigger_lr)
+        self._dis_mean = None                            # EMA of the disagreement, sets the step scale
+        self._dis_win: list[float] = []
+        self.n_trig_eval = 0
+        self._feat = None            # pooled VLM embedding from the most recent VLA query
+        self._vla_tok = None         # the VLA token executed at the current frame
+        self._resid = (float("nan"), float("nan"))
+        if self.diagnostics:
+            self._install_backbone_hook()
+        self.begin_episode()
+
+    def _install_backbone_hook(self):
+        """Capture the VLM embedding the action head conditions on, via a forward hook.
+
+        A hook keeps this out of the vendored GR00T repo -- nothing there is patched, and with
+        diagnostics off no hook is registered at all. Pooled over the token axis so each frame
+        yields one vector, which is what a density model fitted on the training set consumes.
+        """
+        backbone = getattr(getattr(self.vla, "model", None), "backbone", None)
+        if backbone is None:
+            raise RuntimeError("VLA policy exposes no .model.backbone -- cannot capture features.")
+
+        def _grab(_module, _inputs, output):
+            f = output
+            if not torch.is_tensor(f):
+                f = f.get("backbone_features") if hasattr(f, "get") else getattr(f, "backbone_features", None)
+            if torch.is_tensor(f):
+                self._feat = f.detach().float().mean(dim=1)[0].cpu().numpy().astype(np.float16)
+
+        backbone.register_forward_hook(_grab)
+
+    def diag_record(self, expert_tok) -> dict:
+        """Per-frame uncertainty signals, all derived from quantities already computed.
+
+        fsq_resid_*          how far off the FSQ lattice the VLA's token landed. Its training
+                             targets sit exactly on the 1/16 grid, so landing between codewords
+                             is the continuous analogue of a flat categorical.
+        vla_expert_token_l2  how much the expert would change the token here -- the signal most
+                             directly relevant to whether taking over buys anything.
+        vla_feat             pooled VLM embedding, for offline feature-space density.
+        """
+        l2, mx = self._resid
+        d = {"vla_fsq_resid_l2": np.float32(l2), "vla_fsq_resid_max": np.float32(mx),
+             "vla_expert_token_l2": np.float32("nan")}
+        if self._vla_tok is not None and expert_tok is not None:
+            d["vla_expert_token_l2"] = np.float32(
+                np.linalg.norm(np.asarray(expert_tok, np.float32) - self._vla_tok))
+        d["vla_feat"] = self._feat if self._feat is not None else np.zeros(1, dtype=np.float16)
+        return d
+
+    def begin_episode(self):
+        self._chunk = None; self._chunk_step = self.chunk; self._expert_drives = True
+        self.n_expert = 0; self.n_vla = 0; self._dis_win = []; self.n_trig_eval = 0
+        self.n_frames = 0
+
+    def step(self, expert_latent: torch.Tensor, expert_tok=None):
+        """Advance the env one step; returns (obs, rew, dones, extras, expert_drove: bool)."""
+        if self._chunk_step >= self.chunk:                               # re-plan boundary
+            self._chunk_step = 0
+            # Only query the VLA when some frame of the coming chunk actually uses its token: the
+            # student is still driving (frame < k), a blend is pending (frame < k + blend), the
+            # residual composes onto the student's token, or the disagreement trigger is on. With
+            # k=0 and no blend the token is never used, and querying anyway ran a 3B forward every
+            # 8 frames during pure expert control -- something pure-demo mode never does.
+            need_vla = (self.trigger == "disagree" or self.expert_base == "student"
+                        or (self.takeover_at is not None
+                            and self.n_frames < self.takeover_at + self.blend))
+            if need_vla:
+                out = self.vla.get_action(self.obs_adapter())
+                self._chunk = out[0] if isinstance(out, tuple) else out
+            elif self.takeover_at is not None:
+                pass                                     # expert-only from here on; no chunk needed
+            else:
+                self._expert_drives = bool(self.rng.random() < self.beta)
+                if not self._expert_drives:
+                    out = self.vla.get_action(self.obs_adapter())
+                    self._chunk = out[0] if isinstance(out, tuple) else out
+        t = self._chunk_step; self._chunk_step += 1
+        frame = self.n_frames; self.n_frames += 1
+        in_blend = False
+        if self.takeover_at is not None:
+            # one-way: the student owns [0, k), the expert owns [k, end)
+            self._expert_drives = frame >= self.takeover_at
+            in_blend = self.blend > 0 and self.takeover_at <= frame < self.takeover_at + self.blend
+
+        if self.trigger == "disagree":
+            if self._chunk is None or expert_tok is None:
+                self._expert_drives = True                               # no comparison yet
+            else:
+                cand = np.asarray(self._chunk["motion_token"], np.float32)[0, t]
+                d = float(np.linalg.norm(np.asarray(expert_tok, np.float32) - cand))
+                self._dis_win.append(d)
+                if len(self._dis_win) > self.trigger_smooth:
+                    self._dis_win.pop(0)
+                self.n_trig_eval += 1
+                ds = float(np.mean(self._dis_win))
+                # Evaluate every frame (the window and the controller need the signal), but only
+                # COMMIT at a re-plan boundary. The stochastic rule can likewise only switch at a
+                # boundary, so the two arms get identical control-switching granularity and any
+                # difference between them is about WHERE the expert drives, not how often control
+                # changes hands.
+                if t == 0 or self._chunk is None:
+                    self._expert_drives = bool(ds > self.trigger_thr)
+                if self.trigger_budget >= 0.0:
+                    # scale the step by the signal's own magnitude so the rule is unit-free
+                    self._dis_mean = ds if self._dis_mean is None else 0.99 * self._dis_mean + 0.01 * ds
+                    self.trigger_thr += (self.trigger_lr * max(self._dis_mean, 1e-6)
+                                         * ((1.0 if self._expert_drives else 0.0) - self.trigger_budget))
+
+        if self.expert_base == "student" and self._chunk is not None:
+            h = np.asarray(self._chunk["motion_token"], np.float32).shape[1]
+            nxt = np.asarray(self._chunk["motion_token"], np.float32)[0, min(t + 1, h - 1)]
+            self.env.set_base_override(nxt)
+        if self._expert_drives and not in_blend:
+            self.n_expert += 1
+            return (*self.env.step(expert_latent), True)
+        tok = np.asarray(self._chunk["motion_token"], np.float32)[0, t]
+        if self.diagnostics:
+            _r = tok - np.asarray(fsq_lattice_snap(tok), np.float32)
+            self._vla_tok = tok; self._resid = (float(np.linalg.norm(_r)), float(np.abs(_r).max()))
+        rh = np.asarray(self._chunk["right_hand_joints"], np.float32)[0, t]
+        composed = torch.zeros((1, 65), device=expert_latent.device, dtype=torch.float32)
+        composed[0, :64] = torch.as_tensor(tok, device=expert_latent.device)
+        if in_blend and expert_tok is not None:
+            # smoothstep: zero slope at both ends, so velocity stays continuous entering AND
+            # leaving the window (linear would trade one jerk for two smaller ones)
+            a = (frame - self.takeover_at + 1) / float(self.blend)
+            a = a * a * (3.0 - 2.0 * a)
+            mixed = (1.0 - a) * tok + a * np.asarray(expert_tok, np.float32)
+            composed[0, :64] = torch.as_tensor(mixed, device=expert_latent.device)
+            # finger channel is binary: hand it to the expert at k (measured finger pose was
+            # identical before/after k in every failed rescue -- the lurch was body-side)
+            composed[0, 64] = -1.0 if float(expert_latent[0, 64].item()) < 0 else 1.0
+            self.n_expert += 1
+            return (*self.env.step_composed(composed), True)
+        composed[0, 64] = -1.0 if float(np.abs(rh).mean()) > self.close_thres else 1.0
+        self.n_vla += 1
+        return (*self.env.step_composed(composed), False)
+
+
+# --- rollout snapshot / restore ------------------------------------------------------------------
+# The DAgger rework needs to resume a rollout exactly at frame k: the student runs to completion to
+# decide whether it failed, and only then does the expert re-drive [k, end). Replaying the student
+# segment instead is not an option -- GR00T's action head samples from torch.randn, so a replay
+# diverges from the rollout that actually failed.
+#
+# ManagerBasedEnv.reset_to() applies a scene state, but it calls _reset_idx() FIRST, which re-runs
+# the reset EVENTS and zeroes episode_length_buf. The physics state is then overwritten, but the
+# reference clock (episode_length_buf / start_motion_times / motion_ids) and the SONIC decoder's
+# autoregressive history are not -- so they are saved and restored explicitly.
+_SNAP_WRAPPER_TENSORS = ("_h_jp", "_h_jv", "_h_la", "_h_av", "_h_gv", "_base_token")
+_SNAP_ENV_TENSORS = ("episode_length_buf", "start_motion_times", "motion_ids")
+
+
+def _wrapper_owning(env, attr: str):
+    """Find the wrapper in the chain that actually owns `attr`.
+
+    The decoder history lives on TokenActionDecoderVecEnvWrapper, which may sit several wrappers
+    below the object the collector holds. Resolving it by walking the chain (rather than assuming
+    `env` owns it) is what stops the snapshot from silently skipping the most important state.
+    """
+    seen = set()
+    node = env
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        if attr in vars(node):
+            return node
+        node = getattr(node, "env", None)
+    return None
+
+
+def rollout_snapshot(env) -> dict:
+    """Everything needed to resume this rollout exactly at the current frame."""
+    u = env.unwrapped
+    snap = {"scene": u.scene.get_state(is_relative=False)}
+    missing = []
+    for name in _SNAP_ENV_TENSORS:
+        t = getattr(u, name, None)
+        snap[name] = t.clone() if t is not None else None
+    for name in _SNAP_WRAPPER_TENSORS:
+        owner = _wrapper_owning(env, name)
+        t = getattr(owner, name, None) if owner is not None else None
+        if t is None:
+            missing.append(name)
+        snap[name] = t.clone() if t is not None else None
+    snap["_owners"] = {n: type(_wrapper_owning(env, n)).__name__ if _wrapper_owning(env, n) else None
+                       for n in _SNAP_WRAPPER_TENSORS}
+    if missing:
+        raise RuntimeError(
+            f"rollout_snapshot could not find {missing} on any wrapper in the chain -- the decoder "
+            f"history would be silently skipped and the stitch would be invalid. "
+            f"owners found: {snap['_owners']}")
+    # The policy observation contains last_action (ObsTerm(func=mdp.last_action)), and _reset_idx
+    # zeroes these -- without them the first post-restore observation is wrong and the rollout
+    # diverges on the very first step rather than drifting.
+    am = getattr(u, "action_manager", None)
+    snap["_am_action"] = am._action.clone() if am is not None else None
+    snap["_am_prev_action"] = am._prev_action.clone() if am is not None else None
+    # Any observation terms configured with history_length > 0 keep circular buffers that
+    # _reset_idx clears.
+    om = getattr(u, "observation_manager", None)
+    hist = {}
+    for grp, terms in getattr(om, "_group_obs_term_history_buffer", {}).items():
+        for tname, buf in terms.items():
+            b = getattr(buf, "buffer", None)
+            if b is not None:
+                hist[(grp, tname)] = b.clone()
+    snap["_obs_history"] = hist
+    return snap
+
+
+def rollout_restore(env, snap: dict) -> None:
+    """Inverse of rollout_snapshot. Order matters: reset_to zeroes the clock, so restore after it."""
+    u = env.unwrapped
+    # Deliberately NOT ManagerBasedEnv.reset_to(): that calls _reset_idx() first, which fires the
+    # reset EVENTS -- teleporting the robot to the reference pose -- before the saved state is
+    # written back. Two teleports in one frame leave PhysX with contact penetration it resolves as a
+    # large impulse on the next step, which is why identical actions from a bit-exact restored state
+    # still diverged (joint_vel by 11.5 rad/s at frame 0). Writing the scene state directly skips
+    # the events and the intermediate pose entirely.
+    env_ids = torch.arange(u.num_envs, dtype=torch.int64, device=u.device)
+    u.scene.reset_to(snap["scene"], env_ids, is_relative=False)
+    u.sim.forward()
+    for name in _SNAP_ENV_TENSORS:
+        cur, saved = getattr(u, name, None), snap.get(name)
+        if cur is not None and saved is not None:
+            cur.copy_(saved)
+    for name in _SNAP_WRAPPER_TENSORS:
+        owner = _wrapper_owning(env, name)
+        cur = getattr(owner, name, None) if owner is not None else None
+        saved = snap.get(name)
+        if cur is None or saved is None:
+            raise RuntimeError(f"rollout_restore: {name} unavailable at restore time")
+        cur.copy_(saved)
+    am = getattr(u, "action_manager", None)
+    if am is not None and snap.get("_am_action") is not None:
+        am._action.copy_(snap["_am_action"])
+        am._prev_action.copy_(snap["_am_prev_action"])
+    om = getattr(u, "observation_manager", None)
+    for (grp, tname), saved in (snap.get("_obs_history") or {}).items():
+        try:
+            buf = om._group_obs_term_history_buffer[grp][tname]
+            buf.buffer.copy_(saved)
+        except (AttributeError, KeyError):
+            pass
+    # reset_to computed obs_buf with the clock still zeroed and last_action cleared, so it is stale
+    # by construction. Recompute now that everything above is back in place; update_history=False so
+    # the restored history buffers are not advanced by the recompute itself.
+    if om is not None:
+        u.obs_buf = om.compute(update_history=False)
+
+
+def replay_token_test(env, simulation_app, root: str, n_eps: int, seed: int, out_json: str) -> None:
+    """Does a 3-frame median filter of the expert's token labels change what the robot DOES?
+
+    For each recorded expert demo (pure demos only: their obs/motion_token is the token that was
+    executed), reset to the same motion and seed and execute the recorded token + finger command
+    frame by frame, three ways: raw, raw again (the simulator is not deterministic, so raw-vs-raw is
+    the noise floor), and with each token dimension median-filtered over 3 frames (removes single-
+    frame A->B->A blips; values stay on the FSQ grid). Reports 4-rule success per variant and how far
+    each replay's joint / object trajectories drift from the first raw replay.
+    """
+    import glob, json as _json, re
+    import h5py
+    from vla_sonic.grasp_success import score, BOX_LO_AF60V7, BOX_HI_AF60V7
+
+    def med3(tok):
+        out = tok.copy()
+        out[1:-1] = np.median(np.stack([tok[:-2], tok[1:-1], tok[2:]]), axis=0)
+        return out
+
+    files = [f for f in sorted(glob.glob(os.path.join(os.path.expanduser(root), "**", "*.hdf5"), recursive=True))
+             if "_passA" not in f][:n_eps]
+    u = env.unwrapped
+    results = []
+    for f in files:
+        mid = int(re.search(r"motion_(\d+)", os.path.basename(f)).group(1))
+        with h5py.File(f, "r", locking=False) as h:
+            g = h["data/demo_0"]
+            tok = g["obs/motion_token"][()].astype(np.float32)
+            fin = g["actions"][()][:, 64].astype(np.float32)
+            md = _json.loads(h.attrs["metadata_json"])
+            rec_jp = g["obs/robot0_joint_pos"][()][:, :29]
+            rec_op = g["obs/object_pos"][()]
+        if md.get("dagger") or md.get("rescue"):
+            continue
+        variants = {"raw_a": tok, "raw_b": tok, "med3": med3(tok)}
+        traj = {}
+        for name, tk in variants.items():
+            u._forced_motion_id = mid
+            _set_all_seeds(seed + mid * 10)
+            with torch.inference_mode():
+                env.reset()
+            jp, op, oq, rp, rq, rw = [], [], [], [], [], []
+            for t in range(len(tk)):
+                c = torch.zeros((1, 65), device=u.device, dtype=torch.float32)
+                c[0, :64] = torch.as_tensor(tk[t], device=u.device)
+                c[0, 64] = -1.0 if fin[t] < 0 else 1.0
+                with torch.inference_mode():
+                    _, _, dones, _ = env.step_composed(c)
+                r = u.scene["robot"].data; o = u.scene["object"].data
+                jp.append(r.joint_pos[0, :29].cpu().numpy()); op.append(o.root_pos_w[0].cpu().numpy() - u.scene.env_origins[0].cpu().numpy())
+                oq.append(o.root_quat_w[0].cpu().numpy()); rp.append(r.root_pos_w[0].cpu().numpy() - u.scene.env_origins[0].cpu().numpy())
+                rq.append(r.root_quat_w[0].cpu().numpy()); rw.append(_capture_teleop_frame(env)["right_wrist"].numpy())
+                if bool(dones[0]) and t < len(tk) - 1:
+                    break
+            a = [np.asarray(x) for x in (op, oq, rp, rq, rw)]
+            sc = score(*a, box_lo=BOX_LO_AF60V7, box_hi=BOX_HI_AF60V7)
+            why = [k for k in ("fallen_height", "fallen_horizontal", "slipping") if sc[k]] + ([] if sc["in_box_at_end"] else ["not_in_box"])
+            traj[name] = dict(jp=np.asarray(jp), op=a[0], ok=bool(sc["success"]), n=len(jp), why=why)
+            if name == "raw_a":
+                np.savez(out_json.replace(".json", f"_m{mid}_raw_a.npz"), obj_pos=a[0], obj_quat=a[1], root_pos=a[2], root_quat=a[3], wrist=a[4])
+        n = min(v["n"] for v in traj.values())
+        ref = traj["raw_a"]
+        row = {"file": os.path.basename(f), "motion": mid, "frames": n,
+               "ok": {k: v["ok"] for k, v in traj.items()},
+               "why": {k: v["why"] for k, v in traj.items()},
+               "joint_dev_vs_raw_a_deg": {k: float(np.degrees(np.abs(v["jp"][:n] - ref["jp"][:n]).max())) for k, v in traj.items() if k != "raw_a"},
+               "joint_dev_mean_deg": {k: float(np.degrees(np.abs(v["jp"][:n] - ref["jp"][:n]).mean())) for k, v in traj.items() if k != "raw_a"},
+               "obj_end_dev_cm": {k: float(100 * np.linalg.norm(v["op"][n - 1] - ref["op"][n - 1])) for k, v in traj.items() if k != "raw_a"},
+               "labels_changed_frac": float((variants["med3"] != tok).mean()),
+               # sanity: how closely does a raw replay reproduce the RECORDED demo?
+               "raw_vs_recording_joint_mean_deg": [float(np.degrees(np.abs(ref["jp"][:n] - rec_jp[o:o + n]).mean())) for o in (-1, 0, 1)
+                                                   if 0 <= o and o + n <= len(rec_jp)] + ([float(np.degrees(np.abs(ref["jp"][1:n] - rec_jp[:n - 1]).mean()))]),
+               "recorded_obj_moved_cm": float(100 * np.linalg.norm(rec_op[:, :2] - rec_op[0, :2], axis=1).max()),
+               "replay_obj_moved_cm": float(100 * np.linalg.norm(ref["op"][:n, :2] - ref["op"][0, :2], axis=1).max()),
+               "rec_obj0": [float(x) for x in rec_op[0]], "replay_obj0": [float(x) for x in ref["op"][0]],
+               "tok_shape": list(tok.shape), "rec_len": int(len(rec_jp))}
+        results.append(row)
+        print(f"[replay] m{mid}: ok {row['ok']} | joint dev vs raw_a (max deg) {row['joint_dev_vs_raw_a_deg']} | "
+              f"obj end dev cm {row['obj_end_dev_cm']} | med3 changed {100*row['labels_changed_frac']:.1f}% of label entries", flush=True)
+        with open(out_json, "w") as fh:
+            _json.dump(results, fh, indent=1)
+    print(f"[replay] done: {len(results)} episodes -> {out_json}")
+
+
+def selftest_determinism(env, policy, n_steps: int, motion_id: int, seed: int) -> bool:
+    """Two identical rollouts (same motion, same seed, full reset each time) -- do they match?
+
+    Reports per-component divergence and the first frame that exceeds 1e-6, plus the growth profile,
+    which distinguishes "one state is wrong" (jumps immediately) from "chaotic amplification of
+    float noise" (starts tiny and grows).
+    """
+    def one_pass():
+        _set_all_seeds(seed)
+        env.unwrapped._forced_motion_id = int(motion_id)
+        out = env.reset()
+        obs = out[0] if isinstance(out, tuple) else out
+        rec = []
+        for _ in range(n_steps):
+            with torch.no_grad():
+                a = policy(obs)
+                out = env.step(a)
+                obs = out[0]
+            u = env.unwrapped
+            rec.append({
+                "joint_pos": u.scene["robot"].data.joint_pos[0].clone(),
+                "root_pos": u.scene["robot"].data.root_pos_w[0].clone(),
+                "object_pos": u.scene["object"].data.root_pos_w[0].clone(),
+            })
+        return rec
+
+    pa = one_pass()
+    pb = one_pass()
+
+    print(f"[selftest-determinism] motion {motion_id}, seed {seed}, {n_steps} steps, two full resets")
+    worst = 0.0
+    for k in pa[0]:
+        d = torch.stack([(x[k] - y[k]).abs().max() for x, y in zip(pa, pb)])
+        first = int((d > 1e-6).nonzero()[0].item()) if (d > 1e-6).any() else -1
+        worst = max(worst, float(d.max()))
+        print(f"    {k:11s} max {float(d.max()):.3e}   first frame over 1e-6: {first}")
+    # growth profile: an immediate jump means a state differs; slow growth means float chaos
+    dj = torch.stack([(x["joint_pos"] - y["joint_pos"]).abs().max() for x, y in zip(pa, pb)])
+    idx = [0, min(4, n_steps - 1), min(9, n_steps - 1), min(19, n_steps - 1), n_steps - 1]
+    print("    joint_pos divergence by frame: " +
+          "  ".join(f"f{i}={float(dj[i]):.2e}" for i in sorted(set(idx))))
+    ok = worst < 1e-6
+    print(f"[selftest-determinism] max |A-B| = {worst:.3e}")
+    if ok:
+        print("[selftest-determinism] PASS -- identical rollouts reproduce; exact re-roll is viable")
+    else:
+        print("[selftest-determinism] FAIL -- identical rollouts diverge; the rescue must accept an "
+              "independent sibling rollout rather than reproducing the failed one")
+    return ok
+
+
+def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
+    """Prove the restore is exact: run n_post steps from a snapshot twice, applying the SAME recorded
+    actions both times, and require the trajectories to match bit-for-bit.
+
+    Replaying recorded actions (rather than re-querying the policy) isolates the environment restore
+    from policy determinism -- if these two segments differ, the snapshot is missing state, and any
+    stitched episode would carry a silent discontinuity at k.
+    """
+    obs, _ = env.reset()
+    for _ in range(n_pre):
+        with torch.no_grad():
+            obs, *_ = env.step(policy(obs))
+
+    snap = rollout_snapshot(env)
+    print(f"[selftest-restore] history owners: {snap['_owners']}")
+    at_snap = {
+        "object_pos": env.unwrapped.scene["object"].data.root_pos_w[0].clone(),
+        "root_pos": env.unwrapped.scene["robot"].data.root_pos_w[0].clone(),
+        "joint_pos": env.unwrapped.scene["robot"].data.joint_pos[0].clone(),
+        "joint_vel": env.unwrapped.scene["robot"].data.joint_vel[0].clone(),
+    }
+
+    def run(tag, actions=None):
+        rec, acts = [], []
+        o = env.get_observations()
+        o = o[0] if isinstance(o, tuple) else o
+        for i in range(n_post):
+            with torch.no_grad():
+                a = policy(o).clone() if actions is None else actions[i]
+            acts.append(a.clone())
+            out = env.step(a)
+            o = out[0]
+            u = env.unwrapped
+            rec.append({
+                "object_pos": u.scene["object"].data.root_pos_w[0].clone(),
+                "object_quat": u.scene["object"].data.root_quat_w[0].clone(),
+                "root_pos": u.scene["robot"].data.root_pos_w[0].clone(),
+                "joint_pos": u.scene["robot"].data.joint_pos[0].clone(),
+                "joint_vel": u.scene["robot"].data.joint_vel[0].clone(),
+            })
+        return rec, acts
+
+    traj_a, acts = run("A")
+    rollout_restore(env, snap)
+    print(f"[selftest-restore] {n_pre} pre-steps, {n_post} post-steps, identical actions replayed")
+    print("[selftest-restore] restore fidelity: state AT the snapshot vs state after restore")
+    for k, v in at_snap.items():
+        cur = {"object_pos": env.unwrapped.scene["object"].data.root_pos_w[0],
+               "root_pos": env.unwrapped.scene["robot"].data.root_pos_w[0],
+               "joint_pos": env.unwrapped.scene["robot"].data.joint_pos[0],
+               "joint_vel": env.unwrapped.scene["robot"].data.joint_vel[0]}[k]
+        print(f"    {k:11s} max {float((v - cur).abs().max()):.3e}")
+    traj_b, _ = run("B", actions=acts)
+
+    print("[selftest-restore] per-component divergence over the replayed segment:")
+    worst = 0.0
+    for k in traj_a[0]:
+        d = torch.stack([(a[k] - b[k]).abs().max() for a, b in zip(traj_a, traj_b)])
+        first = int((d > 1e-6).nonzero()[0].item()) if (d > 1e-6).any() else -1
+        worst = max(worst, float(d.max()))
+        print(f"    {k:11s} max {float(d.max()):.3e}   first frame over 1e-6: {first}")
+    ok = worst < 1e-6
+    print(f"[selftest-restore] max |A-B| = {worst:.3e}")
+    print(f"[selftest-restore] {'PASS -- restore is exact; the stitch is safe' if ok else 'FAIL -- snapshot is missing state; DO NOT stitch'}")
+    return ok
+
+
+def score_written_episode(path, box: str) -> tuple[bool, dict]:
+    """4-rule verdict on a written episode, reusing the same path as the offline filter.
+
+    box: "af60" for the post-audit calibration, "af60v7" for the af60v7 grasp, "preaudit" for the original. This is explicit on
+    purpose -- the pre-audit box rejects 100% of post-audit grasps (the bottle sits ~10 cm higher in
+    the palm), which would make every rollout read as a failure and trigger a rescue every time.
+    """
+    import h5py
+    from vla_sonic.grasp_success import score, BOX_LO, BOX_HI, BOX_LO_AF60, BOX_HI_AF60, BOX_LO_AF60V7, BOX_HI_AF60V7
+    if box.startswith("file:"):                    # a box calibrated from an expert's own demos (calibrate_box.py)
+        import json as _json
+        _b = _json.load(open(box[5:]))
+        lo, hi = np.asarray(_b["lo"], dtype=np.float64), np.asarray(_b["hi"], dtype=np.float64)
+    else:
+        lo, hi = {"af60": (BOX_LO_AF60, BOX_HI_AF60), "af60v7": (BOX_LO_AF60V7, BOX_HI_AF60V7)}.get(box, (BOX_LO, BOX_HI))
+    with h5py.File(str(path), "r", locking=False) as h:
+        g = h["data/demo_0"]
+        r = score(g["obs/object_pos"][()], g["obs/object_quat"][()],
+                  g["obs/robot0_root_pos_w"][()], g["obs/robot0_root_quat_w"][()],
+                  g["teleop/right_wrist"][()], box_lo=lo, box_hi=hi)
+    why = [t for t, cond in (("fell", r["fallen_height"]), ("horiz", r["fallen_horizontal"]),
+                             ("slip", r["slipping"]), ("notbox", not r["in_box_at_end"])) if cond]
+    return bool(r["success"]), {"why": "+".join(why) or "-", "max_tilt": float(r["max_tilt"])}
+
+
+def dagger_closed_pose(demo_root: str, max_files: int = 8) -> np.ndarray:
+    """Mean measured right-finger pose (collector joint order) over closed-command frames of the demos."""
+    import h5py
+    acc, n = None, 0
+    for f in sorted(Path(demo_root).expanduser().rglob("*.hdf5"))[:max_files]:
+        with h5py.File(f, "r") as h:
+            g = h["data/demo_0"]
+            closed = g["actions"][()][:, 64] < 0
+            if closed.any():
+                fr = g["teleop/finger_joints/right"][()][closed]
+                acc = fr.sum(0) if acc is None else acc + fr.sum(0); n += len(fr)
+    if not n:
+        raise RuntimeError(f"no closed frames found under {demo_root}")
+    return (acc / n).astype(np.float64)
+
+
 def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, real_time,
-                         reset_at_start, lift_thres, phys_lift=0.05, phys_radius=0.15, phys_steps=25):
+                         reset_at_start, lift_thres, phys_lift=0.05, phys_radius=0.15, phys_steps=25,
+                         dagger: "DaggerDriver | None" = None, dagger_closed_pose_arr: np.ndarray | None = None,
+                         grasp_gate: "GraspGate | None" = None, gate_drives: bool = False):
     camera_frames: list[np.ndarray] = []
     state_history: list[dict[str, Any]] = []
     teleop_history: list[dict[str, torch.Tensor]] = []
@@ -304,6 +940,14 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     # the recorded motion → the correct VLA supervision target, stored directly instead
     # of being re-derived offline (which would recover only the un-adapted base token).
     token_history: list[np.ndarray] = []
+    dagger_mask: list[bool] = []                                     # expert drove this step?
+    is_closed_hist: list[bool] = []                                  # reference grasp phase per frame
+    diag_hist: list[dict] = []                                       # per-frame VLA uncertainty signals
+    gate_hist: list[bool] = []                                       # grasp gate latched this step?
+    if dagger is not None:
+        dagger.begin_episode()
+    if grasp_gate is not None:
+        grasp_gate.reset()
     # Eval-parity success: a frame is a real pickup when the object (bottle) clears lift_thres
     # AND the reference motion is in its closed/grasp phase. Mirrors eval_sonic_adapter.py
     # (bottle_z > lift_thres & is_closed), evaluated POST-step.
@@ -363,15 +1007,47 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         step_index += 1
         with torch.inference_mode():
             actions = policy(obs).clone()
+            if grasp_gate is not None:
+                gate_closed = grasp_gate()
+                gate_hist.append(gate_closed)
+                # LABEL (and, with --dagger-gate-drives, the executed expert command) comes from the
+                # state-based gate instead of the reference clip's is_closed schedule.
+                if gate_drives:
+                    actions[0, 64] = -1.0 if gate_closed else 1.0
+            expert_tok = env.expert_token(actions)[0].cpu().numpy().astype(np.float64) if dagger is not None else None
         camera_output = getattr(cam_robot.data, "output", None)
         if camera_output is None or "rgb" not in camera_output:
             raise RuntimeError("camera_robot.data.output missing 'rgb'.")
         camera_frames.append(_frame_to_uint8_rgb(camera_output["rgb"][0].cpu().numpy()))
         if state_on:
-            state_history.append(_capture_rollout_state(env, actions))
+            # Reference grasp phase, so grab_idx (where the reference closes) comes out of the
+            # rollout itself -- the rescue samples its takeover frame k from [0, grab_idx).
+            try:
+                _u = env.unwrapped
+                _mt = (_u.episode_length_buf * _u.step_dt
+                       + _u.start_motion_times.to(device=_u.device, dtype=torch.float32))
+                _mr = _u.motion_lib.get_motion_state(_u.motion_ids, _mt)
+                is_closed_hist.append(bool(_mr["is_closed"][0].item() > 0.5))
+            except Exception:
+                is_closed_hist.append(False)
+            st = _capture_rollout_state(env, actions)
+            if dagger is not None:
+                # label = the expert's finger COMMAND as a pose (measured fingers follow the driver, not the expert)
+                closed = gate_hist[-1] if grasp_gate is not None else bool(actions[0, 64].item() < 0)
+                if "action" in st:                       # keep the recorded latent's finger slot == the label
+                    st["action"][64] = -1.0 if closed else 1.0
+                st["robot"]["right_finger_joint_pos"] = torch.as_tensor(
+                    dagger_closed_pose_arr if closed else np.zeros_like(dagger_closed_pose_arr), dtype=torch.float32)
+            state_history.append(st)
             teleop_history.append(_capture_teleop_frame(env))
         with torch.inference_mode():
-            step_result = env.step(actions)
+            if dagger is not None:
+                *step_result, expert_drove = dagger.step(actions, expert_tok=expert_tok)
+                step_result = tuple(step_result); dagger_mask.append(expert_drove)
+                if dagger.diagnostics:
+                    diag_hist.append(dagger.diag_record(expert_tok))
+            else:
+                step_result = env.step(actions)
         if len(step_result) == 5:
             obs, _, terminated, truncated, _ = step_result
         else:
@@ -383,9 +1059,12 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         # actions applied above). Pairs index-for-index with camera_frames/state_history
         # since all three append exactly once per iteration before the break check.
         if state_on:
-            last_token = getattr(env, "_last_token", None)
-            if last_token is not None:
-                token_history.append(last_token[0].detach().cpu().numpy().astype(np.float64))
+            if dagger is not None:
+                token_history.append(expert_tok)                     # DAgger label: the expert's token
+            else:
+                last_token = getattr(env, "_last_token", None)
+                if last_token is not None:
+                    token_history.append(last_token[0].detach().cpu().numpy().astype(np.float64))
         # Eval-parity lift check — POST-step, matching eval_sonic_adapter.py
         # (bottle_z > lift_thres while the reference is_closed). The settle gate
         # (object_settled) ignores the reset-drop transient: the object is reset to z=1.0
@@ -461,6 +1140,17 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         n_state = int(np.asarray(raw_state["robot"]["joint_pos"]).shape[0])
         if len(token_history) == n_state:
             raw_state["motion_token"] = np.stack(token_history, axis=0)  # (N, 64)
+            if dagger is not None and len(dagger_mask) == n_state:
+                raw_state["dagger_expert_mask"] = np.asarray(dagger_mask, dtype=np.uint8)
+            if grasp_gate is not None and len(gate_hist) == n_state:
+                raw_state["grasp_gate"] = np.asarray(gate_hist, dtype=np.uint8)
+            if diag_hist and len(diag_hist) == n_state:
+                for _k in ("vla_fsq_resid_l2", "vla_fsq_resid_max", "vla_expert_token_l2"):
+                    raw_state[_k] = np.asarray([d[_k] for d in diag_hist], dtype=np.float32)
+                _fd = max(len(d["vla_feat"]) for d in diag_hist)
+                raw_state["vla_feat"] = np.stack(
+                    [d["vla_feat"] if len(d["vla_feat"]) == _fd else np.zeros(_fd, np.float16)
+                     for d in diag_hist], axis=0)
         else:
             print(f"[WARN] token_history ({len(token_history)}) != state frames ({n_state}) "
                   "— NOT writing obs/motion_token; converter will re-derive instead.")
@@ -513,6 +1203,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         "max_lift_m": float(max_lift),
         "object_rest_z": float(obj_rest_z) if obj_rest_z is not None else float("nan"),
         "toppled_any": bool(toppled_any),
+        "grab_idx": (int(np.argmax(is_closed_hist)) if any(is_closed_hist) else -1),
         "legacy_lift_success": bool(had_any_lift),
         "lift_thres": float(lift_thres),
         "success_n_successes": success_n_successes,
@@ -521,6 +1212,16 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         "camera_on": True,
         "state_on": state_on,
     }
+    if dagger is not None:
+        metadata["dagger"] = {"beta": dagger.beta, "chunk": dagger.chunk, "trigger": dagger.trigger,
+                          "trigger_thr": dagger.trigger_thr, "trigger_smooth": dagger.trigger_smooth,
+                          "trigger_budget": dagger.trigger_budget,
+                          "expert_steps": dagger.n_expert,
+                              "vla_steps": dagger.n_vla, "labels": "expert token + expert finger command"}
+    if grasp_gate is not None:
+        metadata["grasp_gate"] = {"lo": grasp_gate.lo.tolist(), "hi": grasp_gate.hi.tolist(), "up_max_deg": grasp_gate.up_max_deg,
+                                  "hold": grasp_gate.hold, "stall": grasp_gate.stall, "release": grasp_gate.release, "drives": bool(gate_drives),
+                                  "closed_frames": int(np.sum(gate_hist)), "first_close": int(np.argmax(gate_hist)) if any(gate_hist) else -1}
     return camera_frames, raw_state, metadata, teleop_payload
 
 
@@ -563,8 +1264,8 @@ def main() -> None:
                         help="Native .pt only; must match training (g1 = full-body reference encoder).")
     parser.add_argument("--residual-scale", type=float, default=0.1,
                         help="MUST match the value train_sonic_adapter.py used (current recipe: 0.1).")
-    parser.add_argument("--residual-transform", type=str, default="multiplicative_free",
-                        choices=["additive", "multiplicative", "multiplicative_free", "unclamped"],
+    parser.add_argument("--residual-transform", type=str, default="additive_free",
+                        choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped"],
                         help="MUST match train_sonic_adapter.py (current recipe: multiplicative_free).")
     parser.add_argument("--phys-lift", type=float, default=0.02,
                         help="SUCCESS filter: object must rise >= this (m) above its rest height ... "
@@ -590,6 +1291,88 @@ def main() -> None:
                              "prepend). The recorded trajectory begins at the skip frame.")
     parser.add_argument("--start-pregrab-margin", type=float, default=None,
                         help="Start episodes this many seconds before the grab (drops prepend + walk).")
+    parser.add_argument("--dagger-vla-checkpoint", type=str, default=None,
+                        help="DAgger mode: GR00T checkpoint that DRIVES the robot (with prob 1-beta per chunk) while "
+                             "the residual labels every state. Rollouts are written regardless of success.")
+    parser.add_argument("--dagger-demo-root", type=str, default=None,
+                        help="DAgger: collector HDF5 root of the demonstrations -- sweeps only its motion ids and "
+                             "takes the closed-finger label pose from it.")
+    parser.add_argument("--dagger-beta", type=float, default=0.5, help="DAgger: P(expert drives) per re-plan chunk.")
+    parser.add_argument("--dagger-diagnostics", action="store_true", default=False,
+                        help="Record per-frame VLA uncertainty signals (FSQ lattice residual, expert/VLA token "
+                             "disagreement, pooled VLM embedding) into obs/. Logging only: control is unchanged.")
+    parser.add_argument("--dagger-chunk", type=int, default=8, help="DAgger: VLA re-plan cadence (eval parity).")
+    parser.add_argument("--replay-token-test", type=str, default=None, metavar="DEMO_DIR",
+                        help="Diagnostic, then exit: replay recorded expert demo tokens raw / raw again / "
+                             "3-frame-median-filtered and compare outcomes (see replay_token_test).")
+    parser.add_argument("--replay-token-n", type=int, default=20, help="episodes for --replay-token-test")
+    parser.add_argument("--dagger-selftest-determinism", type=int, default=None, metavar="N_STEPS",
+                        help="Roll the same motion twice with the same seed (full reset each time) and report\n"
+                             "whether the trajectories are identical, then exit. Gates the deterministic\n"
+                             "re-roll approach: if two identical rollouts diverge, exact reproduction of a\n"
+                             "failed student rollout is impossible.")
+    parser.add_argument("--dagger-selftest-restore", type=int, nargs=2, default=None,
+                        metavar=("N_PRE", "N_POST"),
+                        help="Run the snapshot/restore self-test (N_PRE steps, snapshot, then N_POST steps\n"
+                             "replayed twice with identical actions) and exit. The failure-rescue mode stitches\n"
+                             "a student segment to an expert segment across a restore, so this must PASS first.")
+    parser.add_argument("--dagger-trigger", choices=("stochastic", "disagree"), default="stochastic",
+                        help="Who drives: 'stochastic' = the original beta coin-flip per chunk; 'disagree' = the\n"
+                             "expert drives whenever its token differs from the VLA's by more than\n"
+                             "--dagger-trigger-thr (smoothed), spending the same budget where it matters.")
+    parser.add_argument("--dagger-trigger-thr", type=float, default=0.551,
+                        help="Disagreement threshold (L2 in token space). Default is the median of the measured\n"
+                             "beta=0 distribution, which reproduces the beta=0.5 expert budget (~50%% of frames).")
+    parser.add_argument("--dagger-trigger-smooth", type=int, default=15,
+                        help="Frames of moving average on the disagreement before thresholding (anti-chatter).")
+    parser.add_argument("--dagger-trigger-budget", type=float, default=-1.0,
+                        help="Target fraction of frames the expert should drive (e.g. 0.5 for parity with\n"
+                             "beta=0.5). The threshold then self-calibrates online to hit it, which is what\n"
+                             "makes the rule portable across tasks. Negative keeps --dagger-trigger-thr fixed.")
+    parser.add_argument("--dagger-trigger-lr", type=float, default=0.02,
+                        help="Step size for the budget controller, relative to the signal's own scale.")
+    parser.add_argument("--dagger-rescue", action="store_true", default=False,
+                        help="Failure-conditioned expert rescue. The student drives the whole episode; if it\n"
+                             "FAILS the 4-rule criterion, an independent second rollout hands over to the\n"
+                             "expert at k ~ U[0, grab_idx) and only that one is kept. Requires\n"
+                             "--dagger-rescue-box and forbids the grasp gate (the residual's own finger head\n"
+                             "supplies the grasp label).")
+    parser.add_argument("--dagger-rescue-blend", type=int, default=0,
+                        help="Frames over which to smoothstep-blend from the student token to the expert "
+                             "token after takeover (0 = hard switch). A hard switch lurched 3-4x and "
+                             "knocked the bottle within 4-7 frames in every measured rescue.")
+    parser.add_argument("--dagger-rescue-k-frac", type=float, default=1.0,
+                        help="Sample the takeover frame from U[0, k_frac * grab_idx). 1.0 = uniform up to the "
+                             "reference grasp (original rule); smaller hands over earlier, before the hand "
+                             "reaches the bottle.")
+    parser.add_argument("--dagger-rescue-box", type=str, default=None,
+                        help="Palm-box calibration for the failure verdict. Explicit on purpose: the wrong\n"
+                             "one rejects every episode and rescues every rollout.")
+    parser.add_argument("--dagger-expert-base", choices=("reference", "student"), default="reference",
+                        help="What the residual expert composes onto: the reference lookahead token\n"
+                             "(default) or the STUDENT's token, which removes the reference clock from\n"
+                             "the token path and makes the expert a corrector of the student.")
+    parser.add_argument("--dagger-rollouts", type=int, default=2, help="DAgger: rollouts per demo motion.")
+    parser.add_argument("--dagger-min-steps", type=int, default=50, help="DAgger: discard rollouts shorter than this.")
+    parser.add_argument("--grasp-gate", action="store_true", default=False,
+                        help="State-based (motion-id-free) finger label: CLOSE when the object lies inside the hand's "
+                             "closing volume in the PALM frame (box calibrated on the demos' hold phase), latched. "
+                             "Replaces the reference clip's is_closed schedule as the DAgger finger label.")
+    parser.add_argument("--grasp-gate-pad", type=float, default=0.03, help="Box padding (m) around the demos' p05/p95.")
+    parser.add_argument("--grasp-gate-up-deg", type=float, default=35.0,
+                        help="Also require the palm z-axis within this angle of world up (demos: 9.5 +- 7.6 deg), "
+                             "guarding the roll DOF the position box leaves free. 180 disables.")
+    parser.add_argument("--grasp-gate-stall", type=int, default=0,
+                        help="ADAPTIVE timing: require the approach to have PLATEAUED -- d_center's running minimum "
+                             "unimproved for this many frames -- before latching (0 = pure dwell). 15-25 recommended.")
+    parser.add_argument("--grasp-gate-stall-eps", type=float, default=0.002, help="Improvement (m) that resets the plateau counter.")
+    parser.add_argument("--grasp-gate-hold", type=int, default=3, help="Consecutive in-box frames before latching.")
+    parser.add_argument("--grasp-gate-release", type=int, default=25, help="Consecutive out-of-2x-box frames to release.")
+    parser.add_argument("--grasp-gate-drives", action="store_true", default=False,
+                        help="Also EXECUTE the gate's command when the expert drives (labels == executed behaviour). "
+                             "Without it the expert still closes on its schedule and only the LABEL is gated.")
+    parser.add_argument("--dagger-finger-close-thres", type=float, default=0.6,
+                        help="DAgger: VLA right-hand mean|q| above which its close is executed (eval parity).")
     parser.add_argument("--skip-existing", action="store_true", default=False,
                         help="Resume: skip motion ids that already have an .hdf5 anywhere under --output-directory "
                              "(previously rejected motions are re-tried; the policy is deterministic).")
@@ -724,6 +1507,52 @@ def main() -> None:
     runner.load(resume_path)
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
+    grasp_gate = GraspGate(env, pad=args_cli.grasp_gate_pad, hold=args_cli.grasp_gate_hold,
+                           release=args_cli.grasp_gate_release,
+                           up_max_deg=args_cli.grasp_gate_up_deg, stall=args_cli.grasp_gate_stall,
+                           stall_eps=args_cli.grasp_gate_stall_eps) if args_cli.grasp_gate else None
+    if grasp_gate is not None:
+        print(f"[grasp-gate] palm-frame box lo={np.round(grasp_gate.lo,3).tolist()} hi={np.round(grasp_gate.hi,3).tolist()} "
+              f"hold={grasp_gate.hold} stall={grasp_gate.stall} release={grasp_gate.release} up<={grasp_gate.up_max_deg:.0f}deg "
+              f"drives={args_cli.grasp_gate_drives}")
+    dagger = None; dagger_closed = None; dagger_motions = None
+    if args_cli.dagger_vla_checkpoint:
+        from gr00t.policy.gr00t_policy import Gr00tPolicy
+        from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter
+        from vla_sonic.simple_robot_model import SimpleG1RobotModel
+        from vla_sonic.eval_helpers import demo_motion_ids
+        if not args_cli.dagger_demo_root:
+            raise SystemExit("--dagger-demo-root is required in DAgger mode")
+        dagger_motions = demo_motion_ids(args_cli.dagger_demo_root)
+        dagger_closed = dagger_closed_pose(args_cli.dagger_demo_root)
+        vla = Gr00tPolicy(embodiment_tag="unitree_g1_sonic", model_path=args_cli.dagger_vla_checkpoint, device=device)
+        obs_adapter = ObsToPolicyAdapter(env, ObsAdapterConfig(language_instruction="pick up the mustard bottle",
+                                                               robot_model=SimpleG1RobotModel.build(),
+                                                               camera_scene_key="camera_robot"))
+        if args_cli.dagger_rescue:
+            _box = args_cli.dagger_rescue_box
+            if _box is None or not (_box in ("preaudit", "af60", "af60v7") or (_box.startswith("file:") and os.path.isfile(_box[5:]))):
+                raise SystemExit("--dagger-rescue requires --dagger-rescue-box preaudit | af60 | af60v7 | file:<calibrated box json>: "
+                                 "the wrong calibration rejects every episode and rescues every rollout.")
+            if grasp_gate is not None:
+                raise SystemExit("--dagger-rescue forbids the grasp gate -- the residual's own finger head supplies the grasp label. Drop --grasp-gate.")
+            if abs(float(args_cli.dagger_beta)) > 1e-9:
+                print("[rescue] forcing --dagger-beta 0: the student must drive all of pass A")
+                args_cli.dagger_beta = 0.0
+        dagger = DaggerDriver(env, vla, obs_adapter, beta=args_cli.dagger_beta, chunk=args_cli.dagger_chunk,
+                              diagnostics=args_cli.dagger_diagnostics,
+                              trigger=args_cli.dagger_trigger, trigger_thr=args_cli.dagger_trigger_thr,
+                              trigger_smooth=args_cli.dagger_trigger_smooth,
+                              trigger_budget=args_cli.dagger_trigger_budget,
+                              trigger_lr=args_cli.dagger_trigger_lr,
+                              expert_base=args_cli.dagger_expert_base,
+                              blend=args_cli.dagger_rescue_blend,
+                              close_thres=args_cli.dagger_finger_close_thres, seed=args_cli.seed)
+        print(f"[DAgger] VLA {args_cli.dagger_vla_checkpoint} drives with P={1-args_cli.dagger_beta:.2f} per "
+              f"{args_cli.dagger_chunk}-step chunk; expert labels every state. {len(dagger_motions)} demo motions x "
+              f"{args_cli.dagger_rollouts} rollouts. closed-pose label (mean|q| {np.abs(dagger_closed).mean():.2f}) "
+              f"= {np.round(dagger_closed, 2).tolist()}")
+
     output_root = Path(args_cli.output_directory).resolve()
     recorder = RolloutRecorder(output_root / datetime.now().strftime("%Y-%m-%d"))
     recorder.output_dir.mkdir(parents=True, exist_ok=True)
@@ -741,6 +1570,25 @@ def main() -> None:
     print(f"[INFO] motion library = {total_motions} motions; target = {target_successes} successful "
           f"trajectories (each motion tried once, deterministic policy).")
 
+    if args_cli.replay_token_test is not None:
+        replay_token_test(env, simulation_app, args_cli.replay_token_test, int(args_cli.replay_token_n),
+                          int(args_cli.seed), os.path.join(args_cli.output_directory, "replay_token_test.json"))
+        simulation_app.close()
+        raise SystemExit(0)
+
+    if args_cli.dagger_selftest_determinism is not None:
+        lo = args_cli.motion_range[0] if args_cli.motion_range else 0
+        ok = selftest_determinism(env, policy, int(args_cli.dagger_selftest_determinism),
+                                  motion_id=int(lo), seed=int(args_cli.seed))
+        simulation_app.close()
+        raise SystemExit(0 if ok else 1)
+
+    if args_cli.dagger_selftest_restore is not None:
+        n_pre, n_post = args_cli.dagger_selftest_restore
+        ok = selftest_restore(env, policy, int(n_pre), int(n_post))
+        simulation_app.close()
+        raise SystemExit(0 if ok else 1)
+
     written = 0
     tried = 0
     rejected_fall = 0
@@ -755,15 +1603,22 @@ def main() -> None:
             m_hi = min(total_motions, args_cli.motion_range[1])
         if args_cli.motion_range is not None:
             print(f"[INFO] --motion-range: sweeping motions [{m_lo}, {m_hi}) of {total_motions}")
-        for motion_id in range(m_lo, m_hi):
+        if dagger is not None:
+            sweep = [(m, r) for m in dagger_motions if m_lo <= m < m_hi for r in range(args_cli.dagger_rollouts)]
+        else:
+            sweep = [(m, 0) for m in range(m_lo, m_hi)]
+        for motion_id, rollout_idx in sweep:
             if written >= target_successes or not simulation_app.is_running():
                 break
-            if args_cli.skip_existing and list(output_root.rglob(f"*__motion_{motion_id:03d}.hdf5")):
-                print(f"[INFO] motion {motion_id}/{total_motions}: already collected under {output_root} -- skipping")
+            suffix = f"_r{rollout_idx}" if dagger is not None else ""
+            if args_cli.skip_existing and list(output_root.rglob(f"*__motion_{motion_id:03d}{suffix}.hdf5")):
+                print(f"[INFO] motion {motion_id}{suffix}: already collected under {output_root} -- skipping")
                 continue
             env.unwrapped._forced_motion_id = int(motion_id)  # forces the reset's motion draw
-            _set_all_seeds(args_cli.seed + motion_id)          # deterministic per-motion init
-            print(f"[INFO] motion {motion_id}/{total_motions} (written {written}/{target_successes})")
+            _set_all_seeds(args_cli.seed + motion_id * 10 + rollout_idx)   # deterministic per-rollout init
+            if dagger is not None:
+                dagger.rng = np.random.default_rng(args_cli.seed + motion_id * 10 + rollout_idx)
+            print(f"[INFO] motion {motion_id}{suffix}/{total_motions} (written {written}/{target_successes})")
 
             # Per-motion resilience: a single bad rollout (or a recoverable error) shouldn't
             # lose the whole run / the partial dataset. If the sim app itself died (e.g. an
@@ -776,7 +1631,8 @@ def main() -> None:
                     reset_at_start=True,  # always reset so the forced motion takes effect
                     lift_thres=float(args_cli.lift_thres),
                     phys_lift=float(args_cli.phys_lift), phys_radius=float(args_cli.phys_radius),
-                    phys_steps=int(args_cli.phys_steps),
+                    phys_steps=int(args_cli.phys_steps), dagger=dagger, dagger_closed_pose_arr=dagger_closed,
+                    grasp_gate=grasp_gate, gate_drives=bool(args_cli.grasp_gate_drives),
                 )
             except Exception as rollout_exc:
                 errored += 1
@@ -789,24 +1645,114 @@ def main() -> None:
                 continue
             tried += 1
 
+            if args_cli.dagger_rescue:
+                # ---- pass A: the student drove the whole episode (beta forced to 0) -------------
+                # Written first so the verdict comes from the same 4-rule path as the offline
+                # filter, rather than a second in-memory implementation that could drift from it.
+                passA_name = f"_passA__motion_{motion_id:03d}{suffix}.hdf5"
+                final_name = f"sonic_adapter__{motion_tag}__motion_{motion_id:03d}{suffix}.hdf5"
+
+                def _write(name, cam, rs, mt, tp, extra):
+                    md = {
+                        "motion_reference": motion_tag, "motion_id": int(motion_id),
+                        "success_index": written, "skip_start_frames": args_cli.skip_start_frames,
+                        "start_pregrab_margin_s": args_cli.start_pregrab_margin,
+                        "residual_scale": args_cli.residual_scale,
+                        "residual_transform": args_cli.residual_transform,
+                        "sonic_pt": str(args_cli.sonic_pt) if args_cli.sonic_pt else None,
+                        "encoder_mode": args_cli.encoder_mode, "waist_dof": int(args_cli.waist_dof),
+                        "checkpoint": str(resume_path), **mt, **extra,
+                    }
+                    recorder.write_rollout(name, frames=np.stack(cam, axis=0),
+                                           raw_state=rs if args_cli.state_on else None,
+                                           metadata=md, teleop=tp,
+                                           env_args=_build_env_args(env, task_name=args_cli.task))
+                    return recorder.output_dir / name
+
+                pA = _write(passA_name, camera_frames, raw_state, meta, teleop_payload,
+                            {"rescue": {"pass": "A", "takeover_at": None}})
+                okA, whyA = score_written_episode(pA, args_cli.dagger_rescue_box)
+                grab_idx = int(meta.get("grab_idx", -1))
+                print(f"[rescue] motion {motion_id}: pass A 4-rule {'PASS' if okA else 'FAIL'} "
+                      f"({whyA['why']}), grab_idx={grab_idx}, steps={meta['num_steps']}")
+
+                if okA:
+                    os.replace(pA, recorder.output_dir / final_name)
+                    written += 1
+                    print(f"[rescue] WROTE student success {written} -> {final_name}")
+                    continue
+
+                # ---- pass B: independent sibling, expert takes over at k -----------------------
+                pA.unlink(missing_ok=True)
+                if grab_idx <= 0:
+                    rejected_nograsp += 1
+                    print(f"[rescue] SKIP motion {motion_id}: no reference grasp frame "
+                          f"(grab_idx={grab_idx}), nowhere to sample k from")
+                    continue
+                # k ~ U[0, k_frac * grab_idx). k_frac=1 is the original uniform-to-grab rule; a small
+                # k_frac hands over early, while the hand is still away from the bottle.
+                k_hi = max(1, int(round(float(args_cli.dagger_rescue_k_frac) * grab_idx)))
+                k = int(np.random.default_rng(args_cli.seed + motion_id * 7919 + rollout_idx).integers(0, k_hi))
+                print(f"[rescue] motion {motion_id}: re-rolling with expert takeover at k={k} "
+                      f"of grab_idx={grab_idx} (expert_base={args_cli.dagger_expert_base})")
+                dagger.takeover_at = k
+                try:
+                    camB, rsB, metaB, tpB = _run_rollout_adapter(
+                        env, policy, simulation_app=simulation_app, max_steps=args_cli.rollout_length,
+                        state_on=bool(args_cli.state_on), real_time=bool(args_cli.real_time),
+                        reset_at_start=True, lift_thres=float(args_cli.lift_thres),
+                        phys_lift=float(args_cli.phys_lift), phys_radius=float(args_cli.phys_radius),
+                        phys_steps=int(args_cli.phys_steps), dagger=dagger,
+                        dagger_closed_pose_arr=dagger_closed, grasp_gate=None, gate_drives=False,
+                    )
+                except Exception as exc:
+                    errored += 1
+                    print(f"[rescue] motion {motion_id}: pass B raised {type(exc).__name__}: {exc}")
+                    dagger.takeover_at = None
+                    if not simulation_app.is_running():
+                        break
+                    continue
+                dagger.takeover_at = None
+                pB = _write(final_name, camB, rsB, metaB, tpB,
+                            {"rescue": {"pass": "B", "takeover_at": int(k), "grab_idx": grab_idx,
+                                        "passA_success": False, "passA_why": whyA["why"],
+                                        "expert_base": args_cli.dagger_expert_base,
+                                        "blend": int(args_cli.dagger_rescue_blend),
+                                        "k_frac": float(args_cli.dagger_rescue_k_frac)}})
+                okB, whyB = score_written_episode(pB, args_cli.dagger_rescue_box)
+                written += 1
+                print(f"[rescue] WROTE rescue {written} -> {final_name} "
+                      f"(4-rule {'PASS' if okB else 'FAIL'}: {whyB['why']}; "
+                      f"expert drove {metaB['dagger']['expert_steps']}/{metaB['num_steps']})")
+                continue
+
+            # DAgger: keep everything long enough to carry labels (failures are the point).
+            if dagger is not None:
+                if meta["num_steps"] < args_cli.dagger_min_steps:
+                    rejected_fall += 1
+                    print(f"[INFO] REJECTED motion={motion_id}{suffix} (DAgger rollout too short: {meta['num_steps']} steps)")
+                    continue
+                print(f"[INFO] DAgger motion={motion_id}{suffix}: {meta['num_steps']} steps "
+                      f"(expert {meta['dagger']['expert_steps']} / vla {meta['dagger']['vla_steps']}), "
+                      f"end={meta['termination_terms']}, held={meta['phys_held']}, max_lift={meta['max_lift_m']:.3f}")
             # SUCCESS FILTER: write only non-fallen, task-successful trajectories.
-            if meta["error_terminated"]:
+            if dagger is None and meta["error_terminated"]:
                 rejected_fall += 1
                 print(f"[INFO] REJECTED motion={motion_id} (failure termination: {meta['termination_terms']}) "
                       f"steps={meta['num_steps']}")
                 continue
-            if not meta["success"]:
+            if dagger is None and not meta["success"]:
                 rejected_nograsp += 1
                 print(f"[INFO] REJECTED motion={motion_id} (no physical hold; max_lift={meta['max_lift_m']:.3f} m, "
                       f"toppled={meta['toppled_any']}) steps={meta['num_steps']}")
                 continue
-            if meta["toppled_any"] and args_cli.reject_topple:
+            if dagger is None and meta["toppled_any"] and args_cli.reject_topple:
                 rejected_topple += 1
                 print(f"[INFO] REJECTED motion={motion_id} (held, but object toppled during the episode) "
                       f"steps={meta['num_steps']}")
                 continue
 
-            file_name = f"sonic_adapter__{motion_tag}__motion_{motion_id:03d}.hdf5"
+            file_name = f"sonic_adapter__{motion_tag}__motion_{motion_id:03d}{suffix}.hdf5"
             metadata = {
                 "motion_reference": motion_tag,
                 "motion_id": int(motion_id),
