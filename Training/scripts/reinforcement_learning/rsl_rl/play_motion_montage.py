@@ -109,6 +109,11 @@ parser.add_argument(
     help="Token residual transform — MUST match train_sonic_adapter.py for this checkpoint.",
 )
 parser.add_argument(
+    "--fire-grasp", action="store_true", default=False,
+    help="With --zero-residual: fire the right-hand grasp on the reference schedule (closed once the reference's "
+         "is_closed trips, open before) instead of leaving the fingers open. Render-only.",
+)
+parser.add_argument(
     "--zero-residual", action="store_true", default=False,
     help="Ignore the policy and play with residual=0 (+finger open): pure zero-shot "
          "frozen-SONIC playback of the reference motion. No checkpoint required.",
@@ -987,7 +992,13 @@ def main():
               "(no checkpoint loaded; action = 0 → residual = 0, fingers open)")
 
         def policy(obs):
-            return torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
+            act = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
+            if args_cli.fire_grasp:
+                uw = env.unwrapped
+                mt = uw.episode_length_buf * uw.step_dt + uw.start_motion_times.clone().detach().to(device=uw.device, dtype=torch.float32)
+                closed = uw.motion_lib.get_motion_state(uw.motion_ids, mt)["is_closed"].to(device).reshape(-1)
+                act[:, -1] = torch.where(closed > 0.5, -1.0, 1.0)      # finger scalar: -1 closed, +1 open
+            return act
     else:
         print(f"[INFO] Loading model checkpoint from: {resume_path}")
         ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=device)
