@@ -120,8 +120,12 @@ parser.add_argument(
 )
 parser.add_argument(
     "--clean", action="store_true", default=False,
-    help="Presentation render: no text label, no reference-keypoint spheres, no stability markers, and a "
-         "high-quality ffmpeg writer (libx264 crf 14, preset slow) instead of cv2 mp4v.",
+    help="Presentation render: no text label, no stability markers, and a high-quality ffmpeg writer "
+         "(libx264 crf 14, preset slow) instead of cv2 mp4v. Add --no-ref-overlay to drop the keypoint spheres too.",
+)
+parser.add_argument(
+    "--no-ref-overlay", action="store_true", default=False,
+    help="Do not draw the reference-keypoint spheres (--overlay-ref is on by default).",
 )
 parser.add_argument(
     "--fire-grasp", action="store_true", default=False,
@@ -235,8 +239,9 @@ args_cli = parser.parse_args()
 # this script always renders → cameras must be on
 args_cli.enable_cameras = True
 if args_cli.clean:
-    args_cli.overlay_ref = False
     args_cli.no_stability = True
+if args_cli.no_ref_overlay:
+    args_cli.overlay_ref = False
 
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
