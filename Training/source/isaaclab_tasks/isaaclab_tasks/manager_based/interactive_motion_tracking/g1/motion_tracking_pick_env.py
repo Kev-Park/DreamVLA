@@ -298,9 +298,15 @@ REWORK_OBJ_GATE = os.environ.get("HS_REWORK_OBJ_GATE", "0") == "1"  # #2 gate ob
 # (+1..+2 steps) because the hand-state term pins it and the object terms are gated to the reference.
 REWORK_CLOSE_ON_ARRIVAL = os.environ.get("HS_REWORK_CLOSE_ON_ARRIVAL", "0") == "1"
 REWORK_ARRIVE_D = float(os.environ.get("HS_REWORK_ARRIVE_D", "0.08"))   # m, palm point -> object centre
+# HS_REWORK_ARRIVE_FINGER_D > 0: a SECOND arrival trigger for the OBJECT GATES only -- the nearest right-hand
+# body (fingers, thumb, wrist) within this distance of the bottle centre. The finger-close ramp keeps using
+# the palm latch above. Motivation (T20_arr dump): in 9/15 toppled episodes the fingertips swept the bottle
+# over from 15-20 cm out before the palm point ever came within 8 cm, so the gates never engaged.
+REWORK_ARRIVE_FINGER_D = float(os.environ.get("HS_REWORK_ARRIVE_FINGER_D", "0"))
 if REWORK_CLOSE_ON_ARRIVAL:
     print(f"[G1PickHOI] HS_REWORK_CLOSE_ON_ARRIVAL=1: finger close ramp + object gates re-anchored to hand arrival "
-          f"(palm point < {REWORK_ARRIVE_D:.2f} m, bottle upright)")
+          f"(palm point < {REWORK_ARRIVE_D:.2f} m, bottle upright)"
+          + (f"; object gates ALSO open when any right-hand body < {REWORK_ARRIVE_FINGER_D:.2f} m" if REWORK_ARRIVE_FINGER_D > 0 else ""))
 REWORK_CONTACT_POS = os.environ.get("HS_REWORK_CONTACT_POS", "0") == "1"  # LadderMan position contact reward + pos contact-loss termination
 REWORK_CONTACT_POS_W = float(os.environ.get("HS_REWORK_CONTACT_POS_W", "2.0"))
 REWORK_CONTACT_POS_STD = float(os.environ.get("HS_REWORK_CONTACT_POS_STD", "0.12"))
@@ -663,13 +669,18 @@ def _arrival_latch(env):
     n = env.scene.num_envs
     if not hasattr(env, "_arrived") or env._arrived.shape[0] != n:
         env._arrived = torch.zeros(n, dtype=torch.bool, device=env.device)
+        env._arrived_any = torch.zeros(n, dtype=torch.bool, device=env.device)
         env._arrival_frame = torch.full((n,), 1e9, device=env.device)
         env._arrival_stamp = -1
         env._arrival_wrist_id = env.scene["robot"].find_bodies("right_wrist_yaw_link")[0][0]
+        env._arrival_hand_ids = torch.tensor(
+            env.scene["robot"].find_bodies("right_(hand_.*|wrist_yaw_link|rubber_hand)")[0],
+            device=env.device, dtype=torch.long)
     if env._arrival_stamp != int(env.common_step_counter):
         env._arrival_stamp = int(env.common_step_counter)
         fresh = env.episode_length_buf == 0
         env._arrived[fresh] = False
+        env._arrived_any[fresh] = False
         env._arrival_frame[fresh] = 1e9
         robot = env.scene["robot"]; obj: RigidObject = env.scene["object"]
         hand = robot.data.body_pos_w[:, env._arrival_wrist_id, :] - env.scene.env_origins
@@ -686,6 +697,11 @@ def _arrival_latch(env):
         trip = near & upright & ~env._arrived
         env._arrival_frame[trip] = frame[trip]
         env._arrived |= trip
+        if REWORK_ARRIVE_FINGER_D > 0:
+            hb = robot.data.body_pos_w[:, env._arrival_hand_ids, :] - env.scene.env_origins.unsqueeze(1)
+            dmin = torch.norm(hb - obj_pos.unsqueeze(1), dim=-1).min(dim=1).values
+            env._arrived_any |= (dmin < REWORK_ARRIVE_FINGER_D) & upright
+        env._arrived_any |= env._arrived
     return env._arrived, env._arrival_frame
 
 
@@ -693,8 +709,8 @@ def _gate_with_arrival(env, is_closed):
     """Object-reward gate: reference is_closed OR hand arrived (when the flag is on)."""
     if not REWORK_CLOSE_ON_ARRIVAL:
         return is_closed.float()
-    arrived, _ = _arrival_latch(env)
-    return (is_closed | arrived).float()
+    _arrival_latch(env)
+    return (is_closed | env._arrived_any).float()      # palm latch OR (optional) finger trigger
 
 
 def right_hand_state_target_reward_arrival(env: ManagerBasedRLEnv) -> torch.Tensor:
