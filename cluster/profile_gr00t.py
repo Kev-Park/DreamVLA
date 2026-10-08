@@ -17,6 +17,7 @@ parser.add_argument('--steps', type=int, default=80)
 parser.add_argument('--output', required=True)
 parser.add_argument('--cpu-grid', action='store_true')
 parser.add_argument('--compile-action', action='store_true')
+parser.add_argument('--cache-geometry', action='store_true')
 args = parser.parse_args()
 
 import torch
@@ -66,6 +67,7 @@ class Timing(TrainerCallback):
         result = dict(mode=args.mode, workers=args.workers, rank=rank,
             cpu_grid=args.cpu_grid,
             compile_action=args.compile_action,
+            cache_geometry=args.cache_geometry,
             steps=state.global_step, steady_steps_per_second=(state.global_step-30)/(time.monotonic()-self.steady_started),
             steady_compute_step_seconds=sum(self.times[30:])/len(self.times[30:]),
             max_memory_bytes=torch.cuda.max_memory_allocated())
@@ -84,16 +86,49 @@ class BenchmarkTrainer(experiment.Gr00tTrainer):
             verified = set()
             for name in ('rot_pos_emb', 'fast_pos_embed_interpolate'):
                 original = getattr(visual, name)
-                def cpu_shape(grid, original=original, name=name):
-                    actual = original(grid.cpu())
+                cache = {}
+                def cpu_shape(grid, original=original, name=name, cache=cache):
+                    cpu_grid = grid.cpu()
+                    key = (cpu_grid.numpy().tobytes(), str(grid.device), torch.is_autocast_enabled('cuda'))
+                    if args.cache_geometry and key in cache:
+                        return cache[key]
+                    actual = original(cpu_grid)
                     if name not in verified:
                         with torch.no_grad():
                             expected = original(grid)
                         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
                         verified.add(name)
                         print(f'{name}: outputs verified bitwise equal on {grid.device}', flush=True)
+                    if args.cache_geometry:
+                        assert not any(p.requires_grad for p in visual.parameters())
+                        cache[key] = actual.detach()
                     return actual
                 setattr(visual, name, cpu_shape)
+        if args.cache_geometry:
+            vlm = self.model.backbone.model
+            position_cache = {}
+            def position_inputs(module, positional, inputs):
+                ids = inputs['input_ids'].cpu()
+                mask = inputs['attention_mask'].cpu()
+                grid = inputs['image_grid_thw'].cpu()
+                key = (tuple(ids.shape), ids.numpy().tobytes(), mask.numpy().tobytes(), grid.numpy().tobytes())
+                if key not in position_cache:
+                    position_ids, deltas = module.model.get_rope_index(
+                        input_ids=ids, attention_mask=mask, image_grid_thw=grid)
+                    expected, expected_deltas = module.model.get_rope_index(
+                        input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'],
+                        image_grid_thw=inputs['image_grid_thw'])
+                    position_ids = position_ids.to(inputs['input_ids'].device)
+                    deltas = deltas.to(inputs['input_ids'].device)
+                    torch.testing.assert_close(position_ids, expected, rtol=0, atol=0)
+                    torch.testing.assert_close(deltas, expected_deltas, rtol=0, atol=0)
+                    if len(position_cache) >= 8:
+                        position_cache.clear()
+                    position_cache[key] = position_ids, deltas
+                    print('Cached position IDs verified bitwise equal', flush=True)
+                inputs['position_ids'], module.model.rope_deltas = position_cache[key]
+                return positional, inputs
+            vlm.register_forward_pre_hook(position_inputs, with_kwargs=True)
         if args.compile_action:
             # Preserve parameter names and optimizer; compile the forward callable.
             # Keep ATen random operations so RNG algorithms stay unchanged.
