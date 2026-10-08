@@ -7,6 +7,7 @@ after two observations with no dependent process and no abort marker.
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -81,7 +82,7 @@ def cluster_tick(root, state, now):
     for tag, session in LINES.items():
         w = root / "dline" / tag
         old = state.setdefault(tag, {})
-        relevant = [p for p in ps if tag in p["args"]]
+        relevant = [p for p in ps if re.search(re.escape(tag) + r"(?![A-Za-z0-9])", p["args"])]
         drivers = []
         for p in ps:
             if "dline/_dline.sh" not in p["args"]:

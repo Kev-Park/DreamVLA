@@ -43,8 +43,8 @@ class RecoveryTests(unittest.TestCase):
             watcher.cluster_tick(self.root, self.state, 100)
             run.assert_not_called()
             report = watcher.cluster_tick(self.root, self.state, 160)
-            self.assertEqual(sum("safe resume" in e for e in report["events"]), 2)
-            self.assertEqual(sum(c.args[0][1] == "send-keys" for c in run.call_args_list), 2)
+            self.assertEqual(sum("safe resume" in e for e in report["events"]), len(watcher.LINES))
+            self.assertEqual(sum(c.args[0][1] == "send-keys" for c in run.call_args_list), len(watcher.LINES))
 
     def test_io_activity_resets_stall_timer(self):
         worker = {"pid": 7, "start": "1", "ticks": 10, "io": 20,
