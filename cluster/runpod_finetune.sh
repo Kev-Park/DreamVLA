@@ -2,7 +2,7 @@
 set -euo pipefail
 DS=${1:?dataset}; RUN=${2:?run}; STEPS=${3:?steps}
 BATCH=${4:-16}
-case "$BATCH" in 16|32) ;; *) echo "Unsupported experiment batch size: $BATCH"; exit 1;; esac
+case "$BATCH" in 16|32|64|128) ;; *) echo "Unsupported experiment batch size: $BATCH"; exit 1;; esac
 export HF_HOME=/workspace/hf CUDA_HOME=/usr/local/cuda
 export WANDB_MODE=offline TOKENIZERS_PARALLELISM=false
 cd ~/kevin/Isaac-GR00T

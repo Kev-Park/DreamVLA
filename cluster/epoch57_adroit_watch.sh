@@ -2,7 +2,12 @@
 # Independent batch: never modifies the running legacy orchestrator.
 set -u
 ORCH_LIB=1 source /k/_ftstage/_ftorch.sh
-ad(){ python '/k/Coding Projects/Labs/EMBER/WBCBenchmark/cluster/adroit_bridge.py'; }
+ad(){
+  local payload; payload=$(cat)
+  local limit=45
+  [[ "$payload" == *'ckpt_transfer.py pack '* ]] && limit=600
+  printf '%s\n' "$payload" | python '/k/Coding Projects/Labs/EMBER/WBCBenchmark/cluster/adroit_bridge.py' --timeout "$limit"
+}
 STAGE=/k/_ftstage/epoch57
 WSTAGE=/mnt/k/_ftstage/epoch57
 LOG=$STAGE/watch.log
@@ -39,7 +44,7 @@ while [ ! -f "$STAGE/stop" ]; do
     j=$(get "$r" adjob)
     # A cancelled cloud-replaced job must not block delivery of the base run.
     [[ "$j" =~ ^[0-9]+$ ]] || continue
-    result=$(printf 'squeue -j %s -h -o %%T\n' "$j" | ad 2>>"$LOG") || { log "Adroit connection failed; stopping for user intervention"; exit 1; }
+    result=$(printf 'set -o pipefail\nsqueue -u "$USER" -h -o "%%i %%T" | awk '\''$1==%s {print $2}'\''\n' "$j" | ad 2>>"$LOG") || { log "Adroit queue query failed; stopping for review"; exit 1; }
     state=$(echo "$result" | tr -d '\r\n ')
     put "$r" state "${state:-LEFT_QUEUE}"
     # Prioritize round 2 by directory order below when capacity returns. Do not
@@ -67,6 +72,7 @@ while [ ! -f "$STAGE/stop" ]; do
       if ck_on "$r" adroit; then
         log "$r: final checkpoint present; delivering"
         deliver "$r" adroit
+        [ "$(get "$r" phase)" = done ] || { log "Delivery failed; stopping rather than retrying automatically"; exit 1; }
       else
         result=$(printf 'sacct -j %s -n -X -o State,ExitCode\n' "$j" | ad 2>>"$LOG") || exit 1
         put "$r" accounting "$result"

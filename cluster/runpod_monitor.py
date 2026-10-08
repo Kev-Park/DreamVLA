@@ -53,9 +53,11 @@ while not (ROOT/'stop').exists():
     requests = []
     lines = blue("for L in af60v8f57; do for f in ~/kevin/dline/$L/ftq/*.req; do test -f \"$f\" || continue; r=${f##*/}; r=${r%.req}; test -f ~/kevin/dline/$L/ftq/$r.ready || echo $L $r $(cat \"$f\"); done; done")
     for line in lines.splitlines():
-        tag, run, dataset, steps = line.split()
+        fields = line.split()
+        tag, run, dataset, steps = fields[:4]
+        batch = int(fields[4]) if len(fields) > 4 else 16
         if '_dagger' in run and run not in INITIAL:
-            requests.append({'run': run, 'line': tag, 'source': dataset, 'steps': int(steps), 'stage': 'epoch57_future'})
+            requests.append({'run': run, 'line': tag, 'source': dataset, 'steps': int(steps), 'global_batch_size': batch, 'stage': 'epoch57_future'})
     report['requests'] = requests
     for pod in config['pods']:
         report['estimated_spend'] += pod.get('accrued_cost', 0)

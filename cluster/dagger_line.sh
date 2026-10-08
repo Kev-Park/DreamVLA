@@ -134,6 +134,7 @@ PY
 }
 steps_of(){ cat $W/steps_$1 2>/dev/null || echo $STEPS; }   # steps the run was (or will be) trained for
 finetune(){  # dataset run
+  local FT_BATCH=16
   # Read a per-line policy at the boundary, never in the middle of a fine-tune.
   if [ -f "$W/finetune_policy.json" ]; then
     local POLICY
@@ -141,7 +142,16 @@ finetune(){  # dataset run
     read -r FT_PASSES FT_MAX_STEPS <<< "$POLICY"
   fi
   local FST=$STEPS
-  if [ "$FT_PASSES" != 0 ] && [ ! -f $W/steps_$2 ]; then
+  if [ -f "$W/deadline_batch_policy.json" ] && [[ "$2" == *_dagger3_* ]]; then
+    local RECIPE="$W/recipe_$2.json" SELECTED
+    if [ -f "$RECIPE" ]; then
+      SELECTED=$(python -c "import json; p=json.load(open('$RECIPE')); print(p['global_batch_size'],p['steps'])") || die "invalid saved recipe"
+    else
+      SELECTED=$(python "$HOME/kevin/wt/dagger-watch-sparse/cluster/select_finetune_batch.py" "$W/deadline_batch_policy.json" "$1/meta/info.json" "$RECIPE") || die "batch selection failed"
+    fi
+    read -r FT_BATCH FST <<< "$SELECTED"
+    log "  $2: selected batch $FT_BATCH, $FST steps; deadline estimate in $RECIPE"
+  elif [ "$FT_PASSES" != 0 ] && [ ! -f $W/steps_$2 ]; then
     local NF=$(python -c "import json; print(json.load(open('$1/meta/info.json'))['total_frames'])")
     FST=$(python -c "import math; s=math.ceil($FT_PASSES*$NF/16/1000)*1000; c=$FT_MAX_STEPS; print(max($STEPS, min(c, s) if c>0 else s))")
     log "  $2: $NF frames x $FT_PASSES passes -> $FST steps"
@@ -150,7 +160,16 @@ finetune(){  # dataset run
   local CK=$HOME/kevin/checkpoints/$2/checkpoint-$FST/model.safetensors.index.json
   [ -f $CK ] && { log "  $2 exists, skipping fine-tune"; return; }
   if [ "$FT_EXTERNAL" = 1 ]; then
-    local Q=$W/ftq; mkdir -p $Q; [ -f $Q/$2.req ] || { echo "$1 $FST" > $Q/$2.req; log "  finetune $2 ($FST steps): requested external runner"; }
+    local Q=$W/ftq; mkdir -p $Q
+    # A larger-batch request is reserved for the batch-aware cloud controller.
+    # Legacy orchestrators skip claimed requests and cannot silently use batch 16.
+    if [ "$FT_BATCH" -ne 16 ]; then
+      [ -f "$Q/$2.claimed" ] || echo "runpod-policy awaiting cloud runner" > "$Q/$2.claimed"
+      [ -f "$Q/$2.req" ] || echo "$1 $FST $FT_BATCH" > "$Q/$2.req"
+    else
+      [ -f "$Q/$2.req" ] || echo "$1 $FST" > "$Q/$2.req"
+    fi
+    log "  finetune $2 ($FST steps, batch $FT_BATCH): requested external runner"
     local t=0; while [ ! -f $Q/$2.claimed ] && [ $t -lt $((FT_CLAIM_WAIT * 2)) ]; do sleep 30; t=$((t + 1)); done
     if [ -f $Q/$2.claimed ]; then
       log "  $2 claimed by: $(cat $Q/$2.claimed)"
@@ -162,10 +181,11 @@ finetune(){  # dataset run
     fi
   fi
   local STEPS=$FST
+  local MICRO_BATCH=16 ACCUM=$((FT_BATCH / 16))
   local G=($(freegpus 1)); [ ${#G[@]} -ge 1 ] || die "no GPU for fine-tune"
   log "  finetune $2 ($STEPS steps, GPU ${G[0]})"
   ( cd $HOME/kevin/Isaac-GR00T && CUDA_VISIBLE_DEVICES=${G[0]} .venv/bin/python gr00t/experiment/launch_finetune.py \
-      --base-model-path nvidia/GR00T-N1.7-3B --dataset-path $1 --embodiment-tag unitree_g1_sonic --num-gpus 1 --global-batch-size 16 \
+      --base-model-path nvidia/GR00T-N1.7-3B --dataset-path $1 --embodiment-tag unitree_g1_sonic --num-gpus 1 --global-batch-size "$MICRO_BATCH" --gradient-accumulation-steps "$ACCUM" \
       --dataloader-num-workers 8 --output-dir $HOME/kevin/checkpoints --experiment-name $2 --max-steps $STEPS --save-steps $STEPS \
       --save-total-limit 1 --save-only-model > $W/ft_$2.log 2>&1 )
   log "  finetune $2 exit $? $(grep -oE "train_loss.: [0-9.]+" $W/ft_$2.log | tail -1)"

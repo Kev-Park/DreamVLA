@@ -32,7 +32,8 @@ def main():
         (work / ("steps_" + run)).write_text(str(steps) + "\n")
     for marker in ("base.done", "r0.done", "r1.done", "r2.done"):
         (work / marker).touch()
-    (work / "finetune_policy.json").write_text(json.dumps({"passes": 5.7, "max_steps": 0}))
+    if not (work / "finetune_policy.json").exists():
+        (work / "finetune_policy.json").write_text(json.dumps({"passes": 5.7, "max_steps": 0}))
     code = Path(os.path.expanduser(env.get("CODE", "~/kevin/DreamVLA")))
     scriptdir = root / "wt/dagger-watch-sparse/Training/scripts/reinforcement_learning/rsl_rl"
     env.update(TAG=tag, BASE="keep:" + str(old / "keep_base.txt"), BOX=str(old / "box.json"),
@@ -47,7 +48,7 @@ def main():
     (work / "epoch57_environment.json").write_text(json.dumps(env, indent=2))
     prefix = "export XLA_PYTHON_CLIENT_PREALLOCATE=false; unset HS_REWORK_ARRIVE_FINGER_D; "
     assignments = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-    script = str(root / "dline/_dline.sh")
+    script = str(root / "wt/dagger-watch-sparse/cluster/dagger_line.sh")
     def launch(session, extra):
         if subprocess.run(["tmux", "has-session", "-t", session], capture_output=True).returncode == 0:
             return

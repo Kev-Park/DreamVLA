@@ -37,7 +37,7 @@ while not (ROOT / 'stop').exists():
     job = json.loads(active.read_text())
     name, steps = job['run'], int(job['steps'])
     batch = int(job.get('global_batch_size', 16))
-    if batch not in (16, 32):
+    if batch not in (16, 32, 64, 128):
         raise ValueError(f'Unsupported experiment batch size: {batch}')
     checkpoint = Path.home() / 'kevin/checkpoints' / name / f'checkpoint-{steps}'
     log = Path('/workspace/logs') / f'{name}.log'
