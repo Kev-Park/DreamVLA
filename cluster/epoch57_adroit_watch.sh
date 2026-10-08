@@ -2,6 +2,7 @@
 # Independent batch: never modifies the running legacy orchestrator.
 set -u
 ORCH_LIB=1 source /k/_ftstage/_ftorch.sh
+ad(){ python '/k/Coding Projects/Labs/EMBER/WBCBenchmark/cluster/adroit_bridge.py'; }
 STAGE=/k/_ftstage/epoch57
 WSTAGE=/mnt/k/_ftstage/epoch57
 LOG=$STAGE/watch.log
