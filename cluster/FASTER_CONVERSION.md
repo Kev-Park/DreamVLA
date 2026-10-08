@@ -41,6 +41,26 @@ the parquet at fine-tune time over the whole dataset. `merge_lerobot.py` therefo
 **never copies a shard's** -- the previous version copied shard 0's `relative_stats.json`, which GR00T
 would have accepted as valid and used to normalise relative actions with one shard's statistics.
 
+## Reusing an already-converted cumulative prefix
+
+`convert_incremental.py` verifies that the prior converted dataset's HDF5 inputs
+are the exact ordered prefix of the new inputs, converts only appended episodes,
+then uses `merge_lerobot.py` to produce one complete dataset. It preserves video
+encoding and drops cached global statistics so GR00T regenerates normalization
+over all episodes. Inputs are read-only; a mismatch fails the build.
+
+Validation on 2026-10-08 reused 711 episodes and converted eight appended episodes:
+all 719 parquet files, 719 videos and five metadata files were byte-identical to
+the full conversion. Whole-dataset and relative-action statistics also matched.
+Conversion plus merge took 169 seconds; including independent comparison and
+statistics verification took 263 seconds. These are validation timings, not a
+measurement of the next full DAgger round.
+
+`dagger_line.sh` enables this only for unfiltered datasets with an entry in
+the line's `conversion_reuse.json`, keyed by dataset name (e.g. `ds_dagger3`).
+Each entry supplies `dataset` (the prior LeRobot dataset) and `hdf5_root`
+(its ordered source inputs). Existing completed datasets remain untouched.
+
 ## Not recommended: changing the codec
 
 Switching `libsvtav1` -> `h264` would give ~3-5x on its own, but it changes the pixel data the VLA
