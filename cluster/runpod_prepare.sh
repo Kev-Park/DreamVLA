@@ -1,0 +1,24 @@
+#!/bin/bash
+# Relocate the exact working GR00T environment; no dependency upgrades.
+set -euo pipefail
+mkdir -p /workspace/kevin /workspace/hf/hub /workspace/logs
+test -e /root/kevin || ln -s /workspace/kevin /root/kevin
+export HF_HOME=/workspace/hf
+export CUDA_HOME=/usr/local/cuda
+export WANDB_MODE=offline TOKENIZERS_PARALLELISM=false
+if ! command -v python3.10 >/dev/null; then
+  uv python install 3.10
+  ln -s "$(uv python find 3.10)" /usr/bin/python3.10
+fi
+cd /workspace/kevin
+if [ ! -d Isaac-GR00T/.git ]; then
+  git clone https://github.com/Kev-Park/Isaac-GR00T.git Isaac-GR00T
+fi
+git -C Isaac-GR00T checkout --detach 29c95b9cda2249b5285c84460c789d4fe3841d97
+# The editable installation stores the original repository path. Supply an
+# environment-level symlink, leaving the copied package and code untouched.
+old=$(Isaac-GR00T/.venv/bin/python -c 'import __editable___gr00t_0_1_0_finder as f; print(f.MAPPING["gr00t"])')
+mkdir -p "$(dirname "$(dirname "$old")")"
+test -e "$(dirname "$old")" || ln -s /workspace/kevin/Isaac-GR00T "$(dirname "$old")"
+cd Isaac-GR00T
+.venv/bin/python -c 'import torch,gr00t,torchcodec,flash_attn; print(torch.__version__,torch.cuda.get_device_name(),"ENV_READY")'
