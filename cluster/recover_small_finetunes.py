@@ -20,7 +20,8 @@ for run, steps in (("pick10",1778),("walk10",2154)):
        " --save-steps "+str(steps)+" --save-total-limit 1 --save-only-model > ~/kevin/checkpoints/_ftlogs/"+run+".log 2>&1; "
        "rc=$?; python3 ~/kevin/wt/dagger-watch-sparse/cluster/gpu_slots.py release --owner $$ --gpu $g; "
        "printf '%s\\n' \"$rc\" > ~/kevin/dline/"+run+"/retry.exit")
-    preflight = "pgrep -f '[e]xperiment-name "+run+" --max-steps' >/dev/null && exit 3; "
+    check_code = "from pathlib import Path; import sys; matches=[]; exec(\"for p in Path('/proc').glob('[0-9]*'):\\n try:\\n  a=(p/'cmdline').read_bytes().decode().split(chr(0))\\n  if '--experiment-name' in a and a[a.index('--experiment-name')+1]=="+repr(run)+": matches.append(p.name)\\n except (FileNotFoundError,PermissionError): pass\"); sys.exit(3 if matches else 0)"
+    preflight = "python3 -c "+shlex.quote(check_code)+" || exit 3; "
     result = subprocess.run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=20',BL,preflight+
         "tmux new-session -d -s retry_"+run+"_kevin "+shlex.quote(command)],capture_output=True,text=True,timeout=40)
     if result.returncode:
