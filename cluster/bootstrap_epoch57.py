@@ -42,6 +42,7 @@ def main():
                COLLECT_SCRIPT=str(scriptdir / "collect_sonic_adapter.py"),
                PYTHONPATH=str(code / "Training/scripts/reinforcement_learning/rsl_rl"))
     if oldtag == "T20maxf":
+        env["CK"] = str(root / "residuals/T20_max_model_8999.pt")
         env["ENVX"] = "HS_REWORK_CLOSE_ON_ARRIVAL=1 HS_REWORK_PALM_NORMAL=0 HS_REWORK_PALM_REACH=0.07 HS_PALM_NORMAL_SIGN=+1"
     (work / "epoch57_environment.json").write_text(json.dumps(env, indent=2))
     prefix = "export XLA_PYTHON_CLIENT_PREALLOCATE=false; unset HS_REWORK_ARRIVE_FINGER_D; "

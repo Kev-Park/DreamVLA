@@ -67,13 +67,17 @@ collect(){  # outdir seed [extra collector args...]
   local OUT=$1 S=$2; shift 2; mkdir -p $OUT; local G=() t=0
   while :; do G=($(gpu_slots $NSH)); [ ${#G[@]} -ge 4 ] && break; t=$((t + 1)); [ $t -ge 120 ] && die "fewer than 4 GPU slots for collection"; sleep 30; done
   local NS=${#G[@]}; log "    collecting on $NS shards (GPU slots: ${G[*]})"
-  local i=0 r
+  local i=0 r; local PIDS=()
   for r in $(ranges $NS); do
     local L=$OUT/_log_$i.txt
     ( CUDA_VISIBLE_DEVICES=${G[$i]} python ${COLLECT_SCRIPT:-$RSL/collect_sonic_adapter.py} $COMMON $XARGS --motion-range ${r%,*} ${r#*,} --seed $S \
-        --skip-existing "$@" --output-directory $OUT > $L 2>&1; log "    shard $i exit $?" ) &
+        --skip-existing "$@" --output-directory $OUT > $L 2>&1; rc=$?; log "    shard $i exit $rc"; exit "$rc" ) &
+    PIDS+=($!)
     until grep -q "\[INFO\] motion \|Traceback" $L 2>/dev/null; do sleep 15; done; sleep 15; i=$((i + 1))
-  done; wait
+  done
+  local FAILED=0 P
+  for P in "${PIDS[@]}"; do wait "$P" || FAILED=1; done
+  return "$FAILED"
 }
 score_keep(){  # pattern keepfile tag -> writes passing hdf5 paths
   python - "$1" "$2" "$3" "$W/box.json" >> $ST 2>&1 << 'PY'
@@ -205,6 +209,7 @@ PY
   touch $W/ev_$RUN.done
 }
 
+[ "${DLINE_LIB:-0}" = 1 ] && return 0
 # Independent eval workers can share the same validated run configuration.
 if [ -n "${EVAL_ONLY:-}" ]; then
   evaluate "$EVAL_ONLY"
