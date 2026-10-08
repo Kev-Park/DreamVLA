@@ -17,7 +17,7 @@ while [ ! -f "$STAGE/stop" ]; do
     phase=$(get "$r" phase)
     if [ "$phase" = done ]; then
       if [ ! -f "$directory/bootstrap.done" ]; then
-        bl "python3 ~/kevin/wt/dagger-watch-sparse/cluster/bootstrap_epoch57.py $r" >> "$LOG" 2>&1 && touch "$directory/bootstrap.done"
+        if bl "python3 ~/kevin/wt/dagger-watch-sparse/cluster/bootstrap_epoch57.py $r" >> "$LOG" 2>&1; then touch "$directory/bootstrap.done"; else remaining=$((remaining+1)); fi
       fi
       continue
     fi
