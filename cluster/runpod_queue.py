@@ -4,9 +4,12 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import fcntl
 
 ROOT = Path('/workspace/queue')
 ROOT.mkdir(exist_ok=True)
+lock = (ROOT / 'worker.lock').open('a+')
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def write(path, obj):
