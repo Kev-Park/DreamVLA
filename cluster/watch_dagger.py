@@ -33,6 +33,8 @@ def atomic(path, value):
 
 
 def run(args, **kw):
+    if os.name == "nt":
+        kw.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
     return subprocess.run(args, capture_output=True, text=True, timeout=45, **kw)
 
 
