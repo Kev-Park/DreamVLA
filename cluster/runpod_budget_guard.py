@@ -16,7 +16,7 @@ import os
 
 ROOT = Path(__file__).resolve().parents[2] / 'out/runpod'
 OWNED = {'04z8d0a941vb9z', 'pscjg26ij7t3yk', 'gop5085t076jhp', '48w7f0lwpz4dfu',
-         'itrttaagys4vib', 'feopiqtnufdbsl'}
+         'itrttaagys4vib', 'feopiqtnufdbsl', 'qv0an1x9jn918o'}
 
 
 def api(pod_id, action=None):
@@ -108,7 +108,7 @@ def main():
                 status['activity'].append({'id':pod['id'], 'status':live['status'], 'gpus':gpus,
                     'run':current.get('run'), 'step':step, 'idle_seconds':idle_seconds,
                     'seconds_without_progress':now-previous['progress_time']})
-                if (idle_seconds >= 300 and age >= 900 and current.get('state') != 'running'
+                if (idle_seconds >= 300 and age >= 900 and now >= pod.get('provisioning_until', 0) and current.get('state') != 'running'
                         and observed.get('pending', 0) == 0
                         and (current.get('state') != 'done'
                              or deliveries.get(current.get('run')) == 'delivered')):
