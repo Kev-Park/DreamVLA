@@ -55,6 +55,8 @@ set -eo pipefail                    # NOT -u: the module function trips on unbou
 DS=${1:?usage: sbatch gr00t_finetune.sbatch <lerobot-dataset-dir> [run-name]}
 RUN=${2:-$(basename "$DS")_adroit}
 STEPS=${3:-10000}
+BATCH=${4:-16}
+case "$BATCH" in 16|32|64|128) ;; *) echo "Invalid batch size: $BATCH"; exit 1;; esac
 OUT=$HOME/kevin/checkpoints
 GR=$HOME/kevin/Isaac-GR00T
 
@@ -79,7 +81,7 @@ exec .venv/bin/python gr00t/experiment/launch_finetune.py \
   --dataset-path "$DS" \
   --embodiment-tag unitree_g1_sonic \
   --num-gpus 1 \
-  --global-batch-size 16 \
+  --global-batch-size "$BATCH" \
   --dataloader-num-workers 8 \
   --output-dir "$OUT" \
   --experiment-name "$RUN" \

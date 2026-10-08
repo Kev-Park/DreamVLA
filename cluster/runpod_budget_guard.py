@@ -130,6 +130,9 @@ def main():
                     elif not reason:
                         reason = 'failed workload diagnosis window ended'
                 match = re.search(r'_dagger(\d+)_', current.get('run', ''))
+                if (pod.get('role') == 'baseline1200' and current.get('state') == 'done'
+                        and deliveries.get(current['run']) == 'delivered'):
+                    reason = reason or 'baseline checkpoint verified and delivered'
                 if (current.get('state') == 'done' and match
                         and int(match.group(1)) >= pod.get('max_round', 3)
                         and deliveries.get(current['run']) == 'delivered'

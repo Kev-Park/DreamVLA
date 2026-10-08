@@ -5,8 +5,17 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
-p=argparse.ArgumentParser(); p.add_argument('run',choices=['pick10','pick50','walk10','walk50']); a=p.parse_args()
+p=argparse.ArgumentParser()
+p.add_argument('run',choices=['pick10','pick50','walk10','walk50',
+    'pick1200_bf16_bs32','pick1200_bf16_bs64','pick1200_bf16_bs128'])
+p.add_argument('--steps',type=int)
+a=p.parse_args()
 root=Path.home()/'kevin'; work=root/'dline'/a.run
+work.mkdir(parents=True,exist_ok=True)
+if a.steps is not None:
+    assert a.steps > 0
+    assert (root/'checkpoints'/a.run/f'checkpoint-{a.steps}'/'model.safetensors.index.json').is_file()
+    (work/('steps_'+a.run)).write_text(str(a.steps)+'\n')
 oldtag='af60v8f' if a.run.startswith('pick') else 'T20maxf'
 env=dict(json.loads((root/'dline/watch/state.json').read_text())[oldtag]['env'])
 code=Path(env.get('CODE',str(root/'DreamVLA')))

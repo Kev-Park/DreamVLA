@@ -99,6 +99,9 @@ while not (ROOT/'stop').exists():
                     if result['stage'] == 'epoch57':
                         blue('python3 ~/kevin/wt/dagger-watch-sparse/cluster/bootstrap_epoch57.py '+shlex.quote(run))
                         (directory/'bootstrap.done').touch()
+                    elif result['stage'] == 'baseline1200':
+                        blue('python3 ~/kevin/wt/dagger-watch-sparse/cluster/bootstrap_subset_eval.py '+shlex.quote(run)+' --steps '+str(result['steps']))
+                        (directory/'bootstrap.done').touch()
                     jobfile = directory/'adjob'
                     if not (ROOT/'adroit_unavailable').exists() and jobfile.exists() and jobfile.read_text().strip().isdigit():
                         j = jobfile.read_text().strip()
