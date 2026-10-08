@@ -102,7 +102,7 @@ def main():
                 status['activity'].append({'id':pod['id'], 'status':live['status'], 'gpus':gpus,
                     'run':current.get('run'), 'step':step, 'idle_seconds':idle_seconds,
                     'seconds_without_progress':now-previous['progress_time']})
-                if idle_seconds >= 300 and age >= 900:
+                if idle_seconds >= 300 and age >= 900 and current.get('state') != 'running':
                     reason = reason or 'no GPU activity or allocation for five minutes'
                 if current.get('state') == 'running' and now-previous['progress_time'] > 600:
                     status['alerts'].append({'id':pod['id'], 'reason':'training progress stalled for ten minutes'})
