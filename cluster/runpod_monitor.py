@@ -80,11 +80,17 @@ while not (ROOT/'stop').exists():
                     (directory/'line').write_text(result['line'])
                     (directory/'steps').write_text(str(result['steps']))
                     (directory/'phase').write_text('done')
+                    if result['stage'] == 'epoch57':
+                        blue('python3 ~/kevin/wt/dagger-watch-sparse/cluster/bootstrap_epoch57.py '+shlex.quote(run))
+                        (directory/'bootstrap.done').touch()
                     jobfile = directory/'adjob'
-                    if jobfile.exists() and jobfile.read_text().strip().isdigit():
+                    if not (ROOT/'adroit_unavailable').exists() and jobfile.exists() and jobfile.read_text().strip().isdigit():
                         j = jobfile.read_text().strip()
-                        call(['wsl.exe','-e','bash','-lc','ssh -o ControlPath=~/.ssh/adroit.sock -o ControlMaster=no -o BatchMode=yes adroit '+shlex.quote('scancel '+j)])
-                        jobfile.write_text('none')
+                        try:
+                            call(['wsl.exe','-e','bash','-lc','ssh -o ControlPath=~/.ssh/adroit.sock -o ControlMaster=no -o BatchMode=yes adroit '+shlex.quote('scancel '+j)])
+                            jobfile.write_text('none')
+                        except (RuntimeError, subprocess.TimeoutExpired) as error:
+                            (ROOT/'adroit_unavailable').write_text(str(error))
                     state['deliveries'][run] = 'delivered'
         running = status['current'] and status['current']['state']=='running'
         if status['ready'] and not running and status['pending']==0:
