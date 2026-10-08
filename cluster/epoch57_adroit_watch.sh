@@ -29,6 +29,10 @@ while [ ! -f "$STAGE/stop" ]; do
       if ck_on "$r" bluesclues; then
         deliver "$r" bluesclues
         continue
+      elif [ $(( $(date +%s) - $(get "$r" started) )) -gt 300 ]; then
+        put "$r" primary adroit
+        rm -f "$directory/local.started"
+        log "$r: local trainer exited without a checkpoint; restored queued fallback and eligibility"
       fi
     fi
     j=$(get "$r" adjob)
@@ -48,7 +52,7 @@ while [ ! -f "$STAGE/stop" ]; do
           T20maxf57_dagger2_run01) ds='~/kevin/datasets/T20maxf_ds_dagger2/lerobot/ds' ;;
           *) ds='' ;;
         esac
-        if [ -n "$ds" ] && bl "test -f $ds/meta/info.json && tmux new-window -d -t train_kevin -n $r 'export XLA_PYTHON_CLIENT_PREALLOCATE=false; bash ~/kevin/wt/dagger-watch-sparse/cluster/run_gr00t_reserved.sh $ds $r $(get "$r" steps) > ~/kevin/checkpoints/_ftlogs/$r.log 2>&1'"; then
+        if [ -n "$ds" ] && bl "test -f $ds/meta/info.json && { test ! -f ~/kevin/checkpoints/_ftlogs/$r.log || cp ~/kevin/checkpoints/_ftlogs/$r.log ~/kevin/checkpoints/_ftlogs/$r.previous.\$(date +%s).log; } && tmux new-window -d -t train_kevin -n $r 'export XLA_PYTHON_CLIENT_PREALLOCATE=false; bash ~/kevin/wt/dagger-watch-sparse/cluster/run_gr00t_reserved.sh $ds $r $(get "$r" steps) > ~/kevin/checkpoints/_ftlogs/$r.log 2>&1'"; then
           put "$r" primary bluesclues
           put "$r" started "$(date +%s)"
           touch "$directory/local.started"
