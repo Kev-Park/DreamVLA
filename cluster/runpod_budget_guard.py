@@ -58,6 +58,9 @@ def main():
                 reason = ('budget cutoff' if spent >= cutoff else
                           'deadline' if now >= deadline else
                           control.get('release', {}).get(pod['id']))
+                replacement = next((p for p in workload.get('pods', []) if p['id'] == 'pscjg26ij7t3yk'), {})
+                if pod['id'] == '04z8d0a941vb9z' and replacement.get('training_step', 0) >= 1000:
+                    reason = reason or 'two-H100 replacement passed 1000 training steps'
                 observed = next((p for p in workload.get('pods', []) if p['id'] == pod['id']), {})
                 current = observed.get('current') or {}
                 match = re.search(r'_dagger(\d+)_', current.get('run', ''))
