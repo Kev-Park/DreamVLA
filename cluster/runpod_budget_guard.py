@@ -74,6 +74,13 @@ def main():
             cutoff = config['budget']-2
             status = {'time': now, 'authenticated': True, 'estimated_spend': spent,
                       'cutoff': cutoff, 'actions': [], 'activity': [], 'alerts': []}
+            hourly = sum(p['cost']+0.05 for p in config['pods'] if not p.get('paused') and not p.get('terminated'))
+            if hourly:
+                status['estimated_cutoff_time'] = now+max(0, cutoff-spent)/hourly*3600
+                status['active_hourly_rate'] = hourly
+                if status['estimated_cutoff_time']-now < 5400:
+                    status['alerts'].append({'reason':'funding cutoff within 90 minutes',
+                        'estimated_cutoff_time':status['estimated_cutoff_time']})
             control = json.loads((ROOT/'budget_control.json').read_text()) if (ROOT/'budget_control.json').exists() else {}
             workload = json.loads((ROOT/'status.json').read_text()) if (ROOT/'status.json').exists() else {}
             deliveries = json.loads((ROOT/'monitor_state.json').read_text()).get('deliveries', {}) if (ROOT/'monitor_state.json').exists() else {}
@@ -90,6 +97,9 @@ def main():
                     reason = reason or 'bounded benchmark window ended'
                 observed = next((p for p in workload.get('pods', []) if p['id'] == pod['id']), {})
                 current = observed.get('current') or {}
+                if (pod.get('provisioning_until') and now >= pod['provisioning_until']
+                        and not observed.get('ready')):
+                    reason = reason or 'bounded setup window expired'
                 live = api(pod['id'])
                 if live['status'] in ('EXITED', 'ERROR'):
                     reason = reason or 'provider reports stopped pod'
@@ -131,7 +141,9 @@ def main():
                         reason = 'failed workload diagnosis window ended'
                 match = re.search(r'_dagger(\d+)_', current.get('run', ''))
                 if (pod.get('role') == 'baseline1200' and current.get('state') == 'done'
-                        and deliveries.get(current['run']) == 'delivered'):
+                        and deliveries.get(current['run']) == 'delivered'
+                        and observed.get('pending', 0) == 0 and not observed.get('queued_next')
+                        and not workload.get('requests')):
                     reason = reason or 'baseline checkpoint verified and delivered'
                 if (current.get('state') == 'done' and match
                         and int(match.group(1)) >= pod.get('max_round', 3)
