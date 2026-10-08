@@ -18,8 +18,8 @@ def checked_prefix(root, prefix_root, prefix_dataset):
     info = json.loads((prefix_dataset/'meta/info.json').read_text())
     if not prior or len(prior) != info['total_episodes']:
         raise ValueError('Prefix HDF5 count does not match converted episode count')
-    if len(files) <= len(prior):
-        raise ValueError('Incremental conversion requires new episodes after the prefix')
+    if len(files) < len(prior):
+        raise ValueError('New dataset is shorter than the prefix')
     if info.get('discarded_episode_indices'):
         raise ValueError('Cannot reuse a prefix with discarded episodes')
     for i, (old, new) in enumerate(zip(prior, files)):
@@ -50,14 +50,17 @@ def main():
     here = Path(__file__).resolve().parent
     converted = work/'converted'/'delta'
     print(f'[incremental] reuse {reused}; convert {len(files)-reused} new episodes', flush=True)
-    subprocess.run(['bash',str(here/'convert_sharded.sh'),'--hdf5-root',str(inputs),
-        '--recursive','--output-path',str(converted.parent),'--dataset-name','delta',
-        '--task-prompt',a.task_prompt,'--fps',str(a.fps),'--shards',str(a.shards)],check=True)
+    shards = [str(a.prefix_dataset)]
+    if len(files) > reused:
+        subprocess.run(['bash',str(here/'convert_sharded.sh'),'--hdf5-root',str(inputs),
+            '--recursive','--output-path',str(converted.parent),'--dataset-name','delta',
+            '--task-prompt',a.task_prompt,'--fps',str(a.fps),'--shards',str(a.shards)],check=True)
+        shards.append(str(converted))
     convert_seconds = time.monotonic()-started
     import os
     wbc = Path(os.environ.get('GR00T_WHOLEBODYCONTROL_DIR',str(Path.home()/'kevin/GR00T-WholeBodyControl')))
     subprocess.run([str(wbc/'.venv_data_collection/bin/python'),str(here/'merge_lerobot.py'),
-        '--shards',str(a.prefix_dataset),str(converted),'--out',str(a.out)],check=True)
+        '--shards',*shards,'--out',str(a.out)],check=True)
     result = json.loads((a.out/'meta/info.json').read_text())
     assert result['total_episodes'] == len(files)
     for name in ['stats.json','relative_stats.json']:

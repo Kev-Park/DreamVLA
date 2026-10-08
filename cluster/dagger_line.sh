@@ -112,8 +112,20 @@ build_ds(){  # name keepfiles... -> LeRobot dataset dir (echo)
   rm -rf $A; mkdir -p $A/hdf5; local i=0
   for kf in "$@"; do while read -r f; do [ -z "$f" ] && continue; ln -s "$f" "$A/hdf5/ep_$(printf '%05d' $i)__$(basename $f)"; i=$((i + 1)); done < $kf; done
   log "  dataset ${TAG}_$NAME: $i episodes"
-  bash $HOME/kevin/DreamVLA/cluster/convert_sharded.sh --hdf5-root $A/hdf5 --recursive --output-path $A/lerobot --dataset-name ds \
-      --task-prompt "$PROMPT" --fps 50 --shards 8 > $A/convert.log 2>&1 || die "conversion of $NAME failed"
+  local REUSE="" PREFIX_DS PREFIX_INPUTS
+  if [ -f "$W/conversion_reuse.json" ]; then
+    REUSE=$(python -c "import json; p=json.load(open('$W/conversion_reuse.json')).get('$NAME'); print(p['dataset'],p['hdf5_root']) if p else None") || die "invalid conversion reuse policy"
+  fi
+  if [ -n "$REUSE" ] && [ "$FILTER" = none ]; then
+    read -r PREFIX_DS PREFIX_INPUTS <<< "$REUSE"
+    log "  reusing converted prefix $PREFIX_DS; only new episodes will be encoded"
+    python "$HOME/kevin/wt/dagger-watch-sparse/cluster/convert_incremental.py" \
+      --hdf5-root "$A/hdf5" --prefix-hdf5-root "$PREFIX_INPUTS" --prefix-dataset "$PREFIX_DS" \
+      --out "$A/lerobot/ds" --task-prompt "$PROMPT" --fps 50 --shards 8 > "$A/convert.log" 2>&1 || die "incremental conversion of $NAME failed"
+  else
+    bash $HOME/kevin/DreamVLA/cluster/convert_sharded.sh --hdf5-root $A/hdf5 --recursive --output-path $A/lerobot --dataset-name ds \
+        --task-prompt "$PROMPT" --fps 50 --shards 8 > $A/convert.log 2>&1 || die "conversion of $NAME failed"
+  fi
   log "  $(grep -m1 '\[done\] wrote' $A/convert.log | cut -c1-70)"
   if [ "$FILTER" = med3 ]; then
     ( source $HOME/kevin/GR00T-WholeBodyControl/.venv_data_collection/bin/activate
@@ -261,7 +273,8 @@ DEMO_ROOT=$W/demo_root; rm -rf $DEMO_ROOT; mkdir -p $DEMO_ROOT; i=0
 while read -r f; do [ -n "$f" ] && ln -s "$f" $DEMO_ROOT/$(basename "$f"); done < $W/keep_base.txt   # motion ids DAgger sweeps
 
 if [ ! -f $W/r0.done ]; then
-  D=$(build_ds base $W/keep_base.txt | tail -1); finetune $D ${TAG}_run01; touch $W/r0.done
+  D=$(set -o pipefail; build_ds base $W/keep_base.txt | tail -1) || die "base dataset build failed"
+  finetune $D ${TAG}_run01; touch $W/r0.done
 fi
 [ "${START_ROUND:-1}" -le 1 ] && evaluate ${TAG}_run01
 KEEPS="$W/keep_base.txt"; STU=${TAG}_run01
@@ -293,7 +306,8 @@ for r in $(seq 1 $NR); do
       log "  round $r: kept DAgger episodes capped at $DAGGER_N (random, seed $((2000 + r)))"
     fi
     KEEPS="$KEEPS $W/keep_d$r.txt"
-    D=$(build_ds ds_dagger${r} $KEEPS | tail -1); finetune $D $RUN; touch $W/r$r.done
+    D=$(set -o pipefail; build_ds ds_dagger${r} $KEEPS | tail -1) || die "round $r dataset build failed"
+    finetune $D $RUN; touch $W/r$r.done
   else
     KEEPS="$KEEPS $W/keep_d$r.txt"
   fi
