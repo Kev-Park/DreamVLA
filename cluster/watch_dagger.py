@@ -45,10 +45,16 @@ def processes():
             stat = (directory / "stat").read_text().rsplit(")", 1)[1].split()
             io = read(directory / "io")
             counters = dict(line.split(": ", 1) for line in io.splitlines())
+            try:
+                log = (directory / "fd/1").resolve()
+                log_stat = log.stat() if "/kevin/" in str(log) else None
+                output = [str(log), log_stat.st_size, log_stat.st_mtime] if log_stat else []
+            except OSError:
+                output = []
             result.append({"pid": int(directory.name), "args": args,
                            "ticks": int(stat[11]) + int(stat[12]),
                            "io": sum(int(counters.get(k, 0)) for k in ("rchar", "wchar")),
-                           "start": stat[19]})
+                           "start": stat[19], "output": output})
         except (OSError, ValueError, IndexError):
             continue
     return result
@@ -97,14 +103,21 @@ def cluster_tick(root, state, now):
             old["changed"] = now
             old["signature"] = signature
         idle = now - old.get("changed", now)
+        outputs = [status[-1:], [(p["pid"], p.get("output", [])) for p in workers]]
+        if outputs != old.get("outputs"):
+            old["output_changed"] = now
+            old["outputs"] = outputs
+        output_idle = now - old.get("output_changed", now)
         done, abort = (w / "done").exists(), (w / "abort").exists()
         item = {"driver_pids": [p["pid"] for p in drivers], "worker_count": len(workers),
                 "last_status": status[-5:], "done": done, "abort": abort,
-                "inactive_seconds": idle}
+                "inactive_seconds": idle, "output_inactive_seconds": output_idle}
         if abort:
             report["events"].append(f"{tag}: ABORT requires diagnosis; no blind restart")
         if idle > 1200 and not done:
             report["events"].append(f"{tag}: no CPU/I/O or stage progress for {idle:.0f}s")
+        elif output_idle > 1800 and not done:
+            report["events"].append(f"{tag}: CPU/I/O active but no log/stage output for {output_idle:.0f}s; inspect throughput")
         old["missing"] = old.get("missing", 0) + 1 if not drivers and not workers and not done else 0
         if old["missing"] >= 2 and not abort and old.get("env"):
             env = old["env"]
@@ -206,6 +219,7 @@ def main():
         try:
             report = cluster_tick(root, state, time.time()) if args.cluster else local_tick(Path("K:/_ftstage"), output, state)
             atomic(output / "status.json", report)
+            (output / "error.json").unlink(missing_ok=True)
             if args.cluster:
                 atomic(output / "state.json", state)
             signature = json.dumps({"lines": report["lines"], "events": report["events"]}, sort_keys=True)
