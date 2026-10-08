@@ -11,10 +11,13 @@ import time
 import queue
 import threading
 import types
+import signal
+import subprocess
+import sys
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', required=True)
-parser.add_argument('--mode', choices=['ddp', 'zero2', 'pipeline'], required=True)
+parser.add_argument('--mode', choices=['ddp', 'zero2', 'pipeline', 'single'], required=True)
 parser.add_argument('--workers', type=int, default=2)
 parser.add_argument('--steps', type=int, default=80)
 parser.add_argument('--output', required=True)
@@ -22,6 +25,7 @@ parser.add_argument('--cpu-grid', action='store_true')
 parser.add_argument('--compile-action', action='store_true')
 parser.add_argument('--cache-geometry', action='store_true')
 parser.add_argument('--prefetch-backbone', action='store_true')
+parser.add_argument('--pause-training-pids', type=int, nargs='+', default=[])
 args = parser.parse_args()
 
 import torch
@@ -63,8 +67,23 @@ class Timing(TrainerCallback):
         torch.cuda.synchronize()
         self.times.append(time.monotonic()-self.step_started)
         self.prof.step()
-        if state.global_step == 30:
+        if state.global_step == 30 and args.pause_training_pids:
+            identities = {}
+            for pid in args.pause_training_pids:
+                proc = Path(f'/proc/{pid}')
+                command = (proc/'cmdline').read_bytes()
+                assert proc.stat().st_uid == os.getuid()
+                assert b'launch_finetune.py' in command and b'af60v8f57_dagger2_run01' in command
+                identities[pid] = (proc/'stat').read_text().split()[21]
+            # Independent dead-man process always resumes the original ranks.
+            helper = "import os,time,signal,json,pathlib; time.sleep(45); ids=json.loads(__import__('sys').argv[1]); [(os.kill(int(p),signal.SIGCONT)) for p,t in ids.items() if pathlib.Path('/proc/'+p+'/stat').exists() and pathlib.Path('/proc/'+p+'/stat').read_text().split()[21]==t]"
+            subprocess.Popen([sys.executable, '-c', helper, json.dumps(identities)], start_new_session=True)
+            for pid in identities:
+                os.kill(pid, signal.SIGSTOP)
+            print('Original optimizer state retained in RAM; diagnostic pause bounded to 45 seconds', flush=True)
+        if state.global_step == (35 if args.pause_training_pids else 30):
             self.steady_started = time.monotonic()
+            self.steady_step = state.global_step
 
     def on_train_end(self, trainer_args, state, control, **kwargs):
         self.prof.stop()
@@ -73,8 +92,9 @@ class Timing(TrainerCallback):
             compile_action=args.compile_action,
             cache_geometry=args.cache_geometry,
             prefetch_backbone=args.prefetch_backbone,
-            steps=state.global_step, steady_steps_per_second=(state.global_step-30)/(time.monotonic()-self.steady_started),
-            steady_compute_step_seconds=sum(self.times[30:])/len(self.times[30:]),
+            isolated=bool(args.pause_training_pids),
+            steps=state.global_step, steady_steps_per_second=(state.global_step-self.steady_step)/(time.monotonic()-self.steady_started),
+            steady_compute_step_seconds=sum(self.times[self.steady_step:])/len(self.times[self.steady_step:]),
             max_memory_bytes=torch.cuda.max_memory_allocated())
         (output/f'result_rank{rank}.json').write_text(json.dumps(result, indent=2))
         print(json.dumps(result), flush=True)
@@ -223,7 +243,7 @@ config = Config().load(Path(args.config))
 assert config.training.global_batch_size == 16
 assert config.training.optim == 'adamw_torch'
 config.training.use_ddp = args.mode == 'ddp'
-if args.mode == 'pipeline':
+if args.mode in ('pipeline', 'single'):
     config.training.num_gpus = 1  # One optimizer replica, batch 16; modules use both GPUs.
 config.training.dataloader_num_workers = args.workers
 config.training.max_steps = args.steps
@@ -236,5 +256,9 @@ experiment.Gr00tTrainer = BenchmarkTrainer
 try:
     experiment.run(config)
 finally:
+    for pid in args.pause_training_pids:
+        proc = Path(f'/proc/{pid}/cmdline')
+        if proc.exists() and b'launch_finetune.py' in proc.read_bytes():
+            os.kill(pid, signal.SIGCONT)
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
