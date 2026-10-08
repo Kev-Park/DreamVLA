@@ -56,10 +56,17 @@ while not (ROOT/'stop').exists():
         if '_dagger' in run and run not in INITIAL:
             requests.append({'run': run, 'line': tag, 'source': dataset, 'steps': int(steps), 'stage': 'epoch57_future'})
     for pod in config['pods']:
+        report['estimated_spend'] += pod.get('accrued_cost', 0)
         if pod.get('terminated'):
+            continue
+        if pod.get('paused'):
+            report['pods'].append({'id':pod['id'], 'state':'paused'})
             continue
         started = datetime.datetime.fromisoformat(pod['started'].replace('Z','+00:00')).timestamp()
         report['estimated_spend'] += (now-started)/3600*(pod['cost']+0.05)
+        if pod['role'] == 'collection':
+            report['pods'].append({'id':pod['id'], 'state':'collection_preparing'})
+            continue
         code = "import json,pathlib; p=pathlib.Path('/workspace/queue'); print(json.dumps({'current':json.loads((p/'current.json').read_text()) if (p/'current.json').exists() else None,'pending':len(list(p.glob('*.job.json'))),'results':[json.loads(f.read_text()) for f in p.glob('*.result.json')],'ready':pathlib.Path('/workspace/logs/prepare.ready').exists()}))"
         status = json.loads(podssh(pod, 'python3 -c '+shlex.quote(code)))
         status['id'] = pod['id']
@@ -96,6 +103,8 @@ while not (ROOT/'stop').exists():
         if status['ready'] and not running and status['pending']==0:
             candidates = list(requests)
             for run,(tag,relative,steps) in INITIAL.items():
+                if pod.get('critical_only'):
+                    continue
                 directory = STAGE/'epoch57'/run
                 if (directory/'phase').exists() and (directory/'phase').read_text().strip()=='done':
                     continue
