@@ -16,6 +16,7 @@ parser.add_argument('--workers', type=int, default=2)
 parser.add_argument('--steps', type=int, default=80)
 parser.add_argument('--output', required=True)
 parser.add_argument('--cpu-grid', action='store_true')
+parser.add_argument('--compile-action', action='store_true')
 args = parser.parse_args()
 
 import torch
@@ -64,6 +65,7 @@ class Timing(TrainerCallback):
         self.prof.stop()
         result = dict(mode=args.mode, workers=args.workers, rank=rank,
             cpu_grid=args.cpu_grid,
+            compile_action=args.compile_action,
             steps=state.global_step, steady_steps_per_second=(state.global_step-30)/(time.monotonic()-self.steady_started),
             steady_compute_step_seconds=sum(self.times[30:])/len(self.times[30:]),
             max_memory_bytes=torch.cuda.max_memory_allocated())
@@ -79,14 +81,25 @@ class BenchmarkTrainer(experiment.Gr00tTrainer):
             visual = self.model.backbone.model.visual
             # These helpers only use grid sizes as Python/CPU shape metadata.
             # Leave the original GPU grid intact for flash-attention cu_seqlens.
+            verified = set()
             for name in ('rot_pos_emb', 'fast_pos_embed_interpolate'):
                 original = getattr(visual, name)
-                grid = torch.tensor([[1, 14, 14], [1, 28, 28]], device=self.model.device)
-                with torch.no_grad():
-                    expected, actual = original(grid), original(grid.cpu())
-                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-                setattr(visual, name, lambda grid, original=original: original(grid.cpu()))
-            print('CPU grid helper outputs verified bitwise equal', flush=True)
+                def cpu_shape(grid, original=original, name=name):
+                    actual = original(grid.cpu())
+                    if name not in verified:
+                        with torch.no_grad():
+                            expected = original(grid)
+                        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                        verified.add(name)
+                        print(f'{name}: outputs verified bitwise equal on {grid.device}', flush=True)
+                    return actual
+                setattr(visual, name, cpu_shape)
+        if args.compile_action:
+            # Preserve parameter names and optimizer; compile the forward callable.
+            # Keep ATen random operations so RNG algorithms stay unchanged.
+            torch._inductor.config.fallback_random = True
+            self.model.action_head.forward = torch.compile(
+                self.model.action_head.forward, mode='reduce-overhead')
         self.add_callback(Timing())
 
     def save_model(self, *args, **kwargs):
