@@ -15,7 +15,12 @@ while [ ! -f "$STAGE/stop" ]; do
     [ -f "$directory/adjob" ] || continue
     r=${directory##*/}
     phase=$(get "$r" phase)
-    [ "$phase" = done ] && continue
+    if [ "$phase" = done ]; then
+      if [ ! -f "$directory/bootstrap.done" ]; then
+        bl "python3 ~/kevin/wt/dagger-watch-sparse/cluster/bootstrap_epoch57.py $r" >> "$LOG" 2>&1 && touch "$directory/bootstrap.done"
+      fi
+      continue
+    fi
     remaining=$((remaining+1))
     j=$(get "$r" adjob)
     result=$(printf 'squeue -j %s -h -o %%T\n' "$j" | ad 2>>"$LOG") || { log "Adroit connection failed; stopping for user intervention"; exit 1; }

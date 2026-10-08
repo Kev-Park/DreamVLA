@@ -1294,6 +1294,8 @@ def main() -> None:
     parser.add_argument("--dagger-vla-checkpoint", type=str, default=None,
                         help="DAgger mode: GR00T checkpoint that DRIVES the robot (with prob 1-beta per chunk) while "
                              "the residual labels every state. Rollouts are written regardless of success.")
+    parser.add_argument("--dagger-motion-ids", type=str, default=None,
+                        help="Explicit reference IDs for student rollouts; closed-pose calibration still uses demo-root.")
     parser.add_argument("--dagger-demo-root", type=str, default=None,
                         help="DAgger: collector HDF5 root of the demonstrations -- sweeps only its motion ids and "
                              "takes the closed-finger label pose from it.")
@@ -1524,6 +1526,10 @@ def main() -> None:
         if not args_cli.dagger_demo_root:
             raise SystemExit("--dagger-demo-root is required in DAgger mode")
         dagger_motions = demo_motion_ids(args_cli.dagger_demo_root)
+        if args_cli.dagger_motion_ids:
+            dagger_motions = [int(x) for x in Path(args_cli.dagger_motion_ids).read_text().split()]
+            if not dagger_motions or len(set(dagger_motions)) != len(dagger_motions) or min(dagger_motions) < 0:
+                raise SystemExit("DAgger reference IDs must be nonempty, unique and nonnegative")
         dagger_closed = dagger_closed_pose(args_cli.dagger_demo_root)
         vla = Gr00tPolicy(embodiment_tag="unitree_g1_sonic", model_path=args_cli.dagger_vla_checkpoint, device=device)
         obs_adapter = ObsToPolicyAdapter(env, ObsAdapterConfig(language_instruction="pick up the mustard bottle",

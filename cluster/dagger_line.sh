@@ -37,7 +37,7 @@ PROMPT="pick up the mustard bottle"
 freegpus(){ local n=$1 got; for _ in $(seq 1 60); do
     got=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk -F', ' '$2<2000{print $1}' | sort -rn | head -$n | sort -n | tr '\n' ' ')
     [ $(echo $got | wc -w) -ge $n ] && break; sleep 30; done; echo $got; }
-cd $WT && git fetch -q origin && git merge -q --ff-only origin/$BRANCH; log "start $TAG: CODE=$CODE@$BRANCH ENVX=[${ENVX:-}] ROLL=$ROLL XARGS=[$XARGS] CK=$CK REFS=$REFS EVREFS=$EVREFS BASE=$BASE BOX=$BOX FILTER=$FILTER NR=$NR; checkout $(git log --oneline -1 | cut -c1-50)"
+if [ "${SKIP_CODE_UPDATE:-0}" != 1 ]; then cd $WT && git fetch -q origin && git merge -q --ff-only origin/$BRANCH; fi; cd $WT; log "start $TAG: CODE=$CODE@$BRANCH ENVX=[${ENVX:-}] ROLL=$ROLL XARGS=[$XARGS] CK=$CK REFS=$REFS EVREFS=$EVREFS BASE=$BASE BOX=$BOX FILTER=$FILTER NR=$NR; checkout $(git log --oneline -1 | cut -c1-50)"
 cd $WT/Training
 NREF=$(ls $HOME/kevin/ref_motions/$REFS/pick_*.pkl | wc -l); NEV=$(ls $HOME/kevin/ref_motions/$EVREFS/pick_*.pkl | wc -l)
 [ $NREF -gt 0 ] && [ $NEV -gt 0 ] || die "missing reference sets ($REFS: $NREF, $EVREFS: $NEV)"
@@ -70,7 +70,7 @@ collect(){  # outdir seed [extra collector args...]
   local i=0 r
   for r in $(ranges $NS); do
     local L=$OUT/_log_$i.txt
-    ( CUDA_VISIBLE_DEVICES=${G[$i]} python $RSL/collect_sonic_adapter.py $COMMON $XARGS --motion-range ${r%,*} ${r#*,} --seed $S \
+    ( CUDA_VISIBLE_DEVICES=${G[$i]} python ${COLLECT_SCRIPT:-$RSL/collect_sonic_adapter.py} $COMMON $XARGS --motion-range ${r%,*} ${r#*,} --seed $S \
         --skip-existing "$@" --output-directory $OUT > $L 2>&1; log "    shard $i exit $?" ) &
     until grep -q "\[INFO\] motion \|Traceback" $L 2>/dev/null; do sleep 15; done; sleep 15; i=$((i + 1))
   done; wait
@@ -240,14 +240,18 @@ for r in $(seq 1 $NR); do
   if [ ! -f $W/r$r.done ]; then
     if [ ! -f $W/r${r}_collect.done ]; then
       log "DAgger round $r: student $STU, expert $CK on the paired reference, seed $((6 + r))"
-      DR=$DEMO_ROOT
-      if [ "$DAGGER_N" -gt 0 ] && [ $(grep -c . $W/keep_base.txt) -gt $DAGGER_N ]; then
+      DR=$DEMO_ROOT; MOTION_ARGS=""
+      if [ "${DAGGER_SAMPLE_ALL:-0}" = 1 ]; then
+        python -c "import random; ids=sorted(random.Random(1000+$r).sample(range($NREF), min($DAGGER_N,$NREF))); print(' '.join(map(str,ids)))" > "$W/motion_sample_r$r.txt"
+        MOTION_ARGS="--dagger-motion-ids $W/motion_sample_r$r.txt"
+        log "  round $r: random reference IDs sampled from all $NREF references; manifest $W/motion_sample_r$r.txt"
+      elif [ "$DAGGER_N" -gt 0 ] && [ $(grep -c . $W/keep_base.txt) -gt $DAGGER_N ]; then
         DR=$W/demo_root_r$r; rm -rf $DR; mkdir -p $DR
         python $HOME/kevin/dline/_dagger_sample.py demos $W/keep_base.txt $DAGGER_N $r > $W/demo_sample_r$r.txt
         while read -r f; do [ -n "$f" ] && ln -s "$f" $DR/$(basename "$f"); done < $W/demo_sample_r$r.txt
         log "  round $r: collecting on $DAGGER_N of $(grep -c . $W/keep_base.txt) reference motions (seed $((1000 + r)))"
       fi
-      collect $DS/${TAG}_dagger$r $((6 + r)) --dagger-vla-checkpoint $HOME/kevin/checkpoints/$STU/checkpoint-$(steps_of $STU) --dagger-demo-root $DR \
+      collect $DS/${TAG}_dagger$r $((6 + r)) --dagger-vla-checkpoint $HOME/kevin/checkpoints/$STU/checkpoint-$(steps_of $STU) --dagger-demo-root $DR $MOTION_ARGS \
         --dagger-chunk 8 --dagger-rescue --dagger-rescue-box file:$W/box.json --dagger-rescue-k-frac 1.0 --dagger-rescue-blend 0 \
         --dagger-expert-base reference --dagger-rollouts 1
       log "  round $r collected $(find $DS/${TAG}_dagger$r -name '*.hdf5' -not -name '_passA*' | wc -l) episodes ($(cat $DS/${TAG}_dagger$r/_log_*.txt | grep -c 'WROTE student') student successes)"
