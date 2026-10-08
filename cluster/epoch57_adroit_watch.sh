@@ -22,6 +22,14 @@ while [ ! -f "$STAGE/stop" ]; do
       continue
     fi
     remaining=$((remaining+1))
+    # Opportunistic bluesclues runs race the queued Adroit copy. Deliver only
+    # after the local trainer exits and its final checkpoint exists.
+    if [ "$(get "$r" primary)" = bluesclues ] && ! local_alive "$r" bluesclues; then
+      if ck_on "$r" bluesclues; then
+        deliver "$r" bluesclues
+        continue
+      fi
+    fi
     j=$(get "$r" adjob)
     result=$(printf 'squeue -j %s -h -o %%T\n' "$j" | ad 2>>"$LOG") || { log "Adroit connection failed; stopping for user intervention"; exit 1; }
     state=$(echo "$result" | tr -d '\r\n ')
