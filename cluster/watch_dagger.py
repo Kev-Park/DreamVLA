@@ -108,7 +108,8 @@ def cluster_tick(root, state, now):
         old["missing"] = old.get("missing", 0) + 1 if not drivers and not workers and not done else 0
         if old["missing"] >= 2 and not abort and old.get("env"):
             env = old["env"]
-            if env.get("TAG") != tag or env.get("NR") != "5":
+            if env.get("TAG") != tag or env.get("NR") != "5" or not all(
+                    env.get(k) for k in ("CK", "REFS", "EVREFS", "BASE")):
                 report["events"].append(f"{tag}: incomplete captured environment; refusing restart")
             else:
                 command = "export XLA_PYTHON_CLIENT_PREALLOCATE=false; " + " ".join(
@@ -129,8 +130,11 @@ def local_tick(stage, output, state):
     result = run(ssh + ["sastrygrp-dvij@bluesclues.ist.berkeley.edu",
                         "cat ~/kevin/dline/watch/status.json"])
     if result.returncode:
-        raise RuntimeError("Berkeley SSH failed; check VPN: " + result.stderr.strip())
+        reason = "Berkeley SSH failed; check VPN" if result.returncode == 255 else "Remote watcher check failed"
+        raise RuntimeError(reason + ": " + result.stderr.strip())
     report = json.loads(result.stdout)
+    if time.time() - report["time"] > 180:
+        report["events"].append("Cluster watcher heartbeat stale; refusing to assume chains are healthy")
     atomic(output / "status.json", report)
     bash = r"C:/Program Files/Git/bin/bash.exe"
     check = run([bash, "-lc", 'p=$(cat /k/_ftstage/orch.pid 2>/dev/null); '

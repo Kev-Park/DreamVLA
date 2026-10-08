@@ -10,7 +10,9 @@ class RecoveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.state = {tag: {"env": {"TAG": tag, "NR": "5"}} for tag in watcher.LINES}
+        self.state = {tag: {"env": {"TAG": tag, "NR": "5", "CK": "checkpoint",
+                                   "REFS": "train", "EVREFS": "eval", "BASE": "collect"}}
+                      for tag in watcher.LINES}
 
     def tearDown(self):
         self.temp.cleanup()
