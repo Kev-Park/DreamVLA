@@ -12,7 +12,9 @@ if ! command -v python3.10 >/dev/null; then
 fi
 cd /workspace/kevin
 if [ ! -d Isaac-GR00T/.git ]; then
-  git clone https://github.com/Kev-Park/Isaac-GR00T.git Isaac-GR00T
+  git -C Isaac-GR00T init
+  git -C Isaac-GR00T remote add origin https://github.com/Kev-Park/Isaac-GR00T.git
+  git -C Isaac-GR00T fetch --depth 1 origin 29c95b9cda2249b5285c84460c789d4fe3841d97
 fi
 git -C Isaac-GR00T checkout --detach 29c95b9cda2249b5285c84460c789d4fe3841d97
 # Recreate interpreter links/config for the destination Python while keeping

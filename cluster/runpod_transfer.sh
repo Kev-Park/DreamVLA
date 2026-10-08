@@ -7,15 +7,15 @@ SSH=(ssh -i "$HOME/kevin/runpod_transport/key" -o BatchMode=yes -o StrictHostKey
 "${SSH[@]}" "$DEST" 'mkdir -p /workspace/kevin /workspace/hf/hub /workspace/logs'
 (
   tar -C ~/kevin -cf - Isaac-GR00T/.venv |
-    "${SSH[@]}" "$DEST" 'tar -C /workspace/kevin -xf - && touch /workspace/logs/environment.ready'
+    "${SSH[@]}" "$DEST" 'tar --no-same-owner -C /workspace/kevin -xf - && touch /workspace/logs/environment.ready'
 ) & envpid=$!
 (
   tar -C ~/.cache/huggingface/hub -cf - models--nvidia--GR00T-N1.7-3B models--nvidia--Cosmos-Reason2-2B |
-    "${SSH[@]}" "$DEST" 'tar -C /workspace/hf/hub -xf - && touch /workspace/logs/models.ready'
+    "${SSH[@]}" "$DEST" 'tar --no-same-owner -C /workspace/hf/hub -xf - && touch /workspace/logs/models.ready'
 ) & modelpid=$!
 (
   tar -C ~/kevin/datasets -cf - af60v8f_base/lerobot/ds af60v8f_ds_dagger1/lerobot/ds af60v8f_ds_dagger2/lerobot/ds T20maxf_base/lerobot/ds T20maxf_ds_dagger1/lerobot/ds T20maxf_ds_dagger2/lerobot/ds |
-    "${SSH[@]}" "$DEST" 'mkdir -p /workspace/kevin/datasets; tar -C /workspace/kevin/datasets -xf - && touch /workspace/logs/datasets.ready'
+    "${SSH[@]}" "$DEST" 'mkdir -p /workspace/kevin/datasets; tar --no-same-owner -C /workspace/kevin/datasets -xf - && touch /workspace/logs/datasets.ready'
 ) & datapid=$!
 if [ -f ~/.cache/huggingface/token ]; then
   "${SSH[@]}" "$DEST" 'umask 077; cat > /workspace/hf/token' < ~/.cache/huggingface/token
