@@ -44,22 +44,22 @@ class Timing(TrainerCallback):
             schedule=torch.profiler.schedule(skip_first=20, wait=1, warmup=1, active=4, repeat=1),
             on_trace_ready=trace_ready)
 
-    def on_train_begin(self, **kwargs):
+    def on_train_begin(self, trainer_args, state, control, **kwargs):
         self.started = time.monotonic()
         self.prof.start()
 
-    def on_step_begin(self, **kwargs):
+    def on_step_begin(self, trainer_args, state, control, **kwargs):
         torch.cuda.synchronize()
         self.step_started = time.monotonic()
 
-    def on_step_end(self, state, **kwargs):
+    def on_step_end(self, trainer_args, state, control, **kwargs):
         torch.cuda.synchronize()
         self.times.append(time.monotonic()-self.step_started)
         self.prof.step()
         if state.global_step == 30:
             self.steady_started = time.monotonic()
 
-    def on_train_end(self, state, **kwargs):
+    def on_train_end(self, trainer_args, state, control, **kwargs):
         self.prof.stop()
         result = dict(mode=args.mode, workers=args.workers, rank=rank,
             steps=state.global_step, steady_steps_per_second=(state.global_step-30)/(time.monotonic()-self.steady_started),
