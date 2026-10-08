@@ -3,6 +3,7 @@ set -euo pipefail
 DS=${1:?dataset}; RUN=${2:?run}; STEPS=${3:?steps}
 export HF_HOME=/workspace/hf CUDA_HOME=/usr/local/cuda
 export WANDB_MODE=offline TOKENIZERS_PARALLELISM=false
+export TORCHINDUCTOR_COMPILE_THREADS=8
 cd ~/kevin/Isaac-GR00T
 mkdir -p ~/kevin/checkpoints /workspace/logs
 # Keep the durable dataset intact; train from a verified local-disk copy.
@@ -21,7 +22,7 @@ if [ "$GPUS" -gt 1 ]; then
   .venv/bin/python -c 'import deepspeed' || uv pip install --python .venv/bin/python deepspeed==0.17.6
   LAUNCH+=(-m torch.distributed.run --standalone --nproc_per_node "$GPUS")
 fi
-"${LAUNCH[@]}" gr00t/experiment/launch_finetune.py \
+"${LAUNCH[@]}" ~/kevin/DreamVLA_runtime/cluster/runpod_train.py \
   --base-model-path nvidia/GR00T-N1.7-3B --dataset-path "$DS" \
   --embodiment-tag unitree_g1_sonic --num-gpus "$GPUS" --global-batch-size 16 \
   --dataloader-num-workers 8 --output-dir ~/kevin/checkpoints \
