@@ -172,7 +172,7 @@ evaluate(){  # run
   local NG=${#G[@]} j=0
   rm -f $OUTV/${RUN}_b*_traj.npz; log "  eval $RUN on $EVREFS: 4 x $EPS episodes (GPUs ${G[*]})"
   for k in 0 1 2 3; do
-    HS_EVAL_NO_EE_TERM=1 CUDA_VISIBLE_DEVICES=${G[$((k % NG))]} python $RSL/eval_vla_sonic.py --headless $XARGS --sonic-pt $PT --ref-motions-path $EVREFS \
+    HS_EVAL_NO_EE_TERM=1 CUDA_VISIBLE_DEVICES=${G[$((k % NG))]} python ${EVAL_SCRIPT:-$RSL/eval_vla_sonic.py} --headless $XARGS --sonic-pt $PT --ref-motions-path $EVREFS \
       --vla-checkpoint $VLA --waist-dof 29 --motions-from $EVIDS/_ids_shard$k.txt --num-episodes $EPS --seed $((100 + k)) \
       --traj-dump $OUTV/${RUN}_b$k > $W/ev_${RUN}_$k.log 2>&1 &
     sleep 20
@@ -187,6 +187,7 @@ for f in sorted(glob.glob(os.path.expanduser(f"~/kevin/eval_videos/{run}_b*_traj
 p = k / max(n, 1); zz = 1.96; d = 1 + zz * zz / max(n, 1); c = (p + zz * zz / (2 * max(n, 1))) / d; h = zz * math.sqrt(p * (1 - p) / max(n, 1) + zz * zz / (4 * max(n, 1) ** 2)) / d
 print(f"  === {run} GR00T eval: {k}/{n} = {100*p:.1f}% (95% CI {100*(c-h):.0f}-{100*(c+h):.0f}%)")
 PY
+  python "$HOME/kevin/wt/dagger-watch-sparse/cluster/mpjpe_report.py" "$OUTV/${RUN}_b*_traj.npz" --output "$OUTV/${RUN}_mpjpe.json" >> "$ST" 2>&1 || log "MPJPE unavailable for $RUN; inspect metric report"
   if [ "${MONTAGE:-1}" = 1 ]; then   # MONTAGE=0: skip the 8 preview renders (scoring above is unaffected)
   local OUT=$OUTV/${RUN}_montage; rm -rf $OUT; mkdir -p $OUT
   for m in 0 12 25 37 50 62 75 87; do
@@ -204,6 +205,11 @@ PY
   touch $W/ev_$RUN.done
 }
 
+# Independent eval workers can share the same validated run configuration.
+if [ -n "${EVAL_ONLY:-}" ]; then
+  evaluate "$EVAL_ONLY"
+  exit $?
+fi
 # ---------------- base data ----------------
 if [ ! -f $W/base.done ]; then
   if [ "$BASE" = collect ]; then
@@ -227,7 +233,7 @@ while read -r f; do [ -n "$f" ] && ln -s "$f" $DEMO_ROOT/$(basename "$f"); done 
 if [ ! -f $W/r0.done ]; then
   D=$(build_ds base $W/keep_base.txt | tail -1); finetune $D ${TAG}_run01; touch $W/r0.done
 fi
-evaluate ${TAG}_run01
+[ "${START_ROUND:-1}" -le 1 ] && evaluate ${TAG}_run01
 KEEPS="$W/keep_base.txt"; STU=${TAG}_run01
 for r in $(seq 1 $NR); do
   RUN=${TAG}_dagger${r}_run01
@@ -259,7 +265,7 @@ for r in $(seq 1 $NR); do
   fi
   # The next round's collection needs only this round's student, not its score: evaluate in the background and
   # move on (wait a few minutes so the eval's GPU memory is visible before collection picks its slots).
-  evaluate $RUN & sleep 240; STU=$RUN
+  if [ "$r" -ge "${START_ROUND:-1}" ]; then evaluate $RUN & sleep 240; fi; STU=$RUN
 done
 wait
 log "LINE DONE: $(grep -E '=== .* GR00T eval' $ST | sed 's/.*=== //' | tr '\n' ';')"

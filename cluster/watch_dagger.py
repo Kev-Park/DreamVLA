@@ -12,8 +12,8 @@ import shlex
 import subprocess
 import time
 
-LINES = {"af60v8f": "dline_v8_kevin", "T20maxf": "dline_t20_kevin"}
-ENV_KEYS = "TAG CK REFS EVREFS EVIDS EVN BASE BOX FILTER NR NSH CODE BRANCH VENV ROLL XARGS ENVX FT_EXTERNAL FT_PASSES FT_MAX_STEPS STEPS DAGGER_N MONTAGE".split()
+LINES = {"af60v8f": "dline_v8_kevin", "T20maxf": "dline_t20_kevin", "af60v8f57": "dline_v857_kevin", "T20maxf57": "dline_t2057_kevin"}
+ENV_KEYS = "START_ROUND EVAL_SCRIPT COLLECT_SCRIPT DAGGER_SAMPLE_ALL TAG CK REFS EVREFS EVIDS EVN BASE BOX FILTER NR NSH CODE BRANCH VENV ROLL XARGS ENVX FT_EXTERNAL FT_PASSES FT_MAX_STEPS STEPS DAGGER_N MONTAGE".split()
 
 
 def read(path):
@@ -109,8 +109,9 @@ def cluster_tick(root, state, now):
             old["outputs"] = outputs
         output_idle = now - old.get("output_changed", now)
         done, abort = (w / "done").exists(), (w / "abort").exists()
+        held = (w / "epoch57_hold").exists()
         item = {"driver_pids": [p["pid"] for p in drivers], "worker_count": len(workers),
-                "last_status": status[-5:], "done": done, "abort": abort,
+                "last_status": status[-5:], "done": done, "abort": abort, "held": held,
                 "inactive_seconds": idle, "output_inactive_seconds": output_idle}
         if abort:
             report["events"].append(f"{tag}: ABORT requires diagnosis; no blind restart")
@@ -119,7 +120,7 @@ def cluster_tick(root, state, now):
         elif output_idle > 1800 and not done:
             report["events"].append(f"{tag}: CPU/I/O active but no log/stage output for {output_idle:.0f}s; inspect throughput")
         old["missing"] = old.get("missing", 0) + 1 if not drivers and not workers and not done else 0
-        if old["missing"] >= 2 and not abort and old.get("env"):
+        if old["missing"] >= 2 and not abort and not held and old.get("env"):
             env = old["env"]
             if env.get("TAG") != tag or env.get("NR") != "5" or not all(
                     env.get(k) for k in ("CK", "REFS", "EVREFS", "BASE")):
