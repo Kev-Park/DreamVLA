@@ -31,7 +31,7 @@ for finder in (env/'lib/python3.11/site-packages').glob('*finder.py'):
                     if not (oldroot/'kevin').exists():
                         (oldroot/'kevin').symlink_to('/opt/kevin')
 PY
-export OMNI_KIT_ALLOW_ROOT=1 ACCEPT_EULA=Y
+export OMNI_KIT_ALLOW_ROOT=1 OMNI_KIT_ACCEPT_EULA=YES
 cd DreamVLA/Training
 /opt/dreamcontrol_51/bin/python -c 'import torch; print(torch.__version__,torch.cuda.get_device_name(),torch.cuda.get_arch_list())'
 touch /workspace/logs/isaac_prepare.ready

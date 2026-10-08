@@ -1,7 +1,10 @@
 """Headless startup/physics/render compatibility check; no task assessment."""
 import argparse
 import json
+import os
 from pathlib import Path
+os.environ['OMNI_KIT_ALLOW_ROOT'] = '1'
+os.environ['OMNI_KIT_ACCEPT_EULA'] = 'YES'
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
