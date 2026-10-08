@@ -11,7 +11,7 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', required=True)
-parser.add_argument('--mode', choices=['ddp', 'zero2'], required=True)
+parser.add_argument('--mode', choices=['ddp', 'zero2', 'pipeline'], required=True)
 parser.add_argument('--workers', type=int, default=2)
 parser.add_argument('--steps', type=int, default=80)
 parser.add_argument('--output', required=True)
@@ -78,6 +78,18 @@ class Timing(TrainerCallback):
 class BenchmarkTrainer(experiment.Gr00tTrainer):
     def __init__(self, *trainer_args, **kwargs):
         kwargs['args'].save_strategy = SaveStrategy.NO
+        if args.mode == 'pipeline':
+            model = kwargs['model']
+            model.backbone.to('cuda:1')
+            model.action_head.to('cuda:0')
+            model.is_parallelizable = True
+            model.model_parallel = True
+            model.hf_device_map = {'backbone': 1, 'action_head': 0}
+            import tree
+            def head_device(module, inputs):
+                return tree.map_structure(
+                    lambda x: x.to('cuda:0') if isinstance(x, torch.Tensor) else x, inputs)
+            model.action_head.register_forward_pre_hook(head_device)
         super().__init__(*trainer_args, **kwargs)
         if args.cpu_grid:
             visual = self.model.backbone.model.visual
@@ -145,6 +157,8 @@ config = Config().load(Path(args.config))
 assert config.training.global_batch_size == 16
 assert config.training.optim == 'adamw_torch'
 config.training.use_ddp = args.mode == 'ddp'
+if args.mode == 'pipeline':
+    config.training.num_gpus = 1  # One optimizer replica, batch 16; modules use both GPUs.
 config.training.dataloader_num_workers = args.workers
 config.training.max_steps = args.steps
 config.training.save_steps = args.steps+1
