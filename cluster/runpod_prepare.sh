@@ -15,6 +15,9 @@ if [ ! -d Isaac-GR00T/.git ]; then
   git clone https://github.com/Kev-Park/Isaac-GR00T.git Isaac-GR00T
 fi
 git -C Isaac-GR00T checkout --detach 29c95b9cda2249b5285c84460c789d4fe3841d97
+# Recreate interpreter links/config for the destination Python while keeping
+# every installed package from the source environment.
+/usr/bin/python3.10 -m venv --upgrade --without-pip Isaac-GR00T/.venv
 # The editable installation stores the original repository path. Supply an
 # environment-level symlink, leaving the copied package and code untouched.
 old=$(Isaac-GR00T/.venv/bin/python -c 'import __editable___gr00t_0_1_0_finder as f; print(f.MAPPING["gr00t"])')
