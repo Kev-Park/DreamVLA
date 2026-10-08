@@ -12,7 +12,7 @@ trap 'rmdir "$STAGE/watch.lockdir" 2>/dev/null' EXIT
 echo $$ > "$STAGE/watch.pid"
 while [ ! -f "$STAGE/stop" ]; do
   remaining=0
-  for r in T20maxf57_dagger2_run01 af60v8f57_dagger2_run01 T20maxf57_run01 af60v8f57_dagger1_run01 T20maxf57_dagger1_run01 af60v8f57_run01; do
+  for r in af60v8f57_dagger2_run01 af60v8f57_dagger1_run01 af60v8f57_run01; do
     directory="$STAGE/$r"
     [ -f "$directory/adjob" ] || continue
     r=${directory##*/}

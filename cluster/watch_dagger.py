@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import time
 
-LINES = {"af60v8f": "dline_v8_kevin", "T20maxf": "dline_t20_kevin", "af60v8f57": "dline_v857_kevin", "T20maxf57": "dline_t2057_kevin"}
+LINES = {"af60v8f": "dline_v8_kevin", "af60v8f57": "dline_v857_kevin"}
 ENV_KEYS = "SKIP_CODE_UPDATE PYTHONPATH START_ROUND EVAL_SCRIPT COLLECT_SCRIPT DAGGER_SAMPLE_ALL TAG CK REFS EVREFS EVIDS EVN BASE BOX FILTER NR NSH CODE BRANCH VENV ROLL XARGS ENVX FT_EXTERNAL FT_PASSES FT_MAX_STEPS STEPS DAGGER_N MONTAGE".split()
 
 
@@ -139,7 +139,7 @@ def cluster_tick(root, state, now):
                     old["missing"] = 0
         report["lines"][tag] = item
     report["auxiliary"] = {}
-    for tag in ("expertpick1200", "expertwalk1200", "pick10", "pick50", "walk10", "walk50"):
+    for tag in ("expertpick1200", "pick10", "pick50"):
         w = root / "dline" / tag
         relevant = [p for p in ps if re.search(re.escape(tag) + r"(?![A-Za-z0-9])", p["args"])]
         workers = [p for p in relevant if "python" in p["args"]]
@@ -190,7 +190,7 @@ def local_tick(stage, output, state):
     if not alive and not (stage / "stop").exists():
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
         subprocess.Popen([bash, "-lc", 'cd /k/_ftstage && '
-                          'LINES="af60v8f T20maxf" bash ./_ftorch.sh'],
+                          'LINES="af60v8f" bash ./_ftorch.sh'],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, creationflags=flags)
         report["events"].append("Restarted absent local orchestrator for the two active lines")

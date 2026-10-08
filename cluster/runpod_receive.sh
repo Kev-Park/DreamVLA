@@ -1,0 +1,24 @@
+#!/bin/bash
+# Run on bluesclues. Verify incoming tensors before replacing a competing run.
+set -euo pipefail
+HOST=${1:?}; PORT=${2:?}; RUN=${3:?}; STEPS=${4:?}; LINE=${5:?}
+[[ "$RUN" =~ ^[A-Za-z0-9_]+$ && "$STEPS" =~ ^[0-9]+$ && "$LINE" =~ ^[A-Za-z0-9_]+$ ]]
+ROOT=$HOME/kevin
+SSH=(ssh -i "$ROOT/runpod_transport/key" -o BatchMode=yes -o ConnectTimeout=20 -p "$PORT")
+PACK=/workspace/packs/$RUN
+"${SSH[@]}" "root@$HOST" "mkdir -p /workspace/packs; HF_HOME=/workspace/hf /root/kevin/Isaac-GR00T/.venv/bin/python /workspace/kevin/DreamVLA_runtime/cluster/ckpt_transfer.py pack /root/kevin/checkpoints/$RUN/checkpoint-$STEPS $PACK"
+mkdir -p "$ROOT/runpod_transport/packs/$RUN" "$ROOT/runpod_transport/received"
+scp -q -r -i "$ROOT/runpod_transport/key" -o BatchMode=yes -P "$PORT" "root@$HOST:$PACK/." "$ROOT/runpod_transport/packs/$RUN/"
+INCOMING="$ROOT/checkpoints/$RUN/runpod_checkpoint-$STEPS"
+"$ROOT/Isaac-GR00T/.venv/bin/python" "$ROOT/wt/dagger-watch-sparse/cluster/ckpt_transfer.py" unpack \
+  "$ROOT/runpod_transport/packs/$RUN" "$ROOT/checkpoints/af60v7f_run01/checkpoint-10000" "$INCOMING"
+# These exact experiment names belong to this orchestrator. Only cancel after
+# the replacement has passed all tensor checksums.
+pkill -TERM -f "[e]xperiment-name $RUN --max-steps" || true
+TARGET="$ROOT/checkpoints/$RUN/checkpoint-$STEPS"
+if [ -e "$TARGET" ]; then mv "$TARGET" "${TARGET}.superseded.$(date +%s)"; fi
+mv "$INCOMING" "$TARGET"
+mkdir -p "$ROOT/dline/$LINE/ftq"
+rm -f "$ROOT/dline/$LINE/ftq/$RUN.failed"
+echo "runpod $(date -u +%H:%M)" > "$ROOT/dline/$LINE/ftq/$RUN.ready"
+echo "$STEPS" > "$ROOT/runpod_transport/received/$RUN"

@@ -5,7 +5,7 @@ import time
 stage=Path('K:/_ftstage/gr00t_subsets')
 while True:
     remaining=0
-    for name in ('pick10','pick50','walk10','walk50'):
+    for name in ('pick10','pick50'):
         work=stage/name
         if (work/'eval.started').exists(): continue
         remaining+=1
