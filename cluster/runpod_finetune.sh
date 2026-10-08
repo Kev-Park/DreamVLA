@@ -12,9 +12,16 @@ mkdir -p "$LOCAL_DS"
 cp -a "$DS/." "$LOCAL_DS/"
 (cd "$LOCAL_DS"; sha256sum --quiet -c "/workspace/logs/$RUN.dataset.sha256")
 DS=$LOCAL_DS
-.venv/bin/python gr00t/experiment/launch_finetune.py \
+GPUS=1
+test ! -f /workspace/gpu_count || GPUS=$(cat /workspace/gpu_count)
+case "$GPUS" in 1|2|4|8) ;; *) echo "Invalid GPU count"; exit 1;; esac
+LAUNCH=(.venv/bin/python)
+if [ "$GPUS" -gt 1 ]; then
+  LAUNCH+=(-m torch.distributed.run --standalone --nproc_per_node "$GPUS")
+fi
+"${LAUNCH[@]}" gr00t/experiment/launch_finetune.py \
   --base-model-path nvidia/GR00T-N1.7-3B --dataset-path "$DS" \
-  --embodiment-tag unitree_g1_sonic --num-gpus 1 --global-batch-size 16 \
+  --embodiment-tag unitree_g1_sonic --num-gpus "$GPUS" --global-batch-size 16 \
   --dataloader-num-workers 8 --output-dir ~/kevin/checkpoints \
   --experiment-name "$RUN" --max-steps "$STEPS" --save-steps 10000 \
   --save-total-limit 2 --save-only-model
