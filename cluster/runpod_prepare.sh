@@ -11,6 +11,10 @@ if ! command -v python3.10 >/dev/null; then
   ln -s "$(uv python find 3.10)" /usr/bin/python3.10
 fi
 cd /workspace/kevin
+if [ -d /opt/kevin/Isaac-GR00T/.venv ] && [ ! -L Isaac-GR00T/.venv ]; then
+  test ! -d Isaac-GR00T/.venv || mv Isaac-GR00T/.venv Isaac-GR00T/.venv.network_copy
+  ln -s /opt/kevin/Isaac-GR00T/.venv Isaac-GR00T/.venv
+fi
 if [ ! -d Isaac-GR00T/.git ]; then
   git -C Isaac-GR00T init
   git -C Isaac-GR00T remote add origin https://github.com/Kev-Park/Isaac-GR00T.git

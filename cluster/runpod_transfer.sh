@@ -7,7 +7,7 @@ SSH=(ssh -i "$HOME/kevin/runpod_transport/key" -o BatchMode=yes -o StrictHostKey
 "${SSH[@]}" "$DEST" 'mkdir -p /workspace/kevin /workspace/hf/hub /workspace/logs'
 (
   tar -C ~/kevin -cf - Isaac-GR00T/.venv |
-    "${SSH[@]}" "$DEST" 'tar --no-same-owner -C /workspace/kevin -xf - && touch /workspace/logs/environment.ready'
+    "${SSH[@]}" "$DEST" 'mkdir -p /opt/kevin; tar --no-same-owner -C /opt/kevin -xf - && touch /workspace/logs/environment.ready'
 ) & envpid=$!
 (
   tar -C ~/.cache/huggingface/hub -cf - models--nvidia--GR00T-N1.7-3B models--nvidia--Cosmos-Reason2-2B |
