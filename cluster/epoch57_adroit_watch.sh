@@ -22,6 +22,11 @@ while [ ! -f "$STAGE/stop" ]; do
     [ -f "$directory/adjob" ] || continue
     r=${directory##*/}
     phase=$(get "$r" phase)
+    if [ "$phase" = manual_transfer ]; then
+      remaining=$((remaining+1))
+      continue
+    fi
+    [ "$phase" != failed ] || { log "$r: prior failure requires review; stopping"; exit 1; }
     if [ "$phase" = done ]; then
       if [ ! -f "$directory/bootstrap.done" ]; then
         if bl "python3 ~/kevin/wt/dagger-watch-sparse/cluster/bootstrap_epoch57.py $r" >> "$LOG" 2>&1; then touch "$directory/bootstrap.done"; else remaining=$((remaining+1)); fi

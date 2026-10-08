@@ -5,10 +5,15 @@ from ctypes import wintypes
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 p = argparse.ArgumentParser()
 p.add_argument('--copy-pid', type=int, required=True)
 a = p.parse_args()
+def failed(kind, value, trace):
+    Path('K:/_ftstage/epoch57/af60v8f57_run01/phase').write_text('failed')
+    sys.__excepthook__(kind, value, trace)
+sys.excepthook = failed
 kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 kernel.OpenProcess.restype = wintypes.HANDLE

@@ -71,7 +71,7 @@ def main():
             deadline = datetime.datetime.fromisoformat(config['deadline'].replace('Z','+00:00')).timestamp()
             if os.name == 'nt' and now >= deadline:
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
-            cutoff = min(config['budget']-2, 98)
+            cutoff = config['budget']-2
             status = {'time': now, 'authenticated': True, 'estimated_spend': spent,
                       'cutoff': cutoff, 'actions': [], 'activity': [], 'alerts': []}
             control = json.loads((ROOT/'budget_control.json').read_text()) if (ROOT/'budget_control.json').exists() else {}
