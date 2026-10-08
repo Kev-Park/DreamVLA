@@ -136,6 +136,22 @@ def cluster_tick(root, state, now):
                     report["events"].append(f"{tag}: safe resume requested, exit={result.returncode}")
                     old["missing"] = 0
         report["lines"][tag] = item
+    report["auxiliary"] = {}
+    for tag in ("expertpick1200", "expertwalk1200", "pick10", "pick50", "walk10", "walk50"):
+        w = root / "dline" / tag
+        relevant = [p for p in ps if re.search(re.escape(tag) + r"(?![A-Za-z0-9])", p["args"])]
+        workers = [p for p in relevant if "python" in p["args"]]
+        steps = read(w / ("steps_" + tag))
+        ready = list(w.glob("pass*.ready"))
+        completed = sum(int(read(f).split()[0]) for f in ready)
+        item = {"worker_count": len(workers), "last_status": read(w / "status").splitlines()[-3:],
+                "completed_attempts": completed, "archived_passes": len(list(w.glob("pass*.archived"))),
+                "done": (w / "done").exists(), "abort": (w / "abort").exists(),
+                "checkpoint_ready": bool(steps) and checkpoint_complete(root / "checkpoints" / tag / ("checkpoint-" + steps)),
+                "eval_done": (w / ("ev_" + tag + ".done")).exists()}
+        report["auxiliary"][tag] = item
+        if item["abort"]:
+            report["events"].append(f"{tag}: ABORT requires diagnosis; attempt budget prevents blind retries")
     return report
 
 
