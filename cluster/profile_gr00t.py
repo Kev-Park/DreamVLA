@@ -8,6 +8,9 @@ import json
 import os
 from pathlib import Path
 import time
+import queue
+import threading
+import types
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', required=True)
@@ -18,6 +21,7 @@ parser.add_argument('--output', required=True)
 parser.add_argument('--cpu-grid', action='store_true')
 parser.add_argument('--compile-action', action='store_true')
 parser.add_argument('--cache-geometry', action='store_true')
+parser.add_argument('--prefetch-backbone', action='store_true')
 args = parser.parse_args()
 
 import torch
@@ -68,6 +72,7 @@ class Timing(TrainerCallback):
             cpu_grid=args.cpu_grid,
             compile_action=args.compile_action,
             cache_geometry=args.cache_geometry,
+            prefetch_backbone=args.prefetch_backbone,
             steps=state.global_step, steady_steps_per_second=(state.global_step-30)/(time.monotonic()-self.steady_started),
             steady_compute_step_seconds=sum(self.times[30:])/len(self.times[30:]),
             max_memory_bytes=torch.cuda.max_memory_allocated())
@@ -147,7 +152,68 @@ class BenchmarkTrainer(experiment.Gr00tTrainer):
             torch._inductor.config.fallback_random = True
             self.model.action_head.forward = torch.compile(
                 self.model.action_head.forward, mode='reduce-overhead')
+        if args.prefetch_backbone:
+            assert args.mode == 'pipeline'
+            assert not any(p.requires_grad for p in self.model.backbone.parameters())
+            def prefetched_forward(model, inputs):
+                return model.action_head(inputs['__backbone'], inputs['__action_inputs'])
+            self.model.forward = types.MethodType(prefetched_forward, self.model)
         self.add_callback(Timing())
+
+    def get_train_dataloader(self):
+        base = super().get_train_dataloader()
+        if not args.prefetch_backbone:
+            return base
+        model = self.model
+        import tree
+        class BackboneLoader:
+            def __getattr__(self, name):
+                return getattr(base, name)
+
+            def __len__(self):
+                return len(base)
+
+            def __iter__(self):
+                source = iter(base)
+                pending = queue.Queue(maxsize=1)
+                stop = threading.Event()
+                def put(value):
+                    while not stop.is_set():
+                        try:
+                            pending.put(value, timeout=0.1)
+                            return
+                        except queue.Full:
+                            pass
+                def produce():
+                    try:
+                        with torch.cuda.device(1), torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+                            for batch in source:
+                                if stop.is_set():
+                                    break
+                                backbone_inputs, action_inputs = model.prepare_input(batch['inputs'])
+                                features = model.backbone(backbone_inputs)
+                                # Normal tensors, not inference-mode tensors, are needed by head backward.
+                                features, action_inputs = tree.map_structure(
+                                    lambda x: x.to('cuda:0') if isinstance(x, torch.Tensor) else x,
+                                    (features, action_inputs))
+                                put({'inputs': {'__backbone': features, '__action_inputs': action_inputs}})
+                        put(None)
+                    except BaseException as error:
+                        put(error)
+                worker = threading.Thread(target=produce, daemon=True)
+                worker.start()
+                try:
+                    while True:
+                        batch = pending.get()
+                        if batch is None:
+                            break
+                        if isinstance(batch, BaseException):
+                            raise batch
+                        yield batch
+                finally:
+                    stop.set()
+                    worker.join(timeout=5)
+        return BackboneLoader()
 
     def save_model(self, *args, **kwargs):
         pass
