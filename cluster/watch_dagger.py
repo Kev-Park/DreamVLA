@@ -116,9 +116,9 @@ def cluster_tick(root, state, now):
                 "inactive_seconds": idle, "output_inactive_seconds": output_idle}
         if abort:
             report["events"].append(f"{tag}: ABORT requires diagnosis; no blind restart")
-        if idle > 1200 and not done:
+        if idle > 1200 and not done and not held:
             report["events"].append(f"{tag}: no CPU/I/O or stage progress for {idle:.0f}s")
-        elif output_idle > 1800 and not done:
+        elif output_idle > 1800 and not done and not held:
             report["events"].append(f"{tag}: CPU/I/O active but no log/stage output for {output_idle:.0f}s; inspect throughput")
         old["missing"] = old.get("missing", 0) + 1 if not drivers and not workers and not done else 0
         if old["missing"] >= 2 and not abort and not held and old.get("env"):
@@ -143,7 +143,7 @@ def cluster_tick(root, state, now):
         workers = [p for p in relevant if "python" in p["args"]]
         steps = read(w / ("steps_" + tag))
         ready = list(w.glob("pass*.ready"))
-        completed = sum(int(read(f).split()[0]) for f in ready)
+        completed = sum(int(parts[0]) for f in ready if (parts := read(f).split()) and parts[0].isdigit())
         item = {"worker_count": len(workers), "last_status": read(w / "status").splitlines()[-3:],
                 "completed_attempts": completed, "archived_passes": len(list(w.glob("pass*.archived"))),
                 "done": (w / "done").exists(), "abort": (w / "abort").exists(),
@@ -181,6 +181,7 @@ def local_tick(stage, output, state):
             procs = [procs]
         alive = any("_ftorch.sh" in (p.get("CommandLine") or "") for p in procs)
     except ValueError:
+        procs = []
         alive = check.returncode == 0  # Refuse duplicate launches on an inspection failure.
     # MSYS may rewrite argv to plain bash: its live PID is also conservatively honored.
     alive = alive or check.returncode == 0
@@ -191,6 +192,17 @@ def local_tick(stage, output, state):
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, creationflags=flags)
         report["events"].append("Restarted absent local orchestrator for the two active lines")
+    for directory, script in (("epoch57_future", "_ftorch57.sh"), ("gr00t_subsets", "_ftorch_subsets.sh")):
+        child_stage = stage / directory
+        if not child_stage.exists() or (child_stage / "stop").exists():
+            continue
+        child = run([bash, "-lc", f'p=$(cat /k/_ftstage/{directory}/orch.pid 2>/dev/null); test -n "$p" && ps -p "$p" -f'])
+        child_alive = child.returncode == 0 or any(script in (p.get("CommandLine") or "") for p in procs)
+        if not child_alive:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+            subprocess.Popen([bash, "-lc", 'cd /k/_ftstage && bash ./' + script], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+            report["events"].append("Restarted absent orchestrator: " + directory)
     if not state.get("adroit_unavailable") and time.time() - state.get("adroit_checked", 0) > 600:
         state["adroit_checked"] = time.time()
         try:
