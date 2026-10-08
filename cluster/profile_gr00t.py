@@ -15,6 +15,7 @@ parser.add_argument('--mode', choices=['ddp', 'zero2'], required=True)
 parser.add_argument('--workers', type=int, default=2)
 parser.add_argument('--steps', type=int, default=80)
 parser.add_argument('--output', required=True)
+parser.add_argument('--cpu-grid', action='store_true')
 args = parser.parse_args()
 
 import torch
@@ -62,6 +63,7 @@ class Timing(TrainerCallback):
     def on_train_end(self, trainer_args, state, control, **kwargs):
         self.prof.stop()
         result = dict(mode=args.mode, workers=args.workers, rank=rank,
+            cpu_grid=args.cpu_grid,
             steps=state.global_step, steady_steps_per_second=(state.global_step-30)/(time.monotonic()-self.steady_started),
             steady_compute_step_seconds=sum(self.times[30:])/len(self.times[30:]),
             max_memory_bytes=torch.cuda.max_memory_allocated())
@@ -73,6 +75,18 @@ class BenchmarkTrainer(experiment.Gr00tTrainer):
     def __init__(self, *trainer_args, **kwargs):
         kwargs['args'].save_strategy = SaveStrategy.NO
         super().__init__(*trainer_args, **kwargs)
+        if args.cpu_grid:
+            visual = self.model.backbone.model.visual
+            # These helpers only use grid sizes as Python/CPU shape metadata.
+            # Leave the original GPU grid intact for flash-attention cu_seqlens.
+            for name in ('rot_pos_emb', 'fast_pos_embed_interpolate'):
+                original = getattr(visual, name)
+                grid = torch.tensor([[1, 14, 14], [1, 28, 28]], device=self.model.device)
+                with torch.no_grad():
+                    expected, actual = original(grid), original(grid.cpu())
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                setattr(visual, name, lambda grid, original=original: original(grid.cpu()))
+            print('CPU grid helper outputs verified bitwise equal', flush=True)
         self.add_callback(Timing())
 
     def save_model(self, *args, **kwargs):
