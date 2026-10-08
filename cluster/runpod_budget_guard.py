@@ -15,7 +15,7 @@ import shlex
 
 ROOT = Path(__file__).resolve().parents[2] / 'out/runpod'
 OWNED = {'04z8d0a941vb9z', 'pscjg26ij7t3yk', 'gop5085t076jhp', '48w7f0lwpz4dfu',
-         'itrttaagys4vib'}
+         'itrttaagys4vib', 'feopiqtnufdbsl'}
 
 
 def api(pod_id, action=None):
