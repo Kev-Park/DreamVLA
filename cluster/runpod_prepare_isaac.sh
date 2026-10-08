@@ -15,7 +15,9 @@ if [ ! -d Isaac-GR00T/.git ]; then
   git -C Isaac-GR00T checkout --detach FETCH_HEAD
 fi
 until test -f /workspace/logs/isaac_env.ready && test -f /workspace/logs/isaac_data.ready && test -f /workspace/logs/isaac_assets.ready; do sleep 10; done
-test -e DreamVLA/Training/assets || ln -s /opt/isaac_assets/assets DreamVLA/Training/assets
+mkdir -p DreamVLA/Training/assets
+# A clone contains LFS pointer files, so an existence check is insufficient.
+cp -a /opt/isaac_assets/assets/. DreamVLA/Training/assets/
 # Resolve the original editable-install root from the copied environment.
 /opt/dreamcontrol_51/bin/python - <<'PY'
 import ast
