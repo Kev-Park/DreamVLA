@@ -5,6 +5,7 @@ retains persistent /workspace outputs. Estimated charges include storage reserve
 """
 import datetime
 import json
+import re
 from pathlib import Path
 import time
 import tomllib
@@ -49,12 +50,22 @@ def main():
             status = {'time': now, 'authenticated': True, 'estimated_spend': spent,
                       'cutoff': cutoff, 'actions': []}
             control = json.loads((ROOT/'budget_control.json').read_text()) if (ROOT/'budget_control.json').exists() else {}
+            workload = json.loads((ROOT/'status.json').read_text()) if (ROOT/'status.json').exists() else {}
+            deliveries = json.loads((ROOT/'monitor_state.json').read_text()).get('deliveries', {}) if (ROOT/'monitor_state.json').exists() else {}
             for pod in config['pods']:
                 if pod['id'] not in OWNED or pod.get('terminated') or pod.get('paused'):
                     continue
                 reason = ('budget cutoff' if spent >= cutoff else
                           'deadline' if now >= deadline else
                           control.get('release', {}).get(pod['id']))
+                observed = next((p for p in workload.get('pods', []) if p['id'] == pod['id']), {})
+                current = observed.get('current') or {}
+                match = re.search(r'_dagger(\d+)_', current.get('run', ''))
+                if (current.get('state') == 'done' and match
+                        and int(match.group(1)) >= pod.get('max_round', 3)
+                        and deliveries.get(current['run']) == 'delivered'
+                        and observed.get('pending', 0) == 0):
+                    reason = reason or 'final cloud checkpoint verified and delivered'
                 if not reason:
                     continue
                 live = api(pod['id'])
