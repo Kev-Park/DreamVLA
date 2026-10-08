@@ -46,6 +46,8 @@ while not (ROOT / 'stop').exists():
         write(ROOT / 'current.json', status)
         rc = child.wait()
     status.update(finished=time.time(), exit_code=rc, state='done' if rc == 0 and complete(checkpoint) else 'failed')
+    if status['state'] == 'failed':
+        status['error_log_tail'] = log.read_bytes()[-24000:].decode('utf-8', errors='replace')
     write(ROOT / f'{name}.result.json', status)
     write(ROOT / 'current.json', status)
     active.rename(active.with_suffix('.finished'))

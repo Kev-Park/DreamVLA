@@ -10,6 +10,8 @@ from pathlib import Path
 import time
 import tomllib
 import urllib.request
+import subprocess
+import shlex
 
 ROOT = Path(__file__).resolve().parents[2] / 'out/runpod'
 OWNED = {'04z8d0a941vb9z', 'pscjg26ij7t3yk', 'gop5085t076jhp', '48w7f0lwpz4dfu',
@@ -38,9 +40,25 @@ def estimate(config, now):
     return cost
 
 
+def capture_logs(pod):
+    """Copy failure evidence off the host before releasing its GPU slot."""
+    code = "import pathlib,json; p=pathlib.Path('/workspace/logs'); fs=sorted(p.glob('*.log'),key=lambda f:f.stat().st_mtime,reverse=True)[:5]; print(json.dumps({f.name:f.read_bytes()[-24000:].decode('utf8','replace') for f in fs}))"
+    result = subprocess.run(['ssh', '-i', str(Path.home()/'.ssh/runpod_deadline'),
+        '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-p', str(pod['port']),
+        'root@'+pod['host'], 'python3 -c '+shlex.quote(code)],
+        capture_output=True, text=True, timeout=20,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    if result.returncode:
+        raise RuntimeError(result.stderr[-500:])
+    data = json.loads(result.stdout)
+    (ROOT/('logs_'+pod['id']+'.json')).write_text(json.dumps(data, indent=2))
+    return list(data)
+
+
 def main():
     config = json.loads((ROOT/'pods.json').read_text())
     api(next(p['id'] for p in config['pods'] if not p.get('terminated')))
+    history = {}
     while not (ROOT/'budget_guard.stop').exists():
         try:
             config = json.loads((ROOT/'pods.json').read_text())
@@ -49,7 +67,7 @@ def main():
             deadline = datetime.datetime.fromisoformat(config['deadline'].replace('Z','+00:00')).timestamp()
             cutoff = min(config['budget']-2, 98)
             status = {'time': now, 'authenticated': True, 'estimated_spend': spent,
-                      'cutoff': cutoff, 'actions': []}
+                      'cutoff': cutoff, 'actions': [], 'activity': [], 'alerts': []}
             control = json.loads((ROOT/'budget_control.json').read_text()) if (ROOT/'budget_control.json').exists() else {}
             workload = json.loads((ROOT/'status.json').read_text()) if (ROOT/'status.json').exists() else {}
             deliveries = json.loads((ROOT/'monitor_state.json').read_text()).get('deliveries', {}) if (ROOT/'monitor_state.json').exists() else {}
@@ -66,6 +84,42 @@ def main():
                     reason = reason or 'bounded benchmark window ended'
                 observed = next((p for p in workload.get('pods', []) if p['id'] == pod['id']), {})
                 current = observed.get('current') or {}
+                live = api(pod['id'])
+                if live['status'] in ('EXITED', 'ERROR'):
+                    reason = reason or 'provider reports stopped pod'
+                previous = history.setdefault(pod['id'], {'step': None, 'progress_time': now})
+                step = observed.get('training_step')
+                if step != previous['step']:
+                    previous.update(step=step, progress_time=now)
+                gpus = (live.get('runtime') or {}).get('gpus', [])
+                idle = bool(gpus) and all(g.get('util', 100) == 0 and g.get('memoryUtil', 100) == 0 for g in gpus)
+                if idle:
+                    previous.setdefault('idle_since', now)
+                else:
+                    previous.pop('idle_since', None)
+                age = now-datetime.datetime.fromisoformat(pod['started'].replace('Z','+00:00')).timestamp()
+                idle_seconds = now-previous.get('idle_since', now)
+                status['activity'].append({'id':pod['id'], 'status':live['status'], 'gpus':gpus,
+                    'run':current.get('run'), 'step':step, 'idle_seconds':idle_seconds,
+                    'seconds_without_progress':now-previous['progress_time']})
+                if idle_seconds >= 300 and age >= 900:
+                    reason = reason or 'no GPU activity or allocation for five minutes'
+                if current.get('state') == 'running' and now-previous['progress_time'] > 600:
+                    status['alerts'].append({'id':pod['id'], 'reason':'training progress stalled for ten minutes'})
+                if current.get('state') == 'failed':
+                    previous.setdefault('failed_since', now)
+                    if not previous.get('logs_captured') and not previous.get('log_capture_failed'):
+                        try:
+                            previous['logs_captured'] = capture_logs(pod)
+                        except Exception as error:
+                            previous['log_capture_failed'] = str(error)
+                    status['alerts'].append({'id':pod['id'], 'reason':'training failed',
+                        'logs_captured':previous.get('logs_captured'), 'capture_error':previous.get('log_capture_failed')})
+                    if reason not in ('budget cutoff', 'deadline') and now-previous['failed_since'] < 600:
+                        # Keep a short diagnosis window; stopping can strand host-local logs.
+                        reason = None
+                    elif not reason:
+                        reason = 'failed workload diagnosis window ended'
                 match = re.search(r'_dagger(\d+)_', current.get('run', ''))
                 if (current.get('state') == 'done' and match
                         and int(match.group(1)) >= pod.get('max_round', 3)
@@ -74,7 +128,11 @@ def main():
                     reason = reason or 'final cloud checkpoint verified and delivered'
                 if not reason:
                     continue
-                live = api(pod['id'])
+                if not previous.get('logs_captured') and not previous.get('log_capture_failed'):
+                    try:
+                        previous['logs_captured'] = capture_logs(pod)
+                    except Exception as error:
+                        previous['log_capture_failed'] = str(error)
                 if live['status'] not in ('EXITED', 'ERROR'):
                     api(pod['id'], 'stop')
                 event = {'id': pod['id'], 'reason': reason, 'time': now}
