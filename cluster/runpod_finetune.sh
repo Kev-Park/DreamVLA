@@ -9,5 +9,5 @@ mkdir -p ~/kevin/checkpoints /workspace/logs
   --base-model-path nvidia/GR00T-N1.7-3B --dataset-path "$DS" \
   --embodiment-tag unitree_g1_sonic --num-gpus 1 --global-batch-size 16 \
   --dataloader-num-workers 8 --output-dir ~/kevin/checkpoints \
-  --experiment-name "$RUN" --max-steps "$STEPS" --save-steps 1000 \
+  --experiment-name "$RUN" --max-steps "$STEPS" --save-steps 10000 \
   --save-total-limit 2 --save-only-model
