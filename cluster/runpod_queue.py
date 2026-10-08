@@ -36,12 +36,15 @@ while not (ROOT / 'stop').exists():
     path.rename(active)
     job = json.loads(active.read_text())
     name, steps = job['run'], int(job['steps'])
+    batch = int(job.get('global_batch_size', 16))
+    if batch not in (16, 32):
+        raise ValueError(f'Unsupported experiment batch size: {batch}')
     checkpoint = Path.home() / 'kevin/checkpoints' / name / f'checkpoint-{steps}'
     log = Path('/workspace/logs') / f'{name}.log'
     status = dict(job, started=time.time(), state='running')
     write(ROOT / 'current.json', status)
     with log.open('ab') as output:
-        child = subprocess.Popen(['bash', str(Path(__file__).with_name('runpod_finetune.sh')), job['dataset'], name, str(steps)], stdout=output, stderr=subprocess.STDOUT)
+        child = subprocess.Popen(['bash', str(Path(__file__).with_name('runpod_finetune.sh')), job['dataset'], name, str(steps), str(batch)], stdout=output, stderr=subprocess.STDOUT)
         status['pid'] = child.pid
         write(ROOT / 'current.json', status)
         rc = child.wait()

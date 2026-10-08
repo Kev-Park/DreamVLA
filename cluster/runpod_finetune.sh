@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 DS=${1:?dataset}; RUN=${2:?run}; STEPS=${3:?steps}
+BATCH=${4:-16}
+case "$BATCH" in 16|32) ;; *) echo "Unsupported experiment batch size: $BATCH"; exit 1;; esac
 export HF_HOME=/workspace/hf CUDA_HOME=/usr/local/cuda
 export WANDB_MODE=offline TOKENIZERS_PARALLELISM=false
 cd ~/kevin/Isaac-GR00T
@@ -23,7 +25,7 @@ if [ "$GPUS" -gt 1 ]; then
 fi
 "${LAUNCH[@]}" gr00t/experiment/launch_finetune.py \
   --base-model-path nvidia/GR00T-N1.7-3B --dataset-path "$DS" \
-  --embodiment-tag unitree_g1_sonic --num-gpus "$GPUS" --global-batch-size 16 \
+  --embodiment-tag unitree_g1_sonic --num-gpus "$GPUS" --global-batch-size "$BATCH" \
   --dataloader-num-workers 8 --output-dir ~/kevin/checkpoints \
   --experiment-name "$RUN" --max-steps "$STEPS" --save-steps 10000 \
   --save-total-limit 2 --save-only-model
