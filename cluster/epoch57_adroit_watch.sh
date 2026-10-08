@@ -11,7 +11,8 @@ trap 'rmdir "$STAGE/watch.lockdir" 2>/dev/null' EXIT
 echo $$ > "$STAGE/watch.pid"
 while [ ! -f "$STAGE/stop" ]; do
   remaining=0
-  for directory in "$STAGE"/*; do
+  for r in T20maxf57_dagger2_run01 af60v8f57_dagger2_run01 T20maxf57_run01 af60v8f57_dagger1_run01 T20maxf57_dagger1_run01 af60v8f57_run01; do
+    directory="$STAGE/$r"
     [ -f "$directory/adjob" ] || continue
     r=${directory##*/}
     phase=$(get "$r" phase)
@@ -34,6 +35,27 @@ while [ ! -f "$STAGE/stop" ]; do
     result=$(printf 'squeue -j %s -h -o %%T\n' "$j" | ad 2>>"$LOG") || { log "Adroit connection failed; stopping for user intervention"; exit 1; }
     state=$(echo "$result" | tr -d '\r\n ')
     put "$r" state "${state:-LEFT_QUEUE}"
+    # Prioritize round 2 by directory order below when capacity returns. Do not
+    # leave queued restarts dependent on a manual opportunistic launch.
+    if [ "$state" = PENDING ] && [ "$(get "$r" primary)" = adroit ] && [ ! -f "$directory/local.started" ]; then
+      free=$(bl "nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits" | awk '$1<2000{n++} END{print n+0}')
+      if [ "$free" -ge 2 ]; then
+        case "$r" in
+          af60v8f57_dagger1_run01) ds='~/kevin/datasets/af60v8f_ds_dagger1/lerobot/ds' ;;
+          af60v8f57_dagger2_run01) ds='~/kevin/datasets/af60v8f_ds_dagger2/lerobot/ds' ;;
+          T20maxf57_run01) ds='~/kevin/datasets/T20maxf_base/lerobot/ds' ;;
+          T20maxf57_dagger1_run01) ds='~/kevin/datasets/T20maxf_ds_dagger1/lerobot/ds' ;;
+          T20maxf57_dagger2_run01) ds='~/kevin/datasets/T20maxf_ds_dagger2/lerobot/ds' ;;
+          *) ds='' ;;
+        esac
+        if [ -n "$ds" ] && bl "test -f $ds/meta/info.json && tmux new-window -d -t train_kevin -n $r 'export XLA_PYTHON_CLIENT_PREALLOCATE=false; bash ~/kevin/wt/dagger-watch-sparse/cluster/run_gr00t_reserved.sh $ds $r $(get "$r" steps) > ~/kevin/checkpoints/_ftlogs/$r.log 2>&1'"; then
+          put "$r" primary bluesclues
+          put "$r" started "$(date +%s)"
+          touch "$directory/local.started"
+          log "$r: opportunistic bluesclues launch; Adroit retained until a checkpoint wins"
+        fi
+      fi
+    fi
     if [ -z "$state" ]; then
       if ck_on "$r" adroit; then
         log "$r: final checkpoint present; delivering"
