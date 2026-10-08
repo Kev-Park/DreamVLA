@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 DS=${1:?dataset}; RUN=${2:?run}; STEPS=${3:?steps}
-BATCH=${4:-16}
+BATCH=${4:-$(python3 -c 'import json,pathlib,sys; p=pathlib.Path("/workspace/queue/current.json"); j=json.loads(p.read_text()) if p.exists() else {}; print(j.get("global_batch_size",16) if j.get("run")==sys.argv[1] else 16)' "$RUN")}
 case "$BATCH" in 16|32|64|128) ;; *) echo "Unsupported experiment batch size: $BATCH"; exit 1;; esac
 export HF_HOME=/workspace/hf CUDA_HOME=/usr/local/cuda
 export WANDB_MODE=offline TOKENIZERS_PARALLELISM=false
