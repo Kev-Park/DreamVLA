@@ -17,6 +17,8 @@ test ! -f /workspace/gpu_count || GPUS=$(cat /workspace/gpu_count)
 case "$GPUS" in 1|2|4|8) ;; *) echo "Invalid GPU count"; exit 1;; esac
 LAUNCH=(.venv/bin/python)
 if [ "$GPUS" -gt 1 ]; then
+  # The copied single-GPU environment may omit this declared dependency.
+  .venv/bin/python -c 'import deepspeed' || uv pip install --python .venv/bin/python deepspeed==0.17.6
   LAUNCH+=(-m torch.distributed.run --standalone --nproc_per_node "$GPUS")
 fi
 "${LAUNCH[@]}" gr00t/experiment/launch_finetune.py \

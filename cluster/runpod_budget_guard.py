@@ -1,0 +1,82 @@
+"""Independent control-plane cutoff; credentials stay on this Windows machine.
+
+Stops (never terminates) only the four Pods created for this experiment. Stopping
+retains persistent /workspace outputs. Estimated charges include storage reserve.
+"""
+import datetime
+import json
+from pathlib import Path
+import time
+import tomllib
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[2] / 'out/runpod'
+OWNED = {'04z8d0a941vb9z', 'pscjg26ij7t3yk', 'gop5085t076jhp', '48w7f0lwpz4dfu'}
+
+
+def api(pod_id, action=None):
+    key = tomllib.loads((Path.home()/'.runpod/config.toml').read_text())['apikey']
+    url = 'https://v2-rest.runpod.io/v2/pods/' + pod_id
+    data = None if action is None else json.dumps({'action': action}).encode()
+    request = urllib.request.Request(url + ('/action' if action else ''), data=data,
+        headers={'Authorization': 'Bearer '+key, 'Content-Type': 'application/json',
+                 'User-Agent': 'ember-budget-monitor'})
+    with urllib.request.urlopen(request, timeout=25) as response:
+        return json.load(response)
+
+
+def estimate(config, now):
+    cost = 0
+    for pod in config['pods']:
+        cost += pod.get('accrued_cost', 0)
+        if pod.get('terminated') or pod.get('paused'):
+            continue
+        start = datetime.datetime.fromisoformat(pod['started'].replace('Z','+00:00')).timestamp()
+        cost += max(0, now-start)/3600*(pod['cost']+0.05)
+    return cost
+
+
+def main():
+    config = json.loads((ROOT/'pods.json').read_text())
+    api(next(p['id'] for p in config['pods'] if not p.get('terminated')))
+    while not (ROOT/'budget_guard.stop').exists():
+        try:
+            config = json.loads((ROOT/'pods.json').read_text())
+            now = time.time()
+            spent = estimate(config, now)
+            deadline = datetime.datetime.fromisoformat(config['deadline'].replace('Z','+00:00')).timestamp()
+            cutoff = min(config['budget']-2, 98)
+            status = {'time': now, 'authenticated': True, 'estimated_spend': spent,
+                      'cutoff': cutoff, 'actions': []}
+            control = json.loads((ROOT/'budget_control.json').read_text()) if (ROOT/'budget_control.json').exists() else {}
+            for pod in config['pods']:
+                if pod['id'] not in OWNED or pod.get('terminated') or pod.get('paused'):
+                    continue
+                reason = ('budget cutoff' if spent >= cutoff else
+                          'deadline' if now >= deadline else
+                          control.get('release', {}).get(pod['id']))
+                if not reason:
+                    continue
+                live = api(pod['id'])
+                if live['status'] not in ('EXITED', 'ERROR'):
+                    api(pod['id'], 'stop')
+                event = {'id': pod['id'], 'reason': reason, 'time': now}
+                # Separate state avoids racing the workload monitor's manifest.
+                (ROOT/('stopped_'+pod['id']+'.json')).write_text(json.dumps(event))
+                status['actions'].append(event)
+                pod['paused'] = True
+                start = datetime.datetime.fromisoformat(pod['started'].replace('Z','+00:00')).timestamp()
+                pod['accrued_cost'] = pod.get('accrued_cost', 0)+max(0,now-start)/3600*(pod['cost']+0.05)
+                temp = ROOT/'pods.guard.tmp'
+                temp.write_text(json.dumps(config, indent=2))
+                temp.replace(ROOT/'pods.json')
+            (ROOT/'budget_guard_status.json').write_text(json.dumps(status, indent=2))
+            print(json.dumps(status), flush=True)
+        except Exception as error:
+            # HTTP errors do not contain the Authorization header; never print requests.
+            print(json.dumps({'time':time.time(), 'error':str(error)}), flush=True)
+        time.sleep(15)
+
+
+if __name__ == '__main__':
+    main()

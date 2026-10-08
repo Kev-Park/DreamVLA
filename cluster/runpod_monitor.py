@@ -6,6 +6,7 @@ plane action; status.json explicitly reports idle Pods and budget warnings.
 from pathlib import Path
 import datetime
 import json
+import re
 import shlex
 import subprocess
 import time
@@ -55,6 +56,7 @@ while not (ROOT/'stop').exists():
         tag, run, dataset, steps = line.split()
         if '_dagger' in run and run not in INITIAL:
             requests.append({'run': run, 'line': tag, 'source': dataset, 'steps': int(steps), 'stage': 'epoch57_future'})
+    report['requests'] = requests
     for pod in config['pods']:
         report['estimated_spend'] += pod.get('accrued_cost', 0)
         if pod.get('terminated'):
@@ -73,7 +75,8 @@ while not (ROOT/'stop').exists():
         for result in status['results']:
             run = result['run']
             if result['state'] != 'done':
-                raise RuntimeError(f'Cloud training failed: {run}')
+                status['failure_needs_review'] = run
+                continue
             delivery = state['deliveries'].get(run)
             if delivery is None:
                 cmd = 'bash ~/kevin/wt/dagger-watch-sparse/cluster/runpod_receive.sh '+ ' '.join(shlex.quote(str(x)) for x in [pod['host'],pod['port'],run,result['steps'],result['line']])
@@ -110,6 +113,7 @@ while not (ROOT/'stop').exists():
                     continue
                 candidates.append({'run':run,'line':tag,'source':'~/kevin/datasets/'+relative,'relative':relative,'steps':steps,'stage':'epoch57'})
             candidates = [j for j in candidates if j['run'] not in state['queued'] and not any(r['run']==j['run'] for r in status['results'])]
+            candidates = [j for j in candidates if int(re.search(r'_dagger(\d+)_',j['run']).group(1)) <= pod.get('max_round',5)]
             candidates.sort(key=lambda j:(0 if j['stage']=='epoch57_future' and j['line'].startswith('af60' if pod['role']=='pick' else 'T20') else 1,j['steps']))
             if candidates:
                 job = candidates[0]
