@@ -146,7 +146,7 @@ def cluster_tick(root, state, now):
         completed = sum(int(parts[0]) for f in ready if (parts := read(f).split()) and parts[0].isdigit())
         item = {"worker_count": len(workers), "last_status": read(w / "status").splitlines()[-3:],
                 "completed_attempts": completed, "archived_passes": len(list(w.glob("pass*.archived"))),
-                "done": (w / "done").exists(), "abort": (w / "abort").exists(),
+                "done": (w / "done").exists(), "abort": (w / "abort").exists(), "retired": (w / "retired").exists(),
                 "checkpoint_ready": bool(steps) and checkpoint_complete(root / "checkpoints" / tag / ("checkpoint-" + steps)),
                 "eval_done": (w / ("ev_" + tag + ".done")).exists()}
         report["auxiliary"][tag] = item
