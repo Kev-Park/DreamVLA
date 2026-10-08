@@ -5,7 +5,7 @@ HOST=${1:?}; PORT=${2:?}
 SSH=(ssh -i "$HOME/kevin/runpod_transport/key" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "$PORT" "root@$HOST")
 "${SSH[@]}" 'mkdir -p /opt/dreamcontrol_51 /opt/kevin /workspace/logs; ln -s /opt/kevin /root/kevin'
 (
-  tar -C "$HOME/miniconda3/envs/dreamcontrol_51" -cf - . |
+  tar --exclude='./lib/python3.11/site-packages/isaacsim/kit/data/documents/Kit/shared/screenshots' -C "$HOME/miniconda3/envs/dreamcontrol_51" -cf - . |
     "${SSH[@]}" 'tar --no-same-owner -C /opt/dreamcontrol_51 -xf - && touch /workspace/logs/isaac_env.ready'
 ) & ep=$!
 (
