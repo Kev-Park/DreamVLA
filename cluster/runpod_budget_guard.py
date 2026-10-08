@@ -109,7 +109,9 @@ def main():
                     'run':current.get('run'), 'step':step, 'idle_seconds':idle_seconds,
                     'seconds_without_progress':now-previous['progress_time']})
                 if (idle_seconds >= 300 and age >= 900 and current.get('state') != 'running'
-                        and observed.get('pending', 0) == 0):
+                        and observed.get('pending', 0) == 0
+                        and (current.get('state') != 'done'
+                             or deliveries.get(current.get('run')) == 'delivered')):
                     reason = reason or 'no GPU activity or allocation for five minutes'
                 if current.get('state') == 'running' and now-previous['progress_time'] > 600:
                     status['alerts'].append({'id':pod['id'], 'reason':'training progress stalled for ten minutes'})
