@@ -59,8 +59,10 @@ def main():
                           'deadline' if now >= deadline else
                           control.get('release', {}).get(pod['id']))
                 replacement = next((p for p in workload.get('pods', []) if p['id'] == 'pscjg26ij7t3yk'), {})
-                if pod['id'] == '04z8d0a941vb9z' and replacement.get('training_step', 0) >= 1000:
+                if pod['id'] == '04z8d0a941vb9z' and pod.get('role') != 'benchmark' and replacement.get('training_step', 0) >= 1000:
                     reason = reason or 'two-H100 replacement passed 1000 training steps'
+                if pod.get('benchmark_until', now+1) <= now:
+                    reason = reason or 'bounded benchmark window ended'
                 observed = next((p for p in workload.get('pods', []) if p['id'] == pod['id']), {})
                 current = observed.get('current') or {}
                 match = re.search(r'_dagger(\d+)_', current.get('run', ''))

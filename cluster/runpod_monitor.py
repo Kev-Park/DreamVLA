@@ -66,8 +66,8 @@ while not (ROOT/'stop').exists():
             continue
         started = datetime.datetime.fromisoformat(pod['started'].replace('Z','+00:00')).timestamp()
         report['estimated_spend'] += (now-started)/3600*(pod['cost']+0.05)
-        if pod['role'] == 'collection':
-            report['pods'].append({'id':pod['id'], 'state':'collection_preparing'})
+        if pod['role'] in ('collection', 'benchmark'):
+            report['pods'].append({'id':pod['id'], 'state':pod['role']+'_preparing'})
             continue
         code = "import json,pathlib; p=pathlib.Path('/workspace/queue'); print(json.dumps({'current':json.loads((p/'current.json').read_text()) if (p/'current.json').exists() else None,'pending':len(list(p.glob('*.job.json'))),'results':[json.loads(f.read_text()) for f in p.glob('*.result.json')],'ready':pathlib.Path('/workspace/logs/prepare.ready').exists()}))"
         status = json.loads(podssh(pod, 'python3 -c '+shlex.quote(code)))
