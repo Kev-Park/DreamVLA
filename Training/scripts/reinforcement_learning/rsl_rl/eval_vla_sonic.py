@@ -541,7 +541,15 @@ def main() -> int:
         max_lift = 0.0; toppled = False; touched = False; legacy_lift = False; object_settled = False
         grab_step = -1; fired = []
         step = 0
-        traj = {k: [] for k in ("obj_pos", "obj_quat", "root_pos", "root_quat", "wrist")}
+        traj = {k: [] for k in ("obj_pos", "obj_quat", "root_pos", "root_quat", "wrist",
+                                  "body_pos", "ref_body_pos", "ref_root_pos", "motion_time")}
+        if args.traj_dump:
+            from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import (
+                HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS,
+            )
+            metric_body_ids, metric_body_names = robot.find_bodies(HOI_BODY_NAMES, preserve_order=True)
+            if list(metric_body_names) != list(HOI_BODY_NAMES):
+                raise RuntimeError("MPJPE body mapping does not match reference keypoints")
         for step in range(args.max_steps_per_episode):
             if replay is not None:
                 token, _fs = replay.latent(step)
@@ -606,6 +614,14 @@ def main() -> int:
                     traj["root_pos"].append(rp.cpu().numpy().copy())
                     traj["root_quat"].append(rq.cpu().numpy().copy())
                     traj["wrist"].append(Tw.cpu().numpy().copy())
+                    # Same simulation time as the post-step observation; exclude auto-reset frames.
+                    metric_time = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.to(
+                        device=unw.device, dtype=torch.float32)
+                    metric_ref = unw.motion_lib.get_motion_state(unw.motion_ids, metric_time)
+                    traj["body_pos"].append((robot.data.body_pos_w[0, metric_body_ids] - org).cpu().numpy().copy())
+                    traj["ref_body_pos"].append(metric_ref["global_keypts"][0, HOI_BODY_KEYPT_IDXS].cpu().numpy().copy())
+                    traj["ref_root_pos"].append(metric_ref["root_pos"][0].cpu().numpy().copy())
+                    traj["motion_time"].append(metric_time[0].cpu().numpy().copy())
                 if obj_rest_z is None or step <= 50:          # running min over the first 1 s (settle)
                     obj_rest_z = float(obj_p[2].item()) if obj_rest_z is None else min(obj_rest_z, float(obj_p[2].item()))
                 dz = float(obj_p[2].item()) - obj_rest_z
@@ -638,7 +654,8 @@ def main() -> int:
         if args.traj_dump and traj["obj_pos"]:
             _tp = Path(f"{args.traj_dump}_ep{ep}_m{mid}_traj.npz")
             _tp.parent.mkdir(parents=True, exist_ok=True)
-            np.savez(_tp, **{k: np.stack(v) for k, v in traj.items()})
+            np.savez(_tp, body_names=np.asarray(metric_body_names),
+                     **{k: np.stack(v) for k, v in traj.items()})
             print(f"[traj-dump] {_tp} ({len(traj['obj_pos'])} frames)")
 
         # ---- episode bookkeeping ----
