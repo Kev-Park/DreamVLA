@@ -12,6 +12,7 @@ import tomllib
 import urllib.request
 import subprocess
 import shlex
+import os
 
 ROOT = Path(__file__).resolve().parents[2] / 'out/runpod'
 OWNED = {'04z8d0a941vb9z', 'pscjg26ij7t3yk', 'gop5085t076jhp', '48w7f0lwpz4dfu',
@@ -58,6 +59,9 @@ def capture_logs(pod):
 def main():
     config = json.loads((ROOT/'pods.json').read_text())
     api(next(p['id'] for p in config['pods'] if not p.get('terminated')))
+    if os.name == 'nt':
+        import ctypes
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
     history = {}
     while not (ROOT/'budget_guard.stop').exists():
         try:
@@ -65,6 +69,8 @@ def main():
             now = time.time()
             spent = estimate(config, now)
             deadline = datetime.datetime.fromisoformat(config['deadline'].replace('Z','+00:00')).timestamp()
+            if os.name == 'nt' and now >= deadline:
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
             cutoff = min(config['budget']-2, 98)
             status = {'time': now, 'authenticated': True, 'estimated_spend': spent,
                       'cutoff': cutoff, 'actions': [], 'activity': [], 'alerts': []}
@@ -102,7 +108,8 @@ def main():
                 status['activity'].append({'id':pod['id'], 'status':live['status'], 'gpus':gpus,
                     'run':current.get('run'), 'step':step, 'idle_seconds':idle_seconds,
                     'seconds_without_progress':now-previous['progress_time']})
-                if idle_seconds >= 300 and age >= 900 and current.get('state') != 'running':
+                if (idle_seconds >= 300 and age >= 900 and current.get('state') != 'running'
+                        and observed.get('pending', 0) == 0):
                     reason = reason or 'no GPU activity or allocation for five minutes'
                 if current.get('state') == 'running' and now-previous['progress_time'] > 600:
                     status['alerts'].append({'id':pod['id'], 'reason':'training progress stalled for ten minutes'})
