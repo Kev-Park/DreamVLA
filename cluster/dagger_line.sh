@@ -58,9 +58,12 @@ freegpus_upto(){ local n=$1 m=$2 got; for _ in $(seq 1 120); do
     got=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk -F', ' '$2<2000{print $1}' | sort -rn | head -$n | sort -n | tr '
 ' ' ')
     [ $(echo $got | wc -w) -ge $m ] && break; sleep 30; done; echo $got; }
-gpu_slots(){  # want [slot MB] -> GPU index per slot of free memory (one process per slot), fullest-first avoided
-  nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader,nounits | sort -t, -k2 -n     | awk -F', ' -v w=$1 -v sz=${2:-15500} '{k=int(($3-2000-$2)/sz); for(i=0;i<k && n<w;i++){print $1; n++}}' | tr '
-' ' '; }
+gpu_slots(){
+  python3 "$HOME/kevin/wt/dagger-watch-sparse/cluster/gpu_slots.py" reserve --owner $$ --count "$1" --mb "${2:-15500}"
+}
+release_slot(){
+  python3 "$HOME/kevin/wt/dagger-watch-sparse/cluster/gpu_slots.py" release --owner $$ --gpu "$1"
+}
 collect(){  # outdir seed [extra collector args...]
   # Shards go wherever there is GPU memory (~15 GB per collector, shared with the other line); up to NSH of them,
   # at least 4. The motion ranges follow the shard count; --skip-existing makes any re-split safe.
@@ -73,7 +76,7 @@ collect(){  # outdir seed [extra collector args...]
     ( CUDA_VISIBLE_DEVICES=${G[$i]} python ${COLLECT_SCRIPT:-$RSL/collect_sonic_adapter.py} $COMMON $XARGS --motion-range ${r%,*} ${r#*,} --seed $S \
         --skip-existing "$@" --output-directory $OUT > $L 2>&1; rc=$?; log "    shard $i exit $rc"; exit "$rc" ) &
     PIDS+=($!)
-    until grep -q "\[INFO\] motion \|Traceback" $L 2>/dev/null; do sleep 15; done; sleep 15; i=$((i + 1))
+    until grep -q "\[INFO\] motion \|Traceback" $L 2>/dev/null; do sleep 15; done; release_slot "${G[$i]}"; sleep 15; i=$((i + 1))
   done
   local FAILED=0 P
   for P in "${PIDS[@]}"; do wait "$P" || FAILED=1; done
@@ -179,6 +182,8 @@ evaluate(){  # run
     HS_EVAL_NO_EE_TERM=1 CUDA_VISIBLE_DEVICES=${G[$((k % NG))]} python ${EVAL_SCRIPT:-$RSL/eval_vla_sonic.py} --headless $XARGS --sonic-pt $PT --ref-motions-path $EVREFS \
       --vla-checkpoint $VLA --waist-dof 29 --motions-from $EVIDS/_ids_shard$k.txt --num-episodes $EPS --seed $((100 + k)) \
       --traj-dump $OUTV/${RUN}_b$k > $W/ev_${RUN}_$k.log 2>&1 &
+    local EPID=$!
+    ( while kill -0 "$EPID" 2>/dev/null && ! grep -q 'VLA @ ep0 step0\|Traceback' "$W/ev_${RUN}_$k.log"; do sleep 15; done; release_slot "${G[$((k % NG))]}" ) &
     sleep 20
   done; wait
   python - $RUN $W/box.json >> $ST 2>&1 << 'PY'
