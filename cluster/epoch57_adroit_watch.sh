@@ -37,6 +37,8 @@ while [ ! -f "$STAGE/stop" ]; do
       fi
     fi
     j=$(get "$r" adjob)
+    # A cancelled cloud-replaced job must not block delivery of the base run.
+    [[ "$j" =~ ^[0-9]+$ ]] || continue
     result=$(printf 'squeue -j %s -h -o %%T\n' "$j" | ad 2>>"$LOG") || { log "Adroit connection failed; stopping for user intervention"; exit 1; }
     state=$(echo "$result" | tr -d '\r\n ')
     put "$r" state "${state:-LEFT_QUEUE}"
