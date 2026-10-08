@@ -45,6 +45,7 @@ def archive(tag, number):
     send = subprocess.Popen(SSH + [BL, "tar -C ~/kevin/datasets -cf - " + name], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     receive = subprocess.Popen(ad("tar -C ~/kevin/archive/expert1200 -xf -"), stdin=send.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     send.stdout.close()
+    send.stdout = None
     _, receive_error = receive.communicate()
     _, send_error = send.communicate()
     if receive.returncode or send.returncode:
@@ -53,7 +54,7 @@ def archive(tag, number):
     if before != after:
         raise RuntimeError("Archive checksum mismatch; source preserved")
     log("Verified every file SHA256: " + name)
-    finalize = "import json,shutil; from pathlib import Path; root=Path.home()/'kevin'; p=root/'datasets'/" + repr(name) + "; assert p.resolve().parent==(root/'datasets').resolve(); w=root/'dline'/" + repr(tag) + "; assert (w/" + repr(f"pass{number}.ready") + ").is_file(); (w/" + repr(f"pass{number}.archive_manifest.json") + ").write_text(" + repr(json.dumps(before)) + "); shutil.rmtree(p); (w/" + repr(f"pass{number}.archived") + ").write_text(" + repr(target) + ")"
+    finalize = "import json,shutil; from pathlib import Path; root=Path.home()/'kevin'; p=root/'datasets'/" + repr(name) + "; assert p.resolve().parent==(root/'datasets').resolve(); w=root/'dline'/" + repr(tag) + "; assert (w/" + repr(f"pass{number}.ready") + ").is_file(); (w/" + repr(f"pass{number}.archive_manifest.json") + ").write_text(" + repr(json.dumps(before)) + "); (w/" + repr(f"pass{number}.archived") + ").write_text(" + repr(target) + "); shutil.rmtree(p)"
     call(SSH + [BL, "python3 -c " + shlex.quote(finalize)])
     log("Released verified source copy: " + name)
 
