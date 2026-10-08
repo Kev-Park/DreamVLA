@@ -6,8 +6,9 @@ STAGE=/k/_ftstage/epoch57
 WSTAGE=/mnt/k/_ftstage/epoch57
 LOG=$STAGE/watch.log
 mkdir -p "$STAGE"
-exec 9>"$STAGE/watch.lock"
-flock -n 9 || exit 0
+mkdir "$STAGE/watch.lockdir" 2>/dev/null || exit 0
+trap 'rmdir "$STAGE/watch.lockdir" 2>/dev/null' EXIT
+echo $$ > "$STAGE/watch.pid"
 while [ ! -f "$STAGE/stop" ]; do
   remaining=0
   for directory in "$STAGE"/*; do
