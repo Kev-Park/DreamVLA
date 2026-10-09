@@ -6,7 +6,7 @@ HOST=${1:?}; PORT=${2:?}; RUN=${3:?}; STEPS=${4:?}; LINE=${5:?}
 ROOT=$HOME/kevin
 SSH=(ssh -c aes128-gcm@openssh.com -i "$ROOT/runpod_transport/key" -o BatchMode=yes -o ConnectTimeout=20 -p "$PORT")
 PACK=/workspace/packs/$RUN
-"${SSH[@]}" "root@$HOST" "mkdir -p /workspace/packs; HF_HOME=/workspace/hf /root/kevin/Isaac-GR00T/.venv/bin/python /workspace/kevin/DreamVLA_runtime/cluster/ckpt_transfer.py pack /root/kevin/checkpoints/$RUN/checkpoint-$STEPS $PACK"
+"${SSH[@]}" "root@$HOST" "mkdir -p /workspace/packs; if ! test -s $PACK/manifest.json || ! test -s $PACK/trained.safetensors; then HF_HOME=/workspace/hf /root/kevin/Isaac-GR00T/.venv/bin/python /workspace/kevin/DreamVLA_runtime/cluster/ckpt_transfer.py pack /root/kevin/checkpoints/$RUN/checkpoint-$STEPS $PACK; fi"
 mkdir -p "$ROOT/runpod_transport/packs/$RUN" "$ROOT/runpod_transport/received"
 printf -v RSYNC_SSH '%q ' "${SSH[@]}"
 rsync -a --partial -e "$RSYNC_SSH" "root@$HOST:$PACK/" "$ROOT/runpod_transport/packs/$RUN/"
