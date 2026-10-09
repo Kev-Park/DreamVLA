@@ -293,6 +293,11 @@ fi
 [ "${START_ROUND:-1}" -le 1 ] && evaluate ${TAG}_run01
 KEEPS="$W/keep_base.txt"; STU=${TAG}_run01
 for r in $(seq 1 $NR); do
+  # A user-requested limit is read at each round boundary, including restarts.
+  if [ -f "$W/max_round" ] && [ "$r" -gt "$(cat "$W/max_round")" ]; then
+    log "stopping collection/training at user round limit $(cat "$W/max_round")"
+    break
+  fi
   RUN=${TAG}_dagger${r}_run01
   if [ ! -f $W/r$r.done ]; then
     if [ ! -f $W/r${r}_collect.done ]; then
