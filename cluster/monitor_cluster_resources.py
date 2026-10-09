@@ -16,6 +16,8 @@ def cmd(args):
   r=subprocess.run(args,capture_output=True,text=True,timeout=15)
   return r.stdout.strip() if r.returncode==0 else r.stderr.strip()[-500:]
  except FileNotFoundError:return None
+ except subprocess.TimeoutExpired:
+  return 'PROBE_TIMEOUT: '+ ' '.join(args)
 out={'time':time.time(),'gpus':cmd(['nvidia-smi','--query-gpu=index,name,utilization.gpu,memory.used,memory.total','--format=csv,noheader']), 'gpu_processes':cmd(['nvidia-smi','--query-compute-apps=pid,process_name,used_memory','--format=csv,noheader']), 'jobs':{}}
 for directory in [root/'checkpoints/_ftlogs',root/'DreamVLA']:
  for p in directory.glob('af60v8f57*'):
