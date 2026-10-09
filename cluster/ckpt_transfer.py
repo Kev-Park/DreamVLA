@@ -31,6 +31,10 @@ PACKED = "trained.safetensors"
 MANIFEST = "manifest.json"
 
 
+def training_state(name):
+    return name in ('optimizer.pt', 'scheduler.pt') or (name.startswith('rng_state') and name.endswith('.pth'))
+
+
 def _sha(arr) -> str:
     return hashlib.sha256(arr.tobytes()).hexdigest()
 
@@ -63,7 +67,7 @@ def pack(ckpt, out, prefixes):
     save_file(packed, os.path.join(out, PACKED), metadata={"format": "pt"})
     for name in os.listdir(ckpt):                      # configs, statistics, trainer state ...
         src = os.path.join(ckpt, name)
-        if name.endswith(".safetensors"):              # the index is copied verbatim, shards are rebuilt
+        if name.endswith(".safetensors") or training_state(name):
             continue
         (shutil.copytree if os.path.isdir(src) else shutil.copy2)(src, os.path.join(out, name))
     json.dump({"index": index, "sha256": hashes, "packed_keys": sorted(packed),
@@ -99,13 +103,16 @@ def unpack(pack_dir, base, out):
         save_file(tensors, os.path.join(out, shard), metadata=man["shard_metadata"].get(shard) or {"format": "pt"})
     for name in os.listdir(pack_dir):
         src = os.path.join(pack_dir, name)
-        if name in (PACKED, MANIFEST):
+        if name in (PACKED, MANIFEST) or training_state(name):
             continue
         dst = os.path.join(out, name)
         if os.path.isdir(src):
             shutil.copytree(src, dst, dirs_exist_ok=True)
         else:
             shutil.copy2(src, dst)
+    json.dump({'purpose':'evaluation checkpoint; every model tensor verified',
+               'optimizer_scheduler_rng':'not transferred; full training checkpoint retained on source Pod'},
+              open(os.path.join(out, 'transfer_state.json'), 'w'))
     print(f"rebuilt {len(hashes)} tensors in {len(shards)} shards, all sha256-verified -> {out}")
 
 

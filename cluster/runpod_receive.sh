@@ -13,7 +13,7 @@ PACK=/workspace/packs/$RUN
 "${SSH[@]}" "root@$HOST" "mkdir -p /workspace/packs; if ! test -s $PACK/manifest.json || ! test -s $PACK/trained.safetensors; then HF_HOME=/workspace/hf /root/kevin/Isaac-GR00T/.venv/bin/python /workspace/kevin/DreamVLA_runtime/cluster/ckpt_transfer.py pack /root/kevin/checkpoints/$RUN/checkpoint-$STEPS $PACK; fi"
 mkdir -p "$ROOT/runpod_transport/packs/$RUN" "$ROOT/runpod_transport/received"
 printf -v RSYNC_SSH '%q ' "${SSH[@]}"
-rsync -a --partial --info=progress2 -e "$RSYNC_SSH" "root@$HOST:$PACK/" "$ROOT/runpod_transport/packs/$RUN/"
+rsync -a --partial --info=progress2 --exclude='/optimizer.pt' --exclude='/scheduler.pt' --exclude='/rng_state*.pth' -e "$RSYNC_SSH" "root@$HOST:$PACK/" "$ROOT/runpod_transport/packs/$RUN/"
 INCOMING="$ROOT/checkpoints/$RUN/runpod_checkpoint-$STEPS"
 "$ROOT/Isaac-GR00T/.venv/bin/python" "$ROOT/wt/dagger-watch-sparse/cluster/ckpt_transfer.py" unpack \
   "$ROOT/runpod_transport/packs/$RUN" "$ROOT/checkpoints/af60v7f_run01/checkpoint-10000" "$INCOMING"
