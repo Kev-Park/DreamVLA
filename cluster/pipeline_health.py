@@ -73,6 +73,22 @@ def assess(now, feeds, remote, history):
     for name, feed in feeds.items():
         if now-feed.get('time', 0) > 180:
             alert(name, 'Watcher heartbeat missing or older than three minutes')
+    for warning in feeds.get('budget',{}).get('alerts',[]):
+        if warning.get('reason')=='funding cutoff within 90 minutes':
+            alert('budget','Funding cutoff within 90 minutes if current spending rate continues; verify planned Pod releases')
+    for host, data in feeds.get('clusters',{}).get('hosts',{}).items():
+        if host not in ('bluesclues','adroit'):continue
+        if data.get('blocked'):alert(host,'Cluster access blocked; user troubleshooting required')
+        for name, job in data.get('jobs',{}).items():
+            progress=job.get('progress') or []
+            if not progress or 'Terminated' in str(progress[-1]) or 'oom' in name:continue
+            step,target,_=progress[-1]
+            if int(step)>=int(target):continue
+            key='cluster_training:'+host+':'+name
+            prev=history.get(key,{'value':step,'since':now})
+            if prev['value']!=step:prev={'value':step,'since':now}
+            history[key]=prev
+            if now-prev['since']>600:alert(name,'Cluster training has made no optimizer-step progress for ten minutes')
     status=feeds.get('status', {})
     for event in feeds.get('chain',{}).get('events',[]):
         if 'af60v8f57' in event or 'heartbeat stale' in event:
