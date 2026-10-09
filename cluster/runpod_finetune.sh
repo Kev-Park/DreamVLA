@@ -23,7 +23,12 @@ if [ "$GPUS" -gt 1 ]; then
   .venv/bin/python -c 'import deepspeed' || uv pip install --python .venv/bin/python deepspeed==0.17.6
   LAUNCH+=(-m torch.distributed.run --standalone --nproc_per_node "$GPUS")
 fi
-"${LAUNCH[@]}" gr00t/experiment/launch_finetune.py \
+ENTRY=(gr00t/experiment/launch_finetune.py)
+RESUME=$(python3 -c 'import json,pathlib,sys; p=pathlib.Path("/workspace/queue/current.json"); j=json.loads(p.read_text()) if p.exists() else {}; print(j.get("resume_checkpoint","") if j.get("run")==sys.argv[1] else "")' "$RUN")
+if [ -n "$RESUME" ]; then
+  ENTRY=("$(dirname "$(readlink -f "$0")")/recover_weights.py" --checkpoint "$RESUME" --)
+fi
+"${LAUNCH[@]}" "${ENTRY[@]}" \
   --base-model-path nvidia/GR00T-N1.7-3B --dataset-path "$DS" \
   --embodiment-tag unitree_g1_sonic --num-gpus "$GPUS" --global-batch-size "$BATCH" \
   --dataloader-num-workers 8 --output-dir ~/kevin/checkpoints \
