@@ -16,7 +16,7 @@ import os
 
 ROOT = Path(__file__).resolve().parents[2] / 'out/runpod'
 OWNED = {'04z8d0a941vb9z', 'pscjg26ij7t3yk', 'gop5085t076jhp', '48w7f0lwpz4dfu',
-         'itrttaagys4vib', 'feopiqtnufdbsl', 'qv0an1x9jn918o'}
+         'itrttaagys4vib', 'feopiqtnufdbsl', 'qv0an1x9jn918o', 'pxn15lr23rle3p'}
 
 
 def api(pod_id, action=None):
