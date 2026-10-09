@@ -24,8 +24,8 @@ import pathlib,sys
 w=pathlib.Path(sys.argv[1])
 for k in range(4): (w/f'_ids_shard{k}.txt').write_text(' '.join(map(str,range(k,100,4))))
 PY
-cd "$CODE/Training"
-echo "START $(date -u) code=$(git rev-parse HEAD) token=$MODE" >> "$W/status"
+cd "$HOME/kevin/DreamVLA/Training"
+echo "START $(date -u) code=$(git -C "$CODE" rev-parse HEAD) token=$MODE" >> "$W/status"
 for wave in 0 1; do
   mapfile -t GPUS < <(python "$CODE/cluster/gpu_slots.py" reserve --owner $$ --count 2 --mb 10000 | tr ' ' '\n' | sed '/^$/d')
   [[ ${#GPUS[@]} -eq 2 ]] || { echo 'Insufficient free GPU slots' >&2; exit 1; }
