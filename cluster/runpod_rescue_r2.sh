@@ -4,22 +4,25 @@ set -euo pipefail
 SRC_HOST=${1:?}; SRC_PORT=${2:?}; DST_HOST=${3:?}; DST_PORT=${4:?}
 RUN=af60v8f57_dagger2_run01
 KEY=$HOME/kevin/runpod_transport/key
-SRC=(ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p "$SRC_PORT" "root@$SRC_HOST")
-DST=(ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p "$DST_PORT" "root@$DST_HOST")
-SSH_SRC="ssh -i $KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p $SRC_PORT"
-SSH_DST="ssh -i $KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p $DST_PORT"
+SRC=(ssh -c aes128-gcm@openssh.com -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p "$SRC_PORT" "root@$SRC_HOST")
+DST=(ssh -c aes128-gcm@openssh.com -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p "$DST_PORT" "root@$DST_HOST")
+SSH_SRC="ssh -c aes128-gcm@openssh.com -i $KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p $SRC_PORT"
+SSH_DST="ssh -c aes128-gcm@openssh.com -i $KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p $DST_PORT"
 BACKUP=$HOME/kevin/runpod_transport/recovered_r2/checkpoint-90000
 mkdir -p "$BACKUP"
-"${DST[@]}" 'mkdir -p /opt/kevin/Isaac-GR00T/.venv /workspace/hf /workspace/logs /workspace/queue /workspace/kevin/checkpoints/af60v8f57_dagger2_run01/checkpoint-90000 /workspace/kevin/datasets/af60v8f_ds_dagger2/lerobot/ds; git clone --depth 1 --branch g1 https://github.com/Kev-Park/DreamVLA.git /workspace/kevin/DreamVLA_runtime'
+"${DST[@]}" 'mkdir -p /opt/kevin/Isaac-GR00T/.venv /workspace/hf/hub /workspace/logs /workspace/queue /workspace/kevin/checkpoints/af60v8f57_dagger2_run01/checkpoint-90000 /workspace/kevin/datasets/af60v8f_ds_dagger2/lerobot/ds; if test -d /workspace/kevin/DreamVLA_runtime/.git; then git -C /workspace/kevin/DreamVLA_runtime pull --ff-only origin g1; else git clone --depth 1 --branch g1 https://github.com/Kev-Park/DreamVLA.git /workspace/kevin/DreamVLA_runtime; fi'
 # Preserve an independent copy before resuming on the new Pod.
-"${SRC[@]}" 'cd /workspace/kevin/checkpoints/af60v8f57_dagger2_run01/checkpoint-90000; find . -type f -print0 | sort -z | xargs -0 sha256sum' > "$BACKUP/../checkpoint.sha256"
+if ! test -s "$BACKUP/../checkpoint.sha256"; then
+  "${SRC[@]}" 'cd /workspace/kevin/checkpoints/af60v8f57_dagger2_run01/checkpoint-90000; find . -type f -print0 | sort -z | xargs -0 sha256sum' > "$BACKUP/../checkpoint.sha256"
+fi
 rsync -a --partial -e "$SSH_SRC" "root@$SRC_HOST:/workspace/kevin/checkpoints/$RUN/checkpoint-90000/" "$BACKUP/" &
 P_CK=$!
 rsync -az --partial --compress-choice=zstd --compress-level=1 -e "$SSH_DST" "$HOME/kevin/Isaac-GR00T/.venv/" "root@$DST_HOST:/opt/kevin/Isaac-GR00T/.venv/" &
 P_ENV=$!
 rsync -a --partial -e "$SSH_DST" "$HOME/kevin/datasets/af60v8f_ds_dagger2/lerobot/ds/" "root@$DST_HOST:/workspace/kevin/datasets/af60v8f_ds_dagger2/lerobot/ds/" &
 P_DS=$!
-"${SRC[@]}" 'tar -C /workspace/hf -cf - .' | "${DST[@]}" 'tar --no-same-owner -C /workspace/hf -xf -' &
+# These exact immutable HF snapshots are already cached by the live backup.
+rsync -a --checksum --partial -e "$SSH_DST" "$HOME/.cache/huggingface/hub/models--nvidia--GR00T-N1.7-3B" "$HOME/.cache/huggingface/hub/models--nvidia--Cosmos-Reason2-2B" "root@$DST_HOST:/workspace/hf/hub/" &
 P_HF=$!
 wait "$P_CK"
 (cd "$BACKUP"; sha256sum --quiet -c ../checkpoint.sha256)
