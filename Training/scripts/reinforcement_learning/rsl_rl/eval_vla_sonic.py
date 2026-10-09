@@ -82,6 +82,10 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--vla-checkpoint", default=None,
                         help="Path to the unitree_g1_sonic fine-tuned GR00T checkpoint dir "
                              "(the VLA that emits motion_token + hand joints).")
+    parser.add_argument("--expert-checkpoint", default=None,
+                        help="Experimental eval: use this residual actor directly as the decoder token.")
+    parser.add_argument("--expert-token-mode", choices=("raw", "snap"), default="snap",
+                        help="Direct expert token: raw actor output, or retain lattice rounding/clamping.")
     parser.add_argument("--embodiment-tag", default=DEFAULT_EMBODIMENT_TAG)
     parser.add_argument("--language", default="pick up the mustard bottle")
     # Default paths assume DreamVLA/ and GR00T-WholeBodyControl/ are sibling repos,
@@ -181,7 +185,6 @@ from vla_sonic.sonic_pt import load_sonic_pt  # noqa: E402
 from vla_sonic.robot_29dof import apply_29dof_waist_override  # noqa: E402
 from vla_sonic.eval_helpers import ReplaySource, apply_episode_scale, demo_motion_ids  # noqa: E402
 
-from gr00t.policy.gr00t_policy import Gr00tPolicy  # noqa: E402
 
 
 # =========================================================================
@@ -383,6 +386,8 @@ def _quat_to_R_t(q):
 
 def main() -> int:
     args = _ARGS
+    if args.expert_checkpoint and (args.vla_checkpoint or args.replay_hdf5 or not args.sonic_pt):
+        raise ValueError("--expert-checkpoint requires --sonic-pt and excludes VLA/replay inputs")
 
     # Deterministic motion draw (reproducible across runs).
     torch.manual_seed(args.seed)
@@ -455,7 +460,9 @@ def main() -> int:
 
     # --- 2. Build VLA policy -------------------------------------------
     replay = ReplaySource(args.replay_hdf5) if args.replay_hdf5 else None
-    if replay is not None:
+    if args.expert_checkpoint:
+        policy = None  # loaded together with the observation-preserving expert wrapper below
+    elif replay is not None:
         policy = None
         print(f"[replay] {replay.path.name}: {replay.num_steps} recorded steps, motion {replay.motion_id} -- "
               f"feeding the RECORDED token + finger scalar (VLA not loaded)")
@@ -463,6 +470,7 @@ def main() -> int:
         if not args.vla_checkpoint:
             raise SystemExit("--vla-checkpoint is required unless --replay-hdf5 is given")
         print(f"[vla] loading {args.vla_checkpoint}  (embodiment={args.embodiment_tag})")
+        from gr00t.policy.gr00t_policy import Gr00tPolicy
         policy = Gr00tPolicy(
             embodiment_tag=args.embodiment_tag,
             model_path=args.vla_checkpoint,
@@ -481,7 +489,12 @@ def main() -> int:
         decoder = load_frozen_decoder(args.decoder_onnx, "cuda:0")
         print(f"[sonic] ONNX decoder {args.decoder_onnx} (v1.0 latent space -- only valid if the "
               f"training tokens were recorded with the ONNX model)")
-    env = TokenActionDecoderVecEnvWrapper(env, decoder, "cuda:0", clip_actions=None)
+    if args.expert_checkpoint:
+        from vla_sonic.direct_expert_eval import load_direct_expert
+        env, policy = load_direct_expert(env, _enc_unused, decoder, args.expert_checkpoint,
+                                        args.task, args.seed, args.expert_token_mode)
+    else:
+        env = TokenActionDecoderVecEnvWrapper(env, decoder, "cuda:0", clip_actions=None)
     unw = env.unwrapped
     total_motions = int(unw.total_motions)
 
@@ -551,7 +564,14 @@ def main() -> int:
             if list(metric_body_names) != list(HOI_BODY_NAMES):
                 raise RuntimeError("MPJPE body mapping does not match reference keypoints")
         for step in range(args.max_steps_per_episode):
-            if replay is not None:
+            if args.expert_checkpoint:
+                with torch.inference_mode():
+                    expert_action = policy(obs)
+                token = expert_action[0, :64]
+                _fs = expert_action[0, 64]
+                vla_chunk = {"right_hand_joints": np.zeros((1, 1, 7), np.float32)}
+                t_idx = 0
+            elif replay is not None:
                 token, _fs = replay.latent(step)
                 vla_chunk = {"right_hand_joints": np.zeros((1, 1, 7), np.float32)}  # keeps the grasp log shape
                 t_idx = 0
@@ -575,7 +595,7 @@ def main() -> int:
                           "the robot is NOT VLA-controlled. Check action.motion_token in the dataset.\n")
             latent = torch.zeros((1, 65), device="cuda:0", dtype=torch.float32)
             latent[0, :64] = torch.as_tensor(token, device="cuda:0")
-            latent[0, 64] = _fs if replay is not None else _finger_scalar(vla_chunk, t_idx)
+            latent[0, 64] = _fs if replay is not None or args.expert_checkpoint else _finger_scalar(vla_chunk, t_idx)
             if args.force_close_at_grab:
                 _mt = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.to("cuda:0", dtype=torch.float32)
                 if bool(unw.motion_lib.get_motion_state(unw.motion_ids, _mt)["is_closed"][0].item() > 0.5):

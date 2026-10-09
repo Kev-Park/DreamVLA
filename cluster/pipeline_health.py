@@ -26,8 +26,9 @@ for s in processes:
   st=log.stat();out['workers'].append({'pid':pid,'log':str(log),'size':st.st_size,'mtime':st.st_mtime})
  except (OSError,ValueError):pass
 names=['pick1200_bf16_bs32','af60v8f57_run01']+[f'af60v8f57_dagger{i}_run01' for i in range(1,6)]
+names += [n for n in ('pick_expert_direct_raw','pick_expert_direct_snap') if (r/'dline'/n).exists()]
 for name in names:
- tag='pick1200_bf16_bs32' if name.startswith('pick1200') else 'af60v8f57'
+ tag=name if name.startswith(('pick1200','pick_expert_direct_')) else 'af60v8f57'
  w=r/'dline'/tag
  logs=list(w.glob('ev_'+name+'_*.log'))
  files=list((r/'eval_videos').glob(name+'_b*_traj.npz'))
@@ -51,7 +52,7 @@ for name in names:
  out['transfers'][name]={'failed':failed.read_text() if failed.exists() else None,
   'bytes':sum(f.stat().st_size for f in fs if f.is_file()),'active':bool(active),
   'delivered':item['checkpoint_ready'],'tail':tail}
-for tag in ['af60v8f57','pick1200_bf16_bs32']:
+for tag in ['af60v8f57','pick1200_bf16_bs32']+[n for n in names if n.startswith('pick_expert_direct_')]:
  w=r/'dline'/tag;status=w/'status'
  out['lines'][tag]={'aborted':(w/'abort').exists(),'done':(w/'done').exists(),
  'mtime':status.stat().st_mtime if status.exists() else None}
