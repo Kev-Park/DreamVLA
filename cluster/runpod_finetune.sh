@@ -33,4 +33,4 @@ fi
   --embodiment-tag unitree_g1_sonic --num-gpus "$GPUS" --global-batch-size "$BATCH" \
   --dataloader-num-workers 8 --output-dir ~/kevin/checkpoints \
   --experiment-name "$RUN" --max-steps "$STEPS" --save-steps 10000 \
-  --save-total-limit 2 --save-only-model
+  --save-total-limit 2

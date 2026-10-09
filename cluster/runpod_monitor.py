@@ -76,7 +76,7 @@ while not (ROOT/'stop').exists():
         status['id'] = pod['id']
         current = status.get('current') or {}
         if current.get('state') == 'running':
-            progress_code = "import pathlib,re,json; p=pathlib.Path('/workspace/logs')/"+repr(current['run']+'.log')+"; f=p.open('rb'); f.seek(max(0,p.stat().st_size-32768)); t=f.read().decode('utf-8','replace'); print(json.dumps({'step':max([int(n) for n in re.findall(r'(\\d+)/"+str(current['steps'])+"',t)] or [0])}))"
+            progress_code = "import pathlib,re,json; p=pathlib.Path('/workspace/logs')/"+repr(current['run']+'.log')+"; f=p.open('rb'); f.seek(max(0,p.stat().st_size-32768)); t=f.read().decode('utf-8','replace'); print(json.dumps({'step':([int(n) for n in re.findall(r'(\\d+)/"+str(current['steps'])+"',t)] or [0])[-1]}))"
             status['training_step'] = json.loads(podssh(pod, 'python3 -c '+shlex.quote(progress_code)))['step']
         for result in status['results']:
             run = result['run']
