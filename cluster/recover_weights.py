@@ -14,6 +14,7 @@ import warnings
 
 def restore_schedule(scheduler, step):
     # GR00T uses a LambdaLR cosine schedule. Fail closed for other schedulers.
+    scheduler = getattr(scheduler, "scheduler", scheduler)
     if not hasattr(scheduler, "lr_lambdas"):
         raise TypeError("Recovery requires the original LambdaLR scheduler")
     with warnings.catch_warnings():
