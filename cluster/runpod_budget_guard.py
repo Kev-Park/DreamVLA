@@ -142,8 +142,7 @@ def main():
                 match = re.search(r'_dagger(\d+)_', current.get('run', ''))
                 if (pod.get('role') == 'baseline1200' and current.get('state') == 'done'
                         and deliveries.get(current['run']) == 'delivered'
-                        and observed.get('pending', 0) == 0 and not observed.get('queued_next')
-                        and not workload.get('requests')):
+                        and observed.get('pending', 0) == 0 and not observed.get('queued_next')):
                     reason = reason or 'baseline checkpoint verified and delivered'
                 if (current.get('state') == 'done' and match
                         and int(match.group(1)) >= pod.get('max_round', 3)
