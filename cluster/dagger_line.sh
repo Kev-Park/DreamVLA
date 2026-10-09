@@ -208,27 +208,41 @@ evaluate(){  # run
   [ -f $W/ev_$RUN.done ] && return
   # one GPU slot (~16 GB) per eval process; the 4 shards (fixed EVN/4 episodes, fixed seeds) never share a slot
   local G=() t=0; while :; do G=($(gpu_slots 4 16000)); [ ${#G[@]} -ge 4 ] && break; t=$((t + 1)); [ $t -ge 120 ] && die "no GPU room for eval"; sleep 30; done
-  local NG=${#G[@]} j=0
+  local NG=${#G[@]} j=0 FAILED=0
+  local EVAL_PIDS=()
   rm -f $OUTV/${RUN}_b*_traj.npz; log "  eval $RUN on $EVREFS: 4 x $EPS episodes (GPUs ${G[*]})"
   for k in 0 1 2 3; do
     HS_EVAL_NO_EE_TERM=1 CUDA_VISIBLE_DEVICES=${G[$((k % NG))]} python ${EVAL_SCRIPT:-$RSL/eval_vla_sonic.py} --headless $XARGS --sonic-pt $PT --ref-motions-path $EVREFS \
       --vla-checkpoint $VLA --waist-dof 29 --motions-from $EVIDS/_ids_shard$k.txt --num-episodes $EPS --seed $((100 + k)) \
       --traj-dump $OUTV/${RUN}_b$k > $W/ev_${RUN}_$k.log 2>&1 &
     local EPID=$!
+    EVAL_PIDS+=("$EPID")
     ( while kill -0 "$EPID" 2>/dev/null && ! grep -q 'VLA @ ep0 step0\|Traceback' "$W/ev_${RUN}_$k.log"; do sleep 15; done; release_slot "${G[$((k % NG))]}" ) &
     sleep 20
-  done; wait
-  python - $RUN $W/box.json >> $ST 2>&1 << 'PY'
+  done
+  for EPID in "${EVAL_PIDS[@]}"; do wait "$EPID" || FAILED=1; done
+  [ "$FAILED" = 0 ] || die "evaluation worker failed for $RUN; inspect ev_${RUN}_*.log"
+  python - $RUN $W/box.json "$EVN" >> $ST 2>&1 << 'PY'
 import sys, glob, os, json, math, numpy as np
 sys.path.insert(0, os.path.expanduser("~/kevin/DreamVLA/Training/scripts/reinforcement_learning/rsl_rl"))
 from vla_sonic.grasp_success import score
 run = sys.argv[1]; b = json.load(open(sys.argv[2])); lo, hi = np.array(b["lo"]), np.array(b["hi"]); k = n = 0
-for f in sorted(glob.glob(os.path.expanduser(f"~/kevin/eval_videos/{run}_b*_traj.npz"))):
+files = sorted(glob.glob(os.path.expanduser(f"~/kevin/eval_videos/{run}_b*_traj.npz")))
+assert len(files) == int(sys.argv[3]), f"Incomplete evaluation: {len(files)}/{sys.argv[3]} episodes"
+for f in files:
     z = np.load(f); n += 1; k += bool(score(z["obj_pos"], z["obj_quat"], z["root_pos"], z["root_quat"], z["wrist"], box_lo=lo, box_hi=hi)["success"])
 p = k / max(n, 1); zz = 1.96; d = 1 + zz * zz / max(n, 1); c = (p + zz * zz / (2 * max(n, 1))) / d; h = zz * math.sqrt(p * (1 - p) / max(n, 1) + zz * zz / (4 * max(n, 1) ** 2)) / d
 print(f"  === {run} GR00T eval: {k}/{n} = {100*p:.1f}% (95% CI {100*(c-h):.0f}-{100*(c+h):.0f}%)")
 PY
-  python "$HOME/kevin/wt/dagger-watch-sparse/cluster/mpjpe_report.py" "$OUTV/${RUN}_b*_traj.npz" --output "$OUTV/${RUN}_mpjpe.json" >> "$ST" 2>&1 || log "MPJPE unavailable for $RUN; inspect metric report"
+  [ "$?" = 0 ] || die "evaluation scoring or episode count failed for $RUN"
+  python "$HOME/kevin/wt/dagger-watch-sparse/cluster/mpjpe_report.py" "$OUTV/${RUN}_b*_traj.npz" --output "$OUTV/${RUN}_mpjpe.json" >> "$ST" 2>&1 || die "MPJPE report failed for $RUN"
+  python - "$OUTV/${RUN}_mpjpe.json" "$EVN" >> "$ST" 2>&1 <<'PY'
+import json, math, sys
+d = json.load(open(sys.argv[1]))
+assert len(d.get('episodes', [])) == int(sys.argv[2]) and not d.get('missing_metric_data'), 'Incomplete MPJPE coverage'
+assert all(math.isfinite(d[k]) for k in ('world_mpjpe_cm_episode_mean', 'root_aligned_mpjpe_cm_episode_mean')), 'Invalid MPJPE'
+PY
+  [ "$?" = 0 ] || die "MPJPE coverage validation failed for $RUN"
   if [ "${MONTAGE:-1}" = 1 ]; then   # MONTAGE=0: skip the 8 preview renders (scoring above is unaffected)
   local OUT=$OUTV/${RUN}_montage; rm -rf $OUT; mkdir -p $OUT
   for m in 0 12 25 37 50 62 75 87; do

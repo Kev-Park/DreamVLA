@@ -74,6 +74,14 @@ def main():
             cutoff = config['budget']-2
             status = {'time': now, 'authenticated': True, 'estimated_spend': spent,
                       'cutoff': cutoff, 'actions': [], 'activity': [], 'alerts': []}
+            healthfile = ROOT/'pipeline_health.json'
+            if healthfile.exists():
+                health = json.loads(healthfile.read_text())
+                if now-health.get('time', 0) > 180:
+                    status['alerts'].append({'reason':'Independent pipeline audit heartbeat stale for three minutes'})
+                else:
+                    status['alerts'].extend({'reason':'pipeline audit: '+a['reason'], 'stage':a['stage']}
+                                            for a in health.get('alerts', []))
             hourly = sum(p['cost']+0.05 for p in config['pods'] if not p.get('paused') and not p.get('terminated'))
             if hourly:
                 status['estimated_cutoff_time'] = now+max(0, cutoff-spent)/hourly*3600
