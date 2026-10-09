@@ -11,7 +11,7 @@ mkdir -p ~/kevin/checkpoints /workspace/logs
 LOCAL_DS=/opt/training_data/$RUN
 mkdir -p "$LOCAL_DS"
 (cd "$DS"; find . -type f -print0 | sort -z | xargs -0 sha256sum) > "/workspace/logs/$RUN.dataset.sha256"
-cp -a "$DS/." "$LOCAL_DS/"
+cp -R --no-preserve=mode,ownership "$DS/." "$LOCAL_DS/"
 (cd "$LOCAL_DS"; sha256sum --quiet -c "/workspace/logs/$RUN.dataset.sha256")
 DS=$LOCAL_DS
 GPUS=1
