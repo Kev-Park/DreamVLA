@@ -5,6 +5,7 @@ Walking intermediates use the original Adapter B lower-body recipe; its unused a
 refinement is skipped because stitch_static_approach replaces that arm completely.
 """
 import argparse
+import csv
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import json
 import multiprocessing
@@ -127,6 +128,42 @@ def plan():
     print(json.dumps({k:v for k,v in result.items() if k!='tasks'}), flush=True)
 
 
+def placement():
+    """Read-only proposal: quantify a rigid alignment without changing any reference."""
+    c, _ = shared.chain()
+    p = json.loads((REPORT/"plan.json").read_text())
+    rows = []
+    for t in p["tasks"] + p["failures"]:
+        if t["split"] == "aug":
+            continue
+        w, s = stitcher.load(t["walk"], c), stitcher.load(t["static"], c)
+        fw = stitcher.final_footfall(w)
+        dw, _ = stitcher.body_offset(w, fw, w["g"])
+        ds, _ = stitcher.body_offset(s, s["g"], s["g"])
+        yaw = stitcher.yaw_of(w["Q"][fw])
+        forward, left = ds-dw
+        dx = forward*np.cos(yaw)-left*np.sin(yaw)
+        dy = forward*np.sin(yaw)+left*np.cos(yaw)
+        trial = dict(w, P=w["P"]+np.array([dx,dy,0]))
+        pos, angle, ok = shared.gate(trial,s)
+        rows.append({"id":t["id"],"split":t["split"],"forward_cm":100*float(forward),
+                     "left_cm":100*float(left),"world_dx_cm":100*float(dx),"world_dy_cm":100*float(dy),
+                     "distance_cm":100*float(np.hypot(dx,dy)),"footfall_frame":fw,
+                     "grab_frame":w["g"],"old_position_error_cm":100*t["body_position_error_m"],
+                     "old_yaw_error_deg":t["body_yaw_error_deg"],
+                     "proposed_position_error_cm":100*pos,"proposed_yaw_error_deg":float(np.degrees(angle)),
+                     "proposed_gate_pass":bool(ok)})
+    rows.sort(key=lambda r:(r["split"],r["id"]))
+    with (REPORT/"placement_proposal.csv").open("w",newline="") as f:
+        wr=csv.DictWriter(f,fieldnames=list(rows[0]));wr.writeheader();wr.writerows(rows)
+    summary={"status":"proposal_only_not_applied","count":len(rows),
+             "translation_cm_quantiles":np.quantile([r["distance_cm"] for r in rows],[0,.5,.9,1]).tolist(),
+             "proposed_gate_pass":sum(r["proposed_gate_pass"] for r in rows),
+             "worst":sorted(rows,key=lambda r:r["distance_cm"],reverse=True)[:10],"rows":rows}
+    shared.dump(REPORT/"placement_proposal.json",summary)
+    print(json.dumps({k:v for k,v in summary.items() if k!='rows'}),flush=True)
+
+
 def generate(t):
     c, lim = shared.chain()
     assert shared.sha(t["walk"]) == t["walk_sha256"]
@@ -190,7 +227,7 @@ def build():
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("phase", choices=["walks","plan","build"])
+    ap.add_argument("phase", choices=["walks","plan","build","placement"])
     args = ap.parse_args()
     REPORT.mkdir(parents=True, exist_ok=True)
     os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:26])
