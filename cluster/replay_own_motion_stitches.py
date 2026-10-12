@@ -22,6 +22,10 @@ def write(name, value):
 
 
 def check_dump(path, count, steps):
+    sys.path.insert(0, str(REPO/'TrajGen/holosoma_adapters'))
+    import build_stitchmax_v2 as shared
+    import torch
+    chain, _ = shared.chain()
     with np.load(path, allow_pickle=False) as d:
         assert len(d['step']) == count*steps
         assert len(np.unique(d['mid'])) == count
@@ -30,8 +34,19 @@ def check_dump(path, count, steps):
         joint_error = float(np.max(np.abs(d['joint_pos']-d['ref_joint_pos'])))
         root_error = float(np.max(np.linalg.norm(d['root_pos']-d['ref_root_pos'], axis=1)))
         assert joint_error < 1e-4 and root_error < 1e-4, (joint_error, root_error)
+        hand_index = list(d['names']).index('right_rubber_hand')
+        hand_error = 0.0
+        joints, roots, quats, hands = d['joint_pos'], d['root_pos'], d['root_quat'], d['hand_pos'][:, hand_index]
+        for lo in range(0, len(joints), 512):
+            hi = lo+512
+            fk = chain.forward_kinematics(torch.tensor(joints[lo:hi], dtype=torch.float32))
+            local = fk[shared.stitcher.HAND].get_matrix()[:, :3, 3].numpy()
+            expected = np.einsum('nij,nj->ni', shared.stitcher.quat_to_R(quats[lo:hi]), local)+roots[lo:hi]
+            hand_error = max(hand_error, float(np.linalg.norm(expected-hands[lo:hi], axis=1).max()))
+        assert hand_error < .001, f'Isaac vs URDF hand FK discrepancy: {hand_error} m'
         return {'frames': len(d['step']), 'motions': count,
                 'max_joint_replay_error_rad': joint_error, 'max_root_replay_error_m': root_error,
+                'max_isaac_vs_urdf_hand_error_m': hand_error,
                 'bytes': path.stat().st_size}
 
 
