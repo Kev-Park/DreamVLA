@@ -25,7 +25,20 @@ def check_dump(path, count, steps):
     sys.path.insert(0, str(REPO/'TrajGen/holosoma_adapters'))
     import build_stitchmax_v2 as shared
     import torch
+    import xml.etree.ElementTree as ET
+    from pxr import Usd
     chain, _ = shared.chain()
+    # The existing hand-equipped USD has its shoulder 1 cm higher than this URDF.
+    # Account for this measured asset-frame difference in the AUDIT ONLY. Do not
+    # alter either model or regenerate reference targets with a different skeleton.
+    usd_path = REPO/'Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_29dof_with_hands_min_collisions_flat_white.usd'
+    stage = Usd.Stage.Open(str(usd_path))
+    shoulder = [p for p in stage.Traverse() if p.GetName() == 'right_shoulder_pitch_joint']
+    assert len(shoulder) == 1
+    usd_origin = np.array(shoulder[0].GetAttribute('physics:localPos0').Get())
+    urdf_joint = ET.parse(shared.stitcher.URDF).find("joint[@name='right_shoulder_pitch_joint']")
+    urdf_origin = np.fromstring(urdf_joint.find('origin').get('xyz'), sep=' ')
+    shoulder_delta = usd_origin - urdf_origin
     with np.load(path, allow_pickle=False) as d:
         assert len(d['step']) == count*steps
         assert len(np.unique(d['mid'])) == count
@@ -38,17 +51,23 @@ def check_dump(path, count, steps):
         hand_link = 'right_wrist_yaw_link'
         hand_index = list(d['names']).index(hand_link)
         hand_error = 0.0
+        raw_hand_error = 0.0
         joints, roots, quats, hands = d['joint_pos'], d['root_pos'], d['root_quat'], d['hand_pos'][:, hand_index]
         for lo in range(0, len(joints), 512):
             hi = lo+512
             fk = chain.forward_kinematics(torch.tensor(joints[lo:hi], dtype=torch.float32))
             local = fk[hand_link].get_matrix()[:, :3, 3].numpy()
             expected = np.einsum('nij,nj->ni', shared.stitcher.quat_to_R(quats[lo:hi]), local)+roots[lo:hi]
+            raw_hand_error = max(raw_hand_error, float(np.linalg.norm(expected-hands[lo:hi], axis=1).max()))
+            torso_R = shared.stitcher.quat_to_R(quats[lo:hi]) @ fk['torso_link'].get_matrix()[:, :3, :3].numpy()
+            expected += np.einsum('nij,j->ni', torso_R, shoulder_delta)
             hand_error = max(hand_error, float(np.linalg.norm(expected-hands[lo:hi], axis=1).max()))
         assert hand_error < .001, f'Isaac vs URDF hand FK discrepancy: {hand_error} m'
         return {'frames': len(d['step']), 'motions': count,
                 'max_joint_replay_error_rad': joint_error, 'max_root_replay_error_m': root_error,
                 'max_isaac_vs_urdf_hand_error_m': hand_error,
+                'max_raw_isaac_vs_urdf_hand_error_m': raw_hand_error,
+                'usd_minus_urdf_shoulder_origin_m': shoulder_delta.tolist(),
                 'bytes': path.stat().st_size}
 
 
