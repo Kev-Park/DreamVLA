@@ -289,6 +289,9 @@ def main():
         ppo_runner.load(resume_path)
         policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
+    from vla_sonic.eval_mpjpe import EpisodeMPJPE
+    mpjpe = EpisodeMPJPE(env.unwrapped)
+
     # ---- per-env episode trackers ----
     num_envs = env.num_envs
     target_episodes = args_cli.num_episodes
@@ -503,6 +506,7 @@ def main():
     while completed_episodes < target_episodes and step_count < max_steps:
         per_env_motion_id.copy_(env.unwrapped.motion_ids)
         with torch.inference_mode():
+            mpjpe.sample()
             actions = policy(obs).clone()
             obs, _, dones, extras = env.step(actions)
         # HS_EVAL_APP_PUMPS=N: A/B diagnostic -- N raw simulation_app.update() calls per step, as the
@@ -612,6 +616,7 @@ def main():
         dones_bool = dones.bool() if dones.dtype != torch.bool else dones
         if dones_bool.any():
             done_idxs = torch.where(dones_bool)[0]
+            mpjpe.finish(done_idxs)
             for _tn in term_names:
                 try:
                     _term_dones_now[_tn] = _tm.get_term(_tn)[done_idxs].bool()
@@ -751,6 +756,9 @@ def main():
     elapsed = time.time() - t_start
     print(f"\n[eval_sonic_adapter] DONE — {completed_episodes} episodes in {elapsed:.1f}s "
           f"({step_count} steps, {step_count/max(elapsed,1e-6):.0f} steps/s)")
+
+    import json
+    print("[MPJPE] " + json.dumps(mpjpe.result()))
 
     # ---- final report ----
     n_succ_total = float(env.unwrapped.n_successes.sum().item())
