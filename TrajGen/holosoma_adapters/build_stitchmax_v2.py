@@ -180,7 +180,7 @@ def build():
     status = {"status": "generating", "completed": len(done), "total": 243, "started": time.time()}
     dump(REPORT / "status.json", status)
     try:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=4, mp_context=multiprocessing.get_context("spawn")) as ex:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=16, mp_context=multiprocessing.get_context("spawn")) as ex:
             futures = [ex.submit(generate, t) for t in todo]
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
