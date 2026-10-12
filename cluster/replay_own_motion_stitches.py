@@ -46,6 +46,8 @@ def main(mode):
         assert validation['count'] == len(tasks) == 500
         ngpu = 8
     run = OUT/('replay_'+mode)
+    if run.exists():
+        run = OUT/('replay_'+mode+'_'+str(time.time_ns()))
     run.mkdir(exist_ok=False)
     jobs = []
     state = {'phase': 'launching', 'mode': mode, 'started': time.time(),
@@ -66,10 +68,12 @@ def main(mode):
                 '--reference-playback','--no-video','--no-stability','--no-ref-overlay',
                 '--num-motions',str(len(rows)), '--segment-steps',str(steps),
                 '--dump-track',str(dump), '--name',str(run/f'unused{gpu}.mp4'),
-                '--render-width','320','--render-height','240']
-            # Vulkan uses the physical device index; CUDA_VISIBLE_DEVICES remaps CUDA.
+                '--render-width','320','--render-height','240','--device',f'cuda:{gpu}']
+            # Keep CUDA and Vulkan on the same physical index (Vulkan ignores CUDA masks).
             env = recipe.environment(gpu)
-            env.update(OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', JAX_PLATFORMS='cpu')
+            env.pop('CUDA_VISIBLE_DEVICES', None)
+            env.update(OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', JAX_PLATFORMS='cpu',
+                       OMNI_KIT_ACCEPT_EULA='YES')
             log = run/f'replay{gpu}.log'
             with log.open('w') as f:
                 proc = subprocess.Popen(cmd, cwd=REPO/'Training', env=env, stdout=f, stderr=subprocess.STDOUT)
