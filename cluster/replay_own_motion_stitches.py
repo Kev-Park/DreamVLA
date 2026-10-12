@@ -77,6 +77,15 @@ def main(mode):
     if mode == 'smoke':
         tasks = [tasks[0]]
         ngpu = 1
+    elif mode == 'preview':
+        validation = json.loads((OUT/'numerical_validation.json').read_text())
+        rows = validation['rows']
+        selected = [max((x for x in rows if x['split']==s), key=lambda x:x['root_translation_cm']) for s in ['train','eval']]
+        selected.append(max(rows, key=lambda x:x['postgrab_hand_max_error_cm']))
+        keys = {(r['split'],r['name']) for r in selected}
+        tasks = [t for t in tasks if (t['split'],t['name']) in keys]
+        ngpu = len(tasks)
+        assert recipe.gpu_free(8), 'Preview GPU occupied'
     else:
         validation = json.loads((OUT/'numerical_validation.json').read_text())
         assert validation['count'] == len(tasks) == 500
@@ -89,31 +98,40 @@ def main(mode):
     state = {'phase': 'launching', 'mode': mode, 'started': time.time(),
              'training_authorized_to_start': False, 'jobs': []}
     try:
-        for gpu in range(ngpu):
-            assert recipe.gpu_free(gpu), f'GPU {gpu} occupied; no launch/retry'
-            rows = sorted(tasks, key=lambda t: (t['split'],t['name']))[gpu::ngpu]
-            pool = run/f'pool{gpu}'
+        for shard in range(ngpu):
+            gpu = 8 if mode == 'preview' else shard
+            if mode != 'preview':
+                assert recipe.gpu_free(gpu), f'GPU {gpu} occupied; no launch/retry'
+            rows = sorted(tasks, key=lambda t: (t['split'],t['name']))[shard::ngpu]
+            pool = run/f'pool{shard}'
             pool.mkdir()
             for t in rows:
                 source = Path(t['output'])
                 (pool/(t['split']+'_'+t['name'])).symlink_to(os.path.relpath(source, pool))
-            recipe.write(run/f'manifest{gpu}.json', rows)
+            recipe.write(run/f'manifest{shard}.json', rows)
             steps = int(np.ceil(max(t['frames'] for t in rows)*.05/.02))+5
-            dump = run/f'track{gpu}.npz'
+            dump = run/f'track{shard}.npz'
             cmd = recipe.command('play_motion_montage.py', str(pool)) + [
                 '--reference-playback','--no-video','--no-stability','--no-ref-overlay',
                 '--num-motions',str(len(rows)), '--segment-steps',str(steps),
                 '--dump-track',str(dump), '--name',str(run/f'unused{gpu}.mp4'),
                 '--render-width','320','--render-height','240','--device',f'cuda:{gpu}']
+            video = None
+            if mode == 'preview':
+                cmd.remove('--no-video')
+                video = run/f"ownStitchV3_{rows[0]['split']}_m{rows[0]['id']}.mp4"
+                cmd[cmd.index('--name')+1] = str(video)
+                cmd[cmd.index('--render-width')+1] = '1280'
+                cmd[cmd.index('--render-height')+1] = '960'
             # Keep CUDA and Vulkan on the same physical index (Vulkan ignores CUDA masks).
             env = recipe.environment(gpu)
             env.pop('CUDA_VISIBLE_DEVICES', None)
             env.update(OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', JAX_PLATFORMS='cpu',
                        OMNI_KIT_ACCEPT_EULA='YES')
-            log = run/f'replay{gpu}.log'
+            log = run/f'replay{shard}.log'
             with log.open('w') as f:
                 proc = subprocess.Popen(cmd, cwd=REPO/'Training', env=env, stdout=f, stderr=subprocess.STDOUT)
-            row = {'gpu':gpu,'pid':proc.pid,'log':str(log),'dump':str(dump),
+            row = {'gpu':gpu,'pid':proc.pid,'log':str(log),'dump':str(dump),'video':str(video) if video else None,
                    'count':len(rows),'steps_per_motion':steps,'command':cmd,'status':'running'}
             jobs.append((proc,row))
             state['jobs'].append(row)
@@ -151,5 +169,5 @@ def main(mode):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['smoke','full'])
+    parser.add_argument('mode', choices=['smoke','full','preview'])
     main(parser.parse_args().mode)
