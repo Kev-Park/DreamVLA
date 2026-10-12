@@ -73,6 +73,7 @@ def check_dump(path, count, steps):
 
 def main(mode, shards=None):
     os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:26])
+    status_name = 'replay_'+mode+('' if shards is None else '_shards_'+'_'.join(map(str,shards)))+'_status.json'
     tasks = json.loads((OUT/'generated.json').read_text())
     if mode == 'smoke':
         tasks = [tasks[0]]
@@ -116,7 +117,8 @@ def main(mode, shards=None):
                 '--reference-playback','--no-video','--no-stability','--no-ref-overlay',
                 '--num-motions',str(len(rows)), '--segment-steps',str(steps),
                 '--dump-track',str(dump), '--name',str(run/f'unused{gpu}.mp4'),
-                '--render-width','320','--render-height','240','--device',f'cuda:{gpu}']
+                '--render-width','320','--render-height','240','--device',f'cuda:{gpu}',
+                '--kit_args=--/renderer/multiGpu/enabled=false']
             video = None
             if mode == 'preview':
                 cmd.remove('--no-video')
@@ -136,7 +138,7 @@ def main(mode, shards=None):
                    'count':len(rows),'steps_per_motion':steps,'command':cmd,'status':'running'}
             jobs.append((proc,row))
             state['jobs'].append(row)
-            write('replay_'+mode+'_status.json',state)
+            write(status_name,state)
         state['phase'] = 'replaying'
         while True:
             active = False
@@ -162,14 +164,14 @@ def main(mode, shards=None):
             state['updated'] = time.time()
             if not active:
                 state['phase'] = 'failed' if any(r['status']=='failed' for _,r in jobs) else 'complete'
-            write('replay_'+mode+'_status.json',state)
+            write(status_name,state)
             if not active:
                 break
             time.sleep(15)
         assert state['phase'] == 'complete', 'Replay failures: inspect status and logs'
     except BaseException as exc:
         state.update(phase='failed',error=repr(exc),updated=time.time())
-        write('replay_'+mode+'_status.json',state)
+        write(status_name,state)
         raise
 
 
