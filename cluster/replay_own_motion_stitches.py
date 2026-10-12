@@ -71,7 +71,7 @@ def check_dump(path, count, steps):
                 'bytes': path.stat().st_size}
 
 
-def main(mode):
+def main(mode, shards=None):
     os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:26])
     tasks = json.loads((OUT/'generated.json').read_text())
     if mode == 'smoke':
@@ -98,7 +98,8 @@ def main(mode):
     state = {'phase': 'launching', 'mode': mode, 'started': time.time(),
              'training_authorized_to_start': False, 'jobs': []}
     try:
-        for shard in range(ngpu):
+        for shard in (range(ngpu) if shards is None else shards):
+            assert 0 <= shard < ngpu
             gpu = 8 if mode == 'preview' else shard
             if mode != 'preview':
                 assert recipe.gpu_free(gpu), f'GPU {gpu} occupied; no launch/retry'
@@ -146,6 +147,11 @@ def main(mode):
                 if rc is None:
                     active = True
                     row['last_log'] = recipe.tail(Path(row['log']),2000)
+                    text = recipe.tail(Path(row['log']))
+                    if 'Traceback (most recent call last)' in text:
+                        row['alert'] = 'Exception logged; process has not exited. Inspect and clean up explicitly.'
+                    elif time.time()-Path(row['log']).stat().st_mtime > 900:
+                        row['alert'] = 'No replay log progress for 15 minutes; inspect process.'
                 elif rc:
                     row.update(status='failed',returncode=rc,last_log=recipe.tail(Path(row['log']),4000))
                 else:
@@ -170,4 +176,6 @@ def main(mode):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=['smoke','full','preview'])
-    main(parser.parse_args().mode)
+    parser.add_argument('--shards', type=int, nargs='+', help='Explicit shard indices for a reviewed partial retry')
+    args = parser.parse_args()
+    main(args.mode, args.shards)

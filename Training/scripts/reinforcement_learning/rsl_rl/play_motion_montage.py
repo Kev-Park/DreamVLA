@@ -1072,7 +1072,9 @@ def main():
     for _ in range(60):
         _APP.update()
 
-    device = agent_cfg.device
+    # The playback environment follows --device; the training config may still
+    # default to cuda:0. Load the frozen modules on the environment's actual GPU.
+    device = env.unwrapped.device
     if args_cli.reference_pd:
         # ---- reference-PD: NO SONIC decoder/encoder. Wrap with the plain RSL-RL wrapper so
         # the env's NATIVE JointPositionAction is what env.step applies (PD physics). ----
