@@ -55,6 +55,12 @@ def plan():
     static = ROOT / "Holosoma_Pick_29_latband60max"
     originals = sorted(p for p in static.glob("pick_*.pkl") if re.fullmatch(r"pick_\d+", p.stem))
     augmented = sorted(p for p in static.glob("pick_*.pkl") if p not in originals)
+    replacements = list((ROOT / "StitchMAX200v2_static_replacements").glob("pick_*.pkl"))
+    for replacement in replacements:
+        parent = "_".join(replacement.stem.split("_")[:2])
+        matches = [p for p in augmented if "_".join(p.stem.split("_")[:2]) == parent]
+        assert len(matches) == 1, parent
+        augmented[augmented.index(matches[0])] = replacement
     assert len(originals) == len(augmented) == 200
     original_ids = {p.stem for p in originals}
     assert {"_".join(p.stem.split("_")[:2]) for p in augmented} == original_ids
@@ -68,7 +74,7 @@ def plan():
         if h not in by_hash:
             by_hash[h] = str(p)
             walks[str(p)] = stitcher.load(str(p), c)
-    tasks, failures, links = [], [], []
+    tasks, failures, links, suggestions = [], [], [], []
     pairings = {}
     for p in originals + augmented:
         is_original = p in originals
@@ -89,6 +95,22 @@ def plan():
                 ranked.append((wp != original_walk, pos / stitcher.MAX_POS_ERR + angle / stitcher.MAX_YAW_ERR, wp, pos, angle))
         if not ranked:
             failures.append(str(p))
+            if not is_original:
+                # Suggest a seeded resample within the original augmentation box and
+                # lateral band. The existing augmentation CLI performs the actual IK.
+                base = stitcher.load(str(static / (parent + ".pkl")), c)
+                yaw = stitcher.yaw_of(base["Q"][base["g"]])
+                forward = np.array([np.cos(yaw), np.sin(yaw)])
+                left = np.array([-np.sin(yaw), np.cos(yaw)])
+                rng = np.random.default_rng([1, int(parent.split("_")[1])])
+                for attempt in range(50):
+                    fwd, lat = float(rng.uniform(-0.04, 0.04)), float(rng.uniform(-0.05, 0.05))
+                    trial = dict(base, O=base["O"].copy())
+                    trial["O"][:, :2] += fwd * forward + lat * left
+                    offset = float((trial["O"][trial["g"], :2] - trial["P"][trial["g"], :2]) @ left)
+                    if -0.29 <= offset <= -0.14 and any(gate(w, trial)[2] for w in walks.values()):
+                        suggestions.append({"parent": parent, "seed": 1, "draw_index": attempt, "forward_m": fwd, "left_m": lat, "replaces": str(p)})
+                        break
             continue
         _, _, wp, pos, angle = min(ranked)
         if is_original and (old / p.name).exists():
@@ -100,10 +122,10 @@ def plan():
         tasks.append({"name": p.name, "original": is_original, "static": str(p), "static_sha256": sha(p), "walk": wp, "walk_sha256": sha(wp), "output": str(output), "repaired_pairing": wp != original_walk, "body_position_error_m": pos, "body_yaw_error_deg": float(np.degrees(angle))})
         if is_original:
             pairings[parent] = wp
-    result = {"created": time.time(), "recipe": "existing stitch_static_approach; unchanged 10cm/15deg body gate, full-ramp uniform hand shift", "hand_shift_m": SHIFT, "walk_candidates": len(walks), "links": links, "tasks": tasks, "failures": failures, "expected_counts": {"original": 200, "augmented": 200, "training": 400}}
+    result = {"created": time.time(), "recipe": "existing stitch_static_approach; unchanged 10cm/15deg body gate, full-ramp uniform hand shift", "hand_shift_m": SHIFT, "walk_candidates": len(walks), "links": links, "tasks": tasks, "failures": failures, "resample_suggestions": suggestions, "expected_counts": {"original": 200, "augmented": 200, "training": 400}}
     REPORT.mkdir(parents=True, exist_ok=True)
     dump(REPORT / "plan.json", result)
-    print(json.dumps({"links": len(links), "new_originals": sum(t["original"] for t in tasks), "augmentations": sum(not t["original"] for t in tasks), "walk_candidates": len(walks), "failures": failures}), flush=True)
+    print(json.dumps({"links": len(links), "new_originals": sum(t["original"] for t in tasks), "augmentations": sum(not t["original"] for t in tasks), "walk_candidates": len(walks), "failures": failures, "resample_suggestions": suggestions}), flush=True)
     return result
 
 
