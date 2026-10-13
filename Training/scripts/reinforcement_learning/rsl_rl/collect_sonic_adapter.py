@@ -74,6 +74,13 @@ def _set_all_seeds(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _read_motion_ids(path: str, total_motions: int) -> list[int]:
+    ids = [int(x) for x in Path(path).read_text().split()]
+    if not ids or len(ids) != len(set(ids)) or not all(0 <= m < total_motions for m in ids):
+        raise ValueError("Motion IDs must be nonempty, unique, and inside the loaded reference library")
+    return ids
+
+
 def _frame_to_uint8_rgb(frame: np.ndarray) -> np.ndarray:
     if frame.ndim == 3 and frame.shape[-1] == 4:
         frame = frame[:, :, :3]
@@ -1301,7 +1308,10 @@ def main() -> None:
                              "the residual labels every state. Rollouts are written regardless of success.")
     parser.add_argument("--dagger-demo-root", type=str, default=None,
                         help="DAgger: collector HDF5 root of the demonstrations -- sweeps only its motion ids and "
-                             "takes the closed-finger label pose from it.")
+                        "takes the closed-finger label pose from it.")
+    parser.add_argument("--dagger-motion-ids", type=str, default=None,
+                        help="Whitespace-separated original-library motion IDs for DAgger. Overrides "
+                             "demo-derived IDs while using --dagger-demo-root for the closed-hand pose.")
     parser.add_argument("--dagger-beta", type=float, default=0.5, help="DAgger: P(expert drives) per re-plan chunk.")
     parser.add_argument("--dagger-diagnostics", action="store_true", default=False,
                         help="Record per-frame VLA uncertainty signals (FSQ lattice residual, expert/VLA token "
@@ -1398,6 +1408,8 @@ def main() -> None:
         parser.error("--sample-expert-actions is only for expert base collection")
     if args_cli.motion_ids and args_cli.dagger_vla_checkpoint:
         parser.error("Use --dagger-motion-ids for DAgger collection")
+    if args_cli.dagger_motion_ids and not args_cli.dagger_vla_checkpoint:
+        parser.error("--dagger-motion-ids requires --dagger-vla-checkpoint")
 
     _set_all_seeds(args_cli.seed)
     if args_cli.num_envs != 1:
@@ -1537,6 +1549,8 @@ def main() -> None:
         if not args_cli.dagger_demo_root:
             raise SystemExit("--dagger-demo-root is required in DAgger mode")
         dagger_motions = demo_motion_ids(args_cli.dagger_demo_root)
+        if args_cli.dagger_motion_ids:
+            dagger_motions = _read_motion_ids(args_cli.dagger_motion_ids, int(env.unwrapped.total_motions))
         dagger_closed = dagger_closed_pose(args_cli.dagger_demo_root)
         vla = Gr00tPolicy(embodiment_tag="unitree_g1_sonic", model_path=args_cli.dagger_vla_checkpoint, device=device)
         obs_adapter = ObsToPolicyAdapter(env, ObsAdapterConfig(language_instruction="pick up the mustard bottle",
@@ -1621,9 +1635,9 @@ def main() -> None:
         else:
             selected = list(range(m_lo, m_hi))
             if args_cli.motion_ids:
-                selected = [int(x) for x in Path(args_cli.motion_ids).read_text().split()]
-                if len(selected) != len(set(selected)) or not all(m_lo <= m < m_hi for m in selected):
-                    raise ValueError("Expert motion IDs must be unique and inside the requested range")
+                selected = _read_motion_ids(args_cli.motion_ids, total_motions)
+                if not all(m_lo <= m < m_hi for m in selected):
+                    raise ValueError("Expert motion IDs must be inside the requested range")
             sweep = [(m, 0) for m in selected]
         for motion_id, rollout_idx in sweep:
             if written >= target_successes or not simulation_app.is_running():
