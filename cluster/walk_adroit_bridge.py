@@ -16,7 +16,7 @@ import time
 BLUE = "sastrygrp-dvij@bluesclues.ist.berkeley.edu"
 BIPED = "dvij@biped.eecs.berkeley.edu"
 FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-ADROIT_CONTROL_PATH = "~/.ssh/cm-adroit-walk"
+ADROIT_CONTROL_PATH = "~/.ssh/cm-adroit"
 
 
 def ssh(host, command):
