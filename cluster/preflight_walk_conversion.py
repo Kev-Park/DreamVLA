@@ -36,6 +36,8 @@ def main():
             group = f["data/demo_0"]
             tokens = group["obs/motion_token"][()].astype(np.float32)
             fingers = group["teleop/finger_joints/right"][()].astype(np.float32)
+            finger_names = [n.decode() if isinstance(n, bytes) else str(n)
+                            for n in group["teleop/finger_joints/right_finger_joint_names"][()]]
             frames = len(tokens)
             assert tokens.shape == (frames, 64) and fingers.shape == (frames, 7)
             assert group["obs/ego_view_image"].shape == (frames, 960, 1280, 3)
@@ -51,7 +53,12 @@ def main():
         assert len(parquet) == 1
         table = pq.read_table(parquet[0])
         actual_tokens = np.asarray(table["action.motion_token"].to_pylist(), dtype=np.float32)
-        actual_fingers = np.asarray(table["action.right_hand_joints"].to_pylist(), dtype=np.float32)
+        actual_fingers = np.asarray(table["teleop.right_hand_joints"].to_pylist(), dtype=np.float32)
+        from gear_sonic.data.features_sonic_vla import get_g1_robot_model
+        robot = get_g1_robot_model()
+        canonical_names = list(robot.supplemental_info.right_hand_actuated_joints)
+        assert set(canonical_names) == set(finger_names)
+        fingers = fingers[:, [finger_names.index(n) for n in canonical_names]]
         assert np.array_equal(actual_tokens, tokens), "SONIC token labels changed during conversion"
         assert np.array_equal(actual_fingers, fingers), "Right-hand labels changed during conversion"
         assert len(list(dataset.glob("videos/**/*.mp4"))) == 1
