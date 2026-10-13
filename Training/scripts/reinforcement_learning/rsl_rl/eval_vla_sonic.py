@@ -26,6 +26,7 @@ Requires cameras (the VLA reads the ego view); the env is the Cam-* variant of t
 from __future__ import annotations
 
 import argparse
+import json
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 from vla_sonic.eval_helpers import flush_render  # noqa: E402
@@ -558,6 +559,13 @@ def main() -> int:
             else:
                 if vla_chunk is None or chunk_step >= args.chunk_size:
                     vla_obs = obs_adapter()
+                    if ep == 0 and step == 0:
+                        rgb = vla_obs["video"]["ego_view"]
+                        camera_check = {"shape": list(rgb.shape), "minimum": int(rgb.min()),
+                                        "maximum": int(rgb.max()), "mean": float(rgb.mean())}
+                        print("[camera-check] " + json.dumps(camera_check), flush=True)
+                        if camera_check["maximum"] == 0:
+                            raise RuntimeError("Ego camera is entirely black after render warm-up")
                     vla_out = policy.get_action(vla_obs)
                     vla_chunk = vla_out[0] if isinstance(vla_out, tuple) else vla_out
                     chunk_step = 0

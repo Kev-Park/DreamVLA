@@ -15,7 +15,20 @@ def main():
     out, boxfile = map(Path, sys.argv[1:])
     box = json.loads(boxfile.read_text())
     paths = sorted(out.glob("b*_traj.npz"))
-    ids = [int(re.search(r"_m(\d+)_traj.npz$", p.name)[1]) for p in paths]
+    source_ids = [int(re.search(r"_m(\d+)_traj.npz$", p.name)[1]) for p in paths]
+    mapping_file = out/"reference_mapping.json"
+    mapping = json.loads(mapping_file.read_text()) if mapping_file.exists() else None
+    if mapping:
+        assert mapping['pool'] == 'StitchMAX100v3_eval'
+        entries = mapping['references']
+        assert sorted(r['source_id'] for r in entries) == list(range(100))
+        assert sorted(r['canonical_id'] for r in entries) == list(range(100))
+        assert len({r['name'] for r in entries}) == 100
+        assert all(r['source_sha256'] == r['canonical_sha256'] for r in entries)
+        lookup = {r['source_id']: r['canonical_id'] for r in entries}
+        ids = [lookup[mid] for mid in source_ids]
+    else:
+        ids = source_ids
     assert sorted(ids) == list(range(100)), f"Missing/duplicated holdout references: {ids}"
     rows = []
     for path, mid in zip(paths, ids):
@@ -30,6 +43,8 @@ def main():
               "root_aligned_mpjpe_cm": float(np.mean([r["root_aligned_mpjpe_cm"] for r in rows])),
               "aggregation": "episode mean; root translation only", "per_episode": rows}
     report["success_pct"] = float(report["successes"])
+    if mapping:
+        report['reference_mapping'] = mapping
     # Preserve the physical 5cm hold metric as well, so it can be compared with
     # the residual/frozen SONIC evaluations without conflating the criteria.
     totals = []

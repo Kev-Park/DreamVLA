@@ -71,7 +71,13 @@ if extra:
  for job in extra.get('active_jobs',[]):
   job['command_live']=command(job['pid'])
   job['log_age']=time.time()-pathlib.Path(job['log']).stat().st_mtime
-print(json.dumps({'observed_at':time.time(),'disk_free_gib':shutil.disk_usage(b).free/2**30,'workflow':state,'results':rows,'confirmation':extra}))
+external=[]
+for path in (b/'eval_videos/walk_v3_study/biped_eval').glob('*/workflow.json'):
+ row=json.loads(path.read_text());row['controller_command']=command(row['controller_pid'])
+ if row.get('active_job'):
+  job=row['active_job'];job['command_live']=command(job['pid']);job['log_age']=time.time()-pathlib.Path(job['log']).stat().st_mtime
+ external.append(row)
+print(json.dumps({'observed_at':time.time(),'disk_free_gib':shutil.disk_usage(b).free/2**30,'workflow':state,'results':rows,'confirmation':extra,'gr00t_evaluations':external}))
 '''
 
 
@@ -163,6 +169,15 @@ def assess(host, data, now, progress):
                 for job in extra.get('active_jobs', []):
                     if not job['command_live'] or job['log_age'] > 900:
                         alerts.append('Checkpoint-4500 confirmation worker stopped or log stalled: '+str(job['pid']))
+        for evaluation in data.get('gr00t_evaluations', []):
+            if evaluation['status'] == 'failed':
+                alerts.append(evaluation['run']+': Biped evaluation failed: '+str(evaluation.get('error')))
+            elif evaluation['status'] != 'complete':
+                if not evaluation['controller_command'] or now-evaluation['heartbeat'] > 120:
+                    alerts.append(evaluation['run']+': Biped evaluation controller stopped or heartbeat stale')
+                job = evaluation.get('active_job')
+                if job and (not job['command_live'] or job['log_age'] > 1800):
+                    alerts.append(evaluation['run']+': Biped evaluation worker stopped or log stalled')
     return alerts
 
 
@@ -204,6 +219,11 @@ def main():
             bridge = json.loads(bridge_file.read_text()) if bridge_file.exists() else {}
             if bridge.get('state') == 'stopped_for_review' or not pid_alive(bridge.get('pid', 0)):
                 alerts.append('Adroit transfer bridge stopped: '+str(bridge.get('error', 'process absent')))
+            for path in (args.state_dir.parent/'walk_biped_eval').glob('*/workflow.json'):
+                remote_bridge = json.loads(path.read_text())
+                if remote_bridge['state'] == 'stopped_for_review' or (
+                        remote_bridge['state'] != 'complete' and not pid_alive(remote_bridge['pid'])):
+                    alerts.append(remote_bridge['run']+': Biped evaluation bridge stopped: '+str(remote_bridge.get('error', 'process absent')))
             complete = not disabled and len(snapshots) == 2 and (
                 snapshots['bluesclues']['gr00t']['status'] == 'complete'
                 and snapshots['biped']['workflow']['status'] == 'complete')
