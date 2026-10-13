@@ -16,6 +16,7 @@ import time
 BLUE = "sastrygrp-dvij@bluesclues.ist.berkeley.edu"
 BIPED = "dvij@biped.eecs.berkeley.edu"
 FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+ADROIT_CONTROL_PATH = "~/.ssh/cm-adroit-walk"
 
 
 def ssh(host, command):
@@ -24,7 +25,7 @@ def ssh(host, command):
         return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", address, command]
     assert host == "adroit"
     return ["wsl.exe", "-d", "Ubuntu", "-u", "kevy0", "--", "bash", "-lc",
-            "ssh -o ControlPath=~/.ssh/cm-adroit -o ControlMaster=no -o BatchMode=yes "
+            f"ssh -o ControlPath={ADROIT_CONTROL_PATH} -o ControlMaster=no -o BatchMode=yes "
             "-o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 adroit "+shlex.quote(command)]
 
 
