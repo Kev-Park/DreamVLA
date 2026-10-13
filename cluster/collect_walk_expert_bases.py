@@ -57,6 +57,26 @@ def inspect_rollouts(root, box=None):
 def collect(ids, name, sampled, seed, expert, state):
     directory = DATA / "raw" / name
     directory.mkdir(parents=True, exist_ok=True)
+    partial = directory/"accepted_partial_sweep.json"
+    if partial.exists():
+        # Only an explicitly reconciled expert retry may be incomplete. Student
+        # DAgger attempts never use this path, and an ordinary partial log still
+        # fails below. Preserve the interrupted logs and every retained episode.
+        receipt = json.loads(partial.read_text())
+        assert sampled and re.fullmatch(r"base(10|50|200)_retry[1-3]", name)
+        assert receipt["state"] == "accepted_partial_after_stall"
+        assert receipt["name"] == name and receipt["requested_motion_ids"] == ids
+        assert receipt["expert"] == str(expert) and receipt["seed"] == seed
+        for job in receipt["workers"]:
+            launch = json.loads((directory/f"launch_{job['index']}.json").read_text())
+            assert launch["pid"] == job["pid"]
+            process = Path("/proc")/str(job["pid"])/"cmdline"
+            assert not process.exists() or not process.read_bytes(), "Prior expert worker is still live"
+        files = [{"path": str(p.relative_to(directory)), "bytes": p.stat().st_size}
+                 for p in sorted(directory.rglob("*.hdf5"))]
+        assert files == receipt["preserved_files"] and all(r["bytes"] > 0 for r in files)
+        state.setdefault("partial_expert_sweeps", {})[name] = receipt
+        return directory
     jobs = []
     for i, gpu in enumerate(GPUS):
         selected = ids[i::len(GPUS)]
