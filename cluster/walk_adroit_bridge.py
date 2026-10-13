@@ -14,12 +14,14 @@ import subprocess
 import time
 
 BLUE = "sastrygrp-dvij@bluesclues.ist.berkeley.edu"
+BIPED = "dvij@biped.eecs.berkeley.edu"
 FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def ssh(host, command):
-    if host == "bluesclues":
-        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", BLUE, command]
+    if host in ("bluesclues", "biped"):
+        address = BLUE if host == "bluesclues" else BIPED
+        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", address, command]
     assert host == "adroit"
     return ["wsl.exe", "-d", "Ubuntu", "-u", "kevy0", "--", "bash", "-lc",
             "ssh -o ControlPath=~/.ssh/cm-adroit -o ControlMaster=no -o BatchMode=yes "
@@ -142,7 +144,10 @@ else:
         payload = {"run": run, "steps": spec["steps"], "job_id": state["job_id"]}
         code = """import pathlib,subprocess,json
 p=PAYLOAD;b=pathlib.Path.home()/'kevin';ck=b/'checkpoints'/p['run']/('checkpoint-'+str(p['steps']))
-q=subprocess.check_output(['squeue','-j',p['job_id'],'-h','-o','%T'],text=True).strip()
+observed=subprocess.run(['squeue','-j',p['job_id'],'-h','-o','%T'],capture_output=True,text=True)
+if observed.returncode and 'Invalid job id specified' not in observed.stderr:
+ raise RuntimeError('Queue observation failed: '+observed.stderr)
+q=observed.stdout.strip() if observed.returncode==0 else ''
 d={'queue_state':q,'checkpoint':str(ck),'complete':False}
 if not q:
  d['accounting']=subprocess.check_output(['sacct','-j',p['job_id'],'-n','-X','-o','State,ExitCode'],text=True).strip()
