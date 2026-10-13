@@ -47,6 +47,8 @@ def inventory(directory, transfer_id, inference):
         if not f.is_file():continue
         if f==src/'stream_manifest.json':continue
         if inference and (f.name in ['optimizer.pt','scheduler.pt'] or f.name.startswith('rng_state')):continue
+        if inference and (any(p.startswith('global_step') for p in f.relative_to(src).parts[:-1])
+                          or f.name.endswith(('optim_states.pt','model_states.pt'))):continue
         if not f.resolve().is_relative_to(rooted('')):raise ValueError('File link escapes ~/kevin')
         before=snapshot(f);digest=sha(f);assert snapshot(f)==before
         files[f.relative_to(src).as_posix()]={'sha256':digest,**before}

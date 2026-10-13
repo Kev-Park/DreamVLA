@@ -47,11 +47,14 @@ class StreamTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             home,src=self.fixture(temp)
             (src/'optimizer.pt').write_bytes(b'optimizer')
+            (src/'global_step42').mkdir()
+            (src/'global_step42/zero_optim_states.pt').write_bytes(b'deepspeed optimizer')
             model=src/'model.safetensors';model.write_bytes(b'weights')
             store=home/'kevin/checkpoints/_shared_weights/sha256';store.mkdir(parents=True)
             canonical=store/(sha(model)+'.safetensors');canonical.write_bytes(model.read_bytes())
             with patch.object(Path,'home',return_value=home):
                 manifest=inventory('source','shared',True);self.assertNotIn('optimizer.pt',manifest['files'])
+                self.assertNotIn('global_step42/zero_optim_states.pt',manifest['files'])
                 prep=prepare('destination',manifest);self.assertEqual(prep['omitted'],['model.safetensors'])
                 wire=io.BytesIO()
                 with patch.object(sys,'stdout',SimpleNamespace(buffer=wire)):send('shared',prep['omitted'])
