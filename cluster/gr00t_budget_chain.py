@@ -236,7 +236,7 @@ class Chain:
             assert read(done)['motion_ids']==self.ids
             return out
         out.mkdir(exist_ok=True)
-        count=2 if self.budget==10 else 4
+        count=getattr(self, 'collection_workers', 2 if self.budget==10 else 4)
         gpus=self.slots(count,17000)
         tasks=[]
         try:

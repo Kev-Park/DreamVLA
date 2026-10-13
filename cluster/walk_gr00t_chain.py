@@ -26,6 +26,7 @@ class WalkChain(base.Chain):
         self.expert = (ROOT/"eval_videos/T20_max_v3_env2048/early_stop/best_evaluated.pt").resolve(strict=True)
         assert self.expert.name == "model_4500.pt"
         self.rollout_steps = 1200
+        self.collection_workers = 8 if budget == 200 else 2 if budget == 10 else 4
         self.training_cwd = HERE.parent/"Training"
         self.score_script = HERE/"walk_gr00t_score.py"
         self.env = common.environment(0)
@@ -85,6 +86,7 @@ class WalkChain(base.Chain):
             "reference_pool": base.REFS, "eval_pool": base.EVAL_REFS, "eval_episodes": 100,
             "rollout_cap": self.rollout_steps, "eval_no_ee_term": self.eval_no_ee_term,
             "collection": "one student attempt per selected reference; existing paired expert rescue; retain four-rule passes",
+            "collection_workers": self.collection_workers,
             "code_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=HERE, text=True).strip()})
         return data
 
