@@ -203,7 +203,7 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
         #                       Same caveat as "multiplicative": near-zero base dims move little.)
         #   "unclamped"      : body = base + latent   (raw additive on token; no anchor, relies on the FSQ snap)
         assert residual_transform in ("additive", "additive_free", "multiplicative",
-                                  "multiplicative_free", "unclamped"), residual_transform
+                                  "multiplicative_free", "unclamped", "direct"), residual_transform
         self.residual_transform = residual_transform
 
         # The reference->SONIC-29 name-matched scatter perm (self._ref_to_sonic_perm) is built once
@@ -460,6 +460,10 @@ class TokenAdapterVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
             # unclipped per-dim scale factor (1 + scale*z); zero-init head => exactly 1.0 at start.
             # No tanh: the FSQ snap's clamp is the only hard bound.
             body = self._base_token * (1.0 + self.residual_scale * z)
+        elif self.residual_transform == "direct":
+            # Actor predicts the token itself. Keep observations and finger action unchanged;
+            # the decoder still applies the same FSQ lattice rounding/clamping as residuals.
+            body = z
         else:  # "unclamped": raw additive on the token, no anchor (safe due to the FSQ snap).
             body = self._base_token + z
         return torch.cat([body, latent[:, TOKEN_TOTAL_DIM:]], dim=1)

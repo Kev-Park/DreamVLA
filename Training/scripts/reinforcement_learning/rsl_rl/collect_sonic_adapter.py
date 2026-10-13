@@ -1235,6 +1235,9 @@ def main() -> None:
                              "the env the residual policies are trained in). Run with the same HS_REWORK "
                              "env vars as training.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--sample-expert-actions", action="store_true",
+                        help="Sample the loaded expert's learned Normal action distribution for "
+                             "base collection retries. DAgger labels remain deterministic.")
     state_group = parser.add_mutually_exclusive_group()
     state_group.add_argument("--state-on", dest="state_on", action="store_true")
     state_group.add_argument("--state-off", dest="state_on", action="store_false")
@@ -1389,6 +1392,8 @@ def main() -> None:
     cli_args.add_rsl_rl_args(parser)
     AppLauncher.add_app_launcher_args(parser)
     args_cli = parser.parse_args()
+    if args_cli.sample_expert_actions and args_cli.dagger_vla_checkpoint:
+        parser.error("--sample-expert-actions is only for expert base collection")
 
     _set_all_seeds(args_cli.seed)
     if args_cli.num_envs != 1:
@@ -1506,6 +1511,10 @@ def main() -> None:
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=device)
     runner.load(resume_path)
     policy = runner.get_inference_policy(device=env.unwrapped.device)
+    if args_cli.sample_expert_actions:
+        from vla_sonic.sample_expert import sampled_inference_policy
+        policy = sampled_inference_policy(runner, policy)
+        print("[collect_sonic_adapter] Sampling the expert's learned action distribution")
 
     grasp_gate = GraspGate(env, pad=args_cli.grasp_gate_pad, hold=args_cli.grasp_gate_hold,
                            release=args_cli.grasp_gate_release,
@@ -1765,6 +1774,7 @@ def main() -> None:
                 "encoder_mode": args_cli.encoder_mode,
                 "waist_dof": int(args_cli.waist_dof),
                 "checkpoint": str(resume_path),
+                "sampled_expert_actions": args_cli.sample_expert_actions,
                 **meta,
             }
             env_args = _build_env_args(env, task_name=args_cli.task)

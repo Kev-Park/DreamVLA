@@ -76,11 +76,14 @@ parser.add_argument("--sonic-encoder-onnx", type=str,
 parser.add_argument("--residual-scale", type=float, default=0.3,
                     help="Residual bound — MUST match the value used by train_sonic_adapter.py.")
 parser.add_argument("--residual-transform", type=str, default="additive",
-                    choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped"],
+                    choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped", "direct"],
                     help="Token residual transform — MUST match train_sonic_adapter.py for this checkpoint.")
 parser.add_argument("--zero-residual", action="store_true", default=False,
                     help="Evaluate the frozen-SONIC base (residual=0, fingers open) as a "
                          "baseline. No checkpoint required.")
+parser.add_argument("--reference-grasp", action="store_true",
+                    help="With --zero-residual, command the right fingers using the reference "
+                         "motion library's is_closed schedule (including the recipe's contact lead).")
 parser.add_argument("--lift-thres", type=float, default=0.95,
                     help="Bottle z (m) above which a frame counts as 'lifted'. Matches the "
                          "env's object_above height_thres (object rests at 0.9; 0.95 = a "
@@ -100,6 +103,10 @@ cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+if args_cli.reference_grasp and not args_cli.zero_residual:
+    parser.error("--reference-grasp requires --zero-residual")
+if args_cli.zero_residual and args_cli.residual_transform == "direct":
+    parser.error("--zero-residual is a frozen encoder baseline; direct token mode has no base addition")
 
 # Headless eval: cameras off unless HS_EVAL_CAMERAS=1 (A/B against the camera-enabled,
 # render_mode="rgb_array" env the collector / montage / VLA scripts build).
@@ -279,10 +286,15 @@ def main():
 
     # ---- policy: trained adapter, or the zero-residual baseline ----
     if args_cli.zero_residual:
-        print("[eval_sonic_adapter] ZERO-RESIDUAL baseline: residual=0, fingers open (frozen SONIC).")
+        grasp_mode = "reference is_closed schedule" if args_cli.reference_grasp else "open"
+        print(f"[eval_sonic_adapter] ZERO-RESIDUAL baseline: residual=0, fingers={grasp_mode} (frozen SONIC).")
 
         def policy(obs):
-            return torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
+            actions = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
+            if args_cli.reference_grasp:
+                from vla_sonic.reference_grasp import reference_finger_command
+                actions[:, 64] = reference_finger_command(env.unwrapped)
+            return actions
     else:
         print(f"[INFO] Loading model checkpoint from: {resume_path}")
         ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=device)
