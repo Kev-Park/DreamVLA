@@ -33,7 +33,7 @@ def inspect(budget):
     if (work/"abort.json").exists():
         row.update(status="failed", failure=read(work/"abort.json"))
         return row
-    if cmd is None:
+    if cmd is None and not (work/"done.json").exists():
         row["alerts"].append("Controller exited")
     for stage in work.glob("*.process.json"):
         job = read(stage)
