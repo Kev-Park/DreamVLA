@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shlex
 import subprocess
 import time
@@ -107,12 +108,18 @@ print(json.dumps({'checkout':str(target),'commit':subprocess.check_output(['git'
 """)
 
 
-def process_request(request, state_dir):
-    spec = request["spec"]
-    run = spec["run"]
+def validate_finetune_request(spec):
     assert spec["phase"] == "finetune" and spec["host"] == "adroit"
     assert spec["global_batch_size"] == 16 and spec["passes"] == 5.7
-    assert run.startswith("walk200_v3_dagger57_20261013_r")
+    assert spec['budget'] in (10, 50, 200)
+    assert re.fullmatch(f"walk{spec['budget']}_v3_dagger57_20261013_r[0-3]", spec['run'])
+    assert spec['learning_rate'] == 0.0001 and spec['steps'] > 0
+
+
+def process_request(request, state_dir):
+    spec = request["spec"]
+    validate_finetune_request(spec)
+    run = spec["run"]
     directory = state_dir/run
     directory.mkdir(exist_ok=True)
     record = directory/"state.json"
@@ -196,9 +203,11 @@ def main():
         while True:
             requests = call("bluesclues", """import pathlib,json
 b=(pathlib.Path.home()/'kevin').resolve();rows=[]
-for p in sorted((b/'dline/walk200_v3_dagger57_20261013/external').glob('finetune_*.request.json')):
- if not p.with_name(p.name.replace('.request.json','.reply.json')).exists():
-  rows.append({'relative':str(p.relative_to(b)),'blue_root':str(b),'spec':json.loads(p.read_text())})
+for budget in [10,50,200]:
+ for p in sorted((b/f'dline/walk{budget}_v3_dagger57_20261013/external').glob('finetune_*.request.json')):
+  if not p.with_name(p.name.replace('.request.json','.reply.json')).exists():
+   spec=json.loads(p.read_text())
+   if spec['host']=='adroit':rows.append({'relative':str(p.relative_to(b)),'blue_root':str(b),'spec':spec})
 print(json.dumps(rows))
 """)
             for request in requests:
