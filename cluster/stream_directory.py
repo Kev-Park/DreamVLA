@@ -49,7 +49,7 @@ def inventory(directory, transfer_id, inference):
         if inference and (f.name in ['optimizer.pt','scheduler.pt'] or f.name.startswith('rng_state')):continue
         if not f.resolve().is_relative_to(rooted('')):raise ValueError('File link escapes ~/kevin')
         before=snapshot(f);digest=sha(f);assert snapshot(f)==before
-        files[str(f.relative_to(src))]={'sha256':digest,**before}
+        files[f.relative_to(src).as_posix()]={'sha256':digest,**before}
     assert files
     m={'source':directory,'files':files,'inference_only':inference,'transfer_id':transfer_id}
     state=rooted('eval_videos/transfers')/transfer_id;state.mkdir(parents=True,exist_ok=False)
