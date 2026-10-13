@@ -18,6 +18,7 @@ import sys
 import time
 
 import watch_t20max_v3 as common
+from watch_walk_sonic_study import gpu_has_room
 
 ROOT, REPO = common.ROOT, common.REPO
 OUT = ROOT / "eval_videos/walk_v3_study/expert_collection"
@@ -70,7 +71,7 @@ def collect(ids, name, sampled, seed, expert, state):
     active = []
     while pending or active:
         for job in pending[:]:
-            if not common.gpu_free(job["gpu"]):
+            if not gpu_has_room(job["gpu"]):
                 continue
             cmd = common.command("collect_sonic_adapter.py", "StitchMAX200v3")
             cmd[cmd.index("--task")+1] = "Isaac-Motion-Tracking-Pick-Cam-HOI-v0"
@@ -121,7 +122,10 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     lock = (OUT/"controller.lock").open("w")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    assert not (OUT/"workflow.json").exists(), "Inspect existing collection before resuming"
+    if (OUT/"workflow.json").exists():
+        old = json.loads((OUT/"workflow.json").read_text())
+        assert not Path(f"/proc/{old['controller_pid']}").exists(), "Controller still running"
+        assert not old.get("active_jobs") and not old.get("completed_jobs"), "Collection resume needs reconciliation"
     os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:26])
     # Match motion_lib_base.load_data's directory glob order exactly. Sorting here
     # would silently assign different reference names to the simulator's IDs.
@@ -146,7 +150,13 @@ def main():
              "base_datasets": {}, "errors": [], "alerts": [],
              "expert": str(expert), "gpu_candidates": GPUS}
     try:
-        initial = collect(order, "initial_deterministic", False, 0, expert, state)
+        # An empty first-attempt directory may remain if the controller only waited
+        # for GPUs. Preserve it and use a new name on a reconciled restart.
+        name = "initial_deterministic"
+        if (DATA/"raw"/name).exists():
+            assert not list((DATA/"raw"/name).glob("shard*.log")), "Prior collector launch needs reconciliation"
+            name += "_"+str(time.time_ns())
+        initial = collect(order, name, False, 0, expert, state)
         cmd = [str(common.PYTHON), "-m", "vla_sonic.calibrate_box", "--out", str(OUT/"box.json"), str(initial)]
         with (OUT/"calibration.log").open("w") as stream:
             subprocess.run(cmd, cwd=RSL, stdout=stream, stderr=subprocess.STDOUT, check=True)

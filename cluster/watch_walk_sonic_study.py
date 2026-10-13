@@ -20,6 +20,15 @@ POOL = "StitchMAX100v3_eval"
 MILESTONES = list(range(500, 9000, 500)) + [8999]
 
 
+def gpu_has_room(index):
+    # Other users run light simulation clients across every GPU. These jobs use
+    # 3-6 GB and low utilization; reserve >35 GB headroom for our workload.
+    row = subprocess.check_output(["nvidia-smi", f"--id={index}",
+        "--query-gpu=memory.free,utilization.gpu", "--format=csv,noheader,nounits"], text=True)
+    memory, utilization = map(int, row.strip().split(","))
+    return memory > 35000 and utilization < 30
+
+
 def command(script, pool, direct=False):
     cmd = common.command(script, pool)
     if direct:
@@ -65,7 +74,7 @@ def main():
         while True:
             now = time.time()
             state["alerts"] = []
-            if train is None and common.gpu_free(7):
+            if train is None and gpu_has_room(7):
                 cmd = command("train_sonic_adapter.py", "StitchMAX400v3", True) + [
                     "--num_envs", "2048", "--max_iterations", "9000", "--seed", "42",
                     "--run_name", RUN, "--tracking-scale", "2.0"]
@@ -112,7 +121,7 @@ def main():
                     key = f"direct_{iteration}"
                     if key not in completed and ck.exists() and ck.stat().st_size > 0 and now-ck.stat().st_mtime > 10:
                         ready.append((key, ck))
-            if active is None and ready and common.gpu_free(8):
+            if active is None and ready and gpu_has_room(8):
                 key, ck = ready[0]
                 cmd = command("eval_sonic_adapter.py", POOL, ck is not None) + [
                     "--num_envs", "1000", "--num_episodes", "2000", "--seed", "0"]
