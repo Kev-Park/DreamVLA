@@ -52,9 +52,13 @@ def observe(work, now):
         label=procfile.name.removesuffix('.process.json')
         args=live_args(record['pid'])
         expected=record['command']
+        if expected and expected[0]=='env':
+            expected=expected[1:]
+            while expected and '=' in expected[0]:
+                expected=expected[1:]
         # Long-lived workers must match the recorded script and run-specific paths,
         # rather than merely occupying a recycled process ID.
-        command_matches=bool(args) and all(str(x) in args for x in expected[1:] if str(x) not in ['env'])
+        command_matches=bool(args) and all(str(x) in args for x in expected[1:])
         exits=re.findall(r'EXIT '+re.escape(label)+r' code=(-?\d+)',status)
         if exits and int(exits[-1]):
             result['alerts'].append(f'{label}: exited {exits[-1]}')
