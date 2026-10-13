@@ -45,13 +45,14 @@ def save(path, data):
     tmp.replace(path)
 
 
-def inventory(host, relative):
+def inventory(host, relative, inference=False):
     script = """import hashlib,json,pathlib
 b=(pathlib.Path.home()/'kevin').resolve();p=b/REL
 assert p.resolve().is_relative_to(b) and p.is_dir(),str(p)
 rows=[]
+skip={'optimizer.pt','scheduler.pt','rng_state.pth','training_args.bin'} if INFERENCE else set()
 for f in sorted(p.rglob('*')):
- if f.is_file():
+ if f.is_file() and f.name not in skip:
   assert not f.is_symlink(),str(f)
   h=hashlib.sha256()
   with f.open('rb') as stream:
@@ -59,15 +60,15 @@ for f in sorted(p.rglob('*')):
   rows.append({'path':str(f.relative_to(p)),'bytes':f.stat().st_size,'sha256':h.hexdigest()})
 assert rows
 print(json.dumps(rows))
-""".replace("REL", repr(relative))
+""".replace("REL", repr(relative)).replace("INFERENCE", repr(inference))
     return call(host, script, timeout=1800)
 
 
-def transfer(source, destination, relative, state_dir, label):
+def transfer(source, destination, relative, state_dir, label, inference=False):
     # Both roots are ~/kevin; all streamed member paths are relative to that root.
     parts = PurePosixPath(relative).parts
     assert parts and ".." not in parts and not relative.startswith("/")
-    before = inventory(source, relative)
+    before = inventory(source, relative, inference)
     save(state_dir/(label+".source_inventory.json"), before)
     call(destination, """import pathlib,json
 b=(pathlib.Path.home()/'kevin').resolve();p=b/REL
@@ -77,9 +78,11 @@ p.parent.mkdir(parents=True,exist_ok=True)
 print(json.dumps({'ready':True}))
 """.replace("REL", repr(relative)))
     state = {"source": source, "destination": destination, "relative": relative,
-             "started": time.time(), "bytes": sum(r["bytes"] for r in before)}
+             "started": time.time(), "bytes": sum(r["bytes"] for r in before),
+             "inference_and_trainer_metadata_only": inference}
     save(state_dir/(label+".transfer.json"), state)
-    producer_cmd = ssh(source, "tar -C ~/kevin -cf - -- "+shlex.quote(relative))
+    members = [str(PurePosixPath(relative)/r['path']) for r in before] if inference else [relative]
+    producer_cmd = ssh(source, "tar -C ~/kevin -cf - -- "+' '.join(map(shlex.quote,members)))
     consumer_cmd = ssh(destination, "tar -C ~/kevin -xf -")
     with (state_dir/(label+".source.stderr")).open("wb") as srcerr, (state_dir/(label+".destination.stderr")).open("wb") as dsterr:
         producer = subprocess.Popen(producer_cmd, stdout=subprocess.PIPE, stderr=srcerr, creationflags=FLAGS)
@@ -89,7 +92,7 @@ print(json.dumps({'ready':True}))
         consumer_code = consumer.wait()
         producer_code = producer.wait()
     assert producer_code == consumer_code == 0, f"Transfer failed: {label}; inspect stderr files"
-    after = inventory(destination, relative)
+    after = inventory(destination, relative, inference)
     assert before == after, f"Checksum mismatch after transfer: {label}"
     state.update(completed=time.time(), verified=True, files=len(before))
     save(state_dir/(label+".transfer.json"), state)
@@ -197,7 +200,12 @@ print(json.dumps(d))
         state["state"] = "returning_checkpoint"
         save(record, state)
         checkpoint = f"checkpoints/{run}/checkpoint-{spec['steps']}"
-        transfer("adroit", "bluesclues", checkpoint, directory, "checkpoint")
+        # The full optimizer/RNG checkpoint stays on Adroit, where the successful
+        # Slurm exit and resumability were verified above. Student collection and
+        # independent subsequent fine-tunes need only inference files and steps.
+        transfer("adroit", "bluesclues", checkpoint, directory, "checkpoint", inference=True)
+        state['resumable_checkpoint_host'] = 'adroit'
+        state['resumable_checkpoint'] = status['checkpoint']
         state.update(state="completed", completed=time.time())
         save(record, state)
     if state["state"] == "returning_checkpoint":
@@ -210,7 +218,9 @@ if f.exists():assert json.loads(f.read_text())==d
 else:
  t=f.with_suffix('.tmp');t.write_text(json.dumps(d,indent=2));t.replace(f)
 print(json.dumps({'delivered':True}))
-""".replace("REL", repr(reply)).replace("DATA", repr({"state": "completed", "host": "adroit", "run": run}))
+""".replace("REL", repr(reply)).replace("DATA", repr({"state": "completed", "host": "adroit", "run": run,
+            "resumable_checkpoint_host": state.get('resumable_checkpoint_host', 'adroit'),
+            "resumable_checkpoint": state.get('resumable_checkpoint', state.get('last_observation', {}).get('checkpoint'))}))
         call("bluesclues", code)
 
 
