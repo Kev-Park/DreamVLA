@@ -18,7 +18,6 @@ import sys
 import time
 
 import watch_t20max_v3 as common
-from watch_walk_sonic_study import gpu_has_room
 
 ROOT, REPO = common.ROOT, common.REPO
 OUT = ROOT / "eval_videos/walk_v3_study/expert_collection"
@@ -57,22 +56,32 @@ def inspect_rollouts(root, box=None):
 
 def collect(ids, name, sampled, seed, expert, state):
     directory = DATA / "raw" / name
-    assert not directory.exists(), f"Refusing to overwrite collection {directory}"
-    directory.mkdir(parents=True)
+    directory.mkdir(parents=True, exist_ok=True)
     jobs = []
     for i, gpu in enumerate(GPUS):
         selected = ids[i::len(GPUS)]
         if not selected:
             continue
         idsfile = directory/f"ids_{i}.txt"
-        idsfile.write_text(" ".join(map(str, selected))+"\n")
+        if idsfile.exists():
+            assert list(map(int, idsfile.read_text().split())) == selected, f"Changed shard inputs: {idsfile}"
+        else:
+            idsfile.write_text(" ".join(map(str, selected))+"\n")
+        log = directory/f"shard{i}.log"
+        if log.exists():
+            text = common.tail(log)
+            assert "Collection finished." in text and "errored=0" in text, f"Prior incomplete collector needs reconciliation: {log}"
+            continue
         jobs.append({"gpu": gpu, "ids": selected, "idsfile": idsfile, "index": i})
     pending = list(jobs)
     active = []
     while pending or active:
         for job in pending[:]:
-            if not gpu_has_room(job["gpu"]):
+            slots = subprocess.check_output([str(common.PYTHON), str(REPO/"cluster/gpu_slots.py"),
+                "reserve", "--owner", str(os.getpid()), "--count", "1", "--mb", "17000"], text=True).split()
+            if not slots:
                 continue
+            job["gpu"] = int(slots[0])
             cmd = common.command("collect_sonic_adapter.py", "StitchMAX200v3")
             cmd[cmd.index("--task")+1] = "Isaac-Motion-Tracking-Pick-Cam-HOI-v0"
             cmd += ["--checkpoint-path", str(expert), "--num-samples", str(len(job["ids"])),
@@ -101,6 +110,8 @@ def collect(ids, name, sampled, seed, expert, state):
             # The collector can catch per-rollout exceptions: do not accept a clean process
             # exit as proof all requested references were actually attempted.
             assert "errored=0" in text, f"Per-rollout errors: {job['log']}"
+            subprocess.run([str(common.PYTHON), str(REPO/"cluster/gpu_slots.py"), "release",
+                "--owner", str(os.getpid()), "--gpu", str(job["gpu"])], check=True)
             state.setdefault("completed_jobs", []).append({"name": name, "gpu": job["gpu"],
                 "references": job["ids"], "log": str(job["log"]), "completed": time.time()})
             active.remove(job)
@@ -125,7 +136,9 @@ def main():
     if (OUT/"workflow.json").exists():
         old = json.loads((OUT/"workflow.json").read_text())
         assert not Path(f"/proc/{old['controller_pid']}").exists(), "Controller still running"
-        assert not old.get("active_jobs") and not old.get("completed_jobs"), "Collection resume needs reconciliation"
+        assert not old.get("active_jobs"), "Collection resume needs reconciliation"
+    else:
+        old = None
     os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:26])
     # Match motion_lib_base.load_data's directory glob order exactly. Sorting here
     # would silently assign different reference names to the simulator's IDs.
@@ -137,7 +150,7 @@ def main():
     random.Random(42).shuffle(order)
     pools = {str(n): sorted(order[:n]) for n in [10, 50, 200]}
     DATA.mkdir(parents=True, exist_ok=True)
-    common.write(OUT/"protocol.json", {
+    protocol = {
         "expert": str(expert), "reference_pool": str(POOL),
         "reference_files": [str(p) for p in refs], "nested_motion_ids": pools,
         "base_passing_episodes": [10, 50, 200], "dagger_attempts_per_round": [10, 50, 200],
@@ -145,27 +158,46 @@ def main():
         "initialization": "independent pretrained GR00T on each cumulative dataset",
         "retry": "3 sampled attempts per failed reference, then sampled working references",
         "success_filter": "existing collector physical-hold + fixed calibrated four-rule pick filter",
-        "evaluation_pool": str(ROOT/"ref_motions/StitchMAX100v3_eval")})
+        "evaluation_pool": str(ROOT/"ref_motions/StitchMAX100v3_eval")}
+    if (OUT/"protocol.json").exists():
+        assert json.loads((OUT/"protocol.json").read_text()) == protocol, "Collection protocol changed"
+    else:
+        common.write(OUT/"protocol.json", protocol)
     state = {"status": "collecting", "controller_pid": os.getpid(), "started": time.time(),
              "base_datasets": {}, "errors": [], "alerts": [],
              "expert": str(expert), "gpu_candidates": GPUS}
+    if old:
+        state.update(old)
+        state.update(controller_pid=os.getpid(), status="collecting", resumed=time.time(), alerts=[])
     try:
         # An empty first-attempt directory may remain if the controller only waited
         # for GPUs. Preserve it and use a new name on a reconciled restart.
-        name = "initial_deterministic"
-        if (DATA/"raw"/name).exists():
-            assert not list((DATA/"raw"/name).glob("shard*.log")), "Prior collector launch needs reconciliation"
-            name += "_"+str(time.time_ns())
-        initial = collect(order, name, False, 0, expert, state)
-        cmd = [str(common.PYTHON), "-m", "vla_sonic.calibrate_box", "--out", str(OUT/"box.json"), str(initial)]
-        with (OUT/"calibration.log").open("w") as stream:
-            subprocess.run(cmd, cwd=RSL, stdout=stream, stderr=subprocess.STDOUT, check=True)
-        box = json.loads((OUT/"box.json").read_text())
-        rows = inspect_rollouts(initial, box)
-        common.write(OUT/"initial_scores.json", rows)
+        if (OUT/"initial_scores.json").exists():
+            box = json.loads((OUT/"box.json").read_text())
+            rows = json.loads((OUT/"initial_scores.json").read_text())
+        else:
+            name = "initial_deterministic"
+            if (DATA/"raw"/name).exists():
+                assert not list((DATA/"raw"/name).glob("shard*.log")), "Prior collector launch needs reconciliation"
+                name += "_"+str(time.time_ns())
+            initial = collect(order, name, False, 0, expert, state)
+            cmd = [str(common.PYTHON), "-m", "vla_sonic.calibrate_box", "--out", str(OUT/"box.json"), str(initial)]
+            with (OUT/"calibration.log").open("w") as stream:
+                subprocess.run(cmd, cwd=RSL, stdout=stream, stderr=subprocess.STDOUT, check=True)
+            box = json.loads((OUT/"box.json").read_text())
+            rows = inspect_rollouts(initial, box)
+            common.write(OUT/"initial_scores.json", rows)
         passed = [r for r in rows if r["passing"]]
         selected_previous = []
         for n in [10, 50, 200]:
+            base = DATA/f"base{n}"
+            if (base/"ready").is_file():
+                manifest = json.loads((base/"manifest.json").read_text())
+                assert manifest["count"] == len(manifest["episodes"]) == n
+                assert manifest["selected_reference_ids"] == pools[str(n)] and manifest["box"] == box
+                assert all(Path(r["path"]).is_file() for r in manifest["episodes"])
+                selected_previous = manifest["episodes"]
+                continue
             allowed = set(pools[str(n)])
             selected = list(selected_previous)
             represented = {r["motion_id"] for r in selected}
