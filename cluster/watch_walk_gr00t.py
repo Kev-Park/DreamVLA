@@ -19,6 +19,46 @@ def process(pid):
         return None
 
 
+def active_output_logs(pid, wrapper, proc_root=Path('/proc')):
+    """Inspect outputs of this live stage's descendants, including shard logs."""
+    pending, seen, logs = [pid], set(), set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        proc = proc_root/str(current)
+        try:
+            pending.extend(map(int, (proc/'task'/str(current)/'children').read_text().split()))
+        except (OSError, ValueError):
+            pass  # Children may exit between the process and descriptor reads.
+        for descriptor in ('1', '2'):
+            try:
+                target = (proc/'fd'/descriptor).resolve(strict=True)
+                if target != wrapper.resolve() and target.is_relative_to(ROOT.resolve()) and target.is_file():
+                    logs.add(target)
+            except OSError:
+                pass
+    return sorted(logs)
+
+
+def output_activity(pid, wrapper, now):
+    child_logs = []
+    for log in active_output_logs(pid, wrapper):
+        try:
+            child_logs.append({'path': str(log), 'seconds_since_log_update': now-log.stat().st_mtime})
+        except OSError:
+            pass
+    wrapper_age = now-wrapper.stat().st_mtime if wrapper.exists() else None
+    age = min(r['seconds_since_log_update'] for r in child_logs) if child_logs else wrapper_age
+    # Each live shard must advance: an active sibling cannot hide a stalled one.
+    stalled = [Path(r['path']).name for r in child_logs if r['seconds_since_log_update'] > 1800]
+    if not child_logs and wrapper_age is not None and wrapper_age > 1800:
+        stalled = [wrapper.name]
+    return {'seconds_since_log_update': age, 'wrapper_log_age': wrapper_age,
+            'active_child_logs': child_logs}, stalled
+
+
 def inspect(budget):
     tag = f"walk{budget}_v3_dagger57_20261013"
     work = ROOT/"dline"/tag
@@ -40,10 +80,10 @@ def inspect(budget):
         log = stage.with_name(stage.name.replace(".process.json", ".log"))
         live = process(job["pid"])
         if live:
+            activity, stalled = output_activity(job['pid'], log, time.time())
             row.setdefault("active_workers", []).append(dict(job, command_live=live,
-                seconds_since_log_update=time.time()-log.stat().st_mtime if log.exists() else None))
-            if log.exists() and time.time()-log.stat().st_mtime > 1800:
-                row["alerts"].append("Stage log stalled: "+log.name)
+                **activity))
+            row['alerts'].extend('Stage log stalled: '+name for name in stalled)
     for index in range(4):
         run = f"{tag}_r{index}"
         trained, evaluated = work/(run+".trained.json"), work/(run+".eval.json")
