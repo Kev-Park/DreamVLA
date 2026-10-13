@@ -95,7 +95,7 @@ def main(resume_controller=False):
     if resume_controller:
         old_command = Path(f"/proc/{previous['controller_pid']}/cmdline")
         assert not old_command.exists() or not old_command.read_bytes(), 'Previous controller is still live'
-        assert previous['status'] in ('training', 'failed') and not previous.get('active_eval'), 'Only idle eval-controller handoff is supported'
+        assert previous['status'] in ('training', 'failed', 'paused_by_user') and not previous.get('active_eval'), 'Only idle eval-controller handoff is supported'
         assert previous['target_updates'] == 9000 and previous['source_completed_updates'] == 3501
         assert previous['source_checkpoint'] == str(SOURCE)
         pid = previous['train_pid']
@@ -121,6 +121,19 @@ def main(resume_controller=False):
         while True:
             now = time.time()
             state["alerts"] = []
+            pause_file = OUT/'user_budget_pause.json'
+            if pause_file.exists():
+                pause = json.loads(pause_file.read_text())
+                assert train and pause['pid'] == train.pid and pause['action'] == 'SIGSTOP'
+                assert active is None, 'Inspect active evaluation before pausing its controller'
+                process_status = Path(f'/proc/{train.pid}/status').read_text()
+                assert re.search(r'^State:\s+T\b', process_status, re.M), 'User-paused trainer is no longer stopped'
+                state.update(status='paused_by_user', heartbeat=now, pause=pause,
+                             active_eval=None, completed_evals=len(rows))
+                common.write(OUT/'workflow.json', state)
+                time.sleep(30)
+                continue
+            assert state['status'] != 'paused_by_user', 'Explicitly reconcile the user pause before resuming'
             if train is None and gpu_room(0, 16000):
                 cmd = command("train_sonic_adapter.py", "StitchMAX400v3") + [
                     "--num_envs", "2048", "--max_iterations", "9000", "--seed", "42",

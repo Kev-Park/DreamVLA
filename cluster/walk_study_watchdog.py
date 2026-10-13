@@ -56,6 +56,10 @@ for row in rows:
   and sum(n for i,n in counts)==row['episodes'] and row['episodes']>=2000)
 state['controller_command']=command(state['controller_pid'])
 state['train_command']=command(state.get('train_pid',0))
+process_status=pathlib.Path('/proc')/str(state.get('train_pid',0))/'status'
+state['train_stopped']=bool(process_status.exists() and re.search(r'^State:\s+T\b',process_status.read_text(),re.M))
+pause=out/'user_budget_pause.json'
+state['user_pause']=json.loads(pause.read_text()) if pause.exists() else None
 log=out/'train.log';state['train_log_age']=time.time()-log.stat().st_mtime
 if state.get('active_eval'):
  log=out/('eval_'+str(state['active_eval']['iteration'])+'.log')
@@ -110,7 +114,17 @@ def assess(host, data, now, progress):
             alerts.append('Frozen SONIC baseline missing or incomplete')
     else:
         state = data['workflow']
-        if state['status'] != 'complete':
+        paused = state['status'] == 'paused_by_user'
+        if paused:
+            pause = state.get('user_pause') or {}
+            if not (state.get('train_stopped') and state['train_command']
+                    and pause.get('pid') == state.get('train_pid') and pause.get('action') == 'SIGSTOP'):
+                alerts.append('Direct-token user pause is not backed by a stopped trainer and matching receipt')
+            if now-state['heartbeat'] > 120 or not state['controller_command']:
+                alerts.append('Paused direct-token controller stopped or heartbeat stale')
+            if state.get('active_eval'):
+                alerts.append('Direct-token controller has an unexpected active evaluation during user pause')
+        elif state['status'] != 'complete':
             if now-state['heartbeat'] > 120 or not state['controller_command']:
                 alerts.append('Direct-token controller stopped or heartbeat stale')
             if state['status'] == 'failed':
