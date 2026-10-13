@@ -25,9 +25,11 @@ with (root / "gpu_slots.lock").open("a+") as lock:
                 entries.pop(i)
                 break
     else:
-        rows = subprocess.check_output(['nvidia-smi','--query-gpu=index,memory.used,memory.total','--format=csv,noheader,nounits'], text=True)
+        rows = subprocess.check_output(['nvidia-smi','--query-gpu=index,memory.used,memory.total,utilization.gpu','--format=csv,noheader,nounits'], text=True)
         available = []
-        for gpu,used,total in sorted(([int(x) for x in row.split(',')] for row in rows.splitlines()), key=lambda row:row[1]):
+        # A compute-saturated neighbor can use little VRAM. Prefer quieter GPUs
+        # before ranking by memory, while keeping the existing capacity checks.
+        for gpu,used,total,util in sorted(([int(x) for x in row.split(',')] for row in rows.splitlines()), key=lambda row:(row[3]>=80,row[1])):
             if a.gpu is not None and gpu != a.gpu:
                 continue
             pending = sum(e['mb'] for e in entries if e['gpu']==gpu)
