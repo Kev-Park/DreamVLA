@@ -127,6 +127,31 @@ class Chain:
         subprocess.run([sys.executable,str(HERE/'gpu_slots.py'),'release','--owner',str(os.getpid()),
                         '--gpu',str(gpu)],check=True)
 
+    def external(self, phase, run, payload):
+        """An explicit routing decision delegates one stage, never a live worker.
+
+        The bridge writes its job handle before launch and a terminal response only
+        after transferring and verifying outputs. No timeout implies cancellation.
+        """
+        policy=self.work/'routing.json'
+        host=read(policy).get(phase,{}).get(run) if policy.exists() else None
+        if host is None or host=='bluesclues':return False
+        assert host in ['biped','adroit'],host
+        directory=self.work/'external';directory.mkdir(exist_ok=True)
+        request=directory/f'{phase}_{run}.request.json'
+        reply=directory/f'{phase}_{run}.reply.json'
+        spec=dict(host=host,phase=phase,run=run,budget=self.budget,**payload)
+        if request.exists():assert read(request)==spec
+        else:atomic(request,spec)
+        self.log(f'WAIT external {phase} {run} host={host}')
+        while not reply.exists():
+            atomic(directory/f'{phase}_{run}.waiting.json',{'time':time.time(),'controller_pid':os.getpid()})
+            time.sleep(30)
+        response=read(reply)
+        assert response['state']=='completed',response
+        assert response['host']==host and response['run']==run
+        return True
+
     def prepare(self):
         manifest = read(ROOT/f'dline/pick{self.budget}/subset_manifest.json')
         sources = [Path(p) for p in manifest['episodes']]
@@ -170,6 +195,14 @@ class Chain:
         ck=ROOT/'checkpoints'/run/f'checkpoint-{steps}'
         if (self.work/f'{run}.trained.json').exists():
             assert checkpoint_ok(ck)
+            return run,ck
+        if self.external('finetune',run,{'dataset':str(dataset),'checkpoint':str(ck),'steps':steps,
+                         'frames':info['total_frames'],'episodes':info['total_episodes'],
+                         'global_batch_size':16,'passes':5.7,'learning_rate':0.0001}):
+            assert checkpoint_ok(ck) and read(ck/'trainer_state.json')['global_step']==steps
+            atomic(self.work/f'{run}.trained.json',{'run':run,'checkpoint':str(ck),'dataset':str(dataset),
+                   'frames':info['total_frames'],'episodes':info['total_episodes'],'steps':steps,
+                   'effective_passes':steps*16/info['total_frames'],'batch_size':16,'external':True})
             return run,ck
         gpu=self.slots(1,45000)[0]
         try:
@@ -263,6 +296,13 @@ class Chain:
         done=self.work/f'{run}.eval.json'
         if done.exists():return
         out=ROOT/'eval_videos'/run;out.mkdir(exist_ok=True)
+        if self.external('evaluate',run,{'checkpoint':str(checkpoint),'output':str(out),
+                         'pool':EVAL_REFS,'episodes':100,'box':read(self.work/'box.json')}):
+            report=read(out/'results.json')
+            assert report['pool']==EVAL_REFS and report['episodes']==100
+            assert sorted(r['motion_id'] for r in report['per_episode'])==list(range(100))
+            atomic(done,report)
+            return
         gpus=self.slots(4,17000)
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
