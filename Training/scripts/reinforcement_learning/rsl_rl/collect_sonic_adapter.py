@@ -1235,6 +1235,8 @@ def main() -> None:
                              "the env the residual policies are trained in). Run with the same HS_REWORK "
                              "env vars as training.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--motion-ids", type=str, default=None,
+                        help="Expert collection: whitespace-separated original-library motion IDs.")
     parser.add_argument("--sample-expert-actions", action="store_true",
                         help="Sample the loaded expert's learned Normal action distribution for "
                              "base collection retries. DAgger labels remain deterministic.")
@@ -1394,6 +1396,8 @@ def main() -> None:
     args_cli = parser.parse_args()
     if args_cli.sample_expert_actions and args_cli.dagger_vla_checkpoint:
         parser.error("--sample-expert-actions is only for expert base collection")
+    if args_cli.motion_ids and args_cli.dagger_vla_checkpoint:
+        parser.error("Use --dagger-motion-ids for DAgger collection")
 
     _set_all_seeds(args_cli.seed)
     if args_cli.num_envs != 1:
@@ -1615,7 +1619,12 @@ def main() -> None:
         if dagger is not None:
             sweep = [(m, r) for m in dagger_motions if m_lo <= m < m_hi for r in range(args_cli.dagger_rollouts)]
         else:
-            sweep = [(m, 0) for m in range(m_lo, m_hi)]
+            selected = list(range(m_lo, m_hi))
+            if args_cli.motion_ids:
+                selected = [int(x) for x in Path(args_cli.motion_ids).read_text().split()]
+                if len(selected) != len(set(selected)) or not all(m_lo <= m < m_hi for m in selected):
+                    raise ValueError("Expert motion IDs must be unique and inside the requested range")
+            sweep = [(m, 0) for m in selected]
         for motion_id, rollout_idx in sweep:
             if written >= target_successes or not simulation_app.is_running():
                 break

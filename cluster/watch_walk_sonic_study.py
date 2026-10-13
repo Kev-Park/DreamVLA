@@ -45,27 +45,31 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     lock = (OUT/"controller.lock").open("w")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    assert not (OUT/"workflow.json").exists(), "Inspect existing workflow before resuming"
+    if (OUT/"workflow.json").exists():
+        previous = json.loads((OUT/"workflow.json").read_text())
+        assert not Path(f"/proc/{previous['controller_pid']}").exists(), "Controller still running"
+        assert not previous.get("train_pid") and not previous.get("active_eval"), "Resume needs process reconciliation"
     os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:26])
     state = {"status": "waiting_for_gpus", "controller_pid": os.getpid(),
-             "started": time.time(), "train_gpu": 9, "eval_gpu": 8,
+             "started": time.time(), "train_gpu": 7, "eval_gpu": 8,
              "run": RUN, "num_envs": 2048, "max_iterations": 9000,
              "eval_pool": POOL, "eval_episodes": 2000, "errors": [],
              "note": "Direct token actor starts from zero tokens, not the frozen encoder token",
              "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()}
     train = active = None
     train_dir = None
-    completed, rows = set(), []
+    rows = json.loads((OUT/"results.json").read_text()) if (OUT/"results.json").exists() else []
+    completed = {r["experiment"] for r in rows}
     last_progress, last_iteration = time.time(), None
     try:
         while True:
             now = time.time()
             state["alerts"] = []
-            if train is None and common.gpu_free(9):
+            if train is None and common.gpu_free(7):
                 cmd = command("train_sonic_adapter.py", "StitchMAX400v3", True) + [
                     "--num_envs", "2048", "--max_iterations", "9000", "--seed", "42",
                     "--run_name", RUN, "--tracking-scale", "2.0"]
-                train, train_log = launch(cmd, "train_direct", 9)
+                train, train_log = launch(cmd, "train_direct", 7)
                 state.update(status="training", train_pid=train.pid, training_started=now)
             if train:
                 text = common.tail(train_log)
