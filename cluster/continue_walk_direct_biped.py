@@ -4,6 +4,7 @@ The original Bluesclues training remains a fallback. This continuation restores
 the policy, optimizer, learning rate and global exploration schedule. Simulation
 episodes restart at the checkpoint boundary; the continuation is labeled clearly.
 """
+import argparse
 import fcntl
 import json
 import os
@@ -27,11 +28,43 @@ def command(script, pool):
     return cmd
 
 
-def gpu_room(index, minimum):
+def gpu_room(index, minimum, allow_busy=False):
     text = subprocess.check_output(["nvidia-smi", f"--id={index}",
         "--query-gpu=memory.free,utilization.gpu", "--format=csv,noheader,nounits"], text=True)
     memory, utilization = map(int, text.strip().split(","))
-    return memory > minimum and utilization < 20
+    return memory > minimum and (allow_busy or utilization < 20)
+
+
+class AttachedTrain:
+    """Observe an existing detached trainer without interrupting its GPU work.
+
+    Its exit status belongs to the previous controller. An observed exit is
+    accepted only with the final update in the log and a nonempty final weight
+    file; this evidence is recorded separately from a waitpid exit status.
+    """
+    def __init__(self, pid, directory):
+        self.pid, self.directory = pid, directory
+        self.returncode = None
+
+    def poll(self):
+        if self.returncode is not None:
+            return self.returncode
+        command = Path(f'/proc/{self.pid}/cmdline')
+        data = command.read_bytes() if command.exists() else b''
+        if data:
+            assert b'train_sonic_adapter.py' in data and RUN.encode() in data, 'Trainer PID was reused'
+            return None
+        text = common.tail(OUT/'train.log')
+        iterations = re.findall(r'Learning iteration\s+(\d+)', text)
+        final = self.directory/'model_8999.pt'
+        verified = bool(iterations and int(iterations[-1]) == 8999
+                        and final.is_file() and final.stat().st_size > 0
+                        and 'Traceback (most recent call last)' not in text)
+        self.returncode = 0 if verified else 1
+        common.write(OUT/'attached_training_exit.json', {'observed_at': time.time(),
+            'pid': self.pid, 'final_checkpoint': str(final), 'final_update_verified': verified,
+            'exit_status_available': False})
+        return self.returncode
 
 
 def launch(cmd, name, gpu):
@@ -45,11 +78,12 @@ def launch(cmd, name, gpu):
     return proc, log
 
 
-def main():
+def main(resume_controller=False):
     OUT.mkdir(parents=True, exist_ok=True)
     lock = (OUT/"controller.lock").open("w")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    assert not (OUT/"workflow.json").exists(), "Inspect previous continuation before restarting"
+    previous = json.loads((OUT/'workflow.json').read_text()) if (OUT/'workflow.json').exists() else None
+    assert resume_controller == bool(previous), 'Inspect previous continuation before restarting'
     assert SOURCE.is_file()
     state = {"status": "waiting_for_gpu", "controller_pid": os.getpid(), "started": time.time(),
              "source_checkpoint": str(SOURCE), "source_completed_updates": 3501,
@@ -58,6 +92,26 @@ def main():
     train = active = None
     directory = None
     completed, rows = set(), []
+    if resume_controller:
+        old_command = Path(f"/proc/{previous['controller_pid']}/cmdline")
+        assert not old_command.exists() or not old_command.read_bytes(), 'Previous controller is still live'
+        assert previous['status'] == 'training' and not previous.get('active_eval'), 'Only idle eval-controller handoff is supported'
+        assert previous['target_updates'] == 9000 and previous['source_completed_updates'] == 3501
+        assert previous['source_checkpoint'] == str(SOURCE)
+        pid = previous['train_pid']
+        command = Path(f'/proc/{pid}/cmdline').read_bytes()
+        assert b'train_sonic_adapter.py' in command and RUN.encode() in command
+        # The trainer launched with start_new_session=True, so replacing its
+        # controller cannot send it tmux's terminal hangup signal.
+        assert os.getsid(pid) == pid
+        directory = Path(previous['checkpoint_dir'])
+        assert directory.is_relative_to(REPO/'Training/logs/rsl_rl/g1_sonic_adapter')
+        train, log = AttachedTrain(pid, directory), OUT/'train.log'
+        rows = json.loads((OUT/'results.json').read_text())
+        completed = {r['iteration'] for r in rows}
+        assert len(completed) == len(rows) and completed.issubset(MILESTONES)
+        state = dict(previous, controller_pid=os.getpid(), controller_resumed_at=time.time(),
+                     note='Detached PPO trainer retained; evals may share its GPU when the second GPU is occupied')
     try:
         while True:
             now = time.time()
@@ -92,14 +146,21 @@ def main():
                 common.write(OUT/"results.json", rows)
                 completed.add(iteration)
                 active = None
-            if directory and active is None and gpu_room(1, 8000):
+            eval_gpu = None
+            if directory and active is None:
+                if gpu_room(1, 8000):
+                    eval_gpu = 1
+                elif gpu_room(0, 8000, allow_busy=True):
+                    eval_gpu = 0
+            if eval_gpu is not None:
                 for iteration in MILESTONES:
                     ck = directory/f"model_{iteration}.pt"
                     if iteration in completed or not ck.is_file() or now-ck.stat().st_mtime < 10:
                         continue
                     cmd = command("eval_sonic_adapter.py", "StitchMAX100v3_eval") + [
                         "--num_envs", "1000", "--num_episodes", "2000", "--seed", "0", "--path", str(ck)]
-                    proc, logfile = launch(cmd, f"eval_{iteration}", 1)
+                    proc, logfile = launch(cmd, f"eval_{iteration}", eval_gpu)
+                    state['eval_gpu'] = eval_gpu
                     active = (iteration, proc, logfile, now)
                     break
             state.update(heartbeat=now, completed_evals=len(rows),
@@ -118,4 +179,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--resume-controller', action='store_true')
+    main(parser.parse_args().resume_controller)
