@@ -62,8 +62,14 @@ def inspect(budget):
         assert all(r["trained"] and r["evaluated"] for r in row["rounds"])
         assert not row["alerts"], row["alerts"]
         row["status"] = "complete"
-    elif (work/"waiting_for_base.json").exists() and not (work/"recipe.json").exists():
-        row["status"] = "waiting_for_exact_expert_base" if cmd else row["status"]
+    elif cmd and (work/"waiting_for_base.json").exists() and not (work/"recipe.json").exists():
+        base = ROOT/f"datasets/walk_v3_study/base{budget}"
+        if not (base/"ready").exists():
+            row["status"] = "waiting_for_exact_expert_base"
+        elif any("convert_sharded.sh" in p["command_live"] for p in row.get("active_workers", [])):
+            row["status"] = "converting_base"
+        else:
+            row["status"] = "preparing_base_training"
     return row
 
 
