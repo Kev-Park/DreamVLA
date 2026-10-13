@@ -1006,6 +1006,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
 
     terminated_flag = truncated_flag = False
     step_index = 0
+    rollout_started = time.monotonic()
     if not simulation_app.is_running():
         raise RuntimeError("Simulation app is not running at rollout start.")
 
@@ -1119,6 +1120,10 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
         terminated_flag = bool(torch.as_tensor(terminated).any().item())
         truncated_flag = bool(torch.as_tensor(truncated).any().item())
+        if step_index % 100 == 0:
+            motion_id = getattr(env.unwrapped, "_forced_motion_id", "unknown")
+            print(f"[progress] collection motion={motion_id} step={step_index}/{max_steps} "
+                  f"elapsed={time.monotonic()-rollout_started:.1f}s", flush=True)
         if terminated_flag or truncated_flag:
             # Which termination term ended the episode (read BEFORE the next step; the manager
             # keeps the per-term flags of the step that terminated). time_out = the reference
