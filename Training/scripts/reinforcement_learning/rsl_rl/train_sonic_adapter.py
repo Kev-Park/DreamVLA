@@ -522,13 +522,28 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         runner.load(resume_path)
+        if agent_cfg.class_name == "OnPolicyRunner":
+            # RSL stores the last completed (zero-based) update in `iter`.
+            # Preserve the global exploration schedule and the requested total
+            # update budget when resuming, rather than starting both over.
+            completed_updates = int(runner.current_learning_iteration) + 1
+            runner.current_learning_iteration = completed_updates
+            _update_counter["n"] = completed_updates
+            runner.alg.learning_rate = float(runner.alg.optimizer.param_groups[0]["lr"])
+            print(f"[train_sonic_adapter] RESUME: {completed_updates} completed updates, "
+                  f"target {agent_cfg.max_iterations}, lr={runner.alg.learning_rate}")
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
 
     # run training
-    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    remaining_iterations = agent_cfg.max_iterations
+    if agent_cfg.resume and agent_cfg.class_name == "OnPolicyRunner":
+        remaining_iterations -= completed_updates
+        if remaining_iterations <= 0:
+            raise ValueError("Resume checkpoint already reached the requested total update count")
+    runner.learn(num_learning_iterations=remaining_iterations, init_at_random_ep_len=True)
 
     # close the simulator
     env.close()
