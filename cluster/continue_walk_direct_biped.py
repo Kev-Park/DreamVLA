@@ -95,12 +95,12 @@ def main(resume_controller=False):
     if resume_controller:
         old_command = Path(f"/proc/{previous['controller_pid']}/cmdline")
         assert not old_command.exists() or not old_command.read_bytes(), 'Previous controller is still live'
-        assert previous['status'] == 'training' and not previous.get('active_eval'), 'Only idle eval-controller handoff is supported'
+        assert previous['status'] in ('training', 'failed') and not previous.get('active_eval'), 'Only idle eval-controller handoff is supported'
         assert previous['target_updates'] == 9000 and previous['source_completed_updates'] == 3501
         assert previous['source_checkpoint'] == str(SOURCE)
         pid = previous['train_pid']
-        command = Path(f'/proc/{pid}/cmdline').read_bytes()
-        assert b'train_sonic_adapter.py' in command and RUN.encode() in command
+        trainer_command = Path(f'/proc/{pid}/cmdline').read_bytes()
+        assert b'train_sonic_adapter.py' in trainer_command and RUN.encode() in trainer_command
         # The trainer launched with start_new_session=True, so replacing its
         # controller cannot send it tmux's terminal hangup signal.
         assert os.getsid(pid) == pid
@@ -110,8 +110,13 @@ def main(resume_controller=False):
         rows = json.loads((OUT/'results.json').read_text())
         completed = {r['iteration'] for r in rows}
         assert len(completed) == len(rows) and completed.issubset(MILESTONES)
-        state = dict(previous, controller_pid=os.getpid(), controller_resumed_at=time.time(),
+        state = dict(previous, status='training', controller_pid=os.getpid(), controller_resumed_at=time.time(),
                      note='Detached PPO trainer retained; evals may share its GPU when the second GPU is occupied')
+        if previous['status'] == 'failed':
+            state.setdefault('controller_failures', []).append({
+                'pid': previous['controller_pid'], 'time': previous['heartbeat'],
+                'error': previous.get('error'), 'recovered_at': time.time()})
+            state.pop('error', None)
     try:
         while True:
             now = time.time()
