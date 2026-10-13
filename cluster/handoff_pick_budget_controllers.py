@@ -32,6 +32,9 @@ def main():
     pending=[]
     for budget in [10,50]:
         c=Chain(budget);run=c.tag+'_r0'
+        if (c.work/f'{run}.trained.json').exists():
+            print(json.dumps({'budget':budget,'state':'already_past_base_boundary','action':'left_original_controller_running'}),flush=True)
+            continue
         parent=int((c.work/'controller.lock').read_text())
         parent_state=proc(parent)
         assert parent_state and 'pick_budget_chain.py' in parent_state['args'] and f'--budget {budget}' in parent_state['args']
