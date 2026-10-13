@@ -52,7 +52,8 @@ for row in rows:
   stream.seek(max(0,log.stat().st_size-2000000));text=stream.read().decode(errors='replace')
  ranking=text.split('PER-CLIP OUTCOME RANKING (worst topple first)')[-1]
  counts=[(int(m[0]),int(m[1])) for m in re.findall(r'^\s+(\d+)\s+(\d+)\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s+',ranking,re.M)]
- row['all_100_references_covered']=sorted(i for i,n in counts)==list(range(100)) and sum(n for i,n in counts)==2000
+ row['all_100_references_covered']=(sorted(i for i,n in counts)==list(range(100))
+  and sum(n for i,n in counts)==row['episodes'] and row['episodes']>=2000)
 state['controller_command']=command(state['controller_pid'])
 state['train_command']=command(state.get('train_pid',0))
 log=out/'train.log';state['train_log_age']=time.time()-log.stat().st_mtime
