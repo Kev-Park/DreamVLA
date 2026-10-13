@@ -112,6 +112,25 @@ print(json.dumps({'checkout':str(target),'commit':subprocess.check_output(['git'
 """)
 
 
+def capacity_forecast():
+    """Observe full-A100 queue availability without submitting or allocating jobs."""
+    return call('adroit', """import pathlib,subprocess,json,time,concurrent.futures,re
+b=pathlib.Path.home()/'kevin'
+def predict(gpus):
+ cmd=['sbatch','--test-only','--gres=gpu:'+str(gpus),'--cpus-per-task='+str(8*gpus),
+      '--mem='+str(96*gpus)+'G',str(b/'wt/locomotion/DreamVLA/cluster/adroit/walk_gr00t_finetune.sbatch'),
+      str(b/'datasets/walk_v3_study/base200/lerobot/ds'),'walk_capacity_preflight','44753']
+ p=subprocess.run(cmd,capture_output=True,text=True,timeout=30)
+ match=re.search(r'to start at (\\S+)',p.stderr)
+ return {'gpus':gpus,'returncode':p.returncode,'predicted_start':match.group(1) if match else None,
+         'stdout':p.stdout,'stderr':p.stderr}
+with concurrent.futures.ThreadPoolExecutor(2) as pool:rows=list(pool.map(predict,[1,2]))
+assert all(r['returncode']==0 and r['predicted_start'] for r in rows),rows
+print(json.dumps({'observed_at':time.time(),'cluster_timezone':list(time.tzname),
+                  'predictions':rows,'test_only':True,'jobs_submitted':False}))
+""", timeout=90)
+
+
 def validate_finetune_request(spec):
     assert spec["phase"] == "finetune" and spec["host"] == "adroit"
     assert spec["global_batch_size"] == 16 and spec["passes"] == 5.7
@@ -233,7 +252,15 @@ def main():
     state = {"pid": os.getpid(), "started": time.time(), "state": "starting"}
     try:
         state["code"] = update_remote_code()
+        last_capacity_check = 0
         while True:
+            if time.time()-last_capacity_check >= 1800:
+                forecast = capacity_forecast()
+                save(args.state_dir/'capacity_latest.json', forecast)
+                with (args.state_dir/'capacity_history.jsonl').open('a') as stream:
+                    stream.write(json.dumps(forecast)+'\n')
+                state['capacity_forecast'] = forecast
+                last_capacity_check = time.time()
             requests = call("bluesclues", """import pathlib,json
 b=(pathlib.Path.home()/'kevin').resolve();rows=[]
 for budget in [10,50,200]:
