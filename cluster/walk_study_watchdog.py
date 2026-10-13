@@ -15,7 +15,7 @@ from walk_adroit_bridge import call, save
 
 
 BLUE = r'''
-import json,pathlib,time
+import json,pathlib,shutil,time
 b=pathlib.Path.home()/'kevin'
 def read(relative):return json.loads((b/relative).read_text())
 def process(pid):
@@ -33,12 +33,13 @@ collector['controller_live']=bool(process(collector['controller_pid']))
 health['watcher_live']=bool(process(health['watcher_pid']))
 failure=b/'eval_videos/walk_v3_study/gr00t/health_failure.json'
 frozen=[r for r in read('eval_videos/walk_v3_study/sonic/results.json') if r['experiment']=='frozen_reference_grasp']
-print(json.dumps({'observed_at':time.time(),'collector':collector,'gr00t':health,
+usage=shutil.disk_usage(b)
+print(json.dumps({'observed_at':time.time(),'disk_free_gib':usage.free/2**30,'collector':collector,'gr00t':health,
  'health_failure':json.loads(failure.read_text()) if failure.exists() else None,'frozen':frozen}))
 '''
 
 BIPED = r'''
-import json,pathlib,re,time
+import json,pathlib,re,shutil,time
 b=pathlib.Path.home()/'kevin';out=b/'eval_videos/walk_v3_study/biped_direct'
 state=json.loads((out/'workflow.json').read_text())
 def command(pid):
@@ -58,7 +59,7 @@ log=out/'train.log';state['train_log_age']=time.time()-log.stat().st_mtime
 if state.get('active_eval'):
  log=out/('eval_'+str(state['active_eval']['iteration'])+'.log')
  state['eval_log_age']=time.time()-log.stat().st_mtime
-print(json.dumps({'observed_at':time.time(),'workflow':state,'results':rows}))
+print(json.dumps({'observed_at':time.time(),'disk_free_gib':shutil.disk_usage(b).free/2**30,'workflow':state,'results':rows}))
 '''
 
 
@@ -82,6 +83,9 @@ def pid_alive(pid):
 
 def assess(host, data, now, progress):
     alerts = []
+    minimum_free = 150 if host == 'bluesclues' else 20
+    if data['disk_free_gib'] < minimum_free:
+        alerts.append(f"Only {data['disk_free_gib']:.1f} GiB free; review storage before further allocation")
     if host == 'bluesclues':
         health, collector = data['gr00t'], data['collector']
         if now-health['heartbeat'] > 120 or not health['watcher_live']:
