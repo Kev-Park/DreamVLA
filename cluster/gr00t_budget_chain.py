@@ -49,6 +49,22 @@ def checkpoint_ok(path):
         return False
 
 
+def shared_memory_pid_collision(text, pid, shm=Path('/dev/shm')):
+    """Recognize Kit failing before startup on another user's recycled PID."""
+    name = f'carb-RStringInternals-{pid}'
+    lines = text.strip().splitlines()
+    if len(lines) != 2 or name not in lines[0]:
+        return False
+    if 'Failed to create shared memory named '+name not in lines[0]:
+        return False
+    if lines[1] != 'terminate called without an active exception':
+        return False
+    try:
+        return (shm/name).stat().st_uid != os.getuid()
+    except OSError:
+        return False
+
+
 def verify_collection_logs(texts, expected):
     attempted, completed = [], []
     for text in texts:
@@ -99,18 +115,30 @@ class Chain:
         if path.exists():
             raise RuntimeError(f'Existing stage log without verified completion: {path}')
         self.log(f'START {label} gpu={gpu}')
-        with path.open('w') as output:
-            p = subprocess.Popen(list(map(str,args)), cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT)
-            atomic(self.work/(label+'.process.json'), {'pid':p.pid, 'host':os.uname().nodename,
-                   'started':time.time(), 'command':list(map(str,args)), 'gpu':gpu})
-            while p.poll() is None:
-                atomic(self.work/(label+'.heartbeat.json'), {'time':time.time(), 'pid':p.pid,
-                       'log_bytes':path.stat().st_size, 'log_mtime':path.stat().st_mtime,
-                       'output_stalled_30min':time.time()-path.stat().st_mtime>1800})
-                try:
-                    p.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    pass
+        for attempt in range(3):
+            with path.open('w') as output:
+                p = subprocess.Popen(list(map(str,args)), cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT)
+                atomic(self.work/(label+'.process.json'), {'pid':p.pid, 'host':os.uname().nodename,
+                       'started':time.time(), 'command':list(map(str,args)), 'gpu':gpu})
+                while p.poll() is None:
+                    atomic(self.work/(label+'.heartbeat.json'), {'time':time.time(), 'pid':p.pid,
+                           'log_bytes':path.stat().st_size, 'log_mtime':path.stat().st_mtime,
+                           'output_stalled_30min':time.time()-path.stat().st_mtime>1800})
+                    try:
+                        p.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        pass
+            if p.returncode != -6 or attempt == 2 or not shared_memory_pid_collision(path.read_text(), p.pid):
+                break
+            # Kit has not initialized or attempted an episode. Preserve the failed
+            # launch, then obtain a new PID; never touch another user's shm files.
+            archive = self.work/'startup_collisions'/f'{label}_{p.pid}'
+            archive.mkdir(parents=True, exist_ok=False)
+            for suffix in ('.log', '.process.json', '.heartbeat.json'):
+                original = self.work/(label+suffix)
+                if original.exists():
+                    original.rename(archive/original.name)
+            self.log(f'RETRY startup PID collision {label} old_pid={p.pid} archive={archive}')
         self.log(f'EXIT {label} code={p.returncode}')
         if p.returncode:
             raise RuntimeError(f'{label} exited {p.returncode}; see {path}')
