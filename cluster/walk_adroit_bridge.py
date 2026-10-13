@@ -23,7 +23,8 @@ ADROIT_CONTROL_PATH = "~/.ssh/cm-adroit"
 def ssh(host, command):
     if host in ("bluesclues", "biped"):
         address = BLUE if host == "bluesclues" else BIPED
-        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", address, command]
+        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+                "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", address, command]
     assert host == "adroit"
     return ["wsl.exe", "-d", "Ubuntu", "-u", "kevy0", "--", "bash", "-lc",
             f"ssh -o ControlPath={ADROIT_CONTROL_PATH} -o ControlMaster=no -o BatchMode=yes "
@@ -116,6 +117,21 @@ def validate_finetune_request(spec):
     assert spec['learning_rate'] == 0.0001 and spec['steps'] > 0
 
 
+def completed_checkpoint(checkpoint, steps, slurm_state, exit_code):
+    """Accept only a successful Slurm exit and a complete resumable checkpoint."""
+    if slurm_state != 'COMPLETED' or exit_code != '0:0':
+        return False
+    try:
+        required = ['trainer_state.json', 'optimizer.pt', 'scheduler.pt', 'rng_state.pth']
+        if not all((checkpoint/name).is_file() and (checkpoint/name).stat().st_size > 8 for name in required):
+            return False
+        names = set(json.loads((checkpoint/'model.safetensors.index.json').read_text())['weight_map'].values())
+        return (bool(names) and all((checkpoint/n).is_file() and (checkpoint/n).stat().st_size > 8 for n in names)
+                and json.loads((checkpoint/'trainer_state.json').read_text())['global_step'] == steps)
+    except (OSError, ValueError, KeyError):
+        return False
+
+
 def process_request(request, state_dir):
     spec = request["spec"]
     validate_finetune_request(spec)
@@ -150,18 +166,25 @@ else:
         save(record, state)
     if state["state"] == "submitted":
         payload = {"run": run, "steps": spec["steps"], "job_id": state["job_id"]}
-        code = """import pathlib,subprocess,json
+        code = """import pathlib,subprocess,json,sys
 p=PAYLOAD;b=pathlib.Path.home()/'kevin';ck=b/'checkpoints'/p['run']/('checkpoint-'+str(p['steps']))
+sys.path.insert(0,str(b/'wt/locomotion/DreamVLA/cluster'))
+from walk_adroit_bridge import completed_checkpoint
 observed=subprocess.run(['squeue','-j',p['job_id'],'-h','-o','%T'],capture_output=True,text=True)
 if observed.returncode and 'Invalid job id specified' not in observed.stderr:
  raise RuntimeError('Queue observation failed: '+observed.stderr)
 q=observed.stdout.strip() if observed.returncode==0 else ''
 d={'queue_state':q,'checkpoint':str(ck),'complete':False}
 if not q:
- d['accounting']=subprocess.check_output(['sacct','-j',p['job_id'],'-n','-X','-o','State,ExitCode'],text=True).strip()
- if (ck/'model.safetensors.index.json').exists() and (ck/'trainer_state.json').exists():
-  names=set(json.loads((ck/'model.safetensors.index.json').read_text())['weight_map'].values())
-  d['complete']=bool(names) and all((ck/n).stat().st_size>8 for n in names) and json.loads((ck/'trainer_state.json').read_text())['global_step']==p['steps']
+ d['accounting']=subprocess.check_output(['sacct','-j',p['job_id'],'-n','-X','-P','-o','State,ExitCode'],text=True).strip()
+ if not d['accounting']:
+  d['queue_state']='ACCOUNTING_PENDING'
+ else:
+  rows=d['accounting'].splitlines();assert len(rows)==1,rows
+  fields=rows[0].split('|');state,exit_code=fields[0].strip(),fields[1].strip()
+  if state in ['PENDING','RUNNING','COMPLETING','CONFIGURING','SUSPENDED','RESIZING','REQUEUED','REQUEUE_FED','STAGE_OUT']:
+   d['queue_state']='ACCOUNTING_'+state
+  else:d['complete']=completed_checkpoint(ck,p['steps'],state,exit_code)
 print(json.dumps(d))
 """.replace("PAYLOAD", repr(payload))
         status = call("adroit", code)
