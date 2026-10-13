@@ -28,6 +28,11 @@ def select_slots(rows, entries, count, mb):
     return selected
 
 
+def reservation_paused(pauses, owner, owner_start, count, mb):
+    return any(p['owner']==owner and str(p['owner_start'])==str(owner_start)
+               and p['count']==count and p['mb']==mb for p in pauses)
+
+
 def main():
     import fcntl
     p = argparse.ArgumentParser()
@@ -49,9 +54,15 @@ def main():
                     entries.pop(i)
                     break
         else:
-            output = subprocess.check_output(['nvidia-smi','--query-gpu=index,memory.used,memory.total','--format=csv,noheader,nounits'], text=True)
-            rows = [[int(x) for x in row.split(',')] for row in output.splitlines()]
-            selected = select_slots(rows, entries, a.count, a.mb)
+            pause_file=root/'gpu_reservation_pauses.json'
+            pauses=json.loads(pause_file.read_text()) if pause_file.exists() else []
+            owner_start=Path(f'/proc/{a.owner}/stat').read_text().rsplit(')',1)[1].split()[19]
+            if reservation_paused(pauses,a.owner,owner_start,a.count,a.mb):
+                selected=[]
+            else:
+                output = subprocess.check_output(['nvidia-smi','--query-gpu=index,memory.used,memory.total','--format=csv,noheader,nounits'], text=True)
+                rows = [[int(x) for x in row.split(',')] for row in output.splitlines()]
+                selected = select_slots(rows, entries, a.count, a.mb)
             entries.extend(dict(owner=a.owner,gpu=gpu,mb=a.mb) for gpu in selected)
             print(' '.join(map(str,selected)))
         temporary = filename.with_suffix('.tmp')

@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from gpu_slots import select_slots
+from gpu_slots import select_slots, reservation_paused
 
 
 @unittest.skipIf(os.name == 'nt', 'Linux fcntl allocator')
@@ -33,6 +33,11 @@ class ReservationTests(unittest.TestCase):
 
 
 class SelectionTests(unittest.TestCase):
+    def test_pause_applies_only_to_exact_owner_generation_and_request(self):
+        pauses=[{'owner':123,'owner_start':'456','count':1,'mb':45000}]
+        self.assertTrue(reservation_paused(pauses,123,'456',1,45000))
+        for owner,start,count,mb in [(124,'456',1,45000),(123,'457',1,45000),(123,'456',4,17000)]:
+            self.assertFalse(reservation_paused(pauses,owner,start,count,mb))
     def test_separate_gpus_before_sharing(self):
         rows=[[i,1000,49140] for i in range(4)]
         self.assertEqual(select_slots(rows,[],4,17000),[0,1,2,3])
