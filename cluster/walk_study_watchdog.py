@@ -64,7 +64,14 @@ log=out/'train.log';state['train_log_age']=time.time()-log.stat().st_mtime
 if state.get('active_eval'):
  log=out/('eval_'+str(state['active_eval']['iteration'])+'.log')
  state['eval_log_age']=time.time()-log.stat().st_mtime
-print(json.dumps({'observed_at':time.time(),'disk_free_gib':shutil.disk_usage(b).free/2**30,'workflow':state,'results':rows}))
+confirmation=b/'eval_videos/walk_v3_study/direct_matched4500_seeds/workflow.json'
+extra=json.loads(confirmation.read_text()) if confirmation.exists() else None
+if extra:
+ extra['controller_live']=bool(command(extra['controller_pid']))
+ for job in extra.get('active_jobs',[]):
+  job['command_live']=command(job['pid'])
+  job['log_age']=time.time()-pathlib.Path(job['log']).stat().st_mtime
+print(json.dumps({'observed_at':time.time(),'disk_free_gib':shutil.disk_usage(b).free/2**30,'workflow':state,'results':rows,'confirmation':extra}))
 '''
 
 
@@ -146,6 +153,16 @@ def assess(host, data, now, progress):
         for row in data['results']:
             if not row['all_100_references_covered']:
                 alerts.append('Direct-token eval '+str(row['iteration'])+': incomplete holdout coverage')
+        extra = data.get('confirmation')
+        if extra:
+            if extra['status'] == 'failed' or extra.get('errors'):
+                alerts.append('Checkpoint-4500 confirmation failed: '+str(extra.get('error', extra.get('errors'))))
+            elif extra['status'] != 'complete':
+                if not extra['controller_live'] or now-extra['heartbeat'] > 120:
+                    alerts.append('Checkpoint-4500 confirmation controller stopped or heartbeat stale')
+                for job in extra.get('active_jobs', []):
+                    if not job['command_live'] or job['log_age'] > 900:
+                        alerts.append('Checkpoint-4500 confirmation worker stopped or log stalled: '+str(job['pid']))
     return alerts
 
 

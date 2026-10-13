@@ -28,6 +28,8 @@ with (root / "gpu_slots.lock").open("a+") as lock:
         rows = subprocess.check_output(['nvidia-smi','--query-gpu=index,memory.used,memory.total','--format=csv,noheader,nounits'], text=True)
         available = []
         for gpu,used,total in sorted(([int(x) for x in row.split(',')] for row in rows.splitlines()), key=lambda row:row[1]):
+            if a.gpu is not None and gpu != a.gpu:
+                continue
             pending = sum(e['mb'] for e in entries if e['gpu']==gpu)
             available.extend([gpu] * max(0,(total-2000-used-pending)//a.mb))
         selected = available[:a.count] if len(available)>=min(4,a.count) else []
