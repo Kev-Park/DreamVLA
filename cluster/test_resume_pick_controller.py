@@ -3,10 +3,18 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from resume_pick_controller import ready
+from resume_pick_controller import ready, controller_command
 
 
 class HandoffTests(unittest.TestCase):
+    def test_controller_identity_accepts_unbuffered_python(self):
+        for flags in [[],['-u'],['-B','-u']]:
+            controller_command(['python',*flags,'/kevin/cluster/pick_budget_chain.py','--budget','50'],50)
+        for command in [['python','other_script.py','--budget','50'],
+                        ['python','pick_budget_chain.py','--budget','10'],
+                        ['python','-c','pick_budget_chain.py','--budget','50']]:
+            with self.assertRaises(AssertionError):controller_command(command,50)
+
     def test_requires_idle_workers_and_verified_conversion(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);work=root/'work';work.mkdir()

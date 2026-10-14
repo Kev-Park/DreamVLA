@@ -15,6 +15,13 @@ from pick_budget_chain import atomic, read
 from watch_pick_budgets import observe
 
 
+def controller_command(command, budget):
+    scripts=[i for i,arg in enumerate(command) if Path(arg).name=='pick_budget_chain.py']
+    assert len(scripts)==1 and scripts[0]>=1
+    assert all(x in ['-u','-B'] for x in command[1:scripts[0]])
+    assert command[scripts[0]+1:]==['--budget',str(budget)]
+
+
 def ready(root, work, budget, health):
     if health['abort'] or not health['controller_live'] or health['active_workers']:
         return False
@@ -40,16 +47,16 @@ def main():
     a=p.parse_args();root=Path.home()/'kevin';work=root/'dline'/f'pick{a.budget}_dagger57_20261013'
     proc=Path('/proc')/str(a.controller)
     command=[os.fsdecode(x) for x in (proc/'cmdline').read_bytes().split(b'\0') if x]
-    assert Path(command[1]).name=='pick_budget_chain.py' and command[-2:]==['--budget',str(a.budget)]
+    controller_command(command,a.budget)
     start=(proc/'stat').read_text().rsplit(')',1)[1].split()[19]
     environment=dict(os.fsdecode(x).split('=',1) for x in (proc/'environ').read_bytes().split(b'\0') if x)
-    cwd=os.readlink(proc/'cwd');state=work/'controller_handoff.json'
+    cwd=os.readlink(proc/'cwd');state=work/'parallel_eval_handoff.json'
     def identity():
         assert int((work/'controller.lock').read_text())==a.controller
         assert (proc/'stat').read_text().rsplit(')',1)[1].split()[19]==start
     def own_pause(entry):
         return entry['owner']==a.controller and str(entry['owner_start'])==start and entry['count']==1 and entry['mb']==45000
-    with (work/'controller_handoff.lock').open('a+') as lock:
+    with (work/'parallel_eval_handoff.lock').open('a+') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         while True:
             identity()
