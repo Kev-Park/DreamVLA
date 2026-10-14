@@ -19,7 +19,7 @@ if [ "${1:-}" = "--worker" ]; then
     echo "$$" > "$PICK_EVAL_WORK/worker.pid"
     set +e
     "$HOME/kevin/bin/isaac" bash -c \
-        'conda activate dreamcontrol_51 && exec python "$PICK_EVAL_RUNNER" run "$PICK_EVAL_REQUEST"' \
+        'source "$HOME/kevin/bin/isaac.rc" && conda activate dreamcontrol_51 && exec python "$PICK_EVAL_RUNNER" run "$PICK_EVAL_REQUEST"' \
         > "$PICK_EVAL_WORK/supervisor.log" 2>&1
     code=$?
     printf '%s\n' "$code" > "$PICK_EVAL_WORK/exit_code.txt"
