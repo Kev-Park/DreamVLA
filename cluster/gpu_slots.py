@@ -8,7 +8,7 @@ import subprocess
 
 
 def choose_gpus(rows, entries, count, mb, requested_gpu=None):
-    available, idle = [], []
+    available = []
     # Saturated neighbors can use little VRAM. Keep quieter devices first.
     for gpu, used, total, util in sorted(rows, key=lambda row: (row[3] >= 80, row[1])):
         if requested_gpu is not None and gpu != requested_gpu:
@@ -16,12 +16,9 @@ def choose_gpus(rows, entries, count, mb, requested_gpu=None):
         pending = sum(e['mb'] for e in entries if e['gpu'] == gpu)
         slots = max(0, (total-2000-used-pending)//mb)
         available.extend([gpu]*slots)
-        if slots and not pending and used < 10000 and util < 20:
-            idle.append(gpu)
-    # Give parallel workers separate idle GPUs only when another idle GPU
-    # remains available. Constrained placements retain the existing packing.
-    if requested_gpu is None and len(idle) > count:
-        return idle[:count]
+    # Pack workers on quiet devices with sufficient memory. Agents review
+    # account-wide GPU occupancy before launch; spreading onto every idle GPU
+    # can consume the remaining device allowance without improving throughput.
     return available[:count] if len(available) >= min(4, count) else []
 
 
