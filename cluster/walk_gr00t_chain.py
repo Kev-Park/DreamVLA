@@ -31,10 +31,19 @@ class WalkChain(base.Chain):
         self.collection_workers = 2 if budget == 10 else 4
         self.training_cwd = HERE.parent/"Training"
         self.score_script = HERE/"walk_gr00t_score.py"
+        self.sim_task_threads = len(os.sched_getaffinity(0))
         self.env = common.environment(0)
         self.env.update(OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", OPENBLAS_NUM_THREADS="1",
-                        NUMEXPR_NUM_THREADS="2", TOKENIZERS_PARALLELISM="false")
+                        NUMEXPR_NUM_THREADS="2", TOKENIZERS_PARALLELISM="false",
+                        PXR_WORK_THREAD_LIMIT=str(self.sim_task_threads))
         self.env["PYTHONPATH"] = str(self.sim)
+
+    def execute(self, args, label, gpu=None, cwd=None):
+        # Use Isaac Lab's own task-pool setting for this job's CPU allocation.
+        # Physics, reference coverage and model settings remain in the recipe.
+        if any(Path(str(arg)).name in {"collect_sonic_adapter.py", "eval_vla_sonic.py"} for arg in args):
+            args = [*args, f"--kit_args=--/plugins/carb.tasking.plugin/threadCount={self.sim_task_threads}"]
+        return super().execute(args, label, gpu, cwd)
 
     def prepare(self):
         directory = ROOT/f"datasets/walk_v3_study/base{self.budget}"
@@ -89,6 +98,7 @@ class WalkChain(base.Chain):
             "rollout_cap": self.rollout_steps, "eval_no_ee_term": self.eval_no_ee_term,
             "collection": "one student attempt per selected reference; existing paired expert rescue; retain four-rule passes",
             "collection_workers": self.collection_workers,
+            "sim_task_threads": self.sim_task_threads,
             "code_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=HERE, text=True).strip()})
         return data
 
