@@ -118,6 +118,22 @@ def inspect(budget):
             row.setdefault("active_workers", []).append(dict(job, command_live=live,
                 **activity))
             row['alerts'].extend('Stage log stalled: '+name for name in stalled)
+    for request in sorted((work/'external').glob('*.request.json')):
+        reply = request.with_name(request.name.replace('.request.json', '.reply.json'))
+        if reply.exists():
+            continue
+        spec = read(request)
+        waiting = request.with_name(request.name.replace('.request.json', '.waiting.json'))
+        heartbeat = read(waiting) if waiting.exists() else {}
+        age = time.time()-heartbeat['time'] if 'time' in heartbeat else None
+        current = bool(cmd) and heartbeat.get('controller_pid') == handle['pid']
+        row.setdefault('pending_external_stages', []).append({
+            'phase': spec['phase'], 'run': spec['run'], 'host': spec['host'],
+            'request': str(request), 'controller_wait_live': current,
+            'waiting_heartbeat_age': age,
+        })
+        if current and age is not None and age > 180:
+            row['alerts'].append('External-stage waiting heartbeat stalled: '+spec['run'])
     for index in range(4):
         run = f"{tag}_r{index}"
         trained, evaluated = work/(run+".trained.json"), work/(run+".eval.json")
@@ -147,6 +163,9 @@ def inspect(budget):
             row["status"] = "converting_base"
         else:
             row["status"] = "preparing_base_training"
+    elif cmd and not row.get('active_workers') and any(
+            stage['controller_wait_live'] for stage in row.get('pending_external_stages', [])):
+        row['status'] = 'waiting_for_external_stage'
     return row
 
 
