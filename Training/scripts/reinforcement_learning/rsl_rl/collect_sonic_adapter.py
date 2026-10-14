@@ -894,14 +894,13 @@ def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
     return ok
 
 
-def score_written_episode(path, box: str) -> tuple[bool, dict]:
-    """4-rule verdict on a written episode, reusing the same path as the offline filter.
+def _score_episode_arrays(obj_pos, obj_quat, root_pos, root_quat, wrist, box: str) -> tuple[bool, dict]:
+    """Use the offline four-rule scorer on the recorder's float64 representation.
 
     box: "af60" for the post-audit calibration, "af60v7" for the af60v7 grasp, "preaudit" for the original. This is explicit on
     purpose -- the pre-audit box rejects 100% of post-audit grasps (the bottle sits ~10 cm higher in
     the palm), which would make every rollout read as a failure and trigger a rescue every time.
     """
-    import h5py
     from vla_sonic.grasp_success import score, BOX_LO, BOX_HI, BOX_LO_AF60, BOX_HI_AF60, BOX_LO_AF60V7, BOX_HI_AF60V7
     if box.startswith("file:"):                    # a box calibrated from an expert's own demos (calibrate_box.py)
         import json as _json
@@ -909,14 +908,33 @@ def score_written_episode(path, box: str) -> tuple[bool, dict]:
         lo, hi = np.asarray(_b["lo"], dtype=np.float64), np.asarray(_b["hi"], dtype=np.float64)
     else:
         lo, hi = {"af60": (BOX_LO_AF60, BOX_HI_AF60), "af60v7": (BOX_LO_AF60V7, BOX_HI_AF60V7)}.get(box, (BOX_LO, BOX_HI))
-    with h5py.File(str(path), "r", locking=False) as h:
-        g = h["data/demo_0"]
-        r = score(g["obs/object_pos"][()], g["obs/object_quat"][()],
-                  g["obs/robot0_root_pos_w"][()], g["obs/robot0_root_quat_w"][()],
-                  g["teleop/right_wrist"][()], box_lo=lo, box_hi=hi)
+    # RolloutRecorder converts each of these columns to float64 before writing.
+    # Match that conversion before arithmetic, including quaternion products.
+    arrays = [np.asarray(value, dtype=np.float64)
+              for value in (obj_pos, obj_quat, root_pos, root_quat, wrist)]
+    r = score(*arrays, box_lo=lo, box_hi=hi)
     why = [t for t, cond in (("fell", r["fallen_height"]), ("horiz", r["fallen_horizontal"]),
                              ("slip", r["slipping"]), ("notbox", not r["in_box_at_end"])) if cond]
     return bool(r["success"]), {"why": "+".join(why) or "-", "max_tilt": float(r["max_tilt"])}
+
+
+def score_written_episode(path, box: str) -> tuple[bool, dict]:
+    """Four-rule verdict from the same stored columns used by the offline filter."""
+    import h5py
+    with h5py.File(str(path), "r", locking=False) as h:
+        g = h["data/demo_0"]
+        return _score_episode_arrays(
+            g["obs/object_pos"][()], g["obs/object_quat"][()],
+            g["obs/robot0_root_pos_w"][()], g["obs/robot0_root_quat_w"][()],
+            g["teleop/right_wrist"][()], box)
+
+
+def score_rollout_episode(raw_state, teleop, box: str) -> tuple[bool, dict]:
+    """Score pending recording without writing images that would be discarded."""
+    return _score_episode_arrays(
+        raw_state["object"]["root_pos_w"], raw_state["object"]["root_quat_w"],
+        raw_state["robot"]["root_pos_w"], raw_state["robot"]["root_quat_w"],
+        teleop["right_wrist"], box)
 
 
 def dagger_closed_pose(demo_root: str, max_files: int = 8) -> np.ndarray:
@@ -1684,8 +1702,8 @@ def main() -> None:
 
             if args_cli.dagger_rescue:
                 # ---- pass A: the student drove the whole episode (beta forced to 0) -------------
-                # Written first so the verdict comes from the same 4-rule path as the offline
-                # filter, rather than a second in-memory implementation that could drift from it.
+                # Use the same scorer and float64 columns as the offline filter. Failed
+                # student recordings were immediately deleted; avoid their image writes.
                 passA_name = f"_passA__motion_{motion_id:03d}{suffix}.hdf5"
                 final_name = f"sonic_adapter__{motion_tag}__motion_{motion_id:03d}{suffix}.hdf5"
 
@@ -1706,21 +1724,22 @@ def main() -> None:
                                            env_args=_build_env_args(env, task_name=args_cli.task))
                     return recorder.output_dir / name
 
-                pA = _write(passA_name, camera_frames, raw_state, meta, teleop_payload,
-                            {"rescue": {"pass": "A", "takeover_at": None}})
-                okA, whyA = score_written_episode(pA, args_cli.dagger_rescue_box)
+                okA, whyA = score_rollout_episode(raw_state, teleop_payload, args_cli.dagger_rescue_box)
                 grab_idx = int(meta.get("grab_idx", -1))
                 print(f"[rescue] motion {motion_id}: pass A 4-rule {'PASS' if okA else 'FAIL'} "
                       f"({whyA['why']}), grab_idx={grab_idx}, steps={meta['num_steps']}")
 
                 if okA:
+                    pA = _write(passA_name, camera_frames, raw_state, meta, teleop_payload,
+                                {"rescue": {"pass": "A", "takeover_at": None}})
+                    assert score_written_episode(pA, args_cli.dagger_rescue_box) == (okA, whyA), \
+                        "In-memory and recorded student verdicts differ"
                     os.replace(pA, recorder.output_dir / final_name)
                     written += 1
                     print(f"[rescue] WROTE student success {written} -> {final_name}")
                     continue
 
                 # ---- pass B: independent sibling, expert takes over at k -----------------------
-                pA.unlink(missing_ok=True)
                 if grab_idx <= 0:
                     rejected_nograsp += 1
                     print(f"[rescue] SKIP motion {motion_id}: no reference grasp frame "
