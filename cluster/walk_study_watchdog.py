@@ -16,7 +16,7 @@ from walk_adroit_bridge import call, save
 
 RESOURCE_HELPER = r'''
 def account_resources():
- import csv,json,os,pathlib,subprocess,time
+ import csv,json,os,pathlib,subprocess,time,xml.etree.ElementTree as ET
  uid=os.getuid();hz=os.sysconf('SC_CLK_TCK');count=os.cpu_count()
  def snapshot():
   rows={}
@@ -43,14 +43,18 @@ def account_resources():
    inventory.append({'gpu':int(fields[0]),'uuid':fields[1],'name':fields[2],
                      'memory_used_mib':int(fields[3]),'memory_total_mib':int(fields[4]),'utilization_pct':int(fields[5])})
   mapping={row['uuid']:row['gpu'] for row in inventory};processes=[]
-  apps=subprocess.check_output(['nvidia-smi','--query-compute-apps=gpu_uuid,pid,used_memory','--format=csv,noheader,nounits'],text=True,timeout=10)
-  for fields in csv.reader(apps.splitlines()):
-   uuid,pid,memory=[value.strip() for value in fields];p=pathlib.Path('/proc',pid)
-   try:
-    if p.stat().st_uid!=uid:continue
-    raw=(p/'stat').read_text();state=raw[raw.rfind(')')+2:].split()[0]
-    processes.append({'gpu':mapping[uuid],'pid':int(pid),'memory_mib':int(memory),'state':state})
-   except (FileNotFoundError,ProcessLookupError):pass
+  xml=ET.fromstring(subprocess.check_output(['nvidia-smi','-q','-x'],text=True,timeout=10))
+  for device in xml.findall('gpu'):
+   gpu=mapping[device.findtext('uuid')]
+   for app in device.findall('processes/process_info'):
+    pid=app.findtext('pid');p=pathlib.Path('/proc',pid)
+    try:
+     if p.stat().st_uid!=uid:continue
+     raw=(p/'stat').read_text();state=raw[raw.rfind(')')+2:].split()[0]
+     memory=app.findtext('used_memory','N/A').split()[0]
+     processes.append({'gpu':gpu,'pid':int(pid),'memory_mib':int(memory) if memory.isdigit() else None,
+                       'type':app.findtext('type'),'state':state})
+    except (FileNotFoundError,ProcessLookupError):pass
   result.update(gpu_inventory=inventory,account_gpu_processes=processes)
   reservations=[];path=pathlib.Path.home()/'kevin/dline/gpu_slots.json'
   try:
@@ -61,7 +65,7 @@ def account_resources():
   except (OSError,ValueError,KeyError,TypeError) as exc:result['reservation_snapshot_error']=repr(exc)
   result.update(live_gpu_reservations=reservations,
                 account_gpu_devices=sorted({row['gpu'] for row in processes+reservations}))
- except (OSError,subprocess.SubprocessError,ValueError,KeyError,IndexError) as exc:
+ except (OSError,subprocess.SubprocessError,ValueError,KeyError,IndexError,ET.ParseError) as exc:
   result['gpu_snapshot_error']=repr(exc)
  return result
 '''
