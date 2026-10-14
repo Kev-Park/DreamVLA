@@ -197,7 +197,12 @@ def main():
     else:
         import fcntl
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    disabled, snapshots, progress = {}, {}, {}
+    previous_file = args.state_dir/'workflow.json'
+    previous = json.loads(previous_file.read_text()) if previous_file.exists() else {}
+    # A monitor restart is not evidence that a failed SSH connection was restored.
+    # The operator clears only the host explicitly restored by the user.
+    disabled = previous.get('disabled_hosts', {})
+    snapshots, progress = previous.get('hosts', {}), {}
     previous_alerts = None
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         while True:

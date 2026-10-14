@@ -63,7 +63,36 @@ print(json.dumps({'ready':True}))
     save(work/(label+'.verified.json'), {'verified_at':time.time(),'bytes':needed,'files':len(before)})
 
 
-def main(run, work):
+def observe_and_return(run, work, state, request_relative):
+    statusfile = work/'workflow.json'
+    launched = state['launch']
+    while True:
+        observed = call('biped', """import pathlib,json
+work=pathlib.Path(WORK);p=work/'workflow.json';process=pathlib.Path('/proc',str(PID),'cmdline')
+assert p.exists() or (process.exists() and process.read_bytes()),'Evaluation controller exited before writing state: '+(work/'controller.log').read_text(errors='replace')[-2000:]
+print(p.read_text() if p.exists() else 'null')
+""".replace('WORK', repr(launched['work'])).replace('PID', str(launched['controller_pid'])))
+        state.update(observation=observed,heartbeat=time.time());save(statusfile,state)
+        if observed:
+            assert observed['status']!='failed',observed
+            if observed['status']=='complete':
+                break
+        time.sleep(30)
+    state.update(state='returning_results',heartbeat=time.time());save(statusfile,state)
+    transfer('biped','bluesclues','eval_videos/'+run,work,'results')
+    reply_relative = request_relative.replace('.request.json','.reply.json')
+    delivered = call('bluesclues', """import pathlib,json,math
+b=pathlib.Path.home()/'kevin';run=RUN;p=b/REPLY;report=json.loads((b/'eval_videos'/run/'results.json').read_text())
+assert report['pool']=='StitchMAX100v3_eval' and report['episodes']==100
+assert sorted(r['motion_id'] for r in report['per_episode'])==list(range(100))
+assert all(math.isfinite(report[k]) for k in ['success_pct','world_mpjpe_cm','root_aligned_mpjpe_cm','physical_held5_pct'])
+assert not p.exists();data={'state':'completed','host':'biped','run':run};tmp=p.with_suffix('.tmp');tmp.write_text(json.dumps(data,indent=2));tmp.replace(p)
+print(json.dumps({'delivered':True,'success_pct':report['success_pct']}))
+""".replace('RUN', repr(run)).replace('REPLY', repr(reply_relative)))
+    state.update(state='complete',result=delivered,heartbeat=time.time(),completed_at=time.time());save(statusfile,state)
+
+
+def main(run, work, resume_existing=False):
     assert re.fullmatch(r'walk(10|50|200)_v3_dagger57_20261013_r[0-3]', run)
     work.mkdir(parents=True, exist_ok=True)
     lock = (work/'controller.lock').open('a+b')
@@ -73,9 +102,27 @@ def main(run, work):
         lock.write(b'0');lock.flush()
     lock.seek(0);msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
     statusfile = work/'workflow.json'
-    assert not statusfile.exists(), 'Reconcile the previous bridge before restarting'
     budget = int(run.split('_')[0][4:])
     request_relative = f'dline/walk{budget}_v3_dagger57_20261013/external/evaluate_{run}.request.json'
+    if resume_existing:
+        state = json.loads(statusfile.read_text())
+        assert state['run'] == run and state['state'] == 'stopped_for_review', state
+        assert (work/'inference.verified.json').exists()
+        assert state['launch'] == json.loads((work/'launch.json').read_text())
+        assert state['launch']['controller_pid'] > 0
+        with (work/'observation_recoveries.jsonl').open('a') as stream:
+            stream.write(json.dumps(state)+'\n')
+        state.update(pid=os.getpid(),state='resuming_existing_evaluation',heartbeat=time.time())
+        state.pop('error',None)
+        save(statusfile,state)
+        try:
+            observe_and_return(run,work,state,request_relative)
+        except BaseException as exc:
+            state.update(state='stopped_for_review',error=repr(exc),heartbeat=time.time())
+            save(statusfile,state)
+            raise
+        return
+    assert not statusfile.exists(), 'Reconcile the previous bridge before restarting'
     state = {'pid':os.getpid(),'run':run,'state':'waiting_for_request','started':time.time()}
     save(statusfile, state)
     try:
@@ -123,30 +170,7 @@ print(json.dumps({'work':str(work),'session':session,'controller_pid':pid,'mappi
 """.replace('PAYLOAD', repr(payload)))
         save(work/'launch.json',launched)
         state.update(state='running',launch=launched,heartbeat=time.time());save(statusfile,state)
-        while True:
-            observed = call('biped', """import pathlib,json
-work=pathlib.Path(WORK);p=work/'workflow.json';process=pathlib.Path('/proc',str(PID),'cmdline')
-assert p.exists() or (process.exists() and process.read_bytes()),'Evaluation controller exited before writing state: '+(work/'controller.log').read_text(errors='replace')[-2000:]
-print(p.read_text() if p.exists() else 'null')
-""".replace('WORK', repr(launched['work'])).replace('PID', str(launched['controller_pid'])))
-            state.update(observation=observed,heartbeat=time.time());save(statusfile,state)
-            if observed:
-                assert observed['status']!='failed',observed
-                if observed['status']=='complete':
-                    break
-            time.sleep(30)
-        state.update(state='returning_results',heartbeat=time.time());save(statusfile,state)
-        transfer('biped','bluesclues','eval_videos/'+run,work,'results')
-        reply_relative = request_relative.replace('.request.json','.reply.json')
-        delivered = call('bluesclues', """import pathlib,json,math
-b=pathlib.Path.home()/'kevin';run=RUN;p=b/REPLY;report=json.loads((b/'eval_videos'/run/'results.json').read_text())
-assert report['pool']=='StitchMAX100v3_eval' and report['episodes']==100
-assert sorted(r['motion_id'] for r in report['per_episode'])==list(range(100))
-assert all(math.isfinite(report[k]) for k in ['success_pct','world_mpjpe_cm','root_aligned_mpjpe_cm','physical_held5_pct'])
-assert not p.exists();data={'state':'completed','host':'biped','run':run};tmp=p.with_suffix('.tmp');tmp.write_text(json.dumps(data,indent=2));tmp.replace(p)
-print(json.dumps({'delivered':True,'success_pct':report['success_pct']}))
-""".replace('RUN', repr(run)).replace('REPLY', repr(reply_relative)))
-        state.update(state='complete',result=delivered,heartbeat=time.time(),completed_at=time.time());save(statusfile,state)
+        observe_and_return(run, work, state, request_relative)
     except BaseException as exc:
         state.update(state='stopped_for_review',error=repr(exc),heartbeat=time.time());save(statusfile,state)
         raise
@@ -156,5 +180,6 @@ if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run',required=True)
     parser.add_argument('--state-dir',type=Path,required=True)
+    parser.add_argument('--resume-existing',action='store_true',help='Observe the verified existing remote evaluation after the user restores access; never launch a replacement.')
     args=parser.parse_args()
-    main(args.run,args.state_dir)
+    main(args.run,args.state_dir,args.resume_existing)
