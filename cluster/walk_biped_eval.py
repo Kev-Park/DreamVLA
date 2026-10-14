@@ -12,6 +12,11 @@ import watch_t20max_v3 as common
 
 
 def main(work):
+    # Apply the operator's per-job allocation before spawning any eval workers.
+    # This affects this controller and its children, never other account jobs.
+    allocation = common.ROOT/'dline/cpu_share.json'
+    if allocation.exists():
+        os.sched_setaffinity(0, json.loads(allocation.read_text())['shared_mask'])
     spec = json.loads((work/'request.json').read_text())
     run = spec['run']
     assert re.fullmatch(r'walk(10|50|200)_v3_dagger57_20261013_r[0-3]', run)
@@ -29,7 +34,8 @@ def main(work):
     checkpoint = common.ROOT/spec['checkpoint_relative']
     assert checkpoint.is_dir() and checkpoint.resolve().is_relative_to(common.ROOT.resolve())
     state = {'status': 'running', 'controller_pid': os.getpid(), 'run': run,
-             'started': time.time(), 'completed_shards': 0, 'gpu': 0, 'errors': [], 'active_job': None}
+             'started': time.time(), 'completed_shards': 0, 'gpu': 0, 'errors': [], 'active_job': None,
+             'allocated_cpus': sorted(os.sched_getaffinity(0))}
     try:
         for shard in range(4):
             slots = []
