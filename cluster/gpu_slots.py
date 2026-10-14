@@ -7,10 +7,12 @@ from pathlib import Path
 import subprocess
 
 
-def choose_gpus(rows, entries, count, mb, requested_gpu=None):
+def choose_gpus(rows, entries, count, mb, requested_gpu=None, allowed_gpus=None):
     available, idle = [], []
     # Saturated neighbors can use little VRAM. Keep quieter devices first.
     for gpu, used, total, util in sorted(rows, key=lambda row: (row[3] >= 80, row[1])):
+        if allowed_gpus is not None and gpu not in allowed_gpus:
+            continue
         if requested_gpu is not None and gpu != requested_gpu:
             continue
         pending = sum(e['mb'] for e in entries if e['gpu'] == gpu)
@@ -44,9 +46,11 @@ with (root / "gpu_slots.lock").open("a+") as lock:
                 entries.pop(i)
                 break
     else:
+        policy_path = root/'resource_policy.json'
+        policy = json.loads(policy_path.read_text()) if policy_path.exists() else {}
         rows = subprocess.check_output(['nvidia-smi','--query-gpu=index,memory.used,memory.total,utilization.gpu','--format=csv,noheader,nounits'], text=True)
         selected = choose_gpus([[int(x) for x in row.split(',')] for row in rows.splitlines()],
-                               entries, a.count, a.mb, a.gpu)
+                               entries, a.count, a.mb, a.gpu, policy.get('allowed_gpus'))
         entries.extend(dict(owner=a.owner,gpu=gpu,mb=a.mb) for gpu in selected)
         print(' '.join(map(str,selected)))
     temporary = filename.with_suffix('.tmp')

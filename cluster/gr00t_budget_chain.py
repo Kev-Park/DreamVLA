@@ -96,7 +96,7 @@ class Chain:
                         TOKENIZERS_PARALLELISM='false', HS_REWORK='1', HS_REWORK_OBJ_PC='1',
                         HS_REWORK_OBJ_GATE='1', HS_REWORK_CONTACT_LEAD='2',
                         PYTHONPATH=str(ROOT / 'DreamVLA/Training/scripts/reinforcement_learning/rsl_rl'))
-        # All workers inherit the existing user-approved Bluesclues 30% CPU share.
+        # All agents' workers inherit the same host-level CPU share.
         if (ROOT/'dline/cpu_share.json').is_file():
             os.sched_setaffinity(0, read(ROOT/'dline/cpu_share.json')['shared_mask'])
 
