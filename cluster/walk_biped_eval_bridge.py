@@ -34,12 +34,12 @@ print(json.dumps(rows))
 
 
 def reuse_inference_shards(destination, relative, expected):
-    """Link exact immutable inference shards already cached for walking evals."""
+    """Budget new bytes, then link exact immutable shards cached for evals."""
     assert destination == 'biped'
-    return call(destination, """import pathlib,hashlib,json,os,re
+    return call(destination, """import pathlib,hashlib,json,os,re,shutil
 b=(pathlib.Path.home()/'kevin').resolve();target=b/REL
 assert target.resolve().is_relative_to(b/'checkpoints')
-target.mkdir(parents=True,exist_ok=True);reused=[]
+reused=[]
 for row in EXPECTED:
  if not re.fullmatch(r'model-\\d+-of-\\d+\\.safetensors',row['path']):continue
  output=target/row['path'];assert not output.exists()
@@ -50,8 +50,12 @@ for row in EXPECTED:
   with candidate.open('rb') as stream:
    for chunk in iter(lambda:stream.read(8*1024*1024),b''):h.update(chunk)
   if h.hexdigest()!=row['sha256']:continue
-  os.link(candidate,output)
   reused.append(dict(row,source=str(candidate)));break
+new_bytes=sum(row['bytes'] for row in EXPECTED)-sum(row['bytes'] for row in reused)
+assert shutil.disk_usage(b).free > new_bytes+20*2**30,'Less than 20 GiB headroom after transfer'
+target.mkdir(parents=True,exist_ok=True)
+for row in reused:
+ os.link(row['source'],target/row['path'])
 print(json.dumps(reused))
 """.replace('REL', repr(relative)).replace('EXPECTED', repr(expected)), timeout=1800)
 
@@ -65,16 +69,23 @@ def transfer(source, destination, relative, work, label, inference=False):
         assert existing == before, 'Partial or different destination needs reconciliation: '+relative
         return
     needed = sum(r['bytes'] for r in before)
-    call(destination, """import pathlib,json,shutil
+    if inference and destination == 'biped':
+        reused = reuse_inference_shards(destination, relative, before)
+    else:
+        reused = []
+        call(destination, """import pathlib,json,shutil
 b=(pathlib.Path.home()/'kevin').resolve();p=b/REL
 assert p.resolve().is_relative_to(b)
 assert shutil.disk_usage(b).free > NEEDED+20*2**30,'Less than 20 GiB headroom after transfer'
 p.parent.mkdir(parents=True,exist_ok=True)
 print(json.dumps({'ready':True}))
 """.replace('REL', repr(relative)).replace('NEEDED', str(needed)))
-    reused = reuse_inference_shards(destination, relative, before) if inference and destination == 'biped' else []
     save(work/(label+'.reused_shards.json'), reused)
     reused_names = {r['path'] for r in reused}
+    save(work/(label+'.capacity.json'), {
+        'logical_bytes': needed, 'reused_bytes': sum(r['bytes'] for r in reused),
+        'new_bytes': sum(r['bytes'] for r in before if r['path'] not in reused_names),
+        'required_free_bytes_after_transfer': 20*2**30})
     paths = [str(PurePosixPath(relative)/r['path']) for r in before if r['path'] not in reused_names]
     with (work/(label+'.source.stderr')).open('ab') as a, (work/(label+'.destination.stderr')).open('ab') as b:
         producer = subprocess.Popen(ssh(source, 'tar -C ~/kevin -cf - -- '+' '.join(map(shlex.quote, paths))),
