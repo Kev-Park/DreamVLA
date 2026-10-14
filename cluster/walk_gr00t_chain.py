@@ -26,7 +26,9 @@ class WalkChain(base.Chain):
         self.expert = (ROOT/"eval_videos/T20_max_v3_env2048/early_stop/best_evaluated.pt").resolve(strict=True)
         assert self.expert.name == "model_4500.pt"
         self.rollout_steps = 1200
-        self.collection_workers = 8 if budget == 200 else 2 if budget == 10 else 4
+        # Four shards leave room for concurrent fine-tunes within the user's
+        # account-wide GPU allowance. The reference/attempt budget is unchanged.
+        self.collection_workers = 2 if budget == 10 else 4
         self.training_cwd = HERE.parent/"Training"
         self.score_script = HERE/"walk_gr00t_score.py"
         self.env = common.environment(0)
