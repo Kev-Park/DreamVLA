@@ -11,12 +11,27 @@ ROOT = Path.home()/"kevin"
 OUT = ROOT/"eval_videos/walk_v3_study/gr00t"
 
 
-def process(pid):
-    p = Path("/proc")/str(pid)/"cmdline"
+def process_argv(pid, proc_root=Path('/proc')):
+    p = proc_root/str(pid)/'cmdline'
     try:
-        return p.read_text().replace("\0", " ")
+        raw = p.read_bytes().decode().strip('\0')
+        return raw.split('\0') if raw else []
     except OSError:
-        return None
+        return []
+
+
+def process(pid):
+    args = process_argv(pid)
+    return ' '.join(args) if args else None
+
+
+def stage_command_matches(expected, actual):
+    expected = list(expected)
+    if expected and Path(expected[0]).name == 'env':
+        expected.pop(0)
+        while expected and '=' in expected[0]:
+            expected.pop(0)
+    return bool(actual) and actual == expected
 
 
 def active_output_logs(pid, wrapper, proc_root=Path('/proc')):
@@ -96,8 +111,9 @@ def inspect(budget):
     for stage in work.glob("*.process.json"):
         job = read(stage)
         log = stage.with_name(stage.name.replace(".process.json", ".log"))
-        live = process(job["pid"])
-        if live:
+        actual = process_argv(job['pid'])
+        if stage_command_matches(job['command'], actual):
+            live = ' '.join(actual)
             activity, stalled = output_activity(job['pid'], log, time.time())
             row.setdefault("active_workers", []).append(dict(job, command_live=live,
                 **activity))
@@ -120,9 +136,9 @@ def inspect(budget):
     row["status"] = ("recovering_startup_failure" if recovering and not resumed
                      else "running" if cmd else "stopped_without_completion")
     if (work/"done.json").exists():
-        assert all(r["trained"] and r["evaluated"] for r in row["rounds"])
-        assert not row["alerts"], row["alerts"]
-        row["status"] = "complete"
+        if not all(r['trained'] and r['evaluated'] for r in row['rounds']):
+            row['alerts'].append('Completion marker lacks verified training/evaluation stages')
+        row['status'] = 'needs_attention' if row['alerts'] else 'complete'
     elif cmd and (work/"waiting_for_base.json").exists() and not (work/"recipe.json").exists():
         base = ROOT/f"datasets/walk_v3_study/base{budget}"
         if not (base/"ready").exists():
@@ -134,13 +150,25 @@ def inspect(budget):
     return row
 
 
+def inspect_all(budgets):
+    rows = []
+    for budget in budgets:
+        try:
+            rows.append(inspect(budget))
+        except Exception as exc:
+            rows.append({'budget': budget, 'tag': f'walk{budget}_v3_dagger57_20261013',
+                         'status': 'inspection_failed', 'rounds': [],
+                         'alerts': ['Health inspection failed: '+repr(exc)]})
+    return rows
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     lock = (OUT/"health.lock").open("w")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     while True:
         try:
-            rows = [inspect(n) for n in [10, 50, 200]]
+            rows = inspect_all([10, 50, 200])
             state = {"heartbeat": time.time(), "watcher_pid": os.getpid(), "chains": rows,
                      "status": "complete" if all(r["status"] == "complete" for r in rows) else "monitoring"}
             atomic(OUT/"workflow.json", state)
