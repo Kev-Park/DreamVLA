@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 import time
 
 if os.name != 'nt':
@@ -68,6 +69,7 @@ class Chain:
         self.tag = f'pick{budget}_dagger57_{PREFIX}'
         self.work = ROOT / 'dline' / self.tag
         self.work.mkdir(parents=True, exist_ok=True)
+        self.local_eval_lock = threading.Lock()
         self.sim = HERE.parent / 'Training/scripts/reinforcement_learning/rsl_rl'
         self.pt = ROOT / 'sonic/sonic_release_3pt_heading_wrist_81-20260415_051436_model_step_100000'
         self.expert = ROOT / 'residuals/af60v8c_model_8998.pt'
@@ -303,6 +305,14 @@ class Chain:
             assert sorted(r['motion_id'] for r in report['per_episode'])==list(range(100))
             atomic(done,report)
             return
+        # Waiting on another host must not hold up a ready local evaluation.
+        # Local evaluations remain serial, preserving their GPU allocation behavior.
+        with self.local_eval_lock:
+            self.evaluate_local(run, checkpoint)
+
+    def evaluate_local(self, run, checkpoint):
+        done=self.work/f'{run}.eval.json'
+        out=ROOT/'eval_videos'/run;out.mkdir(exist_ok=True)
         gpus=self.slots(4,17000)
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
@@ -322,22 +332,22 @@ class Chain:
             for gpu in gpus:self.release(gpu)
 
     def run(self):
-        lock=(self.work/'controller.lock').open('w')
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        lock.write(str(os.getpid()));lock.flush()
-        data=self.prepare()
-        evaluations=[]
-        # Evaluation errors propagate at the end; collection/training can proceed independently.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            for round_id in range(4):
-                if round_id:
-                    raw=self.collect(round_id,checkpoint)
-                    data=self.dataset(round_id,raw,data)
-                run,checkpoint=self.finetune(data,round_id)
-                evaluations.append(pool.submit(self.evaluate,run,checkpoint))
-            for f in evaluations:f.result()
-        atomic(self.work/'done.json',{'time':time.time(),'rounds':3,'evals':4,'budget':self.budget})
-        self.log('COMPLETE: base + 3 DAgger fine-tunes, all four held-out evaluations verified')
+        with (self.work/'controller.lock').open('a+') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            lock.seek(0);lock.truncate();lock.write(str(os.getpid()));lock.flush()
+            data=self.prepare()
+            evaluations=[]
+            # Evaluation errors propagate at the end; collection/training can proceed independently.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                for round_id in range(4):
+                    if round_id:
+                        raw=self.collect(round_id,checkpoint)
+                        data=self.dataset(round_id,raw,data)
+                    run,checkpoint=self.finetune(data,round_id)
+                    evaluations.append(pool.submit(self.evaluate,run,checkpoint))
+                for f in evaluations:f.result()
+            atomic(self.work/'done.json',{'time':time.time(),'rounds':3,'evals':4,'budget':self.budget})
+            self.log('COMPLETE: base + 3 DAgger fine-tunes, all four held-out evaluations verified')
 
 
 def main():
