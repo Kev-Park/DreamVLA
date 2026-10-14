@@ -33,6 +33,29 @@ print(json.dumps(rows))
 """.replace('REL', repr(relative)).replace('INFERENCE', repr(inference)), timeout=1800)
 
 
+def reuse_inference_shards(destination, relative, expected):
+    """Link exact immutable inference shards already cached for walking evals."""
+    assert destination == 'biped'
+    return call(destination, """import pathlib,hashlib,json,os,re
+b=(pathlib.Path.home()/'kevin').resolve();target=b/REL
+assert target.resolve().is_relative_to(b/'checkpoints')
+target.mkdir(parents=True,exist_ok=True);reused=[]
+for row in EXPECTED:
+ if not re.fullmatch(r'model-\\d+-of-\\d+\\.safetensors',row['path']):continue
+ output=target/row['path'];assert not output.exists()
+ for candidate in sorted((b/'checkpoints').glob('walk*_v3_dagger57_20261013_r*/checkpoint-*/'+row['path'])):
+  if candidate.parent==target or candidate.is_symlink():continue
+  if not candidate.resolve().is_relative_to(b/'checkpoints') or candidate.stat().st_size!=row['bytes']:continue
+  h=hashlib.sha256()
+  with candidate.open('rb') as stream:
+   for chunk in iter(lambda:stream.read(8*1024*1024),b''):h.update(chunk)
+  if h.hexdigest()!=row['sha256']:continue
+  os.link(candidate,output)
+  reused.append(dict(row,source=str(candidate)));break
+print(json.dumps(reused))
+""".replace('REL', repr(relative)).replace('EXPECTED', repr(expected)), timeout=1800)
+
+
 def transfer(source, destination, relative, work, label, inference=False):
     before = inventory(source, relative, inference)
     assert before and all(r['bytes'] > 0 for r in before)
@@ -49,7 +72,10 @@ assert shutil.disk_usage(b).free > NEEDED+20*2**30,'Less than 20 GiB headroom af
 p.parent.mkdir(parents=True,exist_ok=True)
 print(json.dumps({'ready':True}))
 """.replace('REL', repr(relative)).replace('NEEDED', str(needed)))
-    paths = [str(PurePosixPath(relative)/r['path']) for r in before]
+    reused = reuse_inference_shards(destination, relative, before) if inference and destination == 'biped' else []
+    save(work/(label+'.reused_shards.json'), reused)
+    reused_names = {r['path'] for r in reused}
+    paths = [str(PurePosixPath(relative)/r['path']) for r in before if r['path'] not in reused_names]
     with (work/(label+'.source.stderr')).open('ab') as a, (work/(label+'.destination.stderr')).open('ab') as b:
         producer = subprocess.Popen(ssh(source, 'tar -C ~/kevin -cf - -- '+' '.join(map(shlex.quote, paths))),
             stdout=subprocess.PIPE, stderr=a, creationflags=FLAGS)
