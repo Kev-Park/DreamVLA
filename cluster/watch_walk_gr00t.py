@@ -115,7 +115,10 @@ def inspect(budget):
             assert item["evaluation"]["episodes"] == 100
             assert sorted(r["motion_id"] for r in item["evaluation"]["per_episode"]) == list(range(100))
         row["rounds"].append(item)
-    row["status"] = "recovering_startup_failure" if recovering else "running" if cmd else "stopped_without_completion"
+    resumed = any(r['command_live'] and r['pid'] == handle['pid']
+                  and r['status'] == 'resuming_from_verified_completed_stages' for r in repairs)
+    row["status"] = ("recovering_startup_failure" if recovering and not resumed
+                     else "running" if cmd else "stopped_without_completion")
     if (work/"done.json").exists():
         assert all(r["trained"] and r["evaluated"] for r in row["rounds"])
         assert not row["alerts"], row["alerts"]
