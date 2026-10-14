@@ -9,11 +9,30 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from gpu_slots import select_slots, reservation_paused
+from gpu_slots import select_slots, reservation_paused, reviewed_placement, placed_slots
 
 
 @unittest.skipIf(os.name == 'nt', 'Linux fcntl allocator')
 class ReservationTests(unittest.TestCase):
+    def test_explicit_job_placement_is_reserved_atomically(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home=Path(temp);work=home/'kevin/dline';work.mkdir(parents=True)
+            owner=os.getpid()
+            start=Path(f'/proc/{owner}/stat').read_text().rsplit(')',1)[1].split()[19]
+            (work/'gpu_reservation_placements.json').write_text(json.dumps([
+                {'owner':owner,'owner_start':start,'count':4,'mb':17000,'gpus':[2,4,7,2]}]))
+            outputs=[]
+            for _ in range(2):
+                out=io.StringIO()
+                with patch.object(Path,'home',return_value=home), patch.object(sys,'argv',
+                    ['gpu_slots.py','reserve','--owner',str(owner),'--count','4','--mb','17000']), patch(
+                    'subprocess.check_output',return_value=''.join(f'{i}, 1000, 49140\n' for i in range(10))), contextlib.redirect_stdout(out):
+                    runpy.run_path(str(Path(__file__).with_name('gpu_slots.py')),run_name='__main__')
+                outputs.append(out.getvalue().split())
+            self.assertEqual(outputs,[['2','4','7','2'],[]])
+            entries=json.loads((work/'gpu_slots.json').read_text())
+            self.assertEqual([e['gpu'] for e in entries],[2,4,7,2])
+
     def test_pending_batches_share_capacity_without_oversubscription(self):
         with tempfile.TemporaryDirectory() as temp:
             home=Path(temp)
@@ -33,6 +52,22 @@ class ReservationTests(unittest.TestCase):
 
 
 class SelectionTests(unittest.TestCase):
+    def test_reviewed_placement_matches_only_exact_job_request(self):
+        placement = [{'owner':123,'owner_start':'456','count':4,'mb':17000,'gpus':[2,4,7,2]}]
+        self.assertEqual(reviewed_placement(placement,123,'456',4,17000),[2,4,7,2])
+        for owner,start,count,mb in [(124,'456',4,17000),(123,'457',4,17000),
+                                     (123,'456',1,17000),(123,'456',4,45000)]:
+            self.assertIsNone(reviewed_placement(placement,owner,start,count,mb))
+        with self.assertRaises(ValueError):
+            reviewed_placement(placement+placement,123,'456',4,17000)
+
+    def test_reviewed_placement_packs_workers_and_checks_pending_memory(self):
+        rows = [[gpu,1000,49140] for gpu in range(10)]
+        self.assertEqual(placed_slots(rows,[],[2,4,7,2],17000),[2,4,7,2])
+        self.assertEqual(placed_slots(rows,[{'gpu':2,'mb':20000}],[2,4,7,2],17000),[])
+        with self.assertRaises(ValueError):
+            placed_slots(rows,[],[10],17000)
+
     def test_pause_applies_only_to_exact_owner_generation_and_request(self):
         pauses=[{'owner':123,'owner_start':'456','count':1,'mb':45000}]
         self.assertTrue(reservation_paused(pauses,123,'456',1,45000))

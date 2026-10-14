@@ -1,5 +1,6 @@
 """Atomic GPU startup reservations shared by collection and eval launchers."""
 import argparse
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,31 @@ def reservation_paused(pauses, owner, owner_start, count, mb):
                and p['count']==count and p['mb']==mb for p in pauses)
 
 
+def reviewed_placement(placements, owner, owner_start, count, mb):
+    """Read an explicit placement for one manually reviewed job generation."""
+    matches = [p for p in placements if reservation_paused([p], owner, owner_start, count, mb)]
+    if len(matches) > 1:
+        raise ValueError('Multiple placements for the same job request')
+    if not matches:
+        return None
+    gpus = matches[0]['gpus']
+    if len(gpus) != count or any(type(gpu) is not int or gpu < 0 for gpu in gpus):
+        raise ValueError('Explicit placement must name one GPU per requested worker')
+    return list(gpus)
+
+
+def placed_slots(rows, entries, gpus, mb):
+    """Honor a job's explicit devices while retaining memory reservations."""
+    capacity = {gpu: total - 2000 - used for gpu, used, total in rows}
+    if not set(gpus) <= capacity.keys():
+        raise ValueError('Explicit placement names an unavailable GPU')
+    for gpu, workers in Counter(gpus).items():
+        pending = sum(e['mb'] for e in entries if e['gpu'] == gpu)
+        if pending + workers * mb > capacity[gpu]:
+            return []
+    return list(gpus)
+
+
 def main():
     import fcntl
     p = argparse.ArgumentParser()
@@ -62,7 +88,11 @@ def main():
             else:
                 output = subprocess.check_output(['nvidia-smi','--query-gpu=index,memory.used,memory.total','--format=csv,noheader,nounits'], text=True)
                 rows = [[int(x) for x in row.split(',')] for row in output.splitlines()]
-                selected = select_slots(rows, entries, a.count, a.mb)
+                placement_file = root/'gpu_reservation_placements.json'
+                placements = json.loads(placement_file.read_text()) if placement_file.exists() else []
+                requested = reviewed_placement(placements, a.owner, owner_start, a.count, a.mb)
+                selected = (select_slots(rows, entries, a.count, a.mb) if requested is None
+                            else placed_slots(rows, entries, requested, a.mb))
             entries.extend(dict(owner=a.owner,gpu=gpu,mb=a.mb) for gpu in selected)
             print(' '.join(map(str,selected)))
         temporary = filename.with_suffix('.tmp')
