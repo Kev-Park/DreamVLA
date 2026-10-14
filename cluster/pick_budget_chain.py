@@ -313,17 +313,22 @@ class Chain:
     def evaluate_local(self, run, checkpoint):
         done=self.work/f'{run}.eval.json'
         out=ROOT/'eval_videos'/run;out.mkdir(exist_ok=True)
-        gpus=self.slots(4,17000)
+        schedule=self.work/'eval_schedule.json'
+        workers=read(schedule).get(run,{}).get('workers',4) if schedule.exists() else 4
+        if type(workers) is not int or not 1 <= workers <= 4:
+            raise ValueError('Evaluation concurrency must be between one and four workers')
+        gpus=self.slots(workers,17000)
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-                tasks=[]
-                for k,gpu in enumerate(gpus):
+            def worker(index,gpu):
+                for k in range(index,4,workers):
                     ids=self.work/f'eval_ids{k}.txt';ids.write_text(' '.join(map(str,range(k,100,4)))+'\n')
                     args=['env','HS_EVAL_NO_EE_TERM=1',sys.executable,self.sim/'eval_vla_sonic.py',
                           '--headless','--sonic-pt',self.pt,'--ref-motions-path',EVAL_REFS,
                           '--vla-checkpoint',checkpoint,'--waist-dof','29','--motions-from',ids,
                           '--num-episodes','25','--seed',str(100+k),'--traj-dump',out/f'b{k}']
-                    tasks.append(pool.submit(self.execute,args,f'eval_{run}_shard{k}',gpu,ROOT/'DreamVLA/Training'))
+                    self.execute(args,f'eval_{run}_shard{k}',gpu,ROOT/'DreamVLA/Training')
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                tasks=[pool.submit(worker,index,gpu) for index,gpu in enumerate(gpus)]
                 for f in tasks:f.result()
             self.execute([sys.executable,HERE/'pick_budget_score.py',out,self.work/'box.json'],f'score_{run}')
             report=read(out/'results.json');assert report['episodes']==100
