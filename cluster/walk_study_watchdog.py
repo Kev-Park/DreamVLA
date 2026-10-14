@@ -14,7 +14,59 @@ import time
 from walk_adroit_bridge import call, save
 
 
-BLUE = r'''
+RESOURCE_HELPER = r'''
+def account_resources():
+ import csv,json,os,pathlib,subprocess,time
+ uid=os.getuid();hz=os.sysconf('SC_CLK_TCK');count=os.cpu_count()
+ def snapshot():
+  rows={}
+  for p in pathlib.Path('/proc').iterdir():
+   if not p.name.isdigit():continue
+   try:
+    if p.stat().st_uid!=uid:continue
+    raw=(p/'stat').read_text();fields=raw[raw.rfind(')')+2:].split()
+    rows[int(p.name)]=(int(fields[11])+int(fields[12]),fields[19])
+   except (OSError,ValueError,IndexError):pass
+  return rows
+ before=snapshot();start=time.monotonic();time.sleep(1);after=snapshot();elapsed=time.monotonic()-start
+ uptime=float(pathlib.Path('/proc/uptime').read_text().split()[0]);ticks=0
+ for pid,(value,born) in after.items():
+  if pid in before and before[pid][1]==born:ticks+=max(0,value-before[pid][0])
+  elif int(born)/hz>=uptime-elapsed:ticks+=value
+ result={'sampled_at':time.time(),'account_cpu_pct':ticks/hz/elapsed/count*100,
+         'cpu_sample_seconds':elapsed,'logical_cpus':count}
+ try:
+  gpu_text=subprocess.check_output(['nvidia-smi','--query-gpu=index,uuid,name,memory.used,memory.total,utilization.gpu','--format=csv,noheader,nounits'],text=True,timeout=10)
+  inventory=[]
+  for fields in csv.reader(gpu_text.splitlines()):
+   fields=[value.strip() for value in fields]
+   inventory.append({'gpu':int(fields[0]),'uuid':fields[1],'name':fields[2],
+                     'memory_used_mib':int(fields[3]),'memory_total_mib':int(fields[4]),'utilization_pct':int(fields[5])})
+  mapping={row['uuid']:row['gpu'] for row in inventory};processes=[]
+  apps=subprocess.check_output(['nvidia-smi','--query-compute-apps=gpu_uuid,pid,used_memory','--format=csv,noheader,nounits'],text=True,timeout=10)
+  for fields in csv.reader(apps.splitlines()):
+   uuid,pid,memory=[value.strip() for value in fields];p=pathlib.Path('/proc',pid)
+   try:
+    if p.stat().st_uid!=uid:continue
+    raw=(p/'stat').read_text();state=raw[raw.rfind(')')+2:].split()[0]
+    processes.append({'gpu':mapping[uuid],'pid':int(pid),'memory_mib':int(memory),'state':state})
+   except (FileNotFoundError,ProcessLookupError):pass
+  result.update(gpu_inventory=inventory,account_gpu_processes=processes)
+  reservations=[];path=pathlib.Path.home()/'kevin/dline/gpu_slots.json'
+  try:
+   for row in json.loads(path.read_text()) if path.exists() else []:
+    try:
+     if pathlib.Path('/proc',str(row['owner'])).stat().st_uid==uid:reservations.append(row)
+    except FileNotFoundError:pass
+  except (OSError,ValueError,KeyError,TypeError) as exc:result['reservation_snapshot_error']=repr(exc)
+  result.update(live_gpu_reservations=reservations,
+                account_gpu_devices=sorted({row['gpu'] for row in processes+reservations}))
+ except (OSError,subprocess.SubprocessError,ValueError,KeyError,IndexError) as exc:
+  result['gpu_snapshot_error']=repr(exc)
+ return result
+'''
+
+BLUE = RESOURCE_HELPER + r'''
 import json,pathlib,shutil,time
 b=pathlib.Path.home()/'kevin'
 def read(relative):return json.loads((b/relative).read_text())
@@ -35,10 +87,11 @@ failure=b/'eval_videos/walk_v3_study/gr00t/health_failure.json'
 frozen=[r for r in read('eval_videos/walk_v3_study/sonic/results.json') if r['experiment']=='frozen_reference_grasp']
 usage=shutil.disk_usage(b)
 print(json.dumps({'observed_at':time.time(),'disk_free_gib':usage.free/2**30,'collector':collector,'gr00t':health,
- 'health_failure':json.loads(failure.read_text()) if failure.exists() else None,'frozen':frozen}))
+ 'health_failure':json.loads(failure.read_text()) if failure.exists() else None,'frozen':frozen,
+ 'account_resources':account_resources()}))
 '''
 
-BIPED = r'''
+BIPED = RESOURCE_HELPER + r'''
 import json,pathlib,re,shutil,time
 b=pathlib.Path.home()/'kevin';out=b/'eval_videos/walk_v3_study/biped_direct'
 state=json.loads((out/'workflow.json').read_text())
@@ -77,7 +130,7 @@ for path in (b/'eval_videos/walk_v3_study/biped_eval').glob('*/workflow.json'):
  if row.get('active_job'):
   job=row['active_job'];job['command_live']=command(job['pid']);job['log_age']=time.time()-pathlib.Path(job['log']).stat().st_mtime
  external.append(row)
-print(json.dumps({'observed_at':time.time(),'disk_free_gib':shutil.disk_usage(b).free/2**30,'workflow':state,'results':rows,'confirmation':extra,'gr00t_evaluations':external}))
+print(json.dumps({'observed_at':time.time(),'disk_free_gib':shutil.disk_usage(b).free/2**30,'workflow':state,'results':rows,'confirmation':extra,'gr00t_evaluations':external,'account_resources':account_resources()}))
 '''
 
 
@@ -101,6 +154,10 @@ def pid_alive(pid):
 
 def assess(host, data, now, progress):
     alerts = []
+    resources = data.get('account_resources', {})
+    for field in ('gpu_snapshot_error', 'reservation_snapshot_error'):
+        if resources.get(field):
+            alerts.append('Account resource snapshot incomplete: '+resources[field])
     minimum_free = 150 if host == 'bluesclues' else 20
     if data['disk_free_gib'] < minimum_free:
         alerts.append(f"Only {data['disk_free_gib']:.1f} GiB free; review storage before further allocation")
