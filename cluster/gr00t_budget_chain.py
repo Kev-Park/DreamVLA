@@ -96,9 +96,12 @@ class Chain:
                         TOKENIZERS_PARALLELISM='false', HS_REWORK='1', HS_REWORK_OBJ_PC='1',
                         HS_REWORK_OBJ_GATE='1', HS_REWORK_CONTACT_LEAD='2',
                         PYTHONPATH=str(ROOT / 'DreamVLA/Training/scripts/reinforcement_learning/rsl_rl'))
-        # All agents' workers inherit the same host-level CPU share.
+        # Apply manual per-job defaults without widening an operator's narrower
+        # inherited allocation. Account-wide limits remain an agent review.
         if (ROOT/'dline/cpu_share.json').is_file():
-            os.sched_setaffinity(0, read(ROOT/'dline/cpu_share.json')['shared_mask'])
+            cpus = set(os.sched_getaffinity(0)) & set(read(ROOT/'dline/cpu_share.json')['shared_mask'])
+            assert cpus, 'Manual CPU pool does not overlap the inherited job allocation'
+            os.sched_setaffinity(0, cpus)
 
     def log(self, message):
         line = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()) + ' ' + message
