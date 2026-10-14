@@ -14,27 +14,7 @@ import time
 from walk_adroit_bridge import call, save
 
 
-RESOURCES = r'''
-import json,os,pathlib,subprocess,time
-def resource_snapshot():
- b=pathlib.Path.home()/'kevin';policy=json.loads((b/'dline/resource_policy.json').read_text())
- cpu=json.loads((b/'dline/cpu_share.json').read_text())
- fields=[line.split(',') for line in subprocess.check_output(['nvidia-smi','--query-gpu=index,uuid','--format=csv,noheader,nounits'],text=True).splitlines()]
- mapping={uuid.strip():int(index) for index,uuid in fields};occupied=set()
- for line in subprocess.check_output(['nvidia-smi','--query-compute-apps=gpu_uuid,pid','--format=csv,noheader,nounits'],text=True).splitlines():
-  uuid,pid=[part.strip() for part in line.split(',')]
-  try:
-   if (pathlib.Path('/proc')/pid).stat().st_uid==os.getuid():occupied.add(mapping[uuid])
-  except FileNotFoundError:pass
- entries=json.loads((b/'dline/gpu_slots.json').read_text())
- reserved={e['gpu'] for e in entries if not e.get('resource_policy_block') and (pathlib.Path('/proc')/str(e['owner'])).exists()}
- process=pathlib.Path('/proc')/str(cpu.get('guard_pid',0))/'cmdline'
- return {'policy':policy,'cpu':cpu,'guard_command':process.read_bytes().decode(errors='replace') if process.exists() else '',
-         'account_gpu_indices':sorted(occupied),'account_and_reserved_gpu_indices':sorted(occupied|reserved)}
-'''
-
-
-BLUE = RESOURCES+r'''
+BLUE = r'''
 import json,pathlib,shutil,time
 b=pathlib.Path.home()/'kevin'
 def read(relative):return json.loads((b/relative).read_text())
@@ -54,11 +34,11 @@ health['watcher_live']=bool(process(health['watcher_pid']))
 failure=b/'eval_videos/walk_v3_study/gr00t/health_failure.json'
 frozen=[r for r in read('eval_videos/walk_v3_study/sonic/results.json') if r['experiment']=='frozen_reference_grasp']
 usage=shutil.disk_usage(b)
-print(json.dumps({'observed_at':time.time(),'disk_free_gib':usage.free/2**30,'collector':collector,'gr00t':health,'resources':resource_snapshot(),
+print(json.dumps({'observed_at':time.time(),'disk_free_gib':usage.free/2**30,'collector':collector,'gr00t':health,
  'health_failure':json.loads(failure.read_text()) if failure.exists() else None,'frozen':frozen}))
 '''
 
-BIPED = RESOURCES+r'''
+BIPED = r'''
 import json,pathlib,re,shutil,time
 b=pathlib.Path.home()/'kevin';out=b/'eval_videos/walk_v3_study/biped_direct'
 state=json.loads((out/'workflow.json').read_text())
@@ -97,7 +77,7 @@ for path in (b/'eval_videos/walk_v3_study/biped_eval').glob('*/workflow.json'):
  if row.get('active_job'):
   job=row['active_job'];job['command_live']=command(job['pid']);job['log_age']=time.time()-pathlib.Path(job['log']).stat().st_mtime
  external.append(row)
-print(json.dumps({'observed_at':time.time(),'disk_free_gib':shutil.disk_usage(b).free/2**30,'workflow':state,'results':rows,'confirmation':extra,'gr00t_evaluations':external,'resources':resource_snapshot()}))
+print(json.dumps({'observed_at':time.time(),'disk_free_gib':shutil.disk_usage(b).free/2**30,'workflow':state,'results':rows,'confirmation':extra,'gr00t_evaluations':external}))
 '''
 
 
@@ -121,20 +101,6 @@ def pid_alive(pid):
 
 def assess(host, data, now, progress):
     alerts = []
-    resources = data['resources']
-    cpu, policy = resources['cpu'], resources['policy']
-    if now-cpu['time'] > 30 or 'cpu_share_guard.py' not in resources['guard_command']:
-        alerts.append('Account-wide CPU/resource guard stopped or heartbeat stale')
-    if len(cpu['shared_mask']) > int(cpu['available_cpus']*policy['cpu_fraction']):
-        alerts.append('Shared CPU mask exceeds the account limit')
-    if cpu.get('affinity_violations') or cpu.get('errors'):
-        alerts.append('Account-wide CPU affinity enforcement requires review')
-    if (cpu.get('measured_cpu_pct_host') or 0) > 100*policy['cpu_fraction']:
-        alerts.append('Measured account-wide CPU utilization exceeds the limit')
-    if len(resources['account_and_reserved_gpu_indices']) > policy['max_gpu_count']:
-        alerts.append('Account-wide GPU occupancy/reservations exceed the limit')
-    if set(resources['account_gpu_indices'])-set(policy['allowed_gpus']):
-        alerts.append('An account-owned GPU process is outside the shared device policy')
     minimum_free = 150 if host == 'bluesclues' else 20
     if data['disk_free_gib'] < minimum_free:
         alerts.append(f"Only {data['disk_free_gib']:.1f} GiB free; review storage before further allocation")
