@@ -70,10 +70,28 @@ def inspect(budget):
     handle = read(launch)
     cmd = process(handle["pid"])
     row.update(controller_pid=handle["pid"], controller_command=cmd)
+    repairs = []
+    for path in work.glob('*.startup_repair.json'):
+        repair = read(path)
+        if repair['status'] == 'complete':
+            continue
+        repair['command_live'] = process(repair['pid'])
+        repairs.append(repair)
+        if not repair['command_live'] or repair['status'] == 'failed_for_review':
+            row['alerts'].append('Startup repair stopped or failed: '+repair['run'])
+    if repairs:
+        row['startup_repairs'] = repairs
+    recovering = any(r['command_live'] for r in repairs)
     if (work/"abort.json").exists():
-        row.update(status="failed", failure=read(work/"abort.json"))
-        return row
-    if cmd is None and not (work/"done.json").exists():
+        failure = read(work/'abort.json')
+        expected = any(r['command_live'] and failure['pid'] == r['controller_pid']
+                       and f"eval_{r['run']}_shard{r['shard']} exited -6" in failure['error']
+                       for r in repairs)
+        if not expected:
+            row.update(status="failed", failure=failure)
+            return row
+        row['recovery_boundary_failure'] = failure
+    if cmd is None and not recovering and not (work/"done.json").exists():
         row["alerts"].append("Controller exited")
     for stage in work.glob("*.process.json"):
         job = read(stage)
@@ -97,7 +115,7 @@ def inspect(budget):
             assert item["evaluation"]["episodes"] == 100
             assert sorted(r["motion_id"] for r in item["evaluation"]["per_episode"]) == list(range(100))
         row["rounds"].append(item)
-    row["status"] = "running" if cmd else "stopped_without_completion"
+    row["status"] = "recovering_startup_failure" if recovering else "running" if cmd else "stopped_without_completion"
     if (work/"done.json").exists():
         assert all(r["trained"] and r["evaluated"] for r in row["rounds"])
         assert not row["alerts"], row["alerts"]
