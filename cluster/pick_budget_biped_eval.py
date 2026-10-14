@@ -1,10 +1,11 @@
-"""Serve Pick50 round-2's unchanged held-out evaluation on an idle Biped GPU.
+"""Run unchanged Pick50 holdouts on Biped or a Slurm-assigned Adroit GPU.
 
 Checkpoint and trajectory transfers are uncompressed and checksummed. Workers
 use the same four reference subsets and seeds as Bluesclues. Occupied GPUs are
-never used; the supervisor waits in tmux until hardware becomes available.
+never used on Biped; Adroit workers stay on their one assigned full GPU.
 """
 import concurrent.futures
+import hashlib
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from bridge_pick_budget_biped import remote
 from stream_directory import transfer
 
 RUN = 'pick50_dagger57_20261013_r2'
+FINAL_RUN = 'pick50_dagger57_20261013_r3'
 POOL = 'Holosoma_Pick_29_latband60max_eval'
 OUT = Path(__file__).resolve().parents[2] / 'out'
 STATE = OUT / 'pick_budget_biped_eval_bridge.json'
@@ -38,17 +40,41 @@ def validate_report(report):
         assert abs(sum(x[key] for x in report['per_episode']) / 100 - report[key]) < 1e-8
 
 
+def slurm_worker_gpus(environment):
+    """Share the one assigned full GPU; never discover other users' devices."""
+    visible = environment.get('CUDA_VISIBLE_DEVICES', '').strip()
+    if not environment.get('SLURM_JOB_ID') or not visible or ',' in visible:
+        raise ValueError('Adroit evaluation requires exactly one Slurm-assigned GPU')
+    if environment.get('SLURM_GPUS_ON_NODE', '1') != '1':
+        raise ValueError('Expected a one-GPU Slurm allocation')
+    return [visible, visible]
+
+
 def run_worker(request_file):
     root = Path.home() / 'kevin'; work = request_file.parent
     request = json.loads(request_file.read_text())
-    assert request['run'] == RUN and request['pool'] == POOL and request['episodes'] == 100
+    assert request['host'] in ['adroit', 'biped']
+    adroit = request['host'] == 'adroit'
+    assert request['run'] == (FINAL_RUN if adroit else RUN)
+    assert request['pool'] == POOL and request['episodes'] == 100
+    relative = Path(request.get('runtime_relative', 'DreamVLA'))
+    assert not relative.is_absolute() and '..' not in relative.parts
+    runtime = root / relative
+    assert runtime.resolve().is_relative_to(root.resolve())
+    if adroit:
+        assert request['runtime_files'], 'Pin the evaluation runtime before submission'
+        for name, expected in request['runtime_files'].items():
+            path = runtime / name
+            assert path.resolve().is_relative_to(runtime.resolve())
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == expected, name
     checkpoint = root / request['checkpoint_relative']
     output = root / request['output_relative']; output.mkdir(parents=True, exist_ok=True)
     assert not list(output.iterdir()), 'Evaluation output already exists; diagnose before resuming'
     assert len(list((root / 'ref_motions' / POOL).glob('pick_*.pkl'))) == 100
     box = work / 'box.json'; box.write_text(json.dumps(request['box']))
     state_file = work / 'state.json'
-    while True:
+    gpus = slurm_worker_gpus(os.environ) if adroit else []
+    while not gpus:
         raw = subprocess.check_output(['nvidia-smi', '--query-gpu=index,memory.used,utilization.gpu',
                                        '--format=csv,noheader,nounits'], text=True)
         gpus = [int(a) for a, b, c in (row.split(',') for row in raw.splitlines())
@@ -62,14 +88,14 @@ def run_worker(request_file):
                MKL_NUM_THREADS='2', OPENBLAS_NUM_THREADS='1', NUMEXPR_NUM_THREADS='2',
                TOKENIZERS_PARALLELISM='false', HS_REWORK='1', HS_REWORK_OBJ_PC='1',
                HS_REWORK_OBJ_GATE='1', HS_REWORK_CONTACT_LEAD='2', HS_EVAL_NO_EE_TERM='1',
-               PYTHONPATH=str(root / 'DreamVLA/Training/scripts/reinforcement_learning/rsl_rl'))
+               PYTHONPATH=str(runtime / 'Training/scripts/reinforcement_learning/rsl_rl'))
     # Host login/tmux settings must not introduce extra experiment switches.
     for key in list(env):
         if key.startswith('HS_'):
             del env[key]
     env.update(request['eval_environment'])
     assert env['HS_EVAL_NO_EE_TERM'] == '1'
-    script = root / 'DreamVLA/Training/scripts/reinforcement_learning/rsl_rl/eval_vla_sonic.py'
+    script = runtime / 'Training/scripts/reinforcement_learning/rsl_rl/eval_vla_sonic.py'
     sonic = root / 'sonic/sonic_release_3pt_heading_wrist_81-20260415_051436_model_step_100000'
 
     def gpu_worker(index, gpu):
@@ -81,7 +107,7 @@ def run_worker(request_file):
                     '--motions-from', str(ids), '--num-episodes', '25', '--seed', str(100 + k),
                     '--traj-dump', str(output / f'b{k}')]
             with logfile.open('w') as log:
-                p = subprocess.Popen(args, cwd=root / 'DreamVLA/Training',
+                p = subprocess.Popen(args, cwd=runtime / 'Training',
                                      env=dict(env, CUDA_VISIBLE_DEVICES=str(gpu)), stdout=log,
                                      stderr=subprocess.STDOUT)
                 write(work / f'shard{k}.process.json', {'pid': p.pid, 'gpu': gpu,
