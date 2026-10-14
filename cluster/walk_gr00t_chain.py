@@ -31,7 +31,12 @@ class WalkChain(base.Chain):
         self.collection_workers = 2 if budget == 10 else 4
         self.training_cwd = HERE.parent/"Training"
         self.score_script = HERE/"walk_gr00t_score.py"
-        self.sim_task_threads = len(os.sched_getaffinity(0))
+        # All collection workers share the inherited CPU mask. Budget each
+        # task pool against that shared allocation rather than multiplying it
+        # by the number of concurrent collectors.
+        shared_cpus = len(os.sched_getaffinity(0))
+        self.sim_task_threads = max(1, (shared_cpus + self.collection_workers - 1)
+                                    // self.collection_workers)
         self.env = common.environment(0)
         self.env.update(OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", OPENBLAS_NUM_THREADS="1",
                         NUMEXPR_NUM_THREADS="2", TOKENIZERS_PARALLELISM="false",
