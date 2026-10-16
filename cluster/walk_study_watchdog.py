@@ -242,6 +242,32 @@ def assess(host, data, now, progress):
     return alerts
 
 
+def review_adroit_bridge(bridge, state_dir):
+    """Keep a documented idle submission hold visible without masking failures."""
+    stopped = not pid_alive(bridge.get('pid', 0))
+    if bridge.get('state') == 'operator_hold_walk200_handoff':
+        try:
+            receipt = json.loads((state_dir/'operator_hold_walk200_handoff.json').read_text())
+        except (OSError, ValueError):
+            receipt = {}
+        valid = (stopped and bridge.get('outstanding') == 0
+                 and isinstance(bridge.get('pid'), int) and bridge['pid'] > 0
+                 and bool(bridge.get('hold_reason', '').strip())
+                 and receipt.get('bridge_pid') == bridge.get('pid')
+                 and receipt.get('purpose') == 'manual_walk200_finetune_handoff'
+                 and receipt.get('outstanding') == 0
+                 and isinstance(receipt.get('held_at'), (int, float)) and receipt['held_at'] > 0
+                 and receipt.get('verified_process_stopped') is True)
+        if valid:
+            return [], [{'component': 'Adroit submission bridge',
+                         'reason': bridge['hold_reason'], 'held_at': receipt['held_at'],
+                         'bridge_pid': bridge['pid']}]
+        return ['Adroit submission hold lacks a verified idle-stop receipt'], []
+    if bridge.get('state') == 'stopped_for_review' or stopped:
+        return ['Adroit transfer bridge stopped: '+str(bridge.get('error', 'process absent'))], []
+    return [], []
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state-dir', type=Path, required=True)
@@ -264,7 +290,7 @@ def main():
     # The operator clears only the host explicitly restored by the user.
     disabled = previous.get('disabled_hosts', {})
     snapshots, progress = previous.get('hosts', {}), {}
-    previous_alerts = None
+    previous_alerts = previous_holds = None
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         while True:
             futures = {executor.submit(call, host, script): host
@@ -283,8 +309,8 @@ def main():
                     alerts.extend(host+': '+a for a in assess(host, data, now, progress))
             bridge_file = args.bridge_state_dir/'workflow.json'
             bridge = json.loads(bridge_file.read_text()) if bridge_file.exists() else {}
-            if bridge.get('state') == 'stopped_for_review' or not pid_alive(bridge.get('pid', 0)):
-                alerts.append('Adroit transfer bridge stopped: '+str(bridge.get('error', 'process absent')))
+            bridge_alerts, operator_holds = review_adroit_bridge(bridge, args.bridge_state_dir)
+            alerts.extend(bridge_alerts)
             for path in (args.state_dir.parent/'walk_biped_eval').glob('*/workflow.json'):
                 remote_bridge = json.loads(path.read_text())
                 if remote_bridge['state'] == 'stopped_for_review' or (
@@ -294,12 +320,13 @@ def main():
                 snapshots['bluesclues']['gr00t']['status'] == 'complete'
                 and snapshots['biped']['workflow']['status'] == 'complete')
             status = {'pid': os.getpid(), 'heartbeat': now, 'status': 'needs_attention' if alerts else 'complete' if complete else 'monitoring',
-                      'alerts': alerts, 'disabled_hosts': disabled, 'hosts': snapshots, 'adroit_bridge': bridge}
+                      'alerts': alerts, 'operator_holds': operator_holds,
+                      'disabled_hosts': disabled, 'hosts': snapshots, 'adroit_bridge': bridge}
             save(args.state_dir/'workflow.json', status)
-            if alerts != previous_alerts:
+            if alerts != previous_alerts or operator_holds != previous_holds:
                 with (args.state_dir/'events.jsonl').open('a') as stream:
-                    stream.write(json.dumps({'time': now, 'alerts': alerts})+'\n')
-                previous_alerts = alerts
+                    stream.write(json.dumps({'time': now, 'alerts': alerts, 'operator_holds': operator_holds})+'\n')
+                previous_alerts, previous_holds = alerts, operator_holds
             if complete or len(disabled) == 2:
                 return
             time.sleep(60)
