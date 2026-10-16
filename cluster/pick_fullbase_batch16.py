@@ -40,14 +40,15 @@ class Run:
         assert re.fullmatch(r'af60v8f57_dagger3_bs16_\d{8}', self.name)
         assert self.work == ROOT / 'dline' / self.name
         self.gpu = self.request['gpu']
-        self.dataset = ROOT / 'datasets/af60v8f_ds_dagger3/lerobot/ds'
+        # Keep the exact source data while isolating the verified metadata cache.
+        self.dataset = self.work / 'dataset'
         self.checkpoint = ROOT / 'checkpoints' / self.name / 'checkpoint-158000'
         self.output = ROOT / 'eval_videos' / self.name
         self.env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(self.gpu),
                         XLA_PYTHON_CLIENT_PREALLOCATE='false', OMP_NUM_THREADS='2',
                         MKL_NUM_THREADS='2', OPENBLAS_NUM_THREADS='1', NUMEXPR_NUM_THREADS='2',
                         TOKENIZERS_PARALLELISM='false',
-                        PYTHONPATH=str(ROOT / 'DreamVLA/Training/scripts/reinforcement_learning/rsl_rl'))
+                        PYTHONPATH=str(HERE.parent / 'Training/scripts/reinforcement_learning/rsl_rl'))
         for key in list(self.env):
             if key.startswith('HS_'):
                 del self.env[key]
@@ -113,6 +114,11 @@ class Run:
         assert sorted(os.sched_getaffinity(0)) == sorted(self.request['cpu_mask'])
         info = read(self.dataset / 'meta/info.json')
         assert (info['total_episodes'], info['total_frames']) == (892, 443502)
+        source = ROOT / 'datasets/af60v8f_ds_dagger3/lerobot/ds'
+        assert all((self.dataset / key).resolve() == (source / key).resolve()
+                   for key in ['data', 'videos'])
+        assert subprocess.check_output(['git', '-C', str(ROOT / 'Isaac-GR00T'),
+            'rev-parse', 'HEAD'], text=True).strip() == self.request['gr00t_commit']
         for relative, digest in self.request['dataset_meta_hashes'].items():
             assert hashlib.sha256((self.dataset / relative).read_bytes()).hexdigest() == digest, relative
         for relative, digest in self.request['runtime_hashes'].items():
@@ -144,13 +150,23 @@ class Run:
                     '--learning-rate', '0.0001', '--weight-decay', '0.00001', '--warmup-ratio', '0.05',
                     '--dataloader-num-workers', '8', '--output-dir', ROOT / 'checkpoints',
                     '--experiment-name', self.name, '--max-steps', '158000',
-                    '--save-steps', '158000', '--save-total-limit', '1'], groot)
+                    '--save-steps', '20000', '--save-total-limit', '1'], groot)
                 assert read(self.checkpoint / 'trainer_state.json')['global_step'] == 158000
                 index = read(self.checkpoint / 'model.safetensors.index.json')['weight_map']
                 assert all((self.checkpoint / name).stat().st_size > 8 for name in set(index.values()))
                 assert (self.checkpoint / 'optimizer.pt').stat().st_size > 0
                 write(self.work / 'trained.json', dict(checkpoint=str(self.checkpoint), steps=158000,
                                                        batch_size=16, time=time.time()))
+                self.release()
+                # Agent review is required before a new Isaac allocation, including
+                # its graphics context. Do not hold an idle GPU while awaiting it.
+                self.status(phase='await_eval_review', worker_pid=None, reserved=False)
+                while not (self.work / 'eval_release.json').exists():
+                    time.sleep(10)
+                release = read(self.work / 'eval_release.json')
+                assert release['run'] == self.name and release['gpu'] == self.gpu
+                assert release['reviewed_at'] >= read(self.work / 'trained.json')['time']
+                self.reserve()
                 self.output.mkdir(parents=True)
                 sim = HERE.parent / 'Training/scripts/reinforcement_learning/rsl_rl'
                 sonic = ROOT / 'sonic/sonic_release_3pt_heading_wrist_81-20260415_051436_model_step_100000'
@@ -161,7 +177,7 @@ class Run:
                         '--headless', '--sonic-pt', sonic, '--ref-motions-path', POOL,
                         '--vla-checkpoint', self.checkpoint, '--waist-dof', '29', '--motions-from', ids,
                         '--num-episodes', '25', '--seed', str(100 + shard),
-                        '--traj-dump', self.output / f'b{shard}'], ROOT / 'DreamVLA/Training')
+                        '--traj-dump', self.output / f'b{shard}'], HERE.parent / 'Training')
                 self.execute('score', [sys.executable, HERE / 'pick_budget_score.py',
                                       self.output, self.work / 'box.json'], HERE.parent)
                 report = read(self.output / 'results.json')
