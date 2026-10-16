@@ -18,6 +18,7 @@ import time
 HERE = Path(__file__).resolve().parent
 ROOT = Path.home() / 'kevin'
 POOL = 'Holosoma_Pick_29_latband60max_eval'
+RESERVATION_MB = 44000
 
 
 def read(path):
@@ -64,7 +65,7 @@ class Run:
         # Coordinate only this explicitly reviewed placement with other launchers.
         owner = os.getpid()
         start = Path(f'/proc/{owner}/stat').read_text().rsplit(')', 1)[1].split()[19]
-        placement = dict(owner=owner, owner_start=start, count=1, mb=45000,
+        placement = dict(owner=owner, owner_start=start, count=1, mb=RESERVATION_MB,
                          gpus=[self.gpu], reason='Manually reviewed historical Pick batch-16 ablation')
         with (ROOT / 'dline/gpu_slots.lock').open('a+') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -73,7 +74,7 @@ class Run:
             assert not any(row['owner'] == owner for row in rows)
             write(path, rows + [placement])
         selected = subprocess.check_output([sys.executable, str(HERE / 'gpu_slots.py'),
-            'reserve', '--owner', str(owner), '--count', '1', '--mb', '45000'], text=True)
+            'reserve', '--owner', str(owner), '--count', '1', '--mb', str(RESERVATION_MB)], text=True)
         assert selected.split() == [str(self.gpu)], 'Reviewed GPU no longer has sufficient free memory; no retry'
         self.status(reserved=True)
 
@@ -141,7 +142,7 @@ class Run:
                     '--dataset-path', self.dataset, '--embodiment-tag', 'unitree_g1_sonic',
                     '--num-gpus', '1', '--global-batch-size', '16', '--gradient-accumulation-steps', '1',
                     '--learning-rate', '0.0001', '--weight-decay', '0.00001', '--warmup-ratio', '0.05',
-                    '--dataloader-num-workers', '4', '--output-dir', ROOT / 'checkpoints',
+                    '--dataloader-num-workers', '8', '--output-dir', ROOT / 'checkpoints',
                     '--experiment-name', self.name, '--max-steps', '158000',
                     '--save-steps', '158000', '--save-total-limit', '1'], groot)
                 assert read(self.checkpoint / 'trainer_state.json')['global_step'] == 158000
