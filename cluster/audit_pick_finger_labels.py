@@ -1,4 +1,6 @@
 """Measure finger-label semantics in an existing LeRobot dataset; no inference."""
+import ast
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -17,6 +19,14 @@ def main():
     hand = modality['state']['right_hand']
     state_column = hand.get('original_key', 'observation.state')
     target_column = modality['action']['right_hand_joints']['original_key']
+    canonical_source = root / 'GR00T-WholeBodyControl/gear_sonic/data/robot_model/supplemental_info/g1/g1_supplemental_info.py'
+    tree = ast.parse(canonical_source.read_text())
+    target_names = next(ast.literal_eval(node.value) for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and any(isinstance(name, ast.Name)
+            and name.id == 'right_hand_actuated_joints' for name in node.targets))
+    state_names = info['features'][state_column]['names'][hand['start']:hand['end']]
+    assert set(target_names) == set(state_names) and len(target_names) == 7
+    permutation = [state_names.index(name) for name in target_names]
     bounds = spec['cumulative_episode_counts']
     assert bounds == [342, 542, 711, 892]
     assert info['total_episodes'] == bounds[-1]
@@ -28,6 +38,7 @@ def main():
             episode_chunk=index // info['chunks_size'], episode_index=index)
         data = pd.read_parquet(path, columns=[state_column, target_column])
         state = np.stack(data[state_column].to_numpy())[:, hand['start']:hand['end']].astype(np.float32)
+        state = state[:, permutation]
         target = np.stack(data[target_column].to_numpy()).astype(np.float32)
         assert state.shape == target.shape and state.shape[1] == 7
         assert np.isfinite(state).all() and np.isfinite(target).all()
@@ -62,6 +73,9 @@ def main():
             values['exact_copy_fraction'] = values['exact_copy_frames'] / values['frames']
             values['mean_absolute_error_rad'] = values['absolute_error_sum'] / values['scalar_values']
     result = dict(time=time.time(),dataset=str(dataset),episodes=episodes,totals=totals,
+        joint_alignment=dict(state_joint_names=state_names,target_joint_names=target_names,
+            state_to_target_permutation=permutation,canonical_source=str(canonical_source),
+            canonical_source_sha256=hashlib.sha256(canonical_source.read_bytes()).hexdigest()),
         offsets_frames=offsets, fps=info['fps'], closure_threshold=0.6,
         limitations=[
             'This compares recorded targets with observed joint positions; it does not evaluate model predictions or task success.',
