@@ -13,6 +13,8 @@ set -eo pipefail
 DS=${1:?dataset directory required}
 RUN=${2:?run name required}
 STEPS=${3:?exact update count required}
+# Trainer saves the exact final step as well as these rolling recovery points.
+SAVE_STEPS=$(( STEPS < 5000 ? STEPS : 5000 ))
 GR=$HOME/kevin/Isaac-GR00T
 module load cudatoolkit/12.8
 export XLA_PYTHON_CLIENT_PREALLOCATE=false WANDB_MODE=offline TOKENIZERS_PARALLELISM=false
@@ -28,4 +30,4 @@ exec .venv/bin/python gr00t/experiment/launch_finetune.py \
   --embodiment-tag unitree_g1_sonic --num-gpus 1 --global-batch-size 16 \
   --gradient-accumulation-steps 1 --learning-rate 0.0001 --dataloader-num-workers 4 \
   --output-dir "$HOME/kevin/checkpoints" --experiment-name "$RUN" \
-  --max-steps "$STEPS" --save-steps "$STEPS" --save-total-limit 1
+  --max-steps "$STEPS" --save-steps "$SAVE_STEPS" --save-total-limit 1

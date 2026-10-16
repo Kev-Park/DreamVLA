@@ -44,6 +44,12 @@ class WalkChain(base.Chain):
         self.env["PYTHONPATH"] = str(self.sim)
 
     def execute(self, args, label, gpu=None, cwd=None):
+        if any(Path(str(arg)).name == "launch_finetune.py" for arg in args):
+            # Keep a resumable checkpoint during long runs. Trainer also saves
+            # the exact final step; the existing one-checkpoint limit bounds disk.
+            args = list(args)
+            steps = int(args[args.index("--max-steps") + 1])
+            args[args.index("--save-steps") + 1] = str(min(steps, 5000))
         # Use Isaac Lab's own task-pool setting for this job's CPU allocation.
         # Physics, reference coverage and model settings remain in the recipe.
         if any(Path(str(arg)).name in {"collect_sonic_adapter.py", "eval_vla_sonic.py"} for arg in args):
