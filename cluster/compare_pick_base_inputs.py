@@ -21,7 +21,7 @@ def main():
     full = root / spec['full_dataset']
     info = json.loads((full / 'meta/info.json').read_text())
     modality = json.loads((full / 'meta/modality.json').read_text())
-    tasks = (full / 'meta/tasks.jsonl').read_text()
+    tasks = [json.loads(line) for line in (full / 'meta/tasks.jsonl').read_text().splitlines()]
     columns = [name for name, feature in info['features'].items() if 'float' in feature['dtype']]
     columns += ['frame_index', 'task_index']
     cameras = [name for name, feature in info['features'].items() if feature['dtype'] == 'video']
@@ -32,7 +32,7 @@ def main():
         assert small_info['total_episodes'] == len(subset['episode_mapping'])
         assert info['fps'] == small_info['fps'] == 50
         assert json.loads((dataset / 'meta/modality.json').read_text()) == modality
-        assert (dataset / 'meta/tasks.jsonl').read_text() == tasks
+        assert [json.loads(line) for line in (dataset / 'meta/tasks.jsonl').read_text().splitlines()] == tasks
         for small_index, full_index in enumerate(subset['episode_mapping']):
             left_path = episode_path(dataset, small_info, small_index, 'data_path')
             right_path = episode_path(full, info, full_index, 'data_path')
