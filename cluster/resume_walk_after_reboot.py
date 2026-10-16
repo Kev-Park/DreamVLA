@@ -132,10 +132,24 @@ def recovered_chain(budget, plan):
             remaining = plan['remaining_ids']; out = Path(plan['raw'])
             self.log(f"RECOVER collection {round_id}: reuse {len(plan['completed_ids'])}, "
                      f"remaining {len(remaining)}, reboot-interrupted {plan['infrastructure_interrupted_ids']}")
-            count = min(self.collection_workers, len(remaining))
-            gpus = self.slots(count, 17000) if count else []
+            placement = base.read(base.ROOT / 'dline/walking_reboot_20261015_resources.json')
+            assert placement['boot_id'] == plan['boot_id']
+            assigned = placement['collection_gpus'][str(self.budget)]
+            assert len(assigned) == len(set(assigned))
+            count = min(len(assigned), len(remaining))
+            gpus = []
             labels = []
             try:
+                # These are the operator's reviewed per-worker devices, using
+                # the existing shared reservation mechanism without packing.
+                import subprocess
+                for gpu in assigned[:count]:
+                    reserved = subprocess.check_output([
+                        sys.executable, str(base.HERE / 'gpu_slots.py'), 'reserve',
+                        '--owner', str(os.getpid()), '--count', '1', '--mb', '17000',
+                        '--gpu', str(gpu)], text=True).split()
+                    assert reserved == [str(gpu)], 'Reviewed recovery GPU is no longer available'
+                    gpus.append(gpu)
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, count)) as pool:
                     tasks = []
                     for k, gpu in enumerate(gpus):
