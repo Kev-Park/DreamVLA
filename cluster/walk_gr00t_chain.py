@@ -26,6 +26,9 @@ class WalkChain(base.Chain):
         self.expert = (ROOT/"eval_videos/T20_max_v3_env2048/early_stop/best_evaluated.pt").resolve(strict=True)
         assert self.expert.name == "model_4500.pt"
         self.rollout_steps = 1200
+        # Keep the same four seeded shards while sharing one reviewed GPU.
+        # Account occupancy still needs an operator review before launch.
+        self.eval_workers = 1
         # Four shards leave room for concurrent fine-tunes within the user's
         # account-wide GPU allowance. The reference/attempt budget is unchanged.
         self.collection_workers = 2 if budget == 10 else 4
@@ -106,6 +109,7 @@ class WalkChain(base.Chain):
             "batch_size": 16, "passes": 5.7, "steps_rule": "ceil(5.7*cumulative_frames/16)",
             "initialization": "independent nvidia/GR00T-N1.7-3B each round", "learning_rate": 0.0001,
             "reference_pool": base.REFS, "eval_pool": base.EVAL_REFS, "eval_episodes": 100,
+            "eval_shards": 4, "eval_workers": self.eval_workers,
             "rollout_cap": self.rollout_steps, "eval_no_ee_term": self.eval_no_ee_term,
             "collection": "one student attempt per selected reference; existing paired expert rescue; retain four-rule passes",
             "collection_workers": self.collection_workers,

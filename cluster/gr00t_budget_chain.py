@@ -91,6 +91,7 @@ class Chain:
         self.training_cwd = ROOT/'DreamVLA/Training'
         self.score_script = HERE/'pick_budget_score.py'
         self.eval_no_ee_term = True
+        self.eval_workers = 4
         self.env = dict(os.environ, XLA_PYTHON_CLIENT_PREALLOCATE='false', OMP_NUM_THREADS='2',
                         MKL_NUM_THREADS='2', OPENBLAS_NUM_THREADS='1', NUMEXPR_NUM_THREADS='2',
                         TOKENIZERS_PARALLELISM='false', HS_REWORK='1', HS_REWORK_OBJ_PC='1',
@@ -340,11 +341,13 @@ class Chain:
             assert sorted(r['motion_id'] for r in report['per_episode'])==list(range(100))
             atomic(done,report)
             return
-        gpus=self.slots(4,17000)
+        assert 1 <= self.eval_workers <= 4
+        gpus=self.slots(self.eval_workers,17000)
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.eval_workers) as pool:
                 tasks=[]
-                for k,gpu in enumerate(gpus):
+                for k in range(4):
+                    gpu=gpus[k % len(gpus)]
                     ids=self.work/f'eval_ids{k}.txt';ids.write_text(' '.join(map(str,range(k,100,4)))+'\n')
                     args=['env',f'HS_EVAL_NO_EE_TERM={int(self.eval_no_ee_term)}',sys.executable,self.sim/'eval_vla_sonic.py',
                           '--headless','--sonic-pt',self.pt,'--ref-motions-path',EVAL_REFS,
