@@ -38,12 +38,14 @@ def progress(texts, expected):
 
 
 def inspect_recordings(raw, written_ids):
+    print(f'[recovery] loading HDF5 tooling for {raw}', flush=True)
     import h5py
     import numpy as np
     found = {}
     columns = ['actions', 'obs/object_pos', 'obs/object_quat', 'obs/robot0_root_pos_w',
                'obs/robot0_root_quat_w', 'obs/motion_token', 'teleop/right_wrist']
     for path in sorted(raw.rglob('*.hdf5')):
+        print(f'[recovery] checking {path.name}', flush=True)
         match = re.fullmatch(r'sonic_adapter__Pick_sim2__motion_(\d+)_r0\.hdf5', path.name)
         assert match, f'Unrecognized recording requires review: {path}'
         motion = int(match[1])
@@ -55,12 +57,14 @@ def inspect_recordings(raw, written_ids):
             assert g['obs/ego_view_image'].shape == (n, 960, 1280, 3), str(path)
             assert all(np.isfinite(g[name][()]).all() for name in columns), str(path)
         found[motion] = {'path': str(path), 'bytes': path.stat().st_size, 'frames': n}
+        print(f'[recovery] verified {path.name}: {n} aligned frames', flush=True)
     assert set(found) == set(written_ids), 'Recorded outcomes and durable files differ'
     return {str(k): v for k, v in found.items()}
 
 
 def build_plan(budget, boot_id):
     from gr00t_budget_chain import ROOT, read, atomic
+    print(f'[recovery] planning walk{budget}', flush=True)
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == boot_id
     boot = int(next(s.split()[1] for s in Path('/proc/stat').read_text().splitlines()
                     if s.startswith('btime ')))
