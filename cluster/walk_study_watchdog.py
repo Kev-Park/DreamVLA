@@ -14,27 +14,11 @@ import time
 from walk_adroit_bridge import call, save
 
 
-RESOURCE_HELPER = r'''
+RESOURCE_HELPER = Path(__file__).with_name('account_cpu_usage.py').read_text() + r'''
 def account_resources():
  import csv,json,os,pathlib,subprocess,time,xml.etree.ElementTree as ET
- uid=os.getuid();hz=os.sysconf('SC_CLK_TCK');count=os.cpu_count()
- def snapshot():
-  rows={}
-  for p in pathlib.Path('/proc').iterdir():
-   if not p.name.isdigit():continue
-   try:
-    if p.stat().st_uid!=uid:continue
-    raw=(p/'stat').read_text();fields=raw[raw.rfind(')')+2:].split()
-    rows[int(p.name)]=(int(fields[11])+int(fields[12]),fields[19])
-   except (OSError,ValueError,IndexError):pass
-  return rows
- before=snapshot();start=time.monotonic();time.sleep(1);after=snapshot();elapsed=time.monotonic()-start
- uptime=float(pathlib.Path('/proc/uptime').read_text().split()[0]);ticks=0
- for pid,(value,born) in after.items():
-  if pid in before and before[pid][1]==born:ticks+=max(0,value-before[pid][0])
-  elif int(born)/hz>=uptime-elapsed:ticks+=value
- result={'sampled_at':time.time(),'account_cpu_pct':ticks/hz/elapsed/count*100,
-         'cpu_sample_seconds':elapsed,'logical_cpus':count}
+ uid=os.getuid()
+ result=sample_account_cpu(1)
  try:
   gpu_text=subprocess.check_output(['nvidia-smi','--query-gpu=index,uuid,name,memory.used,memory.total,utilization.gpu','--format=csv,noheader,nounits'],text=True,timeout=10)
   inventory=[]
@@ -159,7 +143,7 @@ def pid_alive(pid):
 def assess(host, data, now, progress):
     alerts = []
     resources = data.get('account_resources', {})
-    for field in ('gpu_snapshot_error', 'reservation_snapshot_error'):
+    for field in ('cpu_snapshot_error', 'gpu_snapshot_error', 'reservation_snapshot_error'):
         if resources.get(field):
             alerts.append('Account resource snapshot incomplete: '+resources[field])
     minimum_free = 150 if host == 'bluesclues' else 20
