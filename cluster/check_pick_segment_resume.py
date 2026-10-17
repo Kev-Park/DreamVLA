@@ -31,7 +31,9 @@ class TinyModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.linear = nn.Linear(3, 1)
-        self.dropout = nn.Dropout(0.2)
+        # Deterministic objective isolates optimizer/scheduler continuity from
+        # extra RNG consumption while rebuilding a resumed data iterator.
+        self.dropout = nn.Dropout(0.0)
 
     def forward(self, features):
         return {'loss': (self.linear(self.dropout(features)) - 0.3).square().mean()}
@@ -49,7 +51,33 @@ def run(output, start, stop):
         save_only_model=False, remove_unused_columns=False)
     trainer = Gr00tTrainer(model=model, args=args, train_dataset=RepeatedData())
     trainer.add_callback(segment.segment_callback(TrainerCallback, start, stop, float('inf')))
+    rng_restored = []
+    if start:
+        ck = output / f'checkpoint-{start}'
+        expected_optimizer = torch.load(ck / 'optimizer.pt', weights_only=False)
+        expected_scheduler = torch.load(ck / 'scheduler.pt', weights_only=False)
+        from safetensors.torch import load_file
+        expected_model = load_file(ck / 'model.safetensors')
+
+        class RestoredState(TrainerCallback):
+            def on_train_begin(self, args, state, control, **kwargs):
+                equal(trainer.model.state_dict(), expected_model)
+                equal(trainer.optimizer.state_dict(), expected_optimizer)
+                equal(trainer.lr_scheduler.state_dict(), expected_scheduler)
+
+        trainer.add_callback(RestoredState())
+        load_rng = trainer._load_rng_state
+
+        def checked_rng(checkpoint):
+            load_rng(checkpoint)
+            saved = torch.load(Path(checkpoint) / 'rng_state.pth', weights_only=False)
+            equal(torch.get_rng_state(), saved['cpu'])
+            rng_restored.append(True)
+
+        trainer._load_rng_state = checked_rng
     trainer.train(resume_from_checkpoint=True)
+    if start:
+        assert rng_restored, 'Trainer never restored checkpoint RNG state'
     assert trainer.state.global_step == stop
     ck = output / f'checkpoint-{stop}'
     for name in ['optimizer.pt', 'scheduler.pt', 'rng_state.pth', 'trainer_state.json', 'training_args.bin']:
@@ -89,9 +117,10 @@ def main():
         rng_b = torch.load(root / 'segmented/checkpoint-6/rng_state.pth', weights_only=False)
         equal(rng_a['cpu'], rng_b['cpu'])
         result = dict(passed=True, total_updates=6, segment_boundaries=[2, 4, 6],
-                      model_exact=True, optimizer_exact=True, scheduler_exact=True, torch_rng_exact=True,
+                      model_exact=True, optimizer_exact=True, scheduler_exact=True,
+                      checkpoint_rng_restored_exactly=True, terminal_torch_rng_exact=True,
                       cuda_used=torch.cuda.is_initialized(),
-                      limitation='Repeated toy inputs; real GR00T iterable data reseeds on resume.')
+                      limitation='Deterministic toy objective. Iterator reconstruction can consume RNG; real GR00T data reseeds. No bitwise-equivalence claim for stochastic VLA training.')
         assert not result['cuda_used']
         Path(sys.argv[1]).write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result))
