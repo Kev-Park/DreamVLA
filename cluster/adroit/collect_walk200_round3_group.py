@@ -16,6 +16,8 @@ import sys
 import time
 import uuid as uuidlib
 
+from walk200_round3_inputs import student_inputs
+
 
 TAG = 'walk200_v3_dagger57_20261013'
 
@@ -52,11 +54,15 @@ def main():
         assert path not in verified, 'Duplicate canonical input'
         assert path.stat().st_size == row['bytes'] and digest(path) == row['sha256'], str(path)
         verified[path] = row['sha256']
-    checkpoint = (b / ready['student_checkpoint_relative']).resolve(strict=True)
+    checkpoint, prefix_info, completion_receipt = student_inputs(b)
+    checkpoint = checkpoint.resolve(strict=True)
+    assert checkpoint == (b / ready['student_checkpoint_relative']).resolve(strict=True)
     assert checkpoint.is_relative_to(root) and checkpoint.parent.name == TAG + '_r2'
     state = json.loads((checkpoint / 'trainer_state.json').read_text())
     assert state['global_step'] == ready['student_steps']
     assert ready['student_steps'] == math.ceil(ready['student_frames'] * 57 / 160)
+    prefix = json.loads(prefix_info.read_text())
+    assert ready['student_frames'] == prefix['total_frames']
     assert checkpoint.name == 'checkpoint-' + str(ready['student_steps'])
     assert digest(work / 'box.json') == 'fdd462b05e1fd3671778d5e10f0a9378bdb2bde453434e979b632fcf4ba25a5b'
     assert len(list((b / 'ref_motions/StitchMAX200v3').glob('*.pkl'))) == 200
@@ -64,7 +70,7 @@ def main():
     demos = sorted((work / 'demo_root').glob('*.hdf5'))
     assert len(demos) == 8 and all(p.is_file() for p in demos)
     teacher = (b / 'eval_videos/T20_max_v3_env2048/early_stop/best_evaluated.pt').resolve(strict=True)
-    required = [teacher, work / 'box.json', *demos]
+    required = [teacher, work / 'box.json', prefix_info, completion_receipt, *demos]
     for pool in ('StitchMAX200v3', 'StitchMAX100v3_eval'):
         required.extend((b / 'ref_motions' / pool).glob('*.pkl'))
     excluded = {'optimizer.pt', 'scheduler.pt', 'rng_state.pth', 'training_args.bin'}
