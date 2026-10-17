@@ -19,6 +19,7 @@ case "$walk_collection_group" in
 esac
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 exec "$HOME/kevin/bin/isaac" bash -c '
+  set -eo pipefail
   source "$HOME/kevin/bin/isaac.rc"
   conda activate dreamcontrol_51
   exec python -u "$HOME/kevin/wt/locomotion/DreamVLA/cluster/adroit/collect_walk200_round3_group.py" --group "$1"

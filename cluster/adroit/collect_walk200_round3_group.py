@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import uuid as uuidlib
 
 
@@ -116,10 +117,15 @@ def main():
     chain.env.update(CUDA_VISIBLE_DEVICES=visible,
                      PXR_WORK_THREAD_LIMIT=str(chain.sim_task_threads))
     atomic(chain.work / 'group.launch.json', {
+        'started': time.time(), 'host': os.uname().nodename,
         'pid': os.getpid(), 'slurm_job_id': os.environ['SLURM_JOB_ID'],
         'group': args.group, 'motion_ids': chain.ids, 'checkpoint': str(checkpoint),
         'cuda_visible_devices': visible, 'gpu_uuid': uuid, 'gpu_name': name,
         'collection_workers': 2, 'seed': 9, 'rollout_cap': 1200,
+        'cpu_affinity': sorted(os.sched_getaffinity(0)),
+        'source_manifest_sha256': digest(work / 'adroit_round3_inputs.ready.json'),
+        'code_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'],
+                        cwd=Path(__file__).resolve().parent, text=True).strip(),
         'retain_full_recordings': True})
     try:
         raw = chain.collect(3, checkpoint)
