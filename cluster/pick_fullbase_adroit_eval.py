@@ -1,5 +1,6 @@
 """Two workers on one full A100; preserve four held-out shards and seeds."""
 import concurrent.futures
+import glob
 import hashlib
 import json
 import os
@@ -7,6 +8,22 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+
+
+def verify_eval_references(pool, manifest_path, expected_digest):
+    payload=manifest_path.read_bytes()
+    assert hashlib.sha256(payload).hexdigest()==expected_digest,'Reference manifest changed'
+    expected=json.loads(payload)
+    assert expected['pool']==pool.name and expected['glob_pattern']=='*.pkl'
+    files=[Path(p) for p in glob.glob(str(pool/'*.pkl'))]
+    assert len(files)==len(expected['files'])==100,'Held-out pool must contain exactly 100 references'
+    assert [p.name for p in files]==[row['name'] for row in expected['files']],'Reference index order changed'
+    for path,row in zip(files,expected['files']):
+        assert path.stat().st_size==row['bytes'],path.name
+        assert hashlib.sha256(path.read_bytes()).hexdigest()==row['sha256'],path.name
+    return dict(time=time.time(),pool=pool.name,episodes=100,manifest_sha256=expected_digest,
+                file_hashes_and_order_verified=True)
+
 
 request=Path(sys.argv[1]);spec=json.loads(request.read_text());work=request.parent
 root=Path.home()/'kevin';runtime=root/'DreamVLA';run=spec['run']
@@ -16,8 +33,11 @@ assert spec['eval_pool']=='Holosoma_Pick_29_latband60max_eval'
 for relative,digest in spec['runtime_hashes'].items():
     assert hashlib.sha256((runtime/relative).read_bytes()).hexdigest()==digest,relative
 assert json.loads((checkpoint/'trainer_state.json').read_text())['global_step']==158000
-assert len(list((root/'ref_motions'/spec['eval_pool']).glob('pick_*.pkl')))==100
+reference_receipt=verify_eval_references(root/'ref_motions'/spec['eval_pool'],
+    work/'eval_reference_manifest.json',spec['eval_reference_manifest_sha256'])
+(work/'eval_reference_pool_verified.json').write_text(json.dumps(reference_receipt,indent=2)+'\n')
 assert not output.exists();output.mkdir(parents=True)
+(output/'eval_reference_pool_verified.json').write_text(json.dumps(reference_receipt,indent=2)+'\n')
 env=dict(os.environ,XLA_PYTHON_CLIENT_PREALLOCATE='false',OMP_NUM_THREADS='2',
          MKL_NUM_THREADS='2',OPENBLAS_NUM_THREADS='1',TOKENIZERS_PARALLELISM='false',
          PYTHONPATH=str(runtime/'Training/scripts/reinforcement_learning/rsl_rl'))
