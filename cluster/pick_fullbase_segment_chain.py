@@ -58,6 +58,9 @@ def main():
                 job = state[kind + '_job_id']
                 status = scheduler_state(job)
                 state.update(last_poll=time.time(), scheduler_state=status)
+                state['missing_accounting_polls'] = state.get('missing_accounting_polls', 0) + 1 if status is None else 0
+                if state['missing_accounting_polls'] >= 6:
+                    raise RuntimeError('Six missing accounting observations; job state unknown, do not resubmit')
                 write_json(path, state)
                 if status == 'COMPLETED':
                     if kind == 'evaluation':

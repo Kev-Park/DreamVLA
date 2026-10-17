@@ -104,7 +104,8 @@ def equal(a, b):
 def main():
     torch.set_num_threads(1)
     segment.TOTAL_STEPS = 6
-    with tempfile.TemporaryDirectory(prefix='pick-resume-check-', dir=Path.home() / 'kevin/dline') as temp:
+    with tempfile.TemporaryDirectory(prefix='pick-resume-check-', dir=Path.home() / 'kevin/dline',
+                                     ignore_cleanup_errors=True) as temp:
         root = Path(temp)
         continuous = run(root / 'continuous', 0, 6)
         run(root / 'segmented', 0, 2)
@@ -124,6 +125,10 @@ def main():
         assert not result['cuda_used']
         Path(sys.argv[1]).write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result))
+        # Release safetensors mappings before deleting temporary files on NFS.
+        del continuous, resumed, rng_a, rng_b
+        import gc
+        gc.collect()
 
 
 if __name__ == '__main__':
