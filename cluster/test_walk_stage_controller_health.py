@@ -67,6 +67,41 @@ class ControllerHealth(unittest.TestCase):
         self.assertEqual(self.check()['status'], 'completed')
         self.assertFalse(self.check()['alerts'])
 
+    def evaluation_stage(self):
+        self.launch['phase'] = 'evaluate'
+        self.write('round2_single_stage.launch.json', self.launch)
+        for path in list(self.work.glob('round2_single_stage*')):
+            path.rename(path.with_name(path.name.replace('round2_single_stage', 'round2_evaluation_single_stage')))
+        final = {'run': 'study_r2', 'steps': 99, 'checkpoint': '/saved/checkpoint-99'}
+        self.write('study_r2.trained.json', final)
+        self.write('round2_evaluation_single_stage.done.json', final)
+
+    def test_evaluation_completion_requires_all_holdout_references(self):
+        self.evaluation_stage()
+        self.assertEqual(self.check()['status'], 'needs_attention')
+        report = {'pool': 'StitchMAX100v3_eval', 'episodes': 100,
+                  'per_episode': [{'motion_id': i} for i in range(100)]}
+        self.write('study_r2.eval.json', report)
+        self.assertEqual(self.check()['status'], 'completed')
+        report['per_episode'][-1]['motion_id'] = 0
+        self.write('study_r2.eval.json', report)
+        self.assertEqual(self.check()['status'], 'needs_attention')
+
+    def test_evaluation_wrong_pool_and_dead_bookkeeper_are_visible(self):
+        self.evaluation_stage()
+        self.write('study_r2.eval.json', {'pool': 'training_pool', 'episodes': 100,
+                   'per_episode': [{'motion_id': i} for i in range(100)]})
+        self.assertEqual(self.check()['status'], 'needs_attention')
+        (self.work/'round2_evaluation_single_stage.done.json').unlink()
+        self.cmdline.unlink()
+        self.assertFalse(self.check()['controller_live'])
+        self.assertTrue(self.check()['alerts'])
+
+    def test_unknown_phase_is_not_accepted_as_a_training_stage(self):
+        self.launch['phase'] = 'unknown'
+        self.write('round2_single_stage.launch.json', self.launch)
+        self.assertEqual(self.check()['status'], 'needs_attention')
+
 
 if __name__ == '__main__':
     unittest.main()

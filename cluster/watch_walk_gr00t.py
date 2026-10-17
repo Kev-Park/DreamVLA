@@ -95,6 +95,12 @@ def stage_only_controllers(work, proc_root=Path('/proc'), now=None):
             continue
         launch = read(launch_path)
         row.update(controller_pid=launch['pid'], run=launch['run'])
+        phase = launch.get('phase', 'finetune')
+        row['phase'] = phase
+        if phase not in ('finetune', 'evaluate'):
+            row['status'] = 'needs_attention'
+            row['alerts'].append('Unknown stage-only controller phase')
+            continue
         failed = work/(prefix+'.abort.json')
         done = work/(prefix+'.done.json')
         if failed.exists():
@@ -110,6 +116,13 @@ def stage_only_controllers(work, proc_root=Path('/proc'), now=None):
                     or trained.get('steps') != launch['steps']
                     or final.get('checkpoint') != trained.get('checkpoint')):
                 row['alerts'].append('Stage-only completion lacks matching canonical training receipt')
+            if phase == 'evaluate':
+                evaluated_path = work/(launch['run']+'.eval.json')
+                report = read(evaluated_path) if evaluated_path.exists() else {}
+                if (report.get('pool') != 'StitchMAX100v3_eval'
+                        or report.get('episodes') != 100
+                        or sorted(r.get('motion_id', -1) for r in report.get('per_episode', [])) != list(range(100))):
+                    row['alerts'].append('Stage-only evaluation completion lacks the canonical 100-reference report')
             row['status'] = 'needs_attention' if row['alerts'] else 'completed'
             continue
         actual = process_argv(launch['pid'], proc_root)
@@ -250,6 +263,7 @@ def main():
         try:
             rows = inspect_all([10, 50, 200])
             state = {"heartbeat": time.time(), "watcher_pid": os.getpid(), "chains": rows,
+                     "stage_only_evaluation_checks": True,
                      "status": "complete" if all(r["status"] == "complete" for r in rows) else "monitoring"}
             atomic(OUT/"workflow.json", state)
             if state["status"] == "complete":
