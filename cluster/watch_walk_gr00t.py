@@ -1,5 +1,6 @@
 """Read-only health and completion checks for all three walking GR00T chains."""
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -74,6 +75,61 @@ def output_activity(pid, wrapper, now):
             'active_child_logs': child_logs}, stalled
 
 
+def stage_only_controllers(work, proc_root=Path('/proc'), now=None):
+    """Check the additional bookkeeper even while the original chain waits.
+
+    This corroborates terminal receipts; the existing checkpoint checks and
+    full completion audits still verify the actual training outputs.
+    """
+    now = time.time() if now is None else now
+    rows = []
+    for review_path in sorted(work.glob('round*_single_stage_operator_review.json')):
+        prefix = review_path.name.removesuffix('_operator_review.json')
+        launch_path = work/(prefix+'.launch.json')
+        row = {'stage': prefix, 'alerts': [], 'controller_live': False}
+        rows.append(row)
+        if not launch_path.exists():
+            row['status'] = 'starting'
+            if now-read(review_path)['at'] > 120:
+                row['alerts'].append('Reviewed launch did not register its controller')
+            continue
+        launch = read(launch_path)
+        row.update(controller_pid=launch['pid'], run=launch['run'])
+        failed = work/(prefix+'.abort.json')
+        done = work/(prefix+'.done.json')
+        if failed.exists():
+            row.update(status='failed', failure=read(failed))
+            row['alerts'].append('Stage-only controller recorded a failure')
+            continue
+        if done.exists():
+            final = read(done)
+            trained_path = work/(launch['run']+'.trained.json')
+            trained = read(trained_path) if trained_path.exists() else {}
+            if (final.get('run') != launch['run'] or final.get('steps') != launch['steps']
+                    or trained.get('run') != launch['run']
+                    or trained.get('steps') != launch['steps']
+                    or final.get('checkpoint') != trained.get('checkpoint')):
+                row['alerts'].append('Stage-only completion lacks matching canonical training receipt')
+            row['status'] = 'needs_attention' if row['alerts'] else 'completed'
+            continue
+        actual = process_argv(launch['pid'], proc_root)
+        review = launch['operator_review']
+        try:
+            owned = (proc_root/str(launch['pid'])).stat().st_uid == os.getuid()
+            same_boot = ((proc_root/'sys/kernel/random/boot_id').read_text().strip()
+                         == review['boot_id'])
+        except OSError:
+            owned = same_boot = False
+        matches = (len(actual) == 4 and Path(actual[0]).name.startswith('python')
+                   and actual[1:3] == ['-u', '-c']
+                   and hashlib.sha256(actual[3].encode()).hexdigest() == review['payload_sha256'])
+        row['controller_live'] = bool(owned and same_boot and matches)
+        row['status'] = 'running' if row['controller_live'] else 'controller_missing_or_changed'
+        if not row['controller_live']:
+            row['alerts'].append('Stage-only controller exited or its process identity changed')
+    return rows
+
+
 def inspect(budget):
     tag = f"walk{budget}_v3_dagger57_20261013"
     work = ROOT/"dline"/tag
@@ -85,6 +141,11 @@ def inspect(budget):
     handle = read(launch)
     cmd = process(handle["pid"])
     row.update(controller_pid=handle["pid"], controller_command=cmd)
+    stages = stage_only_controllers(work)
+    if stages:
+        row['stage_only_controllers'] = stages
+        row['alerts'].extend(stage['stage']+': '+alert
+                             for stage in stages for alert in stage['alerts'])
     repairs = []
     for path in work.glob('*.startup_repair.json'):
         repair = read(path)
