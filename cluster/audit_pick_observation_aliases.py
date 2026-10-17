@@ -27,6 +27,7 @@ def main():
     seen = {}
     duplicates = {}
     labels = {}
+    member_labels = {}
     sources = []
     windows = 0
     for episode in range(342):
@@ -52,8 +53,10 @@ def main():
                 if key not in duplicates:
                     duplicates[key] = [seen[key][0]]
                     labels[key] = {seen[key][1]}
+                    member_labels[key] = [seen[key][1]]
                 duplicates[key].append(item)
                 labels[key].add(label)
+                member_labels[key].append(label)
             else:
                 seen[key] = (item, label)
             windows += 1
@@ -79,8 +82,16 @@ def main():
         return cache[key]
 
     for key in cross_episode[:64]:
-        first = duplicates[key][0]
-        second = next(item for item in duplicates[key] if item[0] != first[0])
+        members = duplicates[key]
+        tags = member_labels[key]
+        first = members[0]
+        second = next((item for item, tag in zip(members, tags)
+                       if item[0] != first[0] and tag != tags[0]), None)
+        if second is None:
+            # All other episodes share the first label; use a different label
+            # within its episode against any member from another episode.
+            first = next(item for item, tag in zip(members, tags) if tag != tags[0])
+            second = next(item for item in members if item[0] != first[0])
         # Pair labels explicitly; a multi-label group can still contain same-label pairs.
         def token_at(item):
             ep, fr = item
