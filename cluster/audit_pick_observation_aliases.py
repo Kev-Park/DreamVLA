@@ -81,6 +81,18 @@ def main():
             cache[key] = hashlib.sha256(p.stdout).hexdigest()
         return cache[key]
 
+    candidate_frames = {item for key in cross_episode for item in duplicates[key]}
+    assert len(candidate_frames) <= 2048, 'Too many candidate frames; review CPU scope before extending'
+    exact_image_groups = []
+    for key in cross_episode:
+        groups = defaultdict(list)
+        for item, tag in zip(duplicates[key], member_labels[key]):
+            groups[image(*item)].append((item, tag))
+        for digest, members in groups.items():
+            if len({item[0] for item, tag in members}) > 1 and len({tag for item, tag in members}) > 1:
+                exact_image_groups.append(dict(decoded_rgb_sha256=digest,
+                    members=[item for item, tag in members], distinct_motion_token_labels=len({tag for item, tag in members})))
+
     for key in cross_episode[:64]:
         members = duplicates[key]
         tags = member_labels[key]
@@ -110,6 +122,9 @@ def main():
         unique_proprio_task_keys=len(seen), duplicate_proprio_task_groups=len(duplicates),
         divergent_immediate_token_groups=len(divergent), cross_episode_divergent_groups=len(cross_episode),
         image_pair_limit=64, image_pairs_checked=len(pairs), pairs=pairs,
+        candidate_image_frame_limit=2048, candidate_image_frames_checked=len(cache),
+        all_cross_episode_candidates_image_checked=len(cache) == len(candidate_frames),
+        full_recorded_observation_alias_groups=len(exact_image_groups), exact_image_groups=exact_image_groups,
         full_recorded_observation_pairs_with_different_token=sum(
             p['decoded_rgb_exact'] and p['motion_token_differs'] for p in pairs),
         source_sha256=sources, no_gpu=True, single_cpu=True, data_modified=False,
