@@ -53,6 +53,11 @@ def main():
         assert len(ids) == len(set(ids))
         repo = Path(__file__).resolve().parents[1]
         collector = repo / 'Training/scripts/reinforcement_learning/rsl_rl/collect_sonic_adapter.py'
+        # The pinned sparse checkout supplies code; the production Training
+        # directory supplies the same relative USD assets as the 10/50 runs.
+        asset_working_directory = root / 'DreamVLA/Training'
+        robot_asset = asset_working_directory / 'HumanoidVerse/humanoidverse/data/robots/g1/g1_29dof_with_hands_min_collisions_flat_white.usd'
+        assert robot_asset.is_file(), str(robot_asset)
         for relative, expected in request['runtime_hashes'].items():
             task_prefix = 'Training/source/isaaclab_tasks/isaaclab_tasks/'
             if relative.startswith(task_prefix):
@@ -83,7 +88,7 @@ def main():
         save(work / 'collection.started.json', dict(time=time.time(), pid=os.getpid(), command=command,
              expected_attempts=len(ids), slurm_job_id=os.environ.get('SLURM_JOB_ID')))
         with (work / 'collection.log').open('w') as log:
-            process = subprocess.Popen(command, cwd=repo / 'Training', env=env,
+            process = subprocess.Popen(command, cwd=asset_working_directory, env=env,
                                        stdout=log, stderr=subprocess.STDOUT)
             save(work / 'collection.worker.json', dict(pid=process.pid, started=time.time()))
             code = process.wait()
