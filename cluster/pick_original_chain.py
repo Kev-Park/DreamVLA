@@ -151,6 +151,7 @@ class OriginalChain(Chain):
         self.verify_eval_pool()
         pool=ROOT/'ref_motions/Holosoma_Pick_29_latband60max'
         ordered=[Path(p) for p in glob.glob(str(pool/'*.pkl'))]
+        assert [p.name for p in ordered]==self.request['training_reference_order'], 'Training reference ordering changed'
         by_name={p.name:i for i,p in enumerate(ordered)}
         self.ids=[]
         for row in self.request['references']:
