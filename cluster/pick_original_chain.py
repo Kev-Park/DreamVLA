@@ -5,6 +5,7 @@ demand, through the shared reservation registry and full-account capacity check.
 An incomplete original-reference base cannot enter training.
 """
 import argparse
+import copy
 import glob
 import hashlib
 import importlib.util
@@ -130,6 +131,64 @@ class OriginalChain(Chain):
                 raise RuntimeError(f'Insufficient raw-collection headroom: {free} bytes free; need {required}; archive/review first')
         return super().collect(round_id,checkpoint)
 
+    def complete_original_coverage(self):
+        """Keep the first passing demo per missing source; retry only failures."""
+        final=self.work/'original_coverage.result.json'
+        if final.exists():
+            result=read(final)
+            original_sources(self.request,result)
+            return
+        first=read(self.work/'collection.result.json')
+        selected={r['reference_file'] for r in self.request['references'] if not r['existing_original_demo']}
+        accepted={r['reference_file']:dict(r,collection_seed=self.request['seed'])
+                  for r in first['recordings'] if r['passing']}
+        receipts=[str(self.work/'collection.result.json')]
+        stagnant=0
+        attempt=0
+        while selected-set(accepted):
+            assert self.request.get('retry_failed_originals_authorized') is True, 'Missing originals require retry approval'
+            attempt+=1
+            seed=self.request['seed']+attempt
+            missing=selected-set(accepted)
+            atomic(self.work/'chain.status.json',dict(time=time.time(),pid=os.getpid(),phase='retrying_missing_originals',
+                   missing=sorted(missing),seed=seed,passing_originals=173+len(accepted)))
+            retry=copy.deepcopy(self.request)
+            retry.update(run=f'{self.tag}_retry{attempt:02d}',seed=seed,expected_attempts=len(missing))
+            for row in retry['references']:
+                row['requires_original_demo_collection']=row['reference_file'] in missing
+            directory=self.work/'original_retries'/f'{attempt:02d}'
+            directory.mkdir(parents=True,exist_ok=True)
+            request=directory/'collection.request.json'
+            if request.exists():
+                assert read(request)==retry, 'Retry request changed; reconcile preserved evidence'
+            else:
+                atomic(request,retry)
+            receipt=directory/'collection.result.json'
+            if not receipt.exists():
+                gpu=self.slots(1,17000)[0]
+                try:
+                    self.execute([sys.executable,'-u',HERE/'pick_original_base_collect.py',request],
+                                 f'collect_missing_originals_retry{attempt:02d}',gpu,ROOT/'DreamVLA/Training')
+                finally:
+                    self.release(gpu)
+            result=read(receipt)
+            new=[dict(r,collection_seed=seed) for r in result['recordings'] if r['passing']]
+            assert len({r['reference_file'] for r in new})==len(new)
+            assert {r['reference_file'] for r in new}<=missing
+            accepted.update({r['reference_file']:r for r in new})
+            receipts.append(str(receipt))
+            stagnant=0 if new else stagnant+1
+            self.log(f'ORIGINAL COVERAGE {173+len(accepted)}/200 after seed {seed}; added {len(new)}')
+            if stagnant>=3:
+                raise RuntimeError('Three retry sweeps added no passing originals; review remaining references: '+
+                                   ', '.join(sorted(selected-set(accepted))))
+        result=dict(time=time.time(),state='complete_original_coverage',recordings=list(accepted.values()),
+                    passing=len(accepted),missing_originals=[],retry_receipts=receipts,
+                    selection='First passing demonstration per original; fixed expert and acceptance criteria',
+                    retry_failed_originals_authorized=self.request.get('retry_failed_originals_authorized',False))
+        original_sources(self.request,result)
+        atomic(final,result)
+
     def prepare(self):
         for relative,expected in self.request['runtime_hashes'].items():
             prefix='Training/source/isaaclab_tasks/isaaclab_tasks/'
@@ -140,7 +199,7 @@ class OriginalChain(Chain):
             else:
                 source=HERE.parent/relative
             assert hashlib.sha256(source.read_bytes()).hexdigest()==expected,(relative,str(source))
-        collection=read(self.work/'collection.result.json')
+        collection=read(self.work/'original_coverage.result.json')
         sources=original_sources(self.request,collection)
         self.sources=[Path(p).expanduser().resolve(strict=True) for p in sources]
         assert len(set(self.sources))==200
@@ -203,6 +262,7 @@ def main():
                 raise RuntimeError('Missing-original collection ended without a valid result receipt')
             atomic(chain.work/'chain.status.json',dict(time=time.time(),pid=os.getpid(),phase='waiting_for_original_collection'))
             time.sleep(30)
+        chain.complete_original_coverage()
         atomic(chain.work/'chain.status.json',dict(time=time.time(),pid=os.getpid(),phase='running'))
         chain.run()
         atomic(chain.work/'chain.status.json',dict(time=time.time(),pid=os.getpid(),phase='done'))
