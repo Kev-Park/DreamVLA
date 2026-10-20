@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -53,7 +54,14 @@ def main():
         repo = Path(__file__).resolve().parents[1]
         collector = repo / 'Training/scripts/reinforcement_learning/rsl_rl/collect_sonic_adapter.py'
         for relative, expected in request['runtime_hashes'].items():
-            assert digest(repo / relative) == expected, relative
+            task_prefix = 'Training/source/isaaclab_tasks/isaaclab_tasks/'
+            if relative.startswith(task_prefix):
+                spec = importlib.util.find_spec('isaaclab_tasks')
+                assert spec is not None and spec.origin, 'Isaac task package is unavailable'
+                source = Path(spec.origin).parent / relative[len(task_prefix):]
+            else:
+                source = repo / relative
+            assert digest(source) == expected, (relative, str(source))
         expert = root / 'residuals/af60v8c_model_8998.pt'
         assert digest(expert) == request['expert_sha256']
         output = root / 'datasets' / request['run'] / 'missing_original_attempt0'
