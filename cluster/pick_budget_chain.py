@@ -234,6 +234,7 @@ class Chain:
         out.mkdir(exist_ok=True)
         count=2 if self.budget==10 else 4
         gpus=self.slots(count,17000)
+        count=len(gpus)
         tasks=[]
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
