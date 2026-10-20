@@ -86,7 +86,9 @@ def main():
                    '--num-samples', str(len(ids)), '--seed', str(request['seed']),
                    '--output-directory', str(output)]
         save(work / 'collection.started.json', dict(time=time.time(), pid=os.getpid(), command=command,
-             expected_attempts=len(ids), slurm_job_id=os.environ.get('SLURM_JOB_ID')))
+             expected_attempts=len(ids), slurm_job_id=os.environ.get('SLURM_JOB_ID'),
+             working_directory=str(asset_working_directory), robot_asset=str(robot_asset),
+             robot_asset_sha256=digest(robot_asset)))
         with (work / 'collection.log').open('w') as log:
             process = subprocess.Popen(command, cwd=asset_working_directory, env=env,
                                        stdout=log, stderr=subprocess.STDOUT)
