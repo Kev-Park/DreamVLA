@@ -1381,6 +1381,9 @@ def main() -> None:
     parser.add_argument("--motion-range", type=int, nargs=2, default=None, metavar=("START", "END"),
                         help="Only sweep motion ids in [START, END) -- shard the deterministic sweep across "
                              "GPUs/processes (file names are per-motion, so shards can share --output-directory).")
+    parser.add_argument("--motions-from", type=str, default=None,
+                        help="Expert-only collection: whitespace-separated motion IDs in a file. "
+                             "Each selected reference is attempted once, in file order.")
     parser.add_argument("--ref-motions-path", type=str, default=None,
                         help="Override the env's ref_motions_path (dir of reference .pkl files) -- the SAME "
                              "reference set the checkpoint was trained on (e.g. ../TrajGen/sample/Holosoma_Pick_29_fixH60).")
@@ -1610,9 +1613,18 @@ def main() -> None:
         if args_cli.motion_range is not None:
             print(f"[INFO] --motion-range: sweeping motions [{m_lo}, {m_hi}) of {total_motions}")
         if dagger is not None:
+            if args_cli.motions_from is not None:
+                raise ValueError("Use --dagger-motion-ids for student collection")
             sweep = [(m, r) for m in dagger_motions if m_lo <= m < m_hi for r in range(args_cli.dagger_rollouts)]
         else:
-            sweep = [(m, 0) for m in range(m_lo, m_hi)]
+            selected = list(range(m_lo, m_hi))
+            if args_cli.motions_from is not None:
+                selected = [int(value) for value in Path(args_cli.motions_from).read_text().split()]
+                if not selected or len(selected) != len(set(selected)):
+                    raise ValueError("--motions-from must contain nonempty, unique motion IDs")
+                if any(mid < m_lo or mid >= m_hi for mid in selected):
+                    raise ValueError("--motions-from contains an ID outside the motion range")
+            sweep = [(m, 0) for m in selected]
         for motion_id, rollout_idx in sweep:
             if written >= target_successes or not simulation_app.is_running():
                 break
