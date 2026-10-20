@@ -50,9 +50,10 @@ def main():
         assert len(selected) == request['expected_attempts']
         ids = [names[r['reference_file']][0] for r in selected]
         assert len(ids) == len(set(ids))
-        collector = root / 'DreamVLA/Training/scripts/reinforcement_learning/rsl_rl/collect_sonic_adapter.py'
+        repo = Path(__file__).resolve().parents[1]
+        collector = repo / 'Training/scripts/reinforcement_learning/rsl_rl/collect_sonic_adapter.py'
         for relative, expected in request['runtime_hashes'].items():
-            assert digest(root / 'DreamVLA' / relative) == expected, relative
+            assert digest(repo / relative) == expected, relative
         expert = root / 'residuals/af60v8c_model_8998.pt'
         assert digest(expert) == request['expert_sha256']
         output = root / 'datasets' / request['run'] / 'missing_original_attempt0'
@@ -74,7 +75,7 @@ def main():
         save(work / 'collection.started.json', dict(time=time.time(), pid=os.getpid(), command=command,
              expected_attempts=len(ids), slurm_job_id=os.environ.get('SLURM_JOB_ID')))
         with (work / 'collection.log').open('w') as log:
-            process = subprocess.Popen(command, cwd=root / 'DreamVLA/Training', env=env,
+            process = subprocess.Popen(command, cwd=repo / 'Training', env=env,
                                        stdout=log, stderr=subprocess.STDOUT)
             save(work / 'collection.worker.json', dict(pid=process.pid, started=time.time()))
             code = process.wait()
