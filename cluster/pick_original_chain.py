@@ -185,9 +185,18 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('request',type=Path);a=p.parse_args()
     chain=OriginalChain(read(a.request))
     try:
+        while not (chain.work/'collection.result.json').exists():
+            state=read(chain.work/'blue_queue.json')
+            if state['phase'] in ['failed','finished']:
+                raise RuntimeError('Missing-original collection ended without a valid result receipt')
+            atomic(chain.work/'chain.status.json',dict(time=time.time(),pid=os.getpid(),phase='waiting_for_original_collection'))
+            time.sleep(30)
+        atomic(chain.work/'chain.status.json',dict(time=time.time(),pid=os.getpid(),phase='running'))
         chain.run()
+        atomic(chain.work/'chain.status.json',dict(time=time.time(),pid=os.getpid(),phase='done'))
     except BaseException as error:
         atomic(chain.work/'abort.json',dict(time=time.time(),error=repr(error),pid=os.getpid()))
+        atomic(chain.work/'chain.status.json',dict(time=time.time(),pid=os.getpid(),phase='needs_attention',error=repr(error)))
         raise
 
 
