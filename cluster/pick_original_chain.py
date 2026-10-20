@@ -7,6 +7,7 @@ An incomplete original-reference base cannot enter training.
 import argparse
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -130,6 +131,15 @@ class OriginalChain(Chain):
         return super().collect(round_id,checkpoint)
 
     def prepare(self):
+        for relative,expected in self.request['runtime_hashes'].items():
+            prefix='Training/source/isaaclab_tasks/isaaclab_tasks/'
+            if relative.startswith(prefix):
+                spec=importlib.util.find_spec('isaaclab_tasks')
+                assert spec is not None and spec.origin
+                source=Path(spec.origin).parent/relative[len(prefix):]
+            else:
+                source=HERE.parent/relative
+            assert hashlib.sha256(source.read_bytes()).hexdigest()==expected,(relative,str(source))
         collection=read(self.work/'collection.result.json')
         sources=original_sources(self.request,collection)
         self.sources=[Path(p).expanduser().resolve(strict=True) for p in sources]
@@ -137,6 +147,7 @@ class OriginalChain(Chain):
         assert hashlib.sha256(self.expert.read_bytes()).hexdigest()==self.request['expert_sha256']
         commit=subprocess.check_output(['git','-C',str(ROOT/'Isaac-GR00T'),'rev-parse','HEAD'],text=True).strip()
         assert commit=='29c95b9cda2249b5285c84460c789d4fe3841d97'
+        assert subprocess.run(['git','-C',str(ROOT/'Isaac-GR00T'),'diff','--quiet'],check=False).returncode==0
         self.verify_eval_pool()
         pool=ROOT/'ref_motions/Holosoma_Pick_29_latband60max'
         ordered=[Path(p) for p in glob.glob(str(pool/'*.pkl'))]
