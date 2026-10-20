@@ -43,10 +43,24 @@ def _jsonl(p: Path) -> list[dict]:
         return list(r)
 
 
-def merge(shards: list[Path], out: Path) -> None:
+def select_episodes(episodes: list[dict], indices: list[int] | None) -> list[dict]:
+    if indices is None:
+        return sorted(episodes, key=lambda e: e['episode_index'])
+    if not indices or any(type(i) is not int for i in indices) or len(indices) != len(set(indices)):
+        raise ValueError('Episode selection must be a nonempty list of unique integer indices')
+    catalog = {e['episode_index']: e for e in episodes}
+    if len(catalog) != len(episodes) or not set(indices) <= catalog.keys():
+        raise ValueError('Episode selection contains missing indices or source metadata has duplicates')
+    return [catalog[i] for i in indices]
+
+
+def merge(shards: list[Path], out: Path, episode_indices: list[int] | None = None) -> None:
     if out.exists():
         sys.exit(f"{out} exists; refusing to overwrite")
     infos = [json.loads((s / "meta" / "info.json").read_text()) for s in shards]
+    if episode_indices is not None and len(shards) != 1:
+        raise ValueError('Episode selection requires exactly one source dataset')
+    episode_lists = [select_episodes(_jsonl(s / 'meta' / 'episodes.jsonl'), episode_indices) for s in shards]
     base = infos[0]
     for s, inf in zip(shards, infos):
         for k in ("features", "fps", "codebase_version", "robot_type", "chunks_size", "script_config",
@@ -71,8 +85,7 @@ def merge(shards: list[Path], out: Path) -> None:
     st_w = jsonlines.open(out / "meta" / "episodes_stats.jsonl", "w")
 
     g_ep = g_frame = 0
-    for s in shards:
-        eps = sorted(_jsonl(s / "meta" / "episodes.jsonl"), key=lambda e: e["episode_index"])
+    for s, eps in zip(shards, episode_lists):
         sts = {e["episode_index"]: e["stats"] for e in _jsonl(s / "meta" / "episodes_stats.jsonl")}
         for e in eps:
             li, n = e["episode_index"], e["length"]
@@ -115,5 +128,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--shards", nargs="+", required=True, help="shard dataset roots, in input order")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--episode-indices", type=Path, help="JSON list selecting episodes from one source, in output order")
     a = ap.parse_args()
-    merge([Path(s).expanduser() for s in a.shards], Path(a.out).expanduser())
+    indices = json.loads(a.episode_indices.read_text()) if a.episode_indices else None
+    merge([Path(s).expanduser() for s in a.shards], Path(a.out).expanduser(), indices)
