@@ -177,7 +177,8 @@ if str(_HERE) not in sys.path:
 from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter  # noqa: E402
 from vla_sonic.physics_overrides import apply_sonic_physics_overrides, apply_object_mass_override, apply_hand_gain_override  # noqa: E402
 from vla_sonic.simple_robot_model import SimpleG1RobotModel  # noqa: E402
-from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder  # noqa: E402
+from vla_sonic.token_action_wrapper import TokenStateDecoderVecEnvWrapper, load_frozen_decoder  # noqa: E402
+from vla_sonic.fsq import fsq_lattice_snap  # noqa: E402
 from vla_sonic.sonic_pt import load_sonic_pt  # noqa: E402
 from vla_sonic.robot_29dof import apply_29dof_waist_override  # noqa: E402
 from vla_sonic.eval_helpers import ReplaySource, apply_episode_scale, demo_motion_ids  # noqa: E402
@@ -287,11 +288,7 @@ def fsq_snap_token(token: np.ndarray) -> np.ndarray:
     continuous APPROXIMATION of them. Snapping recovers the on-grid values the
     decoder expects (identical to the lattice snap in token_adapter_wrapper.py).
     """
-    half_width = 16.0  # 32 FSQ levels → half_width = 32 // 2
-    return np.clip(
-        np.round(token * half_width) / half_width,
-        -1.0, (half_width - 1.0) / half_width,
-    ).astype(np.float32)
+    return fsq_lattice_snap(token)
 
 
 # =========================================================================
@@ -471,7 +468,7 @@ def main() -> int:
         )
 
     # --- 3. SONIC decoder: the same frozen decoder + proprio-history wrapper the residual
-    # policy was trained/collected with (TokenActionDecoderVecEnvWrapper). The VLA's token
+    # policy was trained/collected with. The VLA's token
     # replaces "encoder base token + residual"; everything downstream is byte-identical:
     # FSQ snap -> 994-D decoder obs (token | 10-frame history) -> 29 body targets, plus the
     # binary right-hand slot. This is the wiring that produced the training data.
@@ -482,7 +479,7 @@ def main() -> int:
         decoder = load_frozen_decoder(args.decoder_onnx, "cuda:0")
         print(f"[sonic] ONNX decoder {args.decoder_onnx} (v1.0 latent space -- only valid if the "
               f"training tokens were recorded with the ONNX model)")
-    env = TokenActionDecoderVecEnvWrapper(env, decoder, "cuda:0", clip_actions=None)
+    env = TokenStateDecoderVecEnvWrapper(env, decoder, "cuda:0", clip_actions=None)
     unw = env.unwrapped
     total_motions = int(unw.total_motions)
 
@@ -581,6 +578,8 @@ def main() -> int:
                 if ep == 0 and step == 0 and float(np.abs(token).max()) < 1e-6:
                     print("\n[WARN] motion_token is ALL ZERO -- the VLA is emitting a null SONIC token; "
                           "the robot is NOT VLA-controlled. Check action.motion_token in the dataset.\n")
+            if args.fsq_snap:
+                token = fsq_snap_token(token)
             latent = torch.zeros((1, 65), device="cuda:0", dtype=torch.float32)
             latent[0, :64] = torch.as_tensor(token, device="cuda:0")
             latent[0, 64] = _fs if replay is not None else _finger_scalar(vla_chunk, t_idx)
@@ -592,7 +591,7 @@ def main() -> int:
             g_pred.append(float(np.abs(_rh[0, t_idx] if _rh.ndim == 3 else _rh.reshape(-1)).mean()))
             g_cmd_close.append(bool(latent[0, 64].item() < 0))
             with torch.inference_mode():
-                obs, _rew, dones, _extras = env.step(latent)                   # FSQ snap + decoder inside
+                obs, _rew, dones, _extras = env.step(latent)                   # token state + decoder history
             g_meas.append(float(robot.data.joint_pos[0, _rf_jids].abs().mean().item()))
             flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 

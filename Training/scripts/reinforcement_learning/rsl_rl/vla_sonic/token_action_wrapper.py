@@ -505,3 +505,20 @@ class TokenActionDecoderVecEnvWrapper(RslRlVecEnvWrapper):
             self._seed_history(reset_mask)
 
         return TensorDict(obs_dict, batch_size=[self.num_envs]), rew, dones, extras
+
+
+class TokenStateDecoderVecEnvWrapper(TokenActionDecoderVecEnvWrapper):
+    """Decode token states prepared by a VLA or read from a recorded rollout.
+
+    These inputs already use the encoder's quantized coordinate system. Callers
+    may snap predictions to that lattice; applying full FSQ here would squash
+    correctly predicted token states again. Native PPO latents continue to use
+    TokenActionDecoderVecEnvWrapper and its full FSQ transform.
+    """
+
+    def _decode_body_29(self, token_state: torch.Tensor) -> torch.Tensor:
+        obs = self._build_obs_dict(token_state).to(torch.float32)
+        out = self.decoder(obs)
+        if isinstance(out, (tuple, list)):
+            out = out[0]
+        return out.reshape(self.num_envs, -1)[:, :N_BODY_JOINTS]
