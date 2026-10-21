@@ -6,15 +6,15 @@ this one renders one (or a few) rollouts so you can WATCH the policy. Same close
 wiring as the eval, so the videos reflect exactly what is measured.
 
 This VLA predicts the SONIC latent token DIRECTLY (``motion_token``, 64-D) plus the finger
-joints. The token is fed through the SAME frozen decoder + proprio-history wrapper the residual
-policy was trained and collected with (``TokenActionDecoderVecEnvWrapper``), so the only thing
-that changes between data collection and this playback is WHO produces the token:
+joints. Predictions are snapped to the collected token-state lattice and fed to the frozen
+decoder with the same proprioceptive history as collection. Full FSQ for native unbounded
+PPO outputs remains in ``TokenActionDecoderVecEnvWrapper``:
 
     env obs ─▶ ObsToPolicyAdapter ─▶ Gr00tPolicy.get_action ─▶ action_dict
                         motion_token (64) + right_hand_joints (7 -> binary scalar)
                                         │
-                     TokenActionDecoderVecEnvWrapper.step([token | finger])
-                       FSQ snap ─▶ [token | 10-frame history] ─▶ frozen decoder (.pt or ONNX)
+                     lattice snap ─▶ TokenStateDecoderVecEnvWrapper.step([token | finger])
+                       [token | 10-frame history] ─▶ frozen decoder (.pt or ONNX)
                        ─▶ 29 body targets + binary finger slots ─▶ env.step
 
 Run (from DreamVLA/Training, same env vars + recipe flags as the collection):
@@ -166,7 +166,8 @@ if str(_HERE) not in sys.path:
 from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter  # noqa: E402
 from vla_sonic.physics_overrides import apply_sonic_physics_overrides, apply_object_mass_override, apply_hand_gain_override  # noqa: E402
 from vla_sonic.simple_robot_model import SimpleG1RobotModel  # noqa: E402
-from vla_sonic.token_action_wrapper import TokenActionDecoderVecEnvWrapper, load_frozen_decoder  # noqa: E402
+from vla_sonic.token_action_wrapper import TokenStateDecoderVecEnvWrapper, load_frozen_decoder  # noqa: E402
+from vla_sonic.fsq import fsq_lattice_snap  # noqa: E402
 from vla_sonic.sonic_pt import load_sonic_pt  # noqa: E402
 from vla_sonic.robot_29dof import apply_29dof_waist_override  # noqa: E402
 from vla_sonic.eval_helpers import ReplaySource, apply_episode_scale, demo_motion_ids  # noqa: E402
@@ -417,7 +418,7 @@ def main() -> int:
         decoder = load_frozen_decoder(args.decoder_onnx, "cuda:0")
         print(f"[sonic] ONNX decoder {args.decoder_onnx} (v1.0 latent space -- only valid if the "
               f"training tokens were recorded with the ONNX model)")
-    env = TokenActionDecoderVecEnvWrapper(env, decoder, "cuda:0", clip_actions=None)
+    env = TokenStateDecoderVecEnvWrapper(env, decoder, "cuda:0", clip_actions=None)
     unw = env.unwrapped
     total_motions = int(unw.total_motions)
 
@@ -504,13 +505,14 @@ def main() -> int:
                 if ep == 0 and step == 0 and float(np.abs(token).max()) < 1e-6:
                     print("\n[WARN] motion_token is ALL ZERO -- the VLA is emitting a null SONIC token; "
                           "the robot is NOT VLA-controlled. Check action.motion_token in the dataset.\n")
+            token = fsq_lattice_snap(token)
             latent = torch.zeros((1, 65), device="cuda:0", dtype=torch.float32)
             latent[0, :64] = torch.as_tensor(token, device="cuda:0")
             latent[0, 64] = _fs if replay is not None else _finger_scalar(vla_chunk, t_idx)
             if step < 3:
                 print(f"[step {step}] motion_token[:8] = {token[:8].round(3).tolist()}  finger={latent[0, 64].item():+.0f}")
             with torch.inference_mode():
-                obs, _rew, dones, _extras = env.step(latent)                   # FSQ snap + decoder inside
+                obs, _rew, dones, _extras = env.step(latent)                   # prepared token state + decoder history
             # Flush the RTX render pipeline so the camera annotator delivers THIS step's frame —
             # both for the video and for the ego view the next chunk's obs_adapter() reads.
             flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
