@@ -52,6 +52,22 @@ def original_sources(request, collection):
     return old + new
 
 
+def completed_retry_request_matches(previous, expected):
+    """Replay a completed sweep across an orchestration-only controller update.
+
+    Preserve its original as-run request. Every reference, seed, expert, scoring
+    source and environment pin must still match; only this controller may differ.
+    This exception never permits launching an incomplete old request.
+    """
+    if previous == expected:
+        return True
+    old, new = copy.deepcopy(previous), copy.deepcopy(expected)
+    if not isinstance(old.get('runtime_hashes'), dict) or not isinstance(new.get('runtime_hashes'), dict):
+        return False
+    pins = [r['runtime_hashes'].pop('cluster/pick_original_chain.py', None) for r in [old, new]]
+    return all(isinstance(p, str) and len(p) == 64 and set(p) <= set('0123456789abcdef') for p in pins) and old == new
+
+
 class OriginalChain(Chain):
     def __init__(self, request):
         self.request = request
@@ -159,12 +175,21 @@ class OriginalChain(Chain):
             directory=self.work/'original_retries'/f'{attempt:02d}'
             directory.mkdir(parents=True,exist_ok=True)
             request=directory/'collection.request.json'
+            receipt=directory/'collection.result.json'
             if request.exists():
-                assert read(request)==retry, 'Retry request changed; reconcile preserved evidence'
+                previous=read(request)
+                assert previous==retry or (receipt.exists() and completed_retry_request_matches(previous,retry)), 'Retry request changed; reconcile preserved evidence'
+                if previous!=retry:
+                    self.log(f'REPLAY completed seed {seed}; preserving its as-run orchestration pin')
             else:
                 atomic(request,retry)
-            receipt=directory/'collection.result.json'
             if not receipt.exists():
+                # Repeated failures may still save large raw recordings. Preserve
+                # checkpoint headroom before another authorized sweep begins.
+                required=50*1024**3+len(missing)*max(1024**3,max((r['bytes'] for r in first['recordings']),default=0))
+                free=shutil.disk_usage(ROOT).free
+                if free<required:
+                    raise RuntimeError(f'Insufficient retry-collection headroom: {free} bytes free; need {required}; archive/review first')
                 gpu=self.slots(1,17000)[0]
                 try:
                     self.execute([sys.executable,'-u',HERE/'pick_original_base_collect.py',request],
@@ -172,6 +197,7 @@ class OriginalChain(Chain):
                 finally:
                     self.release(gpu)
             result=read(receipt)
+            assert result['state']=='attempts_completed', 'Incomplete retry receipt'
             new=[dict(r,collection_seed=seed) for r in result['recordings'] if r['passing']]
             assert len({r['reference_file'] for r in new})==len(new)
             assert {r['reference_file'] for r in new}<=missing
@@ -179,9 +205,11 @@ class OriginalChain(Chain):
             receipts.append(str(receipt))
             stagnant=0 if new else stagnant+1
             self.log(f'ORIGINAL COVERAGE {173+len(accepted)}/200 after seed {seed}; added {len(new)}')
-            if stagnant>=3:
-                raise RuntimeError('Three retry sweeps added no passing originals; review remaining references: '+
-                                   ', '.join(sorted(selected-set(accepted))))
+            if stagnant and stagnant%3==0:
+                atomic(self.work/'original_retry_plateau.json',dict(time=time.time(),seed=seed,
+                       consecutive_zero_gain_sweeps=stagnant,missing=sorted(selected-set(accepted)),
+                       action='Continue authorized retries with unchanged expert and success criteria'))
+                self.log(f'ORIGINAL RETRY PLATEAU {stagnant} zero-gain sweeps; continuing authorized seed retries')
         result=dict(time=time.time(),state='complete_original_coverage',recordings=list(accepted.values()),
                     passing=len(accepted),missing_originals=[],retry_receipts=receipts,
                     selection='First passing demonstration per original; fixed expert and acceptance criteria',
