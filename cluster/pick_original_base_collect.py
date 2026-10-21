@@ -28,6 +28,22 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest() if hasattr(hashlib, 'file_digest') else hashlib.sha256(stream.read()).hexdigest()
 
 
+def reference_request(request):
+    refs = request['references']
+    assert len(refs) == len({r['source_motion_id'] for r in refs})
+    assert all(r['reference_file'] == f"pick_{r['source_motion_id']}.pkl" for r in refs)
+    if request.get('purpose') == 'approved_spare_screening':
+        assert request.get('spare_replacements_authorized') is True
+        assert 1 <= len(refs) <= 19
+        allowed = {r['reference_file']: r['reference_sha256'] for r in request['eligible_spare_references']}
+        assert len(allowed) == 19
+        assert all(r['requires_original_demo_collection'] and allowed.get(r['reference_file']) == r['reference_sha256'] for r in refs)
+        assert request['reference_pool'] == 'Holosoma_Pick_29_hf60v3'
+        return refs, request['reference_pool']
+    assert len(refs) == 200
+    return refs, 'Holosoma_Pick_29_latband60max'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('request', type=Path)
@@ -39,10 +55,8 @@ def main():
     with (work / 'collection.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert not (work / 'collection.started.json').exists(), 'Existing attempt needs reconciliation'
-        refs = request['references']
-        assert len(refs) == len({r['source_motion_id'] for r in refs}) == 200
-        assert all(r['reference_file'] == f"pick_{r['source_motion_id']}.pkl" for r in refs)
-        pool = root / 'ref_motions/Holosoma_Pick_29_latband60max'
+        refs, pool_name = reference_request(request)
+        pool = root / 'ref_motions' / pool_name
         ordered = [Path(p) for p in glob.glob(str(pool / '*.pkl'))]
         names = {p.name: (i, p) for i, p in enumerate(ordered)}
         for row in refs:
@@ -81,7 +95,7 @@ def main():
                    '--sonic-pt', str(root / 'sonic/sonic_release_3pt_heading_wrist_81-20260415_051436_model_step_100000'),
                    '--encoder-mode', 'g1', '--residual-transform', 'additive_free',
                    '--residual-scale', '0.1', '--checkpoint-path', str(expert),
-                   '--ref-motions-path', 'Holosoma_Pick_29_latband60max',
+                   '--ref-motions-path', pool_name,
                    '--motions-from', str(idsfile), '--rollout-length', '500',
                    '--num-samples', str(len(ids)), '--seed', str(request['seed']),
                    '--output-directory', str(output)]

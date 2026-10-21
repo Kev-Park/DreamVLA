@@ -71,7 +71,12 @@ def completed_retry_request_matches(previous, expected):
 class OriginalChain(Chain):
     def __init__(self, request):
         self.request = request
-        assert request['launch_authorized'] is True and request['run']=='pick200_original_dagger57_v1'
+        assert request['launch_authorized'] is True
+        assert request['run'] in ['pick200_original_dagger57_v1','pick200_original_spares57_v2']
+        if request['run']=='pick200_original_spares57_v2':
+            assert request.get('spare_replacements_authorized') is True
+            assert request['training_reference_pool']=='Holosoma_Pick_29_original200_spares_v2'
+        self.reference_pool=request.get('training_reference_pool','Holosoma_Pick_29_latband60max')
         self.budget=200
         self.tag=request['run']
         self.work=ROOT/'dline'/self.tag
@@ -236,7 +241,7 @@ class OriginalChain(Chain):
         assert commit=='29c95b9cda2249b5285c84460c789d4fe3841d97'
         assert subprocess.run(['git','-C',str(ROOT/'Isaac-GR00T'),'diff','--quiet'],check=False).returncode==0
         self.verify_eval_pool()
-        pool=ROOT/'ref_motions/Holosoma_Pick_29_latband60max'
+        pool=ROOT/'ref_motions'/self.reference_pool
         ordered=[Path(p) for p in glob.glob(str(pool/'*.pkl'))]
         assert [p.name for p in ordered]==self.request['training_reference_order'], 'Training reference ordering changed'
         by_name={p.name:i for i,p in enumerate(ordered)}

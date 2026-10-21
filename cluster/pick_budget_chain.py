@@ -246,7 +246,7 @@ class Chain:
                     args=[sys.executable,self.sim/'collect_sonic_adapter.py','--headless',
                           '--task','Isaac-Motion-Tracking-Pick-Cam-HOI-v0','--waist-dof','29',
                           '--sonic-pt',self.pt,'--encoder-mode','g1','--residual-transform','additive_free',
-                          '--residual-scale','0.1','--checkpoint-path',self.expert,'--ref-motions-path',REFS,
+                          '--residual-scale','0.1','--checkpoint-path',self.expert,'--ref-motions-path',getattr(self,'reference_pool',REFS),
                           '--rollout-length','500','--num-samples','100000','--seed',str(6+round_id),
                           '--output-directory',out,'--dagger-vla-checkpoint',checkpoint,
                           '--dagger-demo-root',self.work/'demo_root','--dagger-motion-ids',idsfile,
