@@ -1,11 +1,13 @@
 """Independently audit captured policy queries against their executed rollouts."""
-import collections, hashlib, json, os, re, time, zipfile
+import argparse, collections, hashlib, json, os, re, time, zipfile
 from pathlib import Path
 
 
 def main():
     import numpy as np
-    root=Path.home()/'kevin';work=root/'dline/walk_gap_eval_input_capture20261022'
+    parser=argparse.ArgumentParser();parser.add_argument('--capture-model',choices=['current_r2','historical_r2'],default='current_r2');args=parser.parse_args()
+    name='walk_gap_eval_input_capture20261022' if args.capture_model=='current_r2' else 'walk_gap_hist_eval_input_capture20261022'
+    root=Path.home()/'kevin';work=root/'dline'/name
     output=root/'eval_videos'/work.name
     launch=json.loads((work/'operator_review.json').read_text())
     controller=(work/'controller.log').read_text()
@@ -74,8 +76,9 @@ def main():
         'all_queries_complete':True,'all_executed_hand_commands_match':True,'all_capture_arrays_finite':True,
         'all_records_uncompressed':True,'max_pre_step_scene_abs_error':max_scene_error,'max_motion_time_error':max_time_error,
         'normal_worker_exit_codes':[0,0],'input_output_decoder_changed':False,'inventory':inventory,
-        'receipt_status':'independently_verified_after_original_parent_finalizer_failure',
-        'original_abort_preserved':json.loads((work/'abort.json').read_text()),
+        'receipt_status':'independently_verified_data_audit',
+        'capture_model':args.capture_model,
+        'original_abort_preserved':json.loads((work/'abort.json').read_text()) if (work/'abort.json').exists() else None,
         'limits':'Ten outcome-stratified diagnostic replicas, not an unbiased success estimate. No population rate inferred.'}
     (output/'capture_independent_audit.json').write_text(json.dumps(result,indent=2)+'\n')
     (output/'replay_sample_plan.json').write_text(json.dumps({'at':time.time(),'points':plan,'selection':'Query0, near reference grasp, final query, first actual close; deduplicated per episode.'},indent=2)+'\n')

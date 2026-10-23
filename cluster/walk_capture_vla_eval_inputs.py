@@ -18,7 +18,7 @@ def build_eval_ast(source):
         finalizers=0
         def visit_Expr(self,node):
             node=self.generic_visit(node)
-            if isinstance(node.value,ast.Call) and ast.unparse(node.value.func)=='_APP.close':
+            if isinstance(node.value,ast.Call) and ast.unparse(node.value.func)=='env.close':
                 self.finalizers+=1
                 return [ast.copy_location(ast.Expr(value=ast.Call(func=ast.Name(id='_capture_finish',ctx=ast.Load()),args=[],keywords=[])),node),node]
             return node
@@ -103,12 +103,12 @@ def main():
         if state['queries']%16==0:print('[input-capture] '+json.dumps(state),flush=True)
         return result
     def finish():
-        # SimulationApp.close may terminate Python without returning to exec.
-        # Persist the logging receipt before that unchanged shutdown call.
+        # Isaac shutdown may terminate Python without returning to exec.
+        # Persist the logging receipt before unchanged environment/app shutdown.
         assert state['queries']>0
         (capture/'capture_complete.json').write_text(json.dumps({**state,'original_eval_sha256':EVAL_SHA,
             'decoder_sha256':DECODER_SHA,'logging_does_not_advance_rng':True,'compression':'none',
-            'policy_calls_per_query':1,'finalized_before_simulation_app_close':True},indent=2)+'\n')
+            'policy_calls_per_query':1,'finalized_before_environment_close':True},indent=2)+'\n')
     module=types.ModuleType('__main__');module.__file__=str(original)
     module.__dict__['_capture_policy_action']=get_action
     module.__dict__['_capture_finish']=finish

@@ -1,15 +1,19 @@
 """Compare unchanged checkpoints on exact saved evaluation inputs and RNG states."""
-import gc, hashlib, json, os, random, subprocess, sys, time
+import argparse, gc, hashlib, json, os, random, subprocess, sys, time
 from pathlib import Path
 from walk_gap_offline_predictions import atomic
 
 
 def main():
+    parser=argparse.ArgumentParser();parser.add_argument('--capture-model',choices=['current_r2','historical_r2'],default='current_r2');args=parser.parse_args()
     root=Path.home()/'kevin';repo=Path(__file__).resolve().parent.parent
-    work=root/'dline/walk_gap_eval_input_replay20261022'
+    name='walk_gap_eval_input_replay20261022' if args.capture_model=='current_r2' else 'walk_gap_hist_eval_input_replay20261022'
+    source_name='walk_gap_eval_input_capture20261022' if args.capture_model=='current_r2' else 'walk_gap_hist_eval_input_capture20261022'
+    work=root/'dline'/name
     output=root/'eval_videos'/work.name
-    source=root/'eval_videos/walk_gap_eval_input_capture20261022'
+    source=root/'eval_videos'/source_name
     review=json.loads((work/'operator_review.json').read_text())
+    assert review.get('capture_model','current_r2')==args.capture_model
     assert review['existing_environment_approved'] and review['account_resources_manually_reviewed']
     assert review['other_agents_pending_allocations_manually_reviewed']
     assert 0<=time.time()-review['at']<120
@@ -45,7 +49,9 @@ def main():
             'tf32_cudnn':torch.backends.cudnn.allow_tf32,'matmul_precision':torch.get_float32_matmul_precision()}
         atomic(output/'runtime.json',runtime)
         records=[];arrays={};reproduction=[]
-        for label,checkpoint in models.items():
+        ordered=[args.capture_model,*[m for m in models if m!=args.capture_model]]
+        for label in ordered:
+            checkpoint=models[label]
             atomic(work/'workflow.json',{'heartbeat':time.time(),'pid':os.getpid(),'status':'loading_model','model':label,'rows':len(records)})
             policy=Gr00tPolicy(embodiment_tag='unitree_g1_sonic',model_path=str(checkpoint),device='cuda:0')
             for index,point in enumerate(points):
@@ -68,7 +74,7 @@ def main():
                     assert np.isfinite(token).all() and np.isfinite(hand).all()
                     count=point['executed_steps'];meanq=np.abs(hand[0,:count].astype(np.float32)).mean(axis=1)
                     close=meanq>.6
-                    if label=='current_r2':
+                    if label==args.capture_model:
                         token_ref=z['prediction/motion_token'];hand_ref=z['prediction/right_hand_joints']
                         token_match=bool(np.allclose(token,token_ref,rtol=1e-4,atol=1e-5))
                         hand_match=bool(np.allclose(hand,hand_ref,rtol=1e-4,atol=1e-5))
@@ -77,7 +83,7 @@ def main():
                             'executed_close_exact':close_match,'token_maxabs':float(np.abs(token-token_ref).max()),
                             'hand_maxabs':float(np.abs(hand-hand_ref).max())})
                         atomic(output/'reproduction.json',{'at':time.time(),'tolerance':{'rtol':1e-4,'atol':1e-5},'records':reproduction})
-                        assert token_match and hand_match and close_match,('Recorded-current-R2 reproduction failed; stop before comparing other models',reproduction[-1])
+                        assert token_match and hand_match and close_match,('Recorded-source-model reproduction failed; stop before comparing other models',reproduction[-1])
                     prefix=f'{label}_{index:03d}'
                     arrays[prefix+'/motion_token']=token;arrays[prefix+'/right_hand_joints']=hand
                     records.append({**point,'model':label,'capture_sha256':inventory[point['path']]['sha256'],
@@ -92,9 +98,10 @@ def main():
         np.savez(output/'prediction_arrays.npz',**arrays)
         atomic(output/'predictions.json',{'at':time.time(),'records':records})
         atomic(output/'results.json',{'at':time.time(),'points':len(points),'predictions':len(records),
-            'current_r2_full_chunk_reproduction_passed':True,'identical_actual_evaluation_observations_and_rng':True,
+            'source_model_full_chunk_reproduction_passed':True,'reproduced_model':args.capture_model,
+            'current_r2_full_chunk_reproduction_passed':args.capture_model=='current_r2','identical_actual_evaluation_observations_and_rng':True,
             'accepted_previous_full_fsq_trajectories':True,'decoder_changed':False,
-            'limits':'Conditional predictions on ten selected current-R2 rollout states; not other models closed-loop trajectories, unbiased success, or causal attribution.'})
+            'limits':'Conditional predictions on ten selected source-model rollout states; not other models closed-loop trajectories, unbiased success, or causal attribution.'})
         atomic(work/'done.json',{'at':time.time(),'points':len(points),'predictions':len(records)})
         atomic(work/'workflow.json',{'heartbeat':time.time(),'pid':os.getpid(),'status':'complete','rows':len(records)})
     except BaseException as exc:

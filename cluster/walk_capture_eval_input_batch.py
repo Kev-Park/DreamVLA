@@ -1,5 +1,5 @@
 """Capture ten selected standard-eval replicas without changing policy outputs."""
-import concurrent.futures,hashlib,json,os,re,socket,subprocess,sys,time
+import argparse,concurrent.futures,hashlib,json,os,re,socket,subprocess,sys,time
 from pathlib import Path
 from gr00t_budget_chain import atomic,read
 from walk_gr00t_chain import WalkChain
@@ -7,9 +7,13 @@ from watch_walk_gr00t import process_argv,stage_command_matches,output_activity
 
 
 def main():
+    parser=argparse.ArgumentParser();parser.add_argument('--capture-model',choices=['current_r2','historical_r2'],default='current_r2');args=parser.parse_args()
     root=Path.home()/'kevin';repo=Path(__file__).resolve().parent.parent
-    work=root/'dline/walk_gap_eval_input_capture20261022';out=root/'eval_videos'/work.name
+    name='walk_gap_eval_input_capture20261022' if args.capture_model=='current_r2' else 'walk_gap_hist_eval_input_capture20261022'
+    work=root/'dline'/name;out=root/'eval_videos'/work.name
     review=read(work/'operator_review.json')
+    assert review.get('capture_model','current_r2')==args.capture_model
+    checkpoint={'current_r2':'walk200_v3_dagger57_20261013_r2/checkpoint-92967','historical_r2':'T20maxf_dagger2_run01/checkpoint-24000'}[args.capture_model]
     assert socket.gethostname().startswith('bluesclues') and review['standard_evaluation_logging_only']
     assert review['account_resources_manually_reviewed'] and review['other_agents_pending_allocations_manually_reviewed']
     assert 0<=time.time()-review['at']<120 and set(os.sched_getaffinity(0))==set(review['cpus'])
@@ -32,7 +36,7 @@ def main():
                 label=f'capture_shard{k}';jobs.append({'label':label,'ids':ids,'seed':200+k})
                 args=['env','HS_EVAL_NO_EE_TERM=1',sys.executable,repo/'cluster/walk_capture_vla_eval_inputs.py',
                     '--capture-root',out/f'inputs_b{k}','--headless','--sonic-pt',chain.pt,'--ref-motions-path','StitchMAX100v3_eval',
-                    '--vla-checkpoint',root/'checkpoints/walk200_v3_dagger57_20261013_r2/checkpoint-92967',
+                    '--vla-checkpoint',root/'checkpoints'/checkpoint,
                     '--waist-dof','29','--motions-from',idsfile,'--num-episodes',str(len(ids)),'--seed',str(200+k),
                     '--traj-dump',out/f'b{k}','--grasp-dump',out/f'grasp_b{k}.pkl','--max-steps-per-episode','1200',
                     '--kit_args=--/plugins/carb.tasking.plugin/threadCount=4']
