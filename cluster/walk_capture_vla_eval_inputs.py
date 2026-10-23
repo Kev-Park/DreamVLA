@@ -15,6 +15,13 @@ def build_eval_ast(source):
     original=ast.parse(source)
     class Trace(ast.NodeTransformer):
         count=0
+        finalizers=0
+        def visit_Expr(self,node):
+            node=self.generic_visit(node)
+            if isinstance(node.value,ast.Call) and ast.unparse(node.value.func)=='_APP.close':
+                self.finalizers+=1
+                return [ast.copy_location(ast.Expr(value=ast.Call(func=ast.Name(id='_capture_finish',ctx=ast.Load()),args=[],keywords=[])),node),node]
+            return node
         def visit_Call(self,node):
             self.generic_visit(node)
             if ast.unparse(node.func)=='policy.get_action' and len(node.args)==1 and isinstance(node.args[0],ast.Name) and node.args[0].id=='vla_obs':
@@ -23,8 +30,11 @@ def build_eval_ast(source):
                 return ast.copy_location(ast.Call(func=ast.Name(id='_capture_policy_action',ctx=ast.Load()),
                     args=[ast.Name(id=name,ctx=ast.Load()) for name in ['policy','vla_obs','ep','mid','step','unw','obs']],keywords=[]),node)
             return node
-    trace=Trace();tree=trace.visit(ast.parse(source));assert trace.count==1
+    trace=Trace();tree=trace.visit(ast.parse(source));assert trace.count==trace.finalizers==1
     class Restore(ast.NodeTransformer):
+        def visit_Expr(self,node):
+            if isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id=='_capture_finish':return None
+            return self.generic_visit(node)
         def visit_Call(self,node):
             if isinstance(node.func,ast.Name) and node.func.id=='_capture_policy_action':
                 return ast.copy_location(ast.Call(func=ast.Attribute(value=ast.Name(id='policy',ctx=ast.Load()),attr='get_action',ctx=ast.Load()),
@@ -92,16 +102,22 @@ def main():
         state['queries']+=1;state['bytes']+=target.stat().st_size
         if state['queries']%16==0:print('[input-capture] '+json.dumps(state),flush=True)
         return result
+    def finish():
+        # SimulationApp.close may terminate Python without returning to exec.
+        # Persist the logging receipt before that unchanged shutdown call.
+        assert state['queries']>0
+        (capture/'capture_complete.json').write_text(json.dumps({**state,'original_eval_sha256':EVAL_SHA,
+            'decoder_sha256':DECODER_SHA,'logging_does_not_advance_rng':True,'compression':'none',
+            'policy_calls_per_query':1,'finalized_before_simulation_app_close':True},indent=2)+'\n')
     module=types.ModuleType('__main__');module.__file__=str(original)
     module.__dict__['_capture_policy_action']=get_action
+    module.__dict__['_capture_finish']=finish
     sys.modules['__main__']=module;sys.argv=[str(original),*remaining];sys.path.insert(0,str(original.parent))
     try:
         try:exec(compile(tree,str(original),'exec'),module.__dict__)
         except SystemExit as exc:
             if exc.code not in [0,None]:raise
-        assert state['queries']>0
-        (capture/'capture_complete.json').write_text(json.dumps({**state,'original_eval_sha256':EVAL_SHA,
-            'decoder_sha256':DECODER_SHA,'logging_does_not_advance_rng':True,'compression':'none','policy_calls_per_query':1},indent=2)+'\n')
+        finish()
     except BaseException as exc:
         (capture/'capture_abort.json').write_text(json.dumps({**state,'error':repr(exc)},indent=2)+'\n');raise
 
