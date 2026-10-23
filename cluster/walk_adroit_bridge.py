@@ -20,6 +20,10 @@ FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 ADROIT_CONTROL_PATH = "~/.ssh/cm-adroit"
 
 
+class RemoteCommandError(RuntimeError):
+    """SSH reached the host, but the command there failed."""
+
+
 def ssh(host, command):
     if host in ("bluesclues", "biped"):
         address = BLUE if host == "bluesclues" else BIPED
@@ -35,7 +39,8 @@ def call(host, script, timeout=90):
     p = subprocess.run(ssh(host, "python3 -"), input=script.encode(), capture_output=True,
                        timeout=timeout, creationflags=FLAGS)
     if p.returncode:
-        raise RuntimeError(f"{host} command failed; stopped for review: "+p.stderr.decode(errors="replace")[-1800:])
+        error = RuntimeError if p.returncode == 255 else RemoteCommandError
+        raise error(f"{host} command failed; stopped for review: "+p.stderr.decode(errors="replace")[-1800:])
     return json.loads(p.stdout)
 
 
