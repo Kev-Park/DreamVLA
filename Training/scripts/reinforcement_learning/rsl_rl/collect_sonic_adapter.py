@@ -39,6 +39,7 @@ import argparse
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 from vla_sonic.eval_helpers import flush_render  # noqa: E402
 from vla_sonic.fsq import fsq_lattice_snap
+from vla_sonic.rescue_sampling import takeover_bounds
 import builtins
 import os
 import time
@@ -1383,6 +1384,9 @@ def main() -> None:
                         help="Sample the takeover frame from U[0, k_frac * grab_idx). 1.0 = uniform up to the "
                              "reference grasp (original rule); smaller hands over earlier, before the hand "
                              "reaches the bottle.")
+    parser.add_argument("--dagger-rescue-window-s", type=float, default=None,
+                        help="Instead sample uniformly in the final N seconds before reference grasp, "
+                             "clipped at episode start. Requires k-frac=1; omitted preserves the original rule.")
     parser.add_argument("--dagger-rescue-box", type=str, default=None,
                         help="Palm-box calibration for the failure verdict. Explicit on purpose: the wrong\n"
                              "one rejects every episode and rescues every rollout.")
@@ -1427,6 +1431,14 @@ def main() -> None:
     cli_args.add_rsl_rl_args(parser)
     AppLauncher.add_app_launcher_args(parser)
     args_cli = parser.parse_args()
+    if args_cli.dagger_rescue_window_s is not None:
+        if not args_cli.dagger_rescue:
+            parser.error("--dagger-rescue-window-s requires --dagger-rescue")
+        try:
+            takeover_bounds(1, k_frac=args_cli.dagger_rescue_k_frac,
+                            window_s=args_cli.dagger_rescue_window_s)
+        except ValueError as exc:
+            parser.error(str(exc))
     if args_cli.sample_expert_actions and args_cli.dagger_vla_checkpoint:
         parser.error("--sample-expert-actions is only for expert base collection")
     if args_cli.motion_ids and args_cli.dagger_vla_checkpoint:
@@ -1747,10 +1759,13 @@ def main() -> None:
                     continue
                 # k ~ U[0, k_frac * grab_idx). k_frac=1 is the original uniform-to-grab rule; a small
                 # k_frac hands over early, while the hand is still away from the bottle.
-                k_hi = max(1, int(round(float(args_cli.dagger_rescue_k_frac) * grab_idx)))
-                k = int(np.random.default_rng(args_cli.seed + motion_id * 7919 + rollout_idx).integers(0, k_hi))
+                k_lo, k_hi = takeover_bounds(
+                    grab_idx, k_frac=args_cli.dagger_rescue_k_frac,
+                    window_s=args_cli.dagger_rescue_window_s, step_dt=float(env.unwrapped.step_dt))
+                k = int(np.random.default_rng(args_cli.seed + motion_id * 7919 + rollout_idx).integers(k_lo, k_hi))
                 print(f"[rescue] motion {motion_id}: re-rolling with expert takeover at k={k} "
-                      f"of grab_idx={grab_idx} (expert_base={args_cli.dagger_expert_base})")
+                      f"of grab_idx={grab_idx} bounds=[{k_lo},{k_hi}) "
+                      f"(expert_base={args_cli.dagger_expert_base})")
                 dagger.takeover_at = k
                 try:
                     camB, rsB, metaB, tpB = _run_rollout_adapter(
@@ -1774,6 +1789,8 @@ def main() -> None:
                                         "passA_success": False, "passA_why": whyA["why"],
                                         "expert_base": args_cli.dagger_expert_base,
                                         "blend": int(args_cli.dagger_rescue_blend),
+                                        "window_s": args_cli.dagger_rescue_window_s,
+                                        "takeover_bounds": [k_lo, k_hi],
                                         "k_frac": float(args_cli.dagger_rescue_k_frac)}})
                 okB, whyB = score_written_episode(pB, args_cli.dagger_rescue_box)
                 written += 1
