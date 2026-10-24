@@ -62,6 +62,7 @@ def assemble(tag):
     assert prior_info['total_episodes']==416 and prior_info['total_frames']==260958
     batches=[base.read(work/f'batch_{i:03d}.converted.json') for i in range(20)]
     assert sum(r['attempts'] for r in batches)==200
+    assert sum(r['episodes'] for r in batches)>0,'No passing additions; retain records and review before training'
     out=ROOT/'datasets'/(tag+'_r3')/'lerobot/ds';done=work/'dataset.ready.json'
     if done.exists():return base.read(done)
     assert not out.exists(),'Incomplete output needs explicit reconciliation'
@@ -99,6 +100,9 @@ def evaluate(tag,checkpoint,gpu):
                 args=[*args,'--kit_args=--/plugins/carb.tasking.plugin/threadCount=2']
             return super().execute(args,label,None if os.environ.get('SLURM_JOB_ID') else gpu,cwd)
     chain=Evaluation(200,tag=tag);chain.env=environment(gpu)
+    box=base.read(chain.work/'inputs/box.json')
+    if (chain.work/'box.json').exists():assert base.read(chain.work/'box.json')==box
+    else:base.atomic(chain.work/'box.json',box)
     chain.env.update(PYTHONPATH=str(HERE.parent/'Training/scripts/reinforcement_learning/rsl_rl'),
         OMP_NUM_THREADS='2',MKL_NUM_THREADS='2',OPENBLAS_NUM_THREADS='1',PXR_WORK_THREAD_LIMIT='4')
     chain.training_cwd=HERE.parent/'Training';chain.rollout_steps=1200

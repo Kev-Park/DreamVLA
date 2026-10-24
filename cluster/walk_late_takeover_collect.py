@@ -39,7 +39,7 @@ def audit_batch(directory, expected, window_s):
                 assert rescue['window_s']==window_s
                 lo,hi=rescue['takeover_bounds'];k=rescue['takeover_at']
                 assert lo<=k<hi and hi==rescue['grab_idx']
-                assert hi-lo<=round(window_s*50)
+                assert lo==max(0,hi-round(window_s*50))
             grab=int(md.get('grab_idx',-1))
             if grab<0 and rescue['pass']=='B':grab=int(rescue['grab_idx'])
             student=np.ones(n,dtype=bool) if rescue['pass']=='A' else np.arange(n)<rescue['takeover_at']
