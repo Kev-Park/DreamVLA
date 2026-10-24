@@ -185,6 +185,21 @@ else:
 '''.replace('JOB',repr(str(job))))
 
 
+def resources(host):
+    return call(host,r'''
+import json,pathlib,shutil,sys,time
+b=pathlib.Path.home()/'kevin';sys.path.insert(0,str(b/'wt/locomotion/DreamVLA/cluster'))
+from walk_study_watchdog import RESOURCE_HELPER
+namespace={};exec(RESOURCE_HELPER,namespace);data=namespace['account_resources']()
+for row in data.get('account_gpu_processes',[]):
+ p=pathlib.Path('/proc',str(row['pid']),'cmdline')
+ try:row['this_experiment']=EXPERIMENT in p.read_bytes().replace(b'\0',b' ').decode()
+ except FileNotFoundError:row['this_experiment']=False
+data.update(observed_at=time.time(),disk_free_bytes=shutil.disk_usage(b).free)
+print(json.dumps(data))
+'''.replace('EXPERIMENT',repr(TAG)))
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--state-dir',required=True)
     a=p.parse_args();directory=Path(a.state_dir).resolve();directory.mkdir(parents=True,exist_ok=True)
@@ -200,6 +215,29 @@ def main():
     state.update(pid=os.getpid(),status='relaying_collection',heartbeat=time.time())
     def record(**kwargs):
         state.update(heartbeat=time.time(),**kwargs);save(state_file,state)
+    last_resource_review=0
+    def observe_resources():
+        nonlocal last_resource_review
+        if time.time()-last_resource_review<300:return
+        last_resource_review=time.time();snapshots={};alerts=[]
+        for host in ('biped','bluesclues'):
+            data=resources(host);snapshots[host]=data
+            save(directory/(host+'.resources.latest.json'),data)
+            with (directory/(host+'.resources.history.jsonl')).open('a') as stream:stream.write(json.dumps(data)+'\n')
+            if not data.get('cpu_measurement_complete'):alerts.append(host+': CPU measurement incomplete')
+            if data['account_cpu_pct']>20:alerts.append(host+': aggregate account CPU exceeds20%')
+            if data.get('gpu_snapshot_error'):alerts.append(host+': GPU snapshot incomplete')
+            devices=set(data.get('account_gpu_devices',[]))
+            if host=='bluesclues' and len(devices)>5:alerts.append(host+': more than5 account GPUs')
+            if host=='biped':
+                extras=[p for p in data.get('account_gpu_processes',[]) if p['gpu']!=0]
+                for proc in extras:
+                    main=any(p['gpu']==0 and p['pid']==proc['pid'] for p in data['account_gpu_processes'])
+                    if not (proc['gpu']==1 and proc['type']=='G' and proc['memory_mib'] is not None and proc['memory_mib']<=6 and main and proc['this_experiment']):
+                        alerts.append(host+': GPU context outside the reviewed GPU0 plus6MiB graphics exception')
+                if any(r['gpu']!=0 for r in data.get('live_gpu_reservations',[])):alerts.append(host+': reservation outside GPU0')
+        save(directory/'resource_attention.json',{'at':time.time(),'alerts':alerts,'action':'read-only review;no account-wide enforcement'})
+        record(latest_resource_review_at=time.time(),resource_alerts=alerts)
     try:
         for index in range(20):
             batch=f'batch_{index:03d}'
@@ -207,6 +245,7 @@ def main():
             record(active_batch=batch)
             report=None
             while report is None:
+                observe_resources()
                 observed=stage_observation('biped',batch)
                 report=observed['ready'];record(collector_observation=observed)
                 assert observed['workflow'] is not None,'Collector did not publish workflow; inspect its log'
@@ -220,6 +259,7 @@ def main():
             converted=None
             conversion_started=time.time()
             while converted is None:
+                observe_resources()
                 observed=stage_observation('bluesclues',batch,conversion=True)
                 converted=observed['ready'];status=observed['workflow']
                 assert status is not None or time.time()-conversion_started<90,'Converter did not publish workflow;inspect its log'
@@ -248,10 +288,14 @@ def main():
         record(assembly_launch=start_assembly())
         started=time.time();ready=None
         while ready is None:
+            observe_resources()
             ready=read_remote('bluesclues',WORK+'/dataset.ready.json')
             status=read_remote('bluesclues',WORK+'/assemble.workflow.json');record(assembly_state=status)
             assert status is not None or time.time()-started<90,'Assembly did not publish workflow;inspect its log'
             assert not status or status['status']!='failed',status
+            if status and status['status']=='running':
+                live=call('bluesclues',"import json,pathlib\nprint(json.dumps(pathlib.Path('/proc',str(PID)).exists()))".replace('PID',repr(status['pid'])))
+                assert live,('Assembly process disappeared',status)
             if ready is None:time.sleep(30)
         assert ready['new_attempts']==200
         merged='datasets/'+TAG+'_r3/lerobot/ds'
@@ -262,6 +306,7 @@ def main():
         record(status='training_and_evaluating',dataset=ready)
         training=submit('finetune_eval',ready);record(training_submission=training)
         while True:
+            observe_resources()
             observed=job_state(training['job_id']);record(training_state=observed)
             if observed['state']=='COMPLETED':assert observed['exitcode']=='0:0';break
             assert not any(observed['state'].startswith(x) for x in ('FAILED','CANCELLED','TIMEOUT','OUT_OF_MEMORY','NODE_FAIL','PREEMPTED')),observed
