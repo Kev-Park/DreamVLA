@@ -223,12 +223,21 @@ else:
 
 def job_state(job):
     return call('adroit',r'''
-import json,subprocess
-job=JOB;p=subprocess.run(['squeue','-j',job,'-h','-o','%T|%R'],capture_output=True,text=True)
-if p.returncode and 'Invalid job id' not in p.stderr:raise RuntimeError(p.stderr)
+import json,subprocess,sys
+job=JOB
+try:p=subprocess.run(['squeue','-j',job,'-h','-o','%T|%R'],capture_output=True,text=True,timeout=20)
+except subprocess.TimeoutExpired:
+ print(json.dumps({'state':'OBSERVATION_TIMEOUT','command':'squeue','job_id':job}));sys.exit(0)
+if p.returncode and 'Invalid job id' not in p.stderr:
+ print(json.dumps({'state':'OBSERVATION_ERROR','command':'squeue','job_id':job,'detail':p.stderr}));sys.exit(0)
 if p.stdout.strip():print(json.dumps({'state':p.stdout.strip().split('|')[0],'detail':p.stdout.strip()}))
 else:
- rows=subprocess.check_output(['sacct','-j',job,'-n','-X','-P','-o','State,ExitCode'],text=True).strip().splitlines()
+ try:accounting=subprocess.run(['sacct','-j',job,'-n','-X','-P','-o','State,ExitCode'],capture_output=True,text=True,timeout=20)
+ except subprocess.TimeoutExpired:
+  print(json.dumps({'state':'OBSERVATION_TIMEOUT','command':'sacct','job_id':job}));sys.exit(0)
+ if accounting.returncode:
+  print(json.dumps({'state':'OBSERVATION_ERROR','command':'sacct','job_id':job,'detail':accounting.stderr}));sys.exit(0)
+ rows=accounting.stdout.strip().splitlines()
  if not rows:print(json.dumps({'state':'ACCOUNTING_PENDING'}))
  else:
   assert len(rows)==1,rows;state,exitcode=rows[0].split('|')[:2];print(json.dumps({'state':state,'exitcode':exitcode}))
@@ -454,7 +463,11 @@ def main():
         training=submit('finetune',ready);record(training_submission=training)
         while True:
             observe_resources()
-            observed=job_state(training['job_id']);record(training_state=observed)
+            observed=job_state(training['job_id'])
+            if observed['state'] in ('OBSERVATION_TIMEOUT','OBSERVATION_ERROR'):
+                state['queue_observation_attention']={'since':state.get('queue_observation_attention',{}).get('since',time.time()),'latest':observed}
+            else:state.pop('queue_observation_attention',None)
+            record(training_state=observed)
             if observed['state']=='COMPLETED':assert observed['exitcode']=='0:0';break
             assert not any(observed['state'].startswith(x) for x in ('FAILED','CANCELLED','TIMEOUT','OUT_OF_MEMORY','NODE_FAIL','PREEMPTED')),observed
             time.sleep(30)
