@@ -12,6 +12,7 @@ import time
 
 import walk_adroit_bridge as wire
 from walk_adroit_bridge import RemoteCommandError,inventory,save,transfer
+from walk_training_progress import watch_progress
 
 _remote_call=wire.call
 STATE_DIRECTORY=None
@@ -230,7 +231,17 @@ except subprocess.TimeoutExpired:
  print(json.dumps({'state':'OBSERVATION_TIMEOUT','command':'squeue','job_id':job}));sys.exit(0)
 if p.returncode and 'Invalid job id' not in p.stderr:
  print(json.dumps({'state':'OBSERVATION_ERROR','command':'squeue','job_id':job,'detail':p.stderr}));sys.exit(0)
-if p.stdout.strip():print(json.dumps({'state':p.stdout.strip().split('|')[0],'detail':p.stdout.strip()}))
+if p.stdout.strip():
+ result={'state':p.stdout.strip().split('|')[0],'detail':p.stdout.strip()}
+ if result['state']=='RUNNING':
+  try:
+   import pathlib
+   base=pathlib.Path.home()/'kevin';sys.path.insert(0,str(base/'wt/locomotion/DreamVLA/cluster'))
+   from walk_training_progress import read_progress
+   expected=json.loads((base/WORK_PATH/'dataset.ready.json').read_text())['steps']
+   result['training_progress']=read_progress(base/'eval_videos'/EXPERIMENT/('finetune-'+job+'.log'),expected)
+  except Exception as exc:result['training_progress']={'observation_error':repr(exc)}
+ print(json.dumps(result))
 else:
  try:accounting=subprocess.run(['sacct','-j',job,'-n','-X','-P','-o','State,ExitCode'],capture_output=True,text=True,timeout=20)
  except subprocess.TimeoutExpired:
@@ -241,7 +252,7 @@ else:
  if not rows:print(json.dumps({'state':'ACCOUNTING_PENDING'}))
  else:
   assert len(rows)==1,rows;state,exitcode=rows[0].split('|')[:2];print(json.dumps({'state':state,'exitcode':exitcode}))
-'''.replace('JOB',repr(str(job))))
+'''.replace('JOB',repr(str(job))).replace('WORK_PATH',repr(WORK)).replace('EXPERIMENT',repr(TAG)))
 
 
 def submitted_training_state(state):
@@ -485,6 +496,8 @@ def main():
             if observed['state'] in ('OBSERVATION_TIMEOUT','OBSERVATION_ERROR'):
                 state['queue_observation_attention']={'since':state.get('queue_observation_attention',{}).get('since',time.time()),'latest':observed}
             else:state.pop('queue_observation_attention',None)
+            if observed['state']=='RUNNING':
+                state['training_progress_watch']=watch_progress(state.get('training_progress_watch'),observed.get('training_progress',{}),time.time())
             record(training_state=observed)
             if observed['state']=='COMPLETED':assert observed['exitcode']=='0:0';break
             assert not any(observed['state'].startswith(x) for x in ('FAILED','CANCELLED','TIMEOUT','OUT_OF_MEMORY','NODE_FAIL','PREEMPTED')),observed
