@@ -147,7 +147,8 @@ else:
  sys.path.insert(0,str(b/'wt/locomotion/DreamVLA/cluster'))
  from account_cpu_usage import sample_account_cpu
  cpu=sample_account_cpu(2);assert cpu['cpu_measurement_complete'],cpu
- assert cpu['account_cpu_pct']+4/os.cpu_count()*100<=CPU_CAP,('Account CPU headroom needs operator review',cpu)
+ if cpu['account_cpu_pct']+4/os.cpu_count()*100>CPU_CAP:
+  print(json.dumps({'waiting_for_cpu_headroom':True,'account_cpu':cpu,'account_cap_pct':CPU_CAP}));sys.exit(0)
  review={'at':__import__('time').time(),'account_cpu':cpu,'allocated_cpu_mask':[0,1,2,3],'gpus':0,'account_cap_pct':CPU_CAP,'approval':'Existing2026-10-14 walking collection exception when30;otherwise normal20%'}
  (work/(batch+'.resource_review.json')).write_text(json.dumps(review,indent=2)+'\n')
  args=[str(b/'wt/locomotion/.venv/bin/python'),'-u',str(b/'wt/locomotion/DreamVLA/cluster/walk_late_takeover_process.py'),'convert','--tag',TAG,'--batch',batch]
@@ -171,7 +172,8 @@ else:
  sys.path.insert(0,str(b/'wt/locomotion/DreamVLA/cluster'))
  from account_cpu_usage import sample_account_cpu
  cpu=sample_account_cpu(2);assert cpu['cpu_measurement_complete'],cpu
- assert cpu['account_cpu_pct']+4/os.cpu_count()*100<=20,('Account CPU headroom needs operator review',cpu)
+ if cpu['account_cpu_pct']+4/os.cpu_count()*100>20:
+  print(json.dumps({'waiting_for_cpu_headroom':True,'account_cpu':cpu,'account_cap_pct':20}));sys.exit(0)
  name='walk_late1s_assemble_kevin';assert subprocess.run(['tmux','has-session','-t',name],capture_output=True).returncode!=0
  args=[str(b/'GR00T-WholeBodyControl/.venv_data_collection/bin/python'),'-u',str(b/'wt/locomotion/DreamVLA/cluster/walk_late_takeover_process.py'),'assemble','--tag',TAG]
  shell='export XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1\n'
@@ -271,6 +273,17 @@ def main():
                 if any(r['gpu']!=0 for r in data.get('live_gpu_reservations',[])):alerts.append(host+': reservation outside GPU0')
         save(directory/'resource_attention.json',{'at':time.time(),'alerts':alerts,'action':'read-only review;no account-wide enforcement'})
         record(latest_resource_review_at=time.time(),resource_alerts=alerts)
+    def wait_for_blue_cpu(extra_cpus,purpose):
+        while True:
+            collector=read_remote('biped',WORK+'/workflow.json')
+            cap=30 if collector['completed_attempts']<200 else 20
+            current=resources('bluesclues')
+            assert current['cpu_measurement_complete'],current
+            review={'purpose':purpose,'account_cpu_pct':current['account_cpu_pct'],'account_cap_pct':cap,'additional_cpu_upper_bound_pct':extra_cpus/current['logical_cpus']*100}
+            if review['account_cpu_pct']+review['additional_cpu_upper_bound_pct']<=cap:
+                record(status='relaying_collection',cpu_headroom_review=review);return cap
+            record(status='waiting_for_cpu_headroom',cpu_headroom_review=review)
+            observe_resources();time.sleep(30)
     try:
         for index in range(20):
             batch=f'batch_{index:03d}'
@@ -286,6 +299,7 @@ def main():
             save(directory/(batch+'.complete.json'),report)
             raw=WORK+'/raw/'+batch
             has_raw=bool(report['episodes'])
+            wait_for_blue_cpu(2,'Verified raw relay')
             if has_raw:checked_transfer('biped','bluesclues',raw,directory,batch+'_raw_blue')
             write_remote('bluesclues',WORK+'/'+batch+'.complete.json',report)
             if has_raw:
@@ -293,7 +307,14 @@ def main():
                 remove_relocated_copy('biped',raw,expected,{'host':'bluesclues','relative':raw})
             collector=observed['workflow']
             cpu_cap=30 if collector['completed_attempts']<200 else 20
-            start_conversion(batch,cpu_cap=cpu_cap)
+            while True:
+                review=start_conversion(batch,cpu_cap=cpu_cap)
+                if not review.get('waiting_for_cpu_headroom'):break
+                record(status='waiting_for_cpu_headroom',conversion_launch_review=review)
+                observe_resources();time.sleep(30)
+                collector=read_remote('biped',WORK+'/workflow.json')
+                cpu_cap=30 if collector['completed_attempts']<200 else 20
+            record(status='relaying_collection')
             converted=None
             conversion_started=time.time()
             while converted is None:
@@ -309,7 +330,11 @@ def main():
             state['completed_batches'].append(batch);record()
             print(json.dumps({'batch_relayed_and_converted':batch,'raw_archive_queued':True,'batches':len(state['completed_batches'])}),flush=True)
         record(status='assembling')
-        record(assembly_launch=start_assembly())
+        while True:
+            launch=start_assembly();record(assembly_launch=launch)
+            if not launch.get('waiting_for_cpu_headroom'):break
+            record(status='waiting_for_cpu_headroom',cpu_stage='assembly');observe_resources();time.sleep(30)
+        record(status='assembling')
         started=time.time();ready=None
         while ready is None:
             observe_resources()
@@ -323,6 +348,7 @@ def main():
             if ready is None:time.sleep(30)
         assert ready['new_attempts']==200
         merged='datasets/'+TAG+'_r3/lerobot/ds'
+        wait_for_blue_cpu(2,'Cumulative training dataset transfer')
         checked_transfer('bluesclues','adroit',merged,directory,'cumulative_dataset_adroit')
         target=call('adroit',"import json,pathlib\nprint(json.dumps(str(pathlib.Path.home()/'kevin'/REL)))".replace('REL',repr(merged)))
         ready=dict(ready,source_dataset=ready['dataset'],dataset=target)
