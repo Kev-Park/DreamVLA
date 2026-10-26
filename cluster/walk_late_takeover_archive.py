@@ -29,6 +29,7 @@ def main():
     path=directory/f'archive{args.lane}.workflow.json'
     state=json.loads(path.read_text()) if path.exists() else {'completed_batches':[],'started':time.time()}
     state.update(pid=os.getpid(),lane=args.lane,status='archiving',heartbeat=time.time())
+    state.pop('error',None)
     def record(**kwargs):
         state.update(heartbeat=time.time(),**kwargs);save(path,state)
     try:
