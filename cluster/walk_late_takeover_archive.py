@@ -12,9 +12,10 @@ from walk_adroit_bridge import save
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state-dir',required=True)
-    directory=Path(parser.parse_args().state_dir).resolve()
+    parser.add_argument('--lane',type=int,choices=(0,1),required=True)
+    args=parser.parse_args();directory=Path(args.state_dir).resolve()
     bridge.configure(directory)
-    lock=(directory/'archive.lock').open('a+b')
+    lock=(directory/f'archive{args.lane}.lock').open('a+b')
     if os.name=='nt':
         import ctypes,msvcrt
         lock.seek(0);lock.write(b'0');lock.flush();lock.seek(0)
@@ -25,13 +26,13 @@ def main():
         import fcntl
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         awake=None
-    path=directory/'archive.workflow.json'
+    path=directory/f'archive{args.lane}.workflow.json'
     state=json.loads(path.read_text()) if path.exists() else {'completed_batches':[],'started':time.time()}
-    state.update(pid=os.getpid(),status='archiving',heartbeat=time.time())
+    state.update(pid=os.getpid(),lane=args.lane,status='archiving',heartbeat=time.time())
     def record(**kwargs):
         state.update(heartbeat=time.time(),**kwargs);save(path,state)
     try:
-        for index in range(20):
+        for index in range(args.lane,20,2):
             batch=f'batch_{index:03d}'
             if batch in state['completed_batches']:continue
             request=directory/'archive_requests'/(batch+'.json')
