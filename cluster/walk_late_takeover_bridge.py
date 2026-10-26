@@ -40,6 +40,23 @@ def read_remote(host,relative):
     return call(host,"import json,pathlib\np=pathlib.Path.home()/'kevin'/REL\nprint(json.dumps(json.loads(p.read_text()) if p.exists() else None))".replace('REL',repr(relative)))
 
 
+def collector_health():
+    health=call('biped',r'''
+import json,pathlib,time
+w=pathlib.Path.home()/'kevin'/WORK;s=json.loads((w/'workflow.json').read_text())
+keys=('status','controller_pid','completed_attempts','active_batch','error','heartbeat')
+result={k:s[k] for k in keys if k in s};result['pid_live']=pathlib.Path('/proc',str(s['controller_pid'])).exists()
+active=s.get('active_batch');heartbeat=w/(str(active)+'.heartbeat.json')
+if s['status']=='collecting' and heartbeat.exists():
+ h=json.loads(heartbeat.read_text());result['worker_log_age_seconds']=time.time()-h['log_mtime']
+print(json.dumps(result))
+'''.replace('WORK',repr(WORK)))
+    assert health['status']!='failed',('Collector stopped;operator review required',health)
+    assert health['status']=='collection_complete' or health['pid_live'],('Collector disappeared',health)
+    assert health.get('worker_log_age_seconds',0)<1800,('Collector output stalled for30minutes;inspect its log',health)
+    return health
+
+
 def stage_observation(host,batch,conversion=False):
     return call(host,r'''
 import json,os,pathlib,time
@@ -253,12 +270,13 @@ def main():
         nonlocal last_resource_review
         if time.time()-last_resource_review<300:return
         last_resource_review=time.time();snapshots={};alerts=[]
+        health=collector_health();record(collector_health=health)
         for host in ('biped','bluesclues'):
             data=resources(host);snapshots[host]=data
             save(directory/(host+'.resources.latest.json'),data)
             with (directory/(host+'.resources.history.jsonl')).open('a') as stream:stream.write(json.dumps(data)+'\n')
             if not data.get('cpu_measurement_complete'):alerts.append(host+': CPU measurement incomplete')
-            collecting=state.get('collector_observation',{}).get('workflow',{}).get('completed_attempts',0)<200
+            collecting=health['completed_attempts']<200
             cap=30 if host=='bluesclues' and collecting else 20
             if data['account_cpu_pct']>cap:alerts.append(host+': aggregate account CPU exceeds'+str(cap)+'%')
             if data.get('gpu_snapshot_error'):alerts.append(host+': GPU snapshot incomplete')
@@ -275,7 +293,7 @@ def main():
         record(latest_resource_review_at=time.time(),resource_alerts=alerts)
     def wait_for_blue_cpu(extra_cpus,purpose):
         while True:
-            collector=read_remote('biped',WORK+'/workflow.json')
+            collector=collector_health();record(collector_health=collector)
             cap=30 if collector['completed_attempts']<200 else 20
             current=resources('bluesclues')
             assert current['cpu_measurement_complete'],current
@@ -312,7 +330,7 @@ def main():
                 if not review.get('waiting_for_cpu_headroom'):break
                 record(status='waiting_for_cpu_headroom',conversion_launch_review=review)
                 observe_resources();time.sleep(30)
-                collector=read_remote('biped',WORK+'/workflow.json')
+                collector=collector_health();record(collector_health=collector)
                 cpu_cap=30 if collector['completed_attempts']<200 else 20
             record(status='relaying_collection')
             converted=None

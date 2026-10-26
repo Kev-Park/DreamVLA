@@ -51,7 +51,8 @@ def main():
             if payload['has_raw']:
                 while True:
                     collector=bridge.read_remote('biped',bridge.WORK+'/workflow.json')
-                    cap=30 if collector['completed_attempts']<200 else 20
+                    active=collector['status'] in ('collecting','waiting_for_verified_relay') and collector['completed_attempts']<200
+                    cap=30 if active else 20
                     resources=bridge.resources('bluesclues')
                     assert resources['cpu_measurement_complete'],resources
                     review={'account_cpu':resources['account_cpu_pct'],'account_cap_pct':cap,'extra_cpu_upper_bound':2/resources['logical_cpus']*100}
