@@ -83,7 +83,7 @@ def assemble(tag):
     base.atomic(done,result);return result
 
 
-def evaluate(tag,checkpoint,gpu):
+def evaluate(tag,checkpoint,gpu,run_name=None):
     class Evaluation(base.Chain):
         def slots(self,count,mb):
             if os.environ.get('SLURM_JOB_ID'):
@@ -110,8 +110,9 @@ def evaluate(tag,checkpoint,gpu):
         chain.env['CUDA_VISIBLE_DEVICES']=os.environ['CUDA_VISIBLE_DEVICES']
     chain.eval_workers=4 if os.environ.get('SLURM_JOB_ID') else 1
     chain.score_script=HERE/'walk_gr00t_score.py'
-    chain.evaluate(tag+'_r3',Path(checkpoint))
-    return base.read(chain.work/(tag+'_r3.eval.json'))
+    run_name=run_name or tag+'_r3'
+    chain.evaluate(run_name,Path(checkpoint))
+    return base.read(chain.work/(run_name+'.eval.json'))
 
 
 def main():
