@@ -244,6 +244,19 @@ else:
 '''.replace('JOB',repr(str(job))))
 
 
+def submitted_training_state(state):
+    """Resume a known submission without recopying a dataset now used by GR00T."""
+    training=state.get('training_submission')
+    if not training:return None
+    assert training['stage']=='finetune' and str(training['job_id']).isdigit(),training
+    assert state.get('dataset') and len(state['completed_batches'])==20,state
+    receipt=read_remote('adroit',WORK+'/finetune.submission.json')
+    assert receipt==training,('Existing submission needs reconciliation;never resubmit',receipt,training)
+    ready=read_remote('adroit',WORK+'/dataset.ready.json')
+    assert ready==state['dataset'],('Submitted dataset identity changed',ready,state['dataset'])
+    return ready,training
+
+
 def start_biped_evaluation(checkpoint_relative,run_name=None):
     """Launch this experiment's control/final evaluation after collection releases GPU0."""
     run_name=run_name or TAG+'_r3'
@@ -378,89 +391,94 @@ def main():
             record(status='waiting_for_cpu_headroom',cpu_headroom_review=review)
             observe_resources();time.sleep(30)
     try:
-        for index in range(20):
-            batch=f'batch_{index:03d}'
-            if batch in state['completed_batches']:continue
-            record(active_batch=batch)
-            report=None
-            while report is None:
-                observe_resources()
-                observed=stage_observation('biped',batch)
-                report=observed['ready'];record(collector_observation=observed)
-                assert observed['workflow'] is not None,'Collector did not publish workflow; inspect its log'
-                if report is None:time.sleep(30)
-            save(directory/(batch+'.complete.json'),report)
-            raw=WORK+'/raw/'+batch
-            has_raw=bool(report['episodes'])
-            wait_for_blue_cpu(1,'Verified raw relay;dedicated transport and copy share one CPU')
-            if has_raw:checked_transfer('biped','bluesclues',raw,directory,batch+'_raw_blue')
-            write_remote('bluesclues',WORK+'/'+batch+'.complete.json',report)
-            if has_raw:
-                expected=json.loads((directory/(batch+'_raw_blue.source_inventory.json')).read_text())
-                remove_relocated_copy('biped',raw,expected,{'host':'bluesclues','relative':raw})
-            collector=observed['workflow']
-            cpu_cap=30 if collector['completed_attempts']<200 else 20
-            while True:
-                review=start_conversion(batch,cpu_cap=cpu_cap)
-                if not review.get('waiting_for_cpu_headroom'):break
-                record(status='waiting_for_cpu_headroom',conversion_launch_review=review)
-                observe_resources();time.sleep(30)
-                collector=collector_health();record(collector_health=collector)
+        resumed=submitted_training_state(state)
+        if resumed:
+            ready,training=resumed
+            record(status='training',resumed_existing_submission=True)
+        else:
+            for index in range(20):
+                batch=f'batch_{index:03d}'
+                if batch in state['completed_batches']:continue
+                record(active_batch=batch)
+                report=None
+                while report is None:
+                    observe_resources()
+                    observed=stage_observation('biped',batch)
+                    report=observed['ready'];record(collector_observation=observed)
+                    assert observed['workflow'] is not None,'Collector did not publish workflow; inspect its log'
+                    if report is None:time.sleep(30)
+                save(directory/(batch+'.complete.json'),report)
+                raw=WORK+'/raw/'+batch
+                has_raw=bool(report['episodes'])
+                wait_for_blue_cpu(1,'Verified raw relay;dedicated transport and copy share one CPU')
+                if has_raw:checked_transfer('biped','bluesclues',raw,directory,batch+'_raw_blue')
+                write_remote('bluesclues',WORK+'/'+batch+'.complete.json',report)
+                if has_raw:
+                    expected=json.loads((directory/(batch+'_raw_blue.source_inventory.json')).read_text())
+                    remove_relocated_copy('biped',raw,expected,{'host':'bluesclues','relative':raw})
+                collector=observed['workflow']
                 cpu_cap=30 if collector['completed_attempts']<200 else 20
-            record(status='relaying_collection')
-            converted=None
-            conversion_started=time.time()
-            while converted is None:
+                while True:
+                    review=start_conversion(batch,cpu_cap=cpu_cap)
+                    if not review.get('waiting_for_cpu_headroom'):break
+                    record(status='waiting_for_cpu_headroom',conversion_launch_review=review)
+                    observe_resources();time.sleep(30)
+                    collector=collector_health();record(collector_health=collector)
+                    cpu_cap=30 if collector['completed_attempts']<200 else 20
+                record(status='relaying_collection')
+                converted=None
+                conversion_started=time.time()
+                while converted is None:
+                    observe_resources()
+                    observed=stage_observation('bluesclues',batch,conversion=True)
+                    converted=observed['ready'];status=observed['workflow']
+                    assert status is not None or time.time()-conversion_started<90,'Converter did not publish workflow;inspect its log'
+                    record(conversion_observation=observed)
+                    if converted is None:time.sleep(30)
+                save(directory/(batch+'.converted.json'),converted)
+                requests=directory/'archive_requests';requests.mkdir(exist_ok=True)
+                save(requests/(batch+'.json'),{'batch':batch,'raw':raw,'has_raw':has_raw,'report':report})
+                state['completed_batches'].append(batch);record()
+                print(json.dumps({'batch_relayed_and_converted':batch,'raw_archive_queued':True,'batches':len(state['completed_batches'])}),flush=True)
+            record(status='assembling')
+            while True:
+                launch=start_assembly();record(assembly_launch=launch)
+                if not launch.get('waiting_for_cpu_headroom'):break
+                record(status='waiting_for_cpu_headroom',cpu_stage='assembly');observe_resources();time.sleep(30)
+            record(status='assembling')
+            started=time.time();ready=None
+            while ready is None:
                 observe_resources()
-                observed=stage_observation('bluesclues',batch,conversion=True)
-                converted=observed['ready'];status=observed['workflow']
-                assert status is not None or time.time()-conversion_started<90,'Converter did not publish workflow;inspect its log'
-                record(conversion_observation=observed)
-                if converted is None:time.sleep(30)
-            save(directory/(batch+'.converted.json'),converted)
-            requests=directory/'archive_requests';requests.mkdir(exist_ok=True)
-            save(requests/(batch+'.json'),{'batch':batch,'raw':raw,'has_raw':has_raw,'report':report})
-            state['completed_batches'].append(batch);record()
-            print(json.dumps({'batch_relayed_and_converted':batch,'raw_archive_queued':True,'batches':len(state['completed_batches'])}),flush=True)
-        record(status='assembling')
-        while True:
-            launch=start_assembly();record(assembly_launch=launch)
-            if not launch.get('waiting_for_cpu_headroom'):break
-            record(status='waiting_for_cpu_headroom',cpu_stage='assembly');observe_resources();time.sleep(30)
-        record(status='assembling')
-        started=time.time();ready=None
-        while ready is None:
-            observe_resources()
-            ready=read_remote('bluesclues',WORK+'/dataset.ready.json')
-            status=read_remote('bluesclues',WORK+'/assemble.workflow.json');record(assembly_state=status)
-            assert status is not None or time.time()-started<90,'Assembly did not publish workflow;inspect its log'
-            assert not status or status['status']!='failed',status
-            if status and status['status']=='running':
-                live=call('bluesclues',"import json,pathlib\nprint(json.dumps(pathlib.Path('/proc',str(PID)).exists()))".replace('PID',repr(status['pid'])))
-                assert live,('Assembly process disappeared',status)
-            if ready is None:time.sleep(30)
-        assert ready['new_attempts']==200
-        merged='datasets/'+TAG+'_r3/lerobot/ds'
-        transferred=directory/'cumulative_dataset_adroit.transfer.json'
-        # A verified recovery is already staged on Adroit. Its checksum-only
-        # reconciliation there allocates no Bluesclues transfer worker.
-        if not (transferred.exists() and json.loads(transferred.read_text()).get('verified')):
-            wait_for_blue_cpu(1,'Cumulative training dataset transfer;dedicated transport and copy share one CPU')
-        checked_transfer('bluesclues','adroit',merged,directory,'cumulative_dataset_adroit')
-        target=call('adroit',"import json,pathlib\nprint(json.dumps(str(pathlib.Path.home()/'kevin'/REL)))".replace('REL',repr(merged)))
-        ready=dict(ready,source_dataset=ready['dataset'],dataset=target)
-        write_remote('adroit',WORK+'/dataset.ready.json',ready)
-        # Preserve all batch provenance beside the single training dataset.
-        for index in range(20):
-            batch=f'batch_{index:03d}'
-            write_remote('adroit',WORK+'/'+batch+'.complete.json',read_remote('bluesclues',WORK+'/'+batch+'.complete.json'))
-            record_file=WORK+'/'+batch+'.converted.json'
-            if read_remote('adroit',record_file) is None:
-                value=read_remote('bluesclues',record_file)
-                value=dict(value,source_dataset=value['dataset'],dataset_in_cumulative=target)
-                write_remote('adroit',record_file,value)
-        record(status='training',dataset=ready)
-        training=submit('finetune',ready);record(training_submission=training)
+                ready=read_remote('bluesclues',WORK+'/dataset.ready.json')
+                status=read_remote('bluesclues',WORK+'/assemble.workflow.json');record(assembly_state=status)
+                assert status is not None or time.time()-started<90,'Assembly did not publish workflow;inspect its log'
+                assert not status or status['status']!='failed',status
+                if status and status['status']=='running':
+                    live=call('bluesclues',"import json,pathlib\nprint(json.dumps(pathlib.Path('/proc',str(PID)).exists()))".replace('PID',repr(status['pid'])))
+                    assert live,('Assembly process disappeared',status)
+                if ready is None:time.sleep(30)
+            assert ready['new_attempts']==200
+            merged='datasets/'+TAG+'_r3/lerobot/ds'
+            transferred=directory/'cumulative_dataset_adroit.transfer.json'
+            # A verified recovery is already staged on Adroit. Its checksum-only
+            # reconciliation there allocates no Bluesclues transfer worker.
+            if not (transferred.exists() and json.loads(transferred.read_text()).get('verified')):
+                wait_for_blue_cpu(1,'Cumulative training dataset transfer;dedicated transport and copy share one CPU')
+            checked_transfer('bluesclues','adroit',merged,directory,'cumulative_dataset_adroit')
+            target=call('adroit',"import json,pathlib\nprint(json.dumps(str(pathlib.Path.home()/'kevin'/REL)))".replace('REL',repr(merged)))
+            ready=dict(ready,source_dataset=ready['dataset'],dataset=target)
+            write_remote('adroit',WORK+'/dataset.ready.json',ready)
+            # Preserve all batch provenance beside the single training dataset.
+            for index in range(20):
+                batch=f'batch_{index:03d}'
+                write_remote('adroit',WORK+'/'+batch+'.complete.json',read_remote('bluesclues',WORK+'/'+batch+'.complete.json'))
+                record_file=WORK+'/'+batch+'.converted.json'
+                if read_remote('adroit',record_file) is None:
+                    value=read_remote('bluesclues',record_file)
+                    value=dict(value,source_dataset=value['dataset'],dataset_in_cumulative=target)
+                    write_remote('adroit',record_file,value)
+            record(status='training',dataset=ready)
+            training=submit('finetune',ready);record(training_submission=training)
         while True:
             observe_resources()
             observed=job_state(training['job_id'])
@@ -502,6 +520,8 @@ def main():
         save(directory/'results.json',results);record(status='complete',completed_at=time.time(),results=results)
     except BaseException as exc:
         record(status='stopped_for_review',error=repr(exc));raise
+    finally:
+        lock.close()
 
 
 if __name__=='__main__':main()
