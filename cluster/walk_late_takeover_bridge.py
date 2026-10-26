@@ -214,7 +214,12 @@ b=pathlib.Path.home()/'kevin';work=b/WORK;p=PAYLOAD
 receipt=work/(p['stage']+'.submission.json');logs=b/'eval_videos'/TAG;logs.mkdir(parents=True,exist_ok=True)
 if receipt.exists():print(receipt.read_text())
 else:
- repo=b/'wt/locomotion/DreamVLA';cmd=['sbatch','--parsable','--job-name='+TAG+'_'+p['stage'],'--output='+str(logs/(p['stage']+'-%j.log'))]
+ repo=b/'wt/locomotion/DreamVLA'
+ import sys
+ sys.path.insert(0,str(repo/'cluster'))
+ from walk_adroit_quota import read_quota
+ capacity=read_quota();assert not capacity.get('attention'),capacity
+ cmd=['sbatch','--parsable','--job-name='+TAG+'_'+p['stage'],'--output='+str(logs/(p['stage']+'-%j.log'))]
  assert p['stage']=='finetune'
  cmd += [str(repo/'cluster/adroit/walk_late_takeover_finetune.sbatch'),TAG,p['ready']['dataset'],str(p['ready']['steps'])]
  job=subprocess.check_output(cmd,text=True).strip().split(';')[0];assert job.isdigit()
@@ -238,6 +243,8 @@ if p.stdout.strip():
    import pathlib
    base=pathlib.Path.home()/'kevin';sys.path.insert(0,str(base/'wt/locomotion/DreamVLA/cluster'))
    from walk_training_progress import read_progress
+   from walk_adroit_quota import read_quota
+   result['account_scratch_quota']=read_quota(required_reserve_bytes=30_000_000_000)
    expected=json.loads((base/WORK_PATH/'dataset.ready.json').read_text())['steps']
    result['training_progress']=read_progress(base/'eval_videos'/EXPERIMENT/('finetune-'+job+'.log'),expected)
   except Exception as exc:result['training_progress']={'observation_error':repr(exc)}

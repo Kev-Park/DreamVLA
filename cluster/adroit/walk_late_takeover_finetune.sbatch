@@ -14,6 +14,7 @@ DS=${2:?dataset required}
 STEPS=${3:?steps required}
 REPO=$HOME/kevin/wt/locomotion/DreamVLA
 RUN=${TAG}_r3
+python3 "$REPO/cluster/walk_adroit_quota.py"
 bash "$REPO/cluster/adroit/walk_gr00t_finetune.sbatch" "$DS" "$RUN" "$STEPS"
 python3 - "$TAG" "$STEPS" <<'PY'
 import json
