@@ -238,8 +238,10 @@ def start_biped_evaluation(checkpoint_relative,run_name=None):
     """Launch this experiment's control/final evaluation after collection releases GPU0."""
     run_name=run_name or TAG+'_r3'
     return call('biped',r'''
-import json,os,pathlib,shlex,subprocess,sys,time,xml.etree.ElementTree as ET
+import fcntl,json,os,pathlib,shlex,subprocess,sys,time,xml.etree.ElementTree as ET
 b=pathlib.Path.home()/'kevin';work=b/WORK;run=RUN_NAME;ready=work/(run+'.eval.json')
+launch_lock=(work/'evaluation_launch.lock').open('a')
+fcntl.flock(launch_lock,fcntl.LOCK_EX)
 key='evaluate' if run==TAG+'_r3' else 'evaluate_'+run
 workflow=work/(key+'.workflow.json');checkpoint=b/CHECKPOINT
 collector=json.loads((work/'workflow.json').read_text())
@@ -278,7 +280,8 @@ else:
  if occupied:
   print(json.dumps({'waiting_for_gpu_headroom':True,'account_contexts':occupied}));sys.exit(0)
  name='walk_late1s_eval_kevin'
- assert subprocess.run(['tmux','has-session','-t',name],capture_output=True).returncode!=0
+ if subprocess.run(['tmux','has-session','-t',name],capture_output=True).returncode==0:
+  print(json.dumps({'waiting_for_gpu_headroom':True,'active_experiment_session':name}));sys.exit(0)
  assert (checkpoint/'model.safetensors.index.json').is_file()
  review={'at':time.time(),'account_cpu':cpu,'cpu_affinity':mask,'compute_gpu':0,
   'gpu1_graphics_exception':'Existing2026-10-24 approval,at most6MiB,only this experiment',
