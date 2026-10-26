@@ -164,16 +164,18 @@ else:
  sys.path.insert(0,str(b/'wt/locomotion/DreamVLA/cluster'))
  from account_cpu_usage import sample_account_cpu
  cpu=sample_account_cpu(2);assert cpu['cpu_measurement_complete'],cpu
- if cpu['account_cpu_pct']+4/os.cpu_count()*100>CPU_CAP:
+ # Background account work is bursty; this small conversion fits one CPU.
+ # Keep the existing four data shards and global normalization unchanged.
+ if cpu['account_cpu_pct']+1/os.cpu_count()*100>CPU_CAP:
   print(json.dumps({'waiting_for_cpu_headroom':True,'account_cpu':cpu,'account_cap_pct':CPU_CAP}));sys.exit(0)
- review={'at':__import__('time').time(),'account_cpu':cpu,'allocated_cpu_mask':[0,1,2,3],'gpus':0,'account_cap_pct':CPU_CAP,'approval':'Existing2026-10-14 walking collection exception when30;otherwise normal20%'}
+ review={'at':__import__('time').time(),'account_cpu':cpu,'allocated_cpu_mask':[0],'gpus':0,'account_cap_pct':CPU_CAP,'approval':'Existing2026-10-14 walking collection exception when30;otherwise normal20%'}
  (work/(batch+'.resource_review.json')).write_text(json.dumps(review,indent=2)+'\n')
  args=[str(b/'wt/locomotion/.venv/bin/python'),'-u',str(b/'wt/locomotion/DreamVLA/cluster/walk_late_takeover_process.py'),'convert','--tag',TAG,'--batch',batch]
  shell='export XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1\n'
- shell+='exec taskset -c 0,1,2,3 '+shlex.join(args)+' > '+shlex.quote(str(work/(batch+'.conversion.log')))+' 2>&1'
+ shell+='exec taskset -c 0 '+shlex.join(args)+' > '+shlex.quote(str(work/(batch+'.conversion.log')))+' 2>&1'
  os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
  subprocess.run(['tmux','new-session','-d','-s',name,'bash','-lc',shell],check=True)
- print(json.dumps({'launched':name,'batch':batch,'cpu_affinity':[0,1,2,3],'gpus':0}))
+ print(json.dumps({'launched':name,'batch':batch,'cpu_affinity':[0],'gpus':0}))
 '''.replace('WORK',repr(WORK)).replace('BATCH',repr(batch)).replace('TAG',repr(TAG)).replace('CPU_CAP',repr(cpu_cap)))
 
 
@@ -189,16 +191,16 @@ else:
  sys.path.insert(0,str(b/'wt/locomotion/DreamVLA/cluster'))
  from account_cpu_usage import sample_account_cpu
  cpu=sample_account_cpu(2);assert cpu['cpu_measurement_complete'],cpu
- if cpu['account_cpu_pct']+4/os.cpu_count()*100>20:
+ if cpu['account_cpu_pct']+1/os.cpu_count()*100>20:
   print(json.dumps({'waiting_for_cpu_headroom':True,'account_cpu':cpu,'account_cap_pct':20}));sys.exit(0)
  name='walk_late1s_assemble_kevin';assert subprocess.run(['tmux','has-session','-t',name],capture_output=True).returncode!=0
  args=[str(b/'GR00T-WholeBodyControl/.venv_data_collection/bin/python'),'-u',str(b/'wt/locomotion/DreamVLA/cluster/walk_late_takeover_process.py'),'assemble','--tag',TAG]
  shell='export XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1\n'
- shell+='exec taskset -c 0,1,2,3 '+shlex.join(args)+' > '+shlex.quote(str(work/'assembly.log'))+' 2>&1'
- (work/'assembly.resource_review.json').write_text(json.dumps({'at':time.time(),'account_cpu':cpu,'cpu_mask':[0,1,2,3],'gpus':0},indent=2)+'\n')
+ shell+='exec taskset -c 0 '+shlex.join(args)+' > '+shlex.quote(str(work/'assembly.log'))+' 2>&1'
+ (work/'assembly.resource_review.json').write_text(json.dumps({'at':time.time(),'account_cpu':cpu,'cpu_mask':[0],'gpus':0},indent=2)+'\n')
  os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
  subprocess.run(['tmux','new-session','-d','-s',name,'bash','-lc',shell],check=True)
- print(json.dumps({'launched':name,'cpu_mask':[0,1,2,3],'gpus':0}))
+ print(json.dumps({'launched':name,'cpu_mask':[0],'gpus':0}))
 '''.replace('WORK',repr(WORK)).replace('TAG',repr(TAG)))
 
 
