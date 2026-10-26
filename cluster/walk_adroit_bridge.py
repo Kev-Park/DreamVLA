@@ -24,10 +24,36 @@ class RemoteCommandError(RuntimeError):
     """SSH reached the host, but the command there failed."""
 
 
-def ssh(host, command):
+def bounded_transport_command(command):
+    """Budget one new, nonmultiplexed SSH transfer session to one CPU.
+
+    Only the command and its own user-owned sshd parent are affected. Never use
+    this wrapper with a shared control master or a privileged sshd process.
+    The wrapper leaves stdin/stdout untouched for binary tar streams.
+    """
+    script = """import os,pathlib
+parent=os.getppid();process=pathlib.Path('/proc',str(parent))
+assert process.stat().st_uid==os.getuid(),'Refuse a privileged or foreign SSH parent'
+assert (process/'comm').read_text().strip() in ('sshd','sshd-session'),'Dedicated SSH session not verified'
+cpu=min(os.sched_getaffinity(0))
+for pid in (parent,os.getpid()):
+ for thread in pathlib.Path('/proc',str(pid),'task').iterdir():
+  try:os.sched_setaffinity(int(thread.name),{cpu})
+  except ProcessLookupError:pass
+ assert os.sched_getaffinity(pid)=={cpu},'CPU allocation did not apply'
+os.execvp('bash',['bash','-c',COMMAND])
+""".replace('COMMAND', repr(command))
+    return 'python3 -c ' + shlex.quote(script)
+
+
+def ssh(host, command, single_cpu=False):
+    if single_cpu:
+        assert host == 'bluesclues', 'Never restrict a shared Adroit connection'
+        command = bounded_transport_command(command)
     if host in ("bluesclues", "biped"):
         address = BLUE if host == "bluesclues" else BIPED
-        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+        options = ["-o", "ControlMaster=no", "-o", "ControlPath=none"] if single_cpu else []
+        return ["ssh", *options, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
                 "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", address, command]
     assert host == "adroit"
     return ["wsl.exe", "-d", "Ubuntu", "-u", "kevy0", "--", "bash", "-lc",
@@ -35,8 +61,9 @@ def ssh(host, command):
             "-o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 adroit "+shlex.quote(command)]
 
 
-def call(host, script, timeout=90):
-    p = subprocess.run(ssh(host, "python3 -"), input=script.encode(), capture_output=True,
+def call(host, script, timeout=90, single_cpu=False):
+    command = ssh(host, "python3 -", single_cpu=True) if single_cpu else ssh(host, "python3 -")
+    p = subprocess.run(command, input=script.encode(), capture_output=True,
                        timeout=timeout, creationflags=FLAGS)
     if p.returncode:
         error = RuntimeError if p.returncode == 255 else RemoteCommandError
@@ -50,7 +77,7 @@ def save(path, data):
     tmp.replace(path)
 
 
-def inventory(host, relative, inference=False):
+def inventory(host, relative, inference=False, single_cpu=False):
     script = """import hashlib,json,pathlib
 b=(pathlib.Path.home()/'kevin').resolve();p=b/REL
 assert p.resolve().is_relative_to(b) and p.is_dir(),str(p)
@@ -66,14 +93,15 @@ for f in sorted(p.rglob('*')):
 assert rows
 print(json.dumps(rows))
 """.replace("REL", repr(relative)).replace("INFERENCE", repr(inference))
-    return call(host, script, timeout=1800)
+    return call(host, script, timeout=1800, **({'single_cpu': True} if single_cpu else {}))
 
 
-def transfer(source, destination, relative, state_dir, label, inference=False):
+def transfer(source, destination, relative, state_dir, label, inference=False, blue_single_cpu=False):
     # Both roots are ~/kevin; all streamed member paths are relative to that root.
     parts = PurePosixPath(relative).parts
     assert parts and ".." not in parts and not relative.startswith("/")
-    before = inventory(source, relative, inference)
+    before = inventory(source, relative, inference,
+                       **({'single_cpu': True} if blue_single_cpu and source == 'bluesclues' else {}))
     save(state_dir/(label+".source_inventory.json"), before)
     call(destination, """import pathlib,json
 b=(pathlib.Path.home()/'kevin').resolve();p=b/REL
@@ -81,14 +109,16 @@ assert p.resolve().is_relative_to(b)
 assert not p.exists(),'Destination already exists; reconcile before transfer: '+str(p)
 p.parent.mkdir(parents=True,exist_ok=True)
 print(json.dumps({'ready':True}))
-""".replace("REL", repr(relative)))
+""".replace("REL", repr(relative)), **({'single_cpu': True} if blue_single_cpu and destination == 'bluesclues' else {}))
     state = {"source": source, "destination": destination, "relative": relative,
              "started": time.time(), "bytes": sum(r["bytes"] for r in before),
-             "inference_and_trainer_metadata_only": inference}
+             "inference_and_trainer_metadata_only": inference, "blue_transport_single_cpu": blue_single_cpu}
     save(state_dir/(label+".transfer.json"), state)
     members = [str(PurePosixPath(relative)/r['path']) for r in before] if inference else [relative]
-    producer_cmd = ssh(source, "tar -C ~/kevin -cf - -- "+' '.join(map(shlex.quote,members)))
-    consumer_cmd = ssh(destination, "tar -C ~/kevin -xf -")
+    producer_cmd = ssh(source, "tar -C ~/kevin -cf - -- "+' '.join(map(shlex.quote,members)),
+                       **({'single_cpu': True} if blue_single_cpu and source == 'bluesclues' else {}))
+    consumer_cmd = ssh(destination, "tar -C ~/kevin -xf -",
+                       **({'single_cpu': True} if blue_single_cpu and destination == 'bluesclues' else {}))
     with (state_dir/(label+".source.stderr")).open("wb") as srcerr, (state_dir/(label+".destination.stderr")).open("wb") as dsterr:
         producer = subprocess.Popen(producer_cmd, stdout=subprocess.PIPE, stderr=srcerr, creationflags=FLAGS)
         consumer = subprocess.Popen(consumer_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
@@ -116,7 +146,8 @@ print(json.dumps({'ready':True}))
     state.update(producer_code=producer_code,consumer_code=consumer_code,stream_bytes=transferred,heartbeat=time.time())
     save(state_dir/(label+'.transfer.json'),state)
     assert producer_code == consumer_code == 0, f"Transfer failed: {label}; inspect stderr files"
-    after = inventory(destination, relative, inference)
+    after = inventory(destination, relative, inference,
+                      **({'single_cpu': True} if blue_single_cpu and destination == 'bluesclues' else {}))
     assert before == after, f"Checksum mismatch after transfer: {label}"
     state.update(completed=time.time(), verified=True, files=len(before))
     save(state_dir/(label+".transfer.json"), state)

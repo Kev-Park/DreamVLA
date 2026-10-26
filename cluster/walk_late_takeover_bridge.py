@@ -93,13 +93,14 @@ def checked_transfer(source,destination,relative,directory,label,inference=False
         receipt=json.loads(marker.read_text())
         assert receipt.get('verified'),'Interrupted transfer needs explicit reconciliation: '+label
         expected=json.loads((directory/(label+'.source_inventory.json')).read_text())
-        assert inventory(destination,relative,inference)==expected
+        assert inventory(destination,relative,inference,single_cpu=destination=='bluesclues')==expected
         return
     if destination in ('bluesclues','biped'):
         size=call(source,"import pathlib,json\np=pathlib.Path.home()/'kevin'/REL\nskip={'optimizer.pt','scheduler.pt','rng_state.pth','training_args.bin'} if INFERENCE else set()\nprint(json.dumps(sum(f.stat().st_size for f in p.rglob('*') if f.is_file() and f.name not in skip)))".replace('REL',repr(relative)).replace('INFERENCE',repr(inference)))
         free=call(destination,"import pathlib,shutil,json\nprint(json.dumps(shutil.disk_usage(pathlib.Path.home()/'kevin').free))")
         assert free>=2*size+8_000_000_000,'Insufficient reviewed conversion staging space;source retained'
-    try:transfer(source,destination,relative,directory,label,inference=inference)
+    try:transfer(source,destination,relative,directory,label,inference=inference,
+                 blue_single_cpu='bluesclues' in (source,destination))
     except BaseException:
         if marker.exists():
             failed=json.loads(marker.read_text())
@@ -382,7 +383,7 @@ def main():
             save(directory/(batch+'.complete.json'),report)
             raw=WORK+'/raw/'+batch
             has_raw=bool(report['episodes'])
-            wait_for_blue_cpu(2,'Verified raw relay')
+            wait_for_blue_cpu(1,'Verified raw relay;dedicated transport and copy share one CPU')
             if has_raw:checked_transfer('biped','bluesclues',raw,directory,batch+'_raw_blue')
             write_remote('bluesclues',WORK+'/'+batch+'.complete.json',report)
             if has_raw:
@@ -431,7 +432,7 @@ def main():
             if ready is None:time.sleep(30)
         assert ready['new_attempts']==200
         merged='datasets/'+TAG+'_r3/lerobot/ds'
-        wait_for_blue_cpu(2,'Cumulative training dataset transfer')
+        wait_for_blue_cpu(1,'Cumulative training dataset transfer;dedicated transport and copy share one CPU')
         checked_transfer('bluesclues','adroit',merged,directory,'cumulative_dataset_adroit')
         target=call('adroit',"import json,pathlib\nprint(json.dumps(str(pathlib.Path.home()/'kevin'/REL)))".replace('REL',repr(merged)))
         ready=dict(ready,source_dataset=ready['dataset'],dataset=target)
