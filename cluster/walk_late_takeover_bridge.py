@@ -244,6 +244,18 @@ key='evaluate' if run==TAG+'_r3' else 'evaluate_'+run
 workflow=work/(key+'.workflow.json');checkpoint=b/CHECKPOINT
 collector=json.loads((work/'workflow.json').read_text())
 assert collector['status']=='collection_complete' and collector['completed_attempts']==200
+prerequisites=work/'evaluation_prerequisites.json'
+if run==TAG+'_r3' and prerequisites.exists():
+ controls=json.loads(prerequisites.read_text())['controls']
+ assert all(pathlib.Path(name).name==name and not name.startswith('.') for name in controls)
+ pending=[name for name in controls if not (work/(name+'.eval.json')).exists()]
+ for name in controls:
+  result_file=work/(name+'.eval.json')
+  if result_file.exists():
+   result=json.loads(result_file.read_text())
+   assert result['episodes']==100 and sorted(row['motion_id'] for row in result['per_episode'])==list(range(100)),('Incomplete control',name)
+ if pending:
+  print(json.dumps({'waiting_for_control_evaluations':pending}));sys.exit(0)
 if ready.exists():print(json.dumps({'already_complete':True}))
 elif workflow.exists():
  d=json.loads(workflow.read_text());assert d['status']=='running' and pathlib.Path('/proc',str(d['pid'])).exists(),d
@@ -450,7 +462,7 @@ def main():
         record(status='starting_evaluation')
         while True:
             launch=start_biped_evaluation(checkpoint);record(evaluation_launch=launch)
-            if not any(launch.get(k) for k in ('waiting_for_cpu_headroom','waiting_for_gpu_headroom')):break
+            if not any(launch.get(k) for k in ('waiting_for_cpu_headroom','waiting_for_gpu_headroom','waiting_for_control_evaluations')):break
             record(status='waiting_for_evaluation_resources');observe_resources();time.sleep(30)
         record(status='evaluating',evaluation_host='biped');started=time.time()
         while True:

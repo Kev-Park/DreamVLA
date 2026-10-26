@@ -16,6 +16,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state-dir', required=True)
     parser.add_argument('--shared-state-dir', required=True)
+    parser.add_argument('--run-name', default=RUN)
+    parser.add_argument('--checkpoint-relative', default=CHECKPOINT)
     args = parser.parse_args()
     directory = Path(args.state_dir).resolve()
     directory.mkdir(exist_ok=True)
@@ -32,9 +34,14 @@ def main():
         import fcntl
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     file = directory / 'workflow.json'
-    state = {'started': time.time(), 'pid': os.getpid(), 'run': RUN,
-             'experiment': bridge.TAG, 'checkpoint': CHECKPOINT,
-             'host': 'biped', 'replaces_failed_adroit_job': '3431297'}
+    run_name, checkpoint = args.run_name, args.checkpoint_relative
+    assert Path(run_name).name == run_name and not run_name.startswith('.')
+    assert not Path(checkpoint).is_absolute() and '..' not in Path(checkpoint).parts
+    state = {'started': time.time(), 'pid': os.getpid(), 'run': run_name,
+             'experiment': bridge.TAG, 'checkpoint': checkpoint,
+             'host': 'biped'}
+    if run_name == RUN:
+        state['replaces_failed_adroit_job'] = '3431297'
 
     def record(**values):
         state.update(heartbeat=time.time(), **values)
@@ -48,7 +55,7 @@ def main():
                 break
             time.sleep(30)
         while True:
-            launch = bridge.start_biped_evaluation(CHECKPOINT, run_name=RUN)
+            launch = bridge.start_biped_evaluation(checkpoint, run_name=run_name)
             record(status='waiting_for_resources', launch=launch)
             if not any(launch.get(k) for k in ('waiting_for_cpu_headroom', 'waiting_for_gpu_headroom')):
                 break
@@ -56,8 +63,8 @@ def main():
         record(status='evaluating')
         started = time.time()
         while True:
-            results = bridge.read_remote('biped', bridge.WORK + '/' + RUN + '.eval.json')
-            workflow = bridge.read_remote('biped', bridge.WORK + '/evaluate_' + RUN + '.workflow.json')
+            results = bridge.read_remote('biped', bridge.WORK + '/' + run_name + '.eval.json')
+            workflow = bridge.read_remote('biped', bridge.WORK + '/evaluate_' + run_name + '.workflow.json')
             record(evaluation_state=workflow)
             assert workflow is not None or time.time() - started < 90
             assert not workflow or workflow['status'] != 'failed', workflow
