@@ -432,7 +432,11 @@ def main():
             if ready is None:time.sleep(30)
         assert ready['new_attempts']==200
         merged='datasets/'+TAG+'_r3/lerobot/ds'
-        wait_for_blue_cpu(1,'Cumulative training dataset transfer;dedicated transport and copy share one CPU')
+        transferred=directory/'cumulative_dataset_adroit.transfer.json'
+        # A verified recovery is already staged on Adroit. Its checksum-only
+        # reconciliation there allocates no Bluesclues transfer worker.
+        if not (transferred.exists() and json.loads(transferred.read_text()).get('verified')):
+            wait_for_blue_cpu(1,'Cumulative training dataset transfer;dedicated transport and copy share one CPU')
         checked_transfer('bluesclues','adroit',merged,directory,'cumulative_dataset_adroit')
         target=call('adroit',"import json,pathlib\nprint(json.dumps(str(pathlib.Path.home()/'kevin'/REL)))".replace('REL',repr(merged)))
         ready=dict(ready,source_dataset=ready['dataset'],dataset=target)
