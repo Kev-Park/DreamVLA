@@ -7,9 +7,30 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import time
 
-from walk_adroit_bridge import call,inventory,save,transfer
+import walk_adroit_bridge as wire
+from walk_adroit_bridge import RemoteCommandError,inventory,save,transfer
+
+_remote_call=wire.call
+STATE_DIRECTORY=None
+
+
+def call(host,script,**kwargs):
+    hold=STATE_DIRECTORY/(host+'.connection_hold.json') if STATE_DIRECTORY else None
+    if hold and hold.exists():raise RuntimeError('Connection held pending operator review: '+str(hold))
+    try:return _remote_call(host,script,**kwargs)
+    except (RuntimeError,subprocess.TimeoutExpired) as exc:
+        if hold and not isinstance(exc,RemoteCommandError):
+            save(hold,{'host':host,'at':time.time(),'error':repr(exc),'automatic_retry':False})
+        raise
+
+
+def configure(directory):
+    global STATE_DIRECTORY
+    STATE_DIRECTORY=Path(directory)
+    wire.call=call
 
 TAG='walk200_v3_late1s_20261024'
 WORK='dline/'+TAG
@@ -61,7 +82,14 @@ def checked_transfer(source,destination,relative,directory,label):
         size=call(source,"import pathlib,json\np=pathlib.Path.home()/'kevin'/REL\nprint(json.dumps(sum(f.stat().st_size for f in p.rglob('*') if f.is_file())))".replace('REL',repr(relative)))
         free=call(destination,"import pathlib,shutil,json\nprint(json.dumps(shutil.disk_usage(pathlib.Path.home()/'kevin').free))")
         assert free>=2*size+8_000_000_000,'Insufficient reviewed conversion staging space;source retained'
-    transfer(source,destination,relative,directory,label)
+    try:transfer(source,destination,relative,directory,label)
+    except BaseException:
+        if marker.exists():
+            failed=json.loads(marker.read_text())
+            for host,key in ((source,'producer_code'),(destination,'consumer_code')):
+                if failed.get(key)==255:
+                    save(directory/(host+'.connection_hold.json'),{'host':host,'at':time.time(),'error':'SSH transfer failed: '+label,'automatic_retry':False})
+        raise
 
 
 def remove_relocated_copy(host,relative,expected,destination):
@@ -104,7 +132,7 @@ else:
     return call(host,script,timeout=240)
 
 
-def start_conversion(batch):
+def start_conversion(batch,cpu_cap=20):
     return call('bluesclues',r'''
 import json,os,pathlib,shlex,subprocess
 b=pathlib.Path.home()/'kevin';work=b/WORK;batch=BATCH
@@ -119,8 +147,8 @@ else:
  sys.path.insert(0,str(b/'wt/locomotion/DreamVLA/cluster'))
  from account_cpu_usage import sample_account_cpu
  cpu=sample_account_cpu(2);assert cpu['cpu_measurement_complete'],cpu
- assert cpu['account_cpu_pct']+4/os.cpu_count()*100<=20,('Account CPU headroom needs operator review',cpu)
- review={'at':__import__('time').time(),'account_cpu':cpu,'allocated_cpu_mask':[0,1,2,3],'gpus':0}
+ assert cpu['account_cpu_pct']+4/os.cpu_count()*100<=CPU_CAP,('Account CPU headroom needs operator review',cpu)
+ review={'at':__import__('time').time(),'account_cpu':cpu,'allocated_cpu_mask':[0,1,2,3],'gpus':0,'account_cap_pct':CPU_CAP,'approval':'Existing2026-10-14 walking collection exception when30;otherwise normal20%'}
  (work/(batch+'.resource_review.json')).write_text(json.dumps(review,indent=2)+'\n')
  args=[str(b/'wt/locomotion/.venv/bin/python'),'-u',str(b/'wt/locomotion/DreamVLA/cluster/walk_late_takeover_process.py'),'convert','--tag',TAG,'--batch',batch]
  shell='export XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1\n'
@@ -128,7 +156,7 @@ else:
  os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
  subprocess.run(['tmux','new-session','-d','-s',name,'bash','-lc',shell],check=True)
  print(json.dumps({'launched':name,'batch':batch,'cpu_affinity':[0,1,2,3],'gpus':0}))
-'''.replace('WORK',repr(WORK)).replace('BATCH',repr(batch)).replace('TAG',repr(TAG)))
+'''.replace('WORK',repr(WORK)).replace('BATCH',repr(batch)).replace('TAG',repr(TAG)).replace('CPU_CAP',repr(cpu_cap)))
 
 
 def start_assembly():
@@ -203,6 +231,7 @@ print(json.dumps(data))
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--state-dir',required=True)
     a=p.parse_args();directory=Path(a.state_dir).resolve();directory.mkdir(parents=True,exist_ok=True)
+    configure(directory)
     lock=(directory/'bridge.lock').open('a+b')
     if os.name=='nt':
         import msvcrt
@@ -213,6 +242,8 @@ def main():
     state_file=directory/'workflow.json'
     state=json.loads(state_file.read_text()) if state_file.exists() else {'tag':TAG,'started':time.time(),'completed_batches':[]}
     state.update(pid=os.getpid(),status='relaying_collection',heartbeat=time.time())
+    state.pop('error',None)
+    state['raw_archival']='Independent archive worker;never on the training dependency path'
     def record(**kwargs):
         state.update(heartbeat=time.time(),**kwargs);save(state_file,state)
     last_resource_review=0
@@ -225,7 +256,9 @@ def main():
             save(directory/(host+'.resources.latest.json'),data)
             with (directory/(host+'.resources.history.jsonl')).open('a') as stream:stream.write(json.dumps(data)+'\n')
             if not data.get('cpu_measurement_complete'):alerts.append(host+': CPU measurement incomplete')
-            if data['account_cpu_pct']>20:alerts.append(host+': aggregate account CPU exceeds20%')
+            collecting=state.get('collector_observation',{}).get('workflow',{}).get('completed_attempts',0)<200
+            cap=30 if host=='bluesclues' and collecting else 20
+            if data['account_cpu_pct']>cap:alerts.append(host+': aggregate account CPU exceeds'+str(cap)+'%')
             if data.get('gpu_snapshot_error'):alerts.append(host+': GPU snapshot incomplete')
             devices=set(data.get('account_gpu_devices',[]))
             if host=='bluesclues' and len(devices)>5:alerts.append(host+': more than5 account GPUs')
@@ -255,7 +288,12 @@ def main():
             has_raw=bool(report['episodes'])
             if has_raw:checked_transfer('biped','bluesclues',raw,directory,batch+'_raw_blue')
             write_remote('bluesclues',WORK+'/'+batch+'.complete.json',report)
-            start_conversion(batch)
+            if has_raw:
+                expected=json.loads((directory/(batch+'_raw_blue.source_inventory.json')).read_text())
+                remove_relocated_copy('biped',raw,expected,{'host':'bluesclues','relative':raw})
+            collector=observed['workflow']
+            cpu_cap=30 if collector['completed_attempts']<200 else 20
+            start_conversion(batch,cpu_cap=cpu_cap)
             converted=None
             conversion_started=time.time()
             while converted is None:
@@ -265,25 +303,11 @@ def main():
                 assert status is not None or time.time()-conversion_started<90,'Converter did not publish workflow;inspect its log'
                 record(conversion_observation=observed)
                 if converted is None:time.sleep(30)
-            # Move all new raw records, including rejected rescues, to durable
-            # scratch storage. Preserve every recording before removing staging.
-            if has_raw:checked_transfer('bluesclues','adroit',raw,directory,batch+'_raw_adroit')
-            delta=WORK+'/converted/'+batch+'/ds'
-            if converted['dataset']:
-                checked_transfer('bluesclues','adroit',delta,directory,batch+'_dataset_adroit')
-            write_remote('adroit',WORK+'/'+batch+'.complete.json',report)
-            target=call('adroit',"import json,pathlib\nprint(json.dumps(str(pathlib.Path.home()/'kevin'/REL)))".replace('REL',repr(delta)))
-            converted=dict(converted,source_dataset=converted['dataset'],dataset=target if converted['dataset'] else None)
-            write_remote('adroit',WORK+'/'+batch+'.converted.json',converted)
-            if has_raw:
-                expected=json.loads((directory/(batch+'_raw_adroit.source_inventory.json')).read_text())
-                destination={'host':'adroit','relative':raw}
-                remove_relocated_copy('biped',raw,expected,destination)
-                remove_relocated_copy('bluesclues',raw,expected,destination)
-            # Keep the small converted Bluesclues deltas until cumulative assembly.
-            # The existing converter environment is already available there.
+            save(directory/(batch+'.converted.json'),converted)
+            requests=directory/'archive_requests';requests.mkdir(exist_ok=True)
+            save(requests/(batch+'.json'),{'batch':batch,'raw':raw,'has_raw':has_raw,'report':report})
             state['completed_batches'].append(batch);record()
-            print(json.dumps({'batch_archived_and_converted':batch,'batches':len(state['completed_batches'])}),flush=True)
+            print(json.dumps({'batch_relayed_and_converted':batch,'raw_archive_queued':True,'batches':len(state['completed_batches'])}),flush=True)
         record(status='assembling')
         record(assembly_launch=start_assembly())
         started=time.time();ready=None
@@ -303,6 +327,15 @@ def main():
         target=call('adroit',"import json,pathlib\nprint(json.dumps(str(pathlib.Path.home()/'kevin'/REL)))".replace('REL',repr(merged)))
         ready=dict(ready,source_dataset=ready['dataset'],dataset=target)
         write_remote('adroit',WORK+'/dataset.ready.json',ready)
+        # Preserve all batch provenance beside the single training dataset.
+        for index in range(20):
+            batch=f'batch_{index:03d}'
+            write_remote('adroit',WORK+'/'+batch+'.complete.json',read_remote('bluesclues',WORK+'/'+batch+'.complete.json'))
+            record_file=WORK+'/'+batch+'.converted.json'
+            if read_remote('adroit',record_file) is None:
+                value=read_remote('bluesclues',record_file)
+                value=dict(value,source_dataset=value['dataset'],dataset_in_cumulative=target)
+                write_remote('adroit',record_file,value)
         record(status='training_and_evaluating',dataset=ready)
         training=submit('finetune_eval',ready);record(training_submission=training)
         while True:

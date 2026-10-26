@@ -91,11 +91,30 @@ print(json.dumps({'ready':True}))
     consumer_cmd = ssh(destination, "tar -C ~/kevin -xf -")
     with (state_dir/(label+".source.stderr")).open("wb") as srcerr, (state_dir/(label+".destination.stderr")).open("wb") as dsterr:
         producer = subprocess.Popen(producer_cmd, stdout=subprocess.PIPE, stderr=srcerr, creationflags=FLAGS)
-        consumer = subprocess.Popen(consumer_cmd, stdin=producer.stdout, stdout=subprocess.DEVNULL,
+        consumer = subprocess.Popen(consumer_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                     stderr=dsterr, creationflags=FLAGS)
-        producer.stdout.close()
-        consumer_code = consumer.wait()
-        producer_code = producer.wait()
+        transferred=0;last_progress=0
+        try:
+            while block := producer.stdout.read(1024*1024):
+                consumer.stdin.write(block);transferred+=len(block)
+                if time.time()-last_progress>=10:
+                    state.update(stream_bytes=transferred,heartbeat=time.time())
+                    save(state_dir/(label+'.transfer.json'),state);last_progress=time.time()
+            consumer.stdin.close();producer.stdout.close()
+            consumer_code=consumer.wait();producer_code=producer.wait()
+        except BaseException:
+            producer.stdout.close()
+            try:consumer.stdin.close()
+            except OSError:pass
+            for process in (producer,consumer):
+                try:process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    process.terminate();process.wait(timeout=15)
+            state.update(failed=time.time(),producer_code=producer.returncode,consumer_code=consumer.returncode,stream_bytes=transferred)
+            save(state_dir/(label+'.transfer.json'),state)
+            raise
+    state.update(producer_code=producer_code,consumer_code=consumer_code,stream_bytes=transferred,heartbeat=time.time())
+    save(state_dir/(label+'.transfer.json'),state)
     assert producer_code == consumer_code == 0, f"Transfer failed: {label}; inspect stderr files"
     after = inventory(destination, relative, inference)
     assert before == after, f"Checksum mismatch after transfer: {label}"
