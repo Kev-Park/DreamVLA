@@ -26,14 +26,12 @@ tag, steps = sys.argv[1], int(sys.argv[2])
 base = Path.home() / 'kevin'
 relative = f'checkpoints/{tag}_r3/checkpoint-{steps}'
 checkpoint = base / relative
-state = json.loads((checkpoint / 'trainer_state.json').read_text())
-assert state['global_step'] == steps
-index = json.loads((checkpoint / 'model.safetensors.index.json').read_text())
-assert all((checkpoint / name).is_file() and (checkpoint / name).stat().st_size > 8
-           for name in set(index['weight_map'].values()))
+sys.path.insert(0, str(base / 'wt/locomotion/DreamVLA/cluster'))
+from walk_checkpoint_integrity import validate_checkpoint
+integrity = validate_checkpoint(checkpoint, steps)
 value = {'completed': time.time(), 'steps': steps, 'checkpoint_relative': relative,
          'training_host': 'adroit', 'evaluation_host': 'biped',
-         'evaluation_requires_rtx': True}
+         'evaluation_requires_rtx': True, 'checkpoint_integrity': integrity}
 target = base / 'dline' / tag / 'finetune.ready.json'
 temporary = target.with_suffix('.json.tmp')
 temporary.write_text(json.dumps(value, indent=2) + '\n')
