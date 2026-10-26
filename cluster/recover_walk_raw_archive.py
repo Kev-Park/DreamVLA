@@ -39,7 +39,7 @@ def main():
         collector = bridge.collector_health()
         cap = 30 if collector['completed_attempts'] < 200 else 20
         assert cpu['cpu_measurement_complete']
-        assert cpu['account_cpu_pct'] + 2 / cpu['logical_cpus'] * 100 <= cap, cpu
+        assert cpu['account_cpu_pct'] + 2 / cpu['logical_cpus'] * 100 <= cap, {'account_cpu_pct':cpu['account_cpu_pct'],'cap':cap}
         update(resource_review={'account_cpu_pct': cpu['account_cpu_pct'], 'cap': cap,
                                 'additional_cpu_upper_bound': 2 / cpu['logical_cpus'] * 100})
         assert inventory('bluesclues', relative) == expected, 'Source changed; retain for review'

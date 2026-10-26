@@ -120,15 +120,17 @@ def main():
     p.add_argument('stage',choices=['convert','assemble','evaluate'])
     p.add_argument('--tag',required=True);p.add_argument('--batch')
     p.add_argument('--checkpoint');p.add_argument('--gpu',type=int,default=0)
+    p.add_argument('--run-name',help='Output name for an unchanged reference-control evaluation')
     a=p.parse_args();work=ROOT/'dline'/a.tag;work.mkdir(parents=True,exist_ok=True)
     key=a.stage+('_'+a.batch if a.batch else '')
+    if a.stage=='evaluate' and a.run_name and a.run_name!=a.tag+'_r3':key+='_'+a.run_name
     lock=(work/(key+'.lock')).open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     state={'status':'running','stage':a.stage,'batch':a.batch,'pid':os.getpid(),'started':time.time()}
     base.atomic(work/(key+'.workflow.json'),state)
     try:
         if a.stage=='convert':assert a.batch;result=convert(a.tag,a.batch)
         elif a.stage=='assemble':result=assemble(a.tag)
-        else:assert a.checkpoint;result=evaluate(a.tag,a.checkpoint,a.gpu)
+        else:assert a.checkpoint;result=evaluate(a.tag,a.checkpoint,a.gpu,run_name=a.run_name)
         state.update(status='complete',completed=time.time(),result=result)
         base.atomic(work/(key+'.workflow.json'),state);print(json.dumps(state),flush=True)
     except BaseException as exc:

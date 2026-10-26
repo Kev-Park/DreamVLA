@@ -9,6 +9,13 @@
 #SBATCH --constraint=gpu80
 #SBATCH --time=08:00:00
 set -eo pipefail
+# Fail before starting Kit on known compute-only devices. CUDA/Vulkan device
+# enumeration alone is insufficient to establish RTX rendering support.
+GPU_NAMES=$(nvidia-smi --query-gpu=name --format=csv,noheader)
+if [[ "$GPU_NAMES" == *A100* || "$GPU_NAMES" == *H100* ]]; then
+  echo "Camera evaluation requires an RTX-capable GPU; use the Berkeley evaluation route." >&2
+  exit 2
+fi
 TAG=${1:?control label required}
 CHECKPOINT=${2:?checkpoint required}
 export XLA_PYTHON_CLIENT_PREALLOCATE=false

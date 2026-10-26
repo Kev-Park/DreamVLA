@@ -87,19 +87,19 @@ print(json.dumps({'written':str(p)}))
 """.replace('REL',repr(relative)).replace('VALUE',repr(value)))
 
 
-def checked_transfer(source,destination,relative,directory,label):
+def checked_transfer(source,destination,relative,directory,label,inference=False):
     marker=directory/(label+'.transfer.json')
     if marker.exists():
         receipt=json.loads(marker.read_text())
         assert receipt.get('verified'),'Interrupted transfer needs explicit reconciliation: '+label
         expected=json.loads((directory/(label+'.source_inventory.json')).read_text())
-        assert inventory(destination,relative)==expected
+        assert inventory(destination,relative,inference)==expected
         return
-    if destination=='bluesclues':
-        size=call(source,"import pathlib,json\np=pathlib.Path.home()/'kevin'/REL\nprint(json.dumps(sum(f.stat().st_size for f in p.rglob('*') if f.is_file())))".replace('REL',repr(relative)))
+    if destination in ('bluesclues','biped'):
+        size=call(source,"import pathlib,json\np=pathlib.Path.home()/'kevin'/REL\nskip={'optimizer.pt','scheduler.pt','rng_state.pth','training_args.bin'} if INFERENCE else set()\nprint(json.dumps(sum(f.stat().st_size for f in p.rglob('*') if f.is_file() and f.name not in skip)))".replace('REL',repr(relative)).replace('INFERENCE',repr(inference)))
         free=call(destination,"import pathlib,shutil,json\nprint(json.dumps(shutil.disk_usage(pathlib.Path.home()/'kevin').free))")
         assert free>=2*size+8_000_000_000,'Insufficient reviewed conversion staging space;source retained'
-    try:transfer(source,destination,relative,directory,label)
+    try:transfer(source,destination,relative,directory,label,inference=inference)
     except BaseException:
         if marker.exists():
             failed=json.loads(marker.read_text())
@@ -211,8 +211,8 @@ receipt=work/(p['stage']+'.submission.json');logs=b/'eval_videos'/TAG;logs.mkdir
 if receipt.exists():print(receipt.read_text())
 else:
  repo=b/'wt/locomotion/DreamVLA';cmd=['sbatch','--parsable','--job-name='+TAG+'_'+p['stage'],'--output='+str(logs/(p['stage']+'-%j.log'))]
- assert p['stage']=='finetune_eval'
- cmd += [str(repo/'cluster/adroit/walk_late_takeover_finetune_eval.sbatch'),TAG,p['ready']['dataset'],str(p['ready']['steps'])]
+ assert p['stage']=='finetune'
+ cmd += [str(repo/'cluster/adroit/walk_late_takeover_finetune.sbatch'),TAG,p['ready']['dataset'],str(p['ready']['steps'])]
  job=subprocess.check_output(cmd,text=True).strip().split(';')[0];assert job.isdigit()
  value={'job_id':job,'stage':p['stage'],'command':cmd};receipt.write_text(json.dumps(value,indent=2)+'\n');print(json.dumps(value))
 '''.replace('WORK',repr(WORK)).replace('PAYLOAD',repr(payload)).replace('TAG',repr(TAG)))
@@ -230,6 +230,54 @@ else:
  else:
   assert len(rows)==1,rows;state,exitcode=rows[0].split('|')[:2];print(json.dumps({'state':state,'exitcode':exitcode}))
 '''.replace('JOB',repr(str(job))))
+
+
+def start_biped_evaluation(checkpoint_relative,run_name=None):
+    """Launch this experiment's control/final evaluation after collection releases GPU0."""
+    run_name=run_name or TAG+'_r3'
+    return call('biped',r'''
+import json,os,pathlib,shlex,subprocess,sys,time,xml.etree.ElementTree as ET
+b=pathlib.Path.home()/'kevin';work=b/WORK;run=RUN_NAME;ready=work/(run+'.eval.json')
+key='evaluate' if run==TAG+'_r3' else 'evaluate_'+run
+workflow=work/(key+'.workflow.json');checkpoint=b/CHECKPOINT
+collector=json.loads((work/'workflow.json').read_text())
+assert collector['status']=='collection_complete' and collector['completed_attempts']==200
+if ready.exists():print(json.dumps({'already_complete':True}))
+elif workflow.exists():
+ d=json.loads(workflow.read_text());assert d['status']=='running' and pathlib.Path('/proc',str(d['pid'])).exists(),d
+ print(json.dumps({'already_running':True,'pid':d['pid']}))
+else:
+ sys.path.insert(0,str(b/'wt/locomotion/DreamVLA/cluster'))
+ from account_cpu_usage import sample_account_cpu
+ cpu=sample_account_cpu(2);assert cpu['cpu_measurement_complete'],cpu
+ mask=json.loads((b/'dline/cpu_share.json').read_text())['shared_mask'][:4]
+ assert len(mask)==4
+ if cpu['account_cpu_pct']+len(mask)/os.cpu_count()*100>20:
+  print(json.dumps({'waiting_for_cpu_headroom':True,'account_cpu':cpu}));sys.exit(0)
+ tree=ET.fromstring(subprocess.check_output(['nvidia-smi','-q','-x'],text=True))
+ assert 'RTX' in tree.findall('gpu')[0].findtext('product_name'),'RTX rendering capability not verified'
+ occupied=[]
+ for device,gpu in enumerate(tree.findall('gpu')):
+  for process in gpu.findall('processes/process_info'):
+   proc=pathlib.Path('/proc',process.findtext('pid'))
+   if proc.exists() and proc.stat().st_uid==os.getuid():occupied.append({'gpu':device,'pid':proc.name})
+ if occupied:
+  print(json.dumps({'waiting_for_gpu_headroom':True,'account_contexts':occupied}));sys.exit(0)
+ name='walk_late1s_eval_kevin'
+ assert subprocess.run(['tmux','has-session','-t',name],capture_output=True).returncode!=0
+ assert (checkpoint/'model.safetensors.index.json').is_file()
+ review={'at':time.time(),'account_cpu':cpu,'cpu_affinity':mask,'compute_gpu':0,
+  'gpu1_graphics_exception':'Existing2026-10-24 approval,at most6MiB,only this experiment',
+  'checkpoint':str(checkpoint),'episodes':100,'decoder':'previous full FSQ','run':run}
+ (work/(key+'.resource_review.json')).write_text(json.dumps(review,indent=2)+'\n')
+ args=[str(b/'wt/locomotion/.venv/bin/python'),'-u',str(b/'wt/locomotion/DreamVLA/cluster/walk_late_takeover_process.py'),
+  'evaluate','--tag',TAG,'--checkpoint',str(checkpoint),'--gpu','0','--run-name',run]
+ shell='export XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1\n'
+ shell+='exec taskset -c '+','.join(map(str,mask))+' '+shlex.join(args)+' > '+shlex.quote(str(work/(key+'.controller.log')))+' 2>&1'
+ os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
+ subprocess.run(['tmux','new-session','-d','-s',name,'bash','-lc',shell],check=True)
+ print(json.dumps({'launched':name,'review':review}))
+'''.replace('WORK',repr(WORK)).replace('TAG',repr(TAG)).replace('CHECKPOINT',repr(checkpoint_relative)).replace('RUN_NAME',repr(run_name)))
 
 
 def resources(host):
@@ -380,16 +428,42 @@ def main():
                 value=read_remote('bluesclues',record_file)
                 value=dict(value,source_dataset=value['dataset'],dataset_in_cumulative=target)
                 write_remote('adroit',record_file,value)
-        record(status='training_and_evaluating',dataset=ready)
-        training=submit('finetune_eval',ready);record(training_submission=training)
+        record(status='training',dataset=ready)
+        training=submit('finetune',ready);record(training_submission=training)
         while True:
             observe_resources()
             observed=job_state(training['job_id']);record(training_state=observed)
             if observed['state']=='COMPLETED':assert observed['exitcode']=='0:0';break
             assert not any(observed['state'].startswith(x) for x in ('FAILED','CANCELLED','TIMEOUT','OUT_OF_MEMORY','NODE_FAIL','PREEMPTED')),observed
             time.sleep(30)
-        results=read_remote('adroit','eval_videos/'+TAG+'_r3/results.json')
+        trained=read_remote('adroit',WORK+'/finetune.ready.json')
+        assert trained['steps']==ready['steps'],trained
+        checkpoint=trained['checkpoint_relative']
+        record(status='staging_final_checkpoint',trained=trained)
+        while True:
+            current=resources('biped');assert current['cpu_measurement_complete'],current
+            if current['account_cpu_pct']+2/current['logical_cpus']*100<=20:break
+            record(status='waiting_for_cpu_headroom',cpu_stage='final_checkpoint_copy');observe_resources();time.sleep(30)
+        checked_transfer('adroit','biped',checkpoint,directory,'final_checkpoint_biped',inference=True)
+        record(status='starting_evaluation')
+        while True:
+            launch=start_biped_evaluation(checkpoint);record(evaluation_launch=launch)
+            if not any(launch.get(k) for k in ('waiting_for_cpu_headroom','waiting_for_gpu_headroom')):break
+            record(status='waiting_for_evaluation_resources');observe_resources();time.sleep(30)
+        record(status='evaluating',evaluation_host='biped');started=time.time()
+        while True:
+            observe_resources()
+            results=read_remote('biped',WORK+'/'+TAG+'_r3.eval.json')
+            status=read_remote('biped',WORK+'/evaluate.workflow.json');record(evaluation_state=status)
+            assert status is not None or time.time()-started<90,'Evaluator did not publish workflow;inspect its log'
+            assert not status or status['status']!='failed',status
+            if results is not None:break
+            if status and status['status']=='running':
+                live=call('biped',"import json,pathlib\nprint(json.dumps(pathlib.Path('/proc',str(PID)).exists()))".replace('PID',repr(status['pid'])))
+                assert live,('Evaluation controller disappeared',status)
+            time.sleep(30)
         assert results and results['episodes']==100
+        assert sorted(row['motion_id'] for row in results['per_episode'])==list(range(100))
         save(directory/'results.json',results);record(status='complete',completed_at=time.time(),results=results)
     except BaseException as exc:
         record(status='stopped_for_review',error=repr(exc));raise
