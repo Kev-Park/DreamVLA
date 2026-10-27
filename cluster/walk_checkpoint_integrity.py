@@ -21,6 +21,16 @@ def validate_checkpoint(checkpoint, expected_step):
     checkpoint = Path(checkpoint)
     state = json.loads((checkpoint / 'trainer_state.json').read_text())
     assert state['global_step'] == expected_step, 'Incorrect checkpoint update count'
+    # The official loader needs both the model configuration and the processor's
+    # normalization/embodiment files. A complete tensor save alone cannot be
+    # published as an inference-ready checkpoint if its on_save callback failed.
+    processor = checkpoint if (checkpoint / 'processor_config.json').exists() else checkpoint / 'processor'
+    configurations = {}
+    for path in (checkpoint / 'config.json', *(processor / name for name in (
+            'processor_config.json', 'statistics.json', 'embodiment_id.json'))):
+        value = json.loads(path.read_text())
+        assert isinstance(value, dict) and value, f'Empty or invalid checkpoint configuration: {path}'
+        configurations[path.relative_to(checkpoint).as_posix()] = {'bytes': path.stat().st_size}
     index = json.loads((checkpoint / 'model.safetensors.index.json').read_text())
     mapping = index['weight_map']
     assert mapping, 'Empty tensor index'
@@ -64,6 +74,6 @@ def validate_checkpoint(checkpoint, expected_step):
                        for item in entries), f'Truncated training archive: {name}'
         archives[name] = dict(info, entries=len(entries))
     return {'global_step': expected_step, 'shards': shards, 'tensor_payload_bytes': total,
-            'training_archives': archives,
-            'validation': 'Trainer step, tensor index/header/offsets/length, file allocation and training ZIP directories',
+            'training_archives': archives, 'configurations': configurations,
+            'validation': 'Trainer step, model/processor JSONs, tensor index/header/offsets/length, file allocation and training ZIP directories',
             'limits': 'No tensor materialization, payload CRC/hash checks, numerical checks or execution test'}

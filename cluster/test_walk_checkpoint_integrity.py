@@ -20,6 +20,8 @@ class CheckpointIntegrityTests(unittest.TestCase):
         (self.root / 'model.safetensors.index.json').write_text(json.dumps({
             'weight_map': {'weight': 'model.safetensors'}, 'metadata': {'total_size': 8}}))
         (self.root / 'trainer_state.json').write_text('{"global_step": 5000}')
+        for name in ('config.json', 'processor_config.json', 'statistics.json', 'embodiment_id.json'):
+            (self.root / name).write_text('{"fixture": true}')
         for name in ('optimizer.pt', 'scheduler.pt', 'rng_state.pth'):
             with zipfile.ZipFile(self.root / name, 'w') as archive:
                 archive.writestr('archive/data.pkl', b'bounded fixture')
@@ -28,6 +30,25 @@ class CheckpointIntegrityTests(unittest.TestCase):
         value = validate_checkpoint(self.root, 5000)
         self.assertEqual(value['tensor_payload_bytes'], 8)
         self.assertEqual(len(value['training_archives']), 3)
+        self.assertEqual(len(value['configurations']), 4)
+
+    def test_missing_processor_normalization_cannot_publish_ready(self):
+        (self.root / 'statistics.json').unlink()
+        with self.assertRaises(FileNotFoundError):
+            validate_checkpoint(self.root, 5000)
+
+    def test_incomplete_processor_callback_cannot_publish_ready(self):
+        (self.root / 'processor_config.json').write_text('{')
+        with self.assertRaises(json.JSONDecodeError):
+            validate_checkpoint(self.root, 5000)
+
+    def test_official_processor_subdirectory_fallback_is_supported(self):
+        processor = self.root / 'processor'
+        processor.mkdir()
+        for name in ('processor_config.json', 'statistics.json', 'embodiment_id.json'):
+            (self.root / name).rename(processor / name)
+        value = validate_checkpoint(self.root, 5000)
+        self.assertIn('processor/statistics.json', value['configurations'])
 
     def test_zero_filled_shard_with_expected_size_fails(self):
         path = self.root / 'model.safetensors'
