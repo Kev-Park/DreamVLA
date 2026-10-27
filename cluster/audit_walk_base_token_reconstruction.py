@@ -195,8 +195,16 @@ def main():
         ids = torch.tensor([by_source[r['source_name']] for r in rows])
         times = (obj.unwrapped.episode_length_buf * .02).unsqueeze(1) + obj._future_offsets
         windows = library.get_motion_state(ids.repeat_interleave(10), times.flatten())
-        pos_error = (windows['dof_pos'].reshape_as(pos) - pos).abs().max()
-        quat_error = (windows['root_rot'].reshape_as(quat) - quat).abs().max()
+        # The recording samples (frame+5*k)*dt, while the encoder uses
+        # frame*dt+k*.1. Compare geometry at the recording's exact float clock;
+        # retain the native encoder clock for the base/label parity checks.
+        row_times = (obj.unwrapped.episode_length_buf.unsqueeze(1) + torch.arange(10) * 5) * .02
+        recorded_windows = library.get_motion_state(ids.repeat_interleave(10), row_times.flatten())
+        pos_error = (recorded_windows['dof_pos'].reshape_as(pos) - pos).abs().max()
+        quat_error = (recorded_windows['root_rot'].reshape_as(quat) - quat).abs().max()
+        shifted = library.get_motion_state(ids.repeat_interleave(10), row_times.flatten() + .05)
+        shifted_error = (shifted['dof_pos'].reshape_as(pos) - pos).abs().max()
+        assert shifted_error > 1e-3, 'Reference-clock negative control lacks excitation'
         obj.unwrapped.motion_ids = ids; obj.unwrapped.motion_lib = library
         with torch.inference_mode():
             obj._update_base_token()
@@ -206,6 +214,10 @@ def main():
         passed = bool(pos_error < 1e-5 and quat_error < 1e-5 and base_exact.all() and label_exact.all())
         result['reference_pickle_validation'] = {**proof, 'passed': passed,
             'reference_joint_max_abs_error': float(pos_error), 'reference_quat_max_abs_error': float(quat_error),
+            'geometry_validation_clock': '(recorded frame+5*k)*step_dt; unchanged1e-5absolute tolerance',
+            'native_encoder_clock_reference_quat_vs_recorded_rows_max_abs_error': float((windows['root_rot'].reshape_as(quat) - quat).abs().max()),
+            'max_encoder_vs_recorded_row_time_difference_seconds': float((times-row_times).abs().max()),
+            'shifted_one_reference_frame_control_joint_max_abs_error': float(shifted_error),
             'complete_base_tokens_equal_recorded_window_reconstruction': int(base_exact.sum()),
             'complete_final_tokens_equal_recorded_expert_labels': int(label_exact.sum()),
             'max_base_token_abs_error': float((obj._base_token - previous_base).abs().max()),
