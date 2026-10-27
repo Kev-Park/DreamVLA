@@ -1,5 +1,6 @@
 """Three exact-recipe updates for memory capacity only; never publish weights."""
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import runpy
@@ -104,6 +105,9 @@ def main():
         result['checkpoint_files_written']=[str(p.relative_to(work)) for pattern in
             ('*.safetensors','optimizer.pt','pytorch_model*.bin') for p in work.rglob(pattern)]
         temporary=result_path.with_suffix('.tmp');temporary.write_text(json.dumps(result,indent=2)+'\n');temporary.replace(result_path)
+        for child in multiprocessing.active_children():
+            child.terminate();child.join(timeout=5)
+            if child.is_alive():child.kill();child.join(timeout=5)
         subprocess.run(['python3',str(slot),'release','--owner',str(os.getpid()),'--gpu','0'],check=True)
         print(json.dumps(result),flush=True)
     assert not result['checkpoint_files_written']
