@@ -341,6 +341,19 @@ else:
    if proc.exists() and proc.stat().st_uid==os.getuid():occupied.append({'gpu':device,'pid':proc.name})
  if occupied:
   print(json.dumps({'waiting_for_gpu_headroom':True,'account_contexts':occupied}));sys.exit(0)
+ # The reservation inside Evaluation.slots needs17GB plus its existing2GB
+ # safety margin. Check all-user device memory before starting a controller;
+ # another account can occupy GPU0 while our account has no GPU contexts.
+ device=tree.findall('gpu')[0]
+ free_mib=int(device.findtext('fb_memory_usage/free').split()[0])
+ reservation_file=b/'dline/gpu_slots.json'
+ reservations=json.loads(reservation_file.read_text()) if reservation_file.exists() else []
+ pending_mib=sum(row['mb'] for row in reservations
+                 if row['gpu']==0 and pathlib.Path('/proc',str(row['owner'])).exists())
+ if free_mib-pending_mib<17000+2000:
+  print(json.dumps({'waiting_for_gpu_headroom':True,'compute_gpu':0,
+                   'free_mib':free_mib,'pending_reservations_mib':pending_mib,
+                   'required_eval_mib':17000,'safety_margin_mib':2000}));sys.exit(0)
  name='walk_late1s_eval_kevin'
  if subprocess.run(['tmux','has-session','-t',name],capture_output=True).returncode==0:
   print(json.dumps({'waiting_for_gpu_headroom':True,'active_experiment_session':name}));sys.exit(0)
