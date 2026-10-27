@@ -41,10 +41,13 @@ def export(plan_relative, bundle_relative):
     attempted = plan['attempted_motion_ids']
     skipped = [r['motion_id'] for r in plan['unrecorded_attempts']]
     observed = [r['motion_id'] for r in records]
+    all_observed = plan.get('all_recorded_motion_ids', observed)
     assert sorted(attempted) == list(range(200))
     assert len(observed) == len(set(observed))
-    assert not set(observed).intersection(skipped)
-    assert sorted(observed + skipped) == attempted
+    assert len(all_observed) == len(set(all_observed))
+    assert set(observed).issubset(all_observed)
+    assert not set(all_observed).intersection(skipped)
+    assert sorted(all_observed + skipped) == attempted
     bundle = owned(bundle_relative)
     assert not bundle.exists(), 'Inspect an existing export before restarting'
     bundle.mkdir(parents=True)
@@ -89,6 +92,9 @@ def export(plan_relative, bundle_relative):
                 'bytes': offset, 'sha256': digest.hexdigest(), 'rows': rows,
                 'source_plan_sha256': hashlib.sha256(plan_bytes).hexdigest(),
                 'attempted_motion_ids': attempted,
+                'all_recorded_motion_ids': all_observed,
+                'complete_collection_export': len(observed) == len(all_observed),
+                'source_host': plan.get('source_host'),
                 'unrecorded_attempts': plan['unrecorded_attempts'],
                 'compression': False, 'images_decoded': False,
                 'policy_queries_executed': False, 'analysis_executed': False,
@@ -130,6 +136,7 @@ def analyze(bundle_relative):
     manifest_path = bundle / 'manifest.json'
     manifest = json.loads(manifest_path.read_text())
     assert manifest['format'] == 'uncompressed_f32_object_trace_v1'
+    assert manifest['complete_collection_export'], 'Join verified host exports before full-cohort analysis'
     payload = (bundle / 'object_traces.f32').read_bytes()
     assert len(payload) == manifest['bytes']
     assert hashlib.sha256(payload).hexdigest() == manifest['sha256']
@@ -141,7 +148,8 @@ def analyze(bundle_relative):
         n = episode['frames']
         values = np.frombuffer(payload, dtype='<f4', count=n * 7, offset=offset).reshape(n, 7)
         offset += row['trace_bytes']
-        bad_height = values[:, 2] < FALLEN_FRAC * TABLE_TOP_Z
+        # score() promotes object positions to Python float before rule1.
+        bad_height = np.asarray(values[:, 2], dtype=float) < FALLEN_FRAC * TABLE_TOP_Z
         bad_horizontal = np.abs(object_tilt_deg(values[:, 3:]) - HORIZ_DEG) <= HORIZ_TOL
 
         def first(values):
