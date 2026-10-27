@@ -19,6 +19,11 @@ def incomplete(count=None):
                                   {} if count is None else {'Range': f'bytes=0-{count-1}'}, None)
 
 
+def quota_error():
+    return urllib.error.HTTPError(URI,403,'Forbidden',{},io.BytesIO(json.dumps(
+        {'error':{'errors':[{'reason':'rateLimitExceeded'}]}}).encode()))
+
+
 class UploadTests(unittest.TestCase):
     def run_upload(self, events, **options):
         requests = []
@@ -75,6 +80,30 @@ class UploadTests(unittest.TestCase):
     def test_non_retryable_http_failure_is_sanitized(self):
         with self.assertRaisesRegex(RuntimeError, '^Upload HTTP 403; source retained$'):
             self.run_upload([urllib.error.HTTPError(URI, 403, 'Forbidden', {}, None)])
+
+    def test_quota_before_upload_waits_then_queries_same_session(self):
+        notices=[]
+        _,requests=self.run_upload([quota_error(),incomplete(512),self.result()],
+            quota_wait=lambda *args:notices.append(args))
+        self.assertEqual(requests[0].data,b'')
+        self.assertEqual(requests[1].data,b'')
+        self.assertEqual(requests[2].data,DATA[512:])
+        self.assertGreaterEqual(notices[0][2],60)
+
+    def test_quota_during_content_queries_before_any_resend(self):
+        _,requests=self.run_upload([incomplete(),quota_error(),incomplete(1024),self.result()])
+        self.assertEqual(requests[2].data,b'')
+        self.assertEqual(requests[3].data,DATA[1024:])
+
+    def test_quota_wait_is_bounded(self):
+        with self.assertRaisesRegex(RuntimeError,'quota unavailable repeatedly'):
+            self.run_upload([quota_error(),quota_error(),quota_error()],quota_retries=2)
+
+    def test_other_forbidden_reason_is_not_retried(self):
+        error=urllib.error.HTTPError(URI,403,'Forbidden',{},io.BytesIO(json.dumps(
+            {'error':{'errors':[{'reason':'insufficientPermissions'}]}}).encode()))
+        with self.assertRaisesRegex(RuntimeError,'Upload HTTP 403; source retained'):
+            self.run_upload([error])
 
     def test_repeated_unknown_outcomes_are_bounded(self):
         events = [incomplete()]

@@ -48,13 +48,15 @@ def validate_session(uri):
 
 
 def transfer(stream, uri, total, digest, progress, opener=urllib.request.urlopen,
-             sleep=time.sleep, chunk=CHUNK, retries=4, expected_sha256=None):
+             sleep=time.sleep, chunk=CHUNK, retries=4, expected_sha256=None,
+             quota_retries=8, quota_wait=None):
     validate_session(uri)
     if total <= 0 or chunk <= 0 or chunk % (256 * 1024):
         raise ValueError('Invalid source or chunk size')
     offset = 0
     query = True
     failures = 0
+    quota_failures = 0
     while True:
         if query:
             data = b''
@@ -79,6 +81,19 @@ def transfer(stream, uri, total, digest, progress, opener=urllib.request.urlopen
             progress(total)
             return result
         except urllib.error.HTTPError as error:
+            if error.code == 403:
+                try:
+                    reasons={item.get('reason') for item in json.load(error).get('error',{}).get('errors',[])}
+                except (ValueError,AttributeError):reasons=set()
+                if reasons & {'rateLimitExceeded','userRateLimitExceeded'}:
+                    if quota_failures >= quota_retries:
+                        raise RuntimeError('Upload quota unavailable repeatedly; source retained') from None
+                    delay=min(64,60+2**quota_failures)
+                    quota_failures+=1
+                    if quota_wait is not None:quota_wait(offset,quota_failures,delay)
+                    sleep(delay)
+                    query=True # Reconcile accepted bytes before any further content.
+                    continue
             if error.code == 308:
                 confirmed = acknowledged(error.headers, total)
                 if confirmed < offset:
@@ -87,6 +102,7 @@ def transfer(stream, uri, total, digest, progress, opener=urllib.request.urlopen
                     raise ValueError('Upload made no acknowledged progress') from None
                 if confirmed > offset:
                     failures = 0
+                    quota_failures = 0
                 elif offset == total:
                     if failures >= retries:
                         raise RuntimeError('Final upload metadata unavailable; source retained') from None
@@ -157,10 +173,15 @@ def main():
         def progress(offset):
             atomic(args.output / 'progress.json', dict(pid=os.getpid(), time=time.time(),
                    started=started, acknowledged_bytes=offset, total_bytes=row['bytes']))
+        def quota_wait(offset,attempt,delay):
+            atomic(args.output / 'progress.json',dict(pid=os.getpid(),time=time.time(),started=started,
+                acknowledged_bytes=offset,total_bytes=row['bytes'],phase='drive_rate_limit_wait',
+                quota_retry=attempt,next_query_at=time.time()+delay))
         progress(0)
         with path.open('rb') as stream:
             response = transfer(stream, request['uri'], row['bytes'], request['md5'], progress,
-                                expected_sha256=sha.hexdigest() if request.get('require_provider_sha256') else None)
+                                expected_sha256=sha.hexdigest() if request.get('require_provider_sha256') else None,
+                                quota_wait=quota_wait)
         source_path(root, row)
         receipt = dict(success=True, pid=os.getpid(), started=started, completed=time.time(),
                        file_id=response['id'], bytes=int(response['size']), md5=response['md5Checksum'],
