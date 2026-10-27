@@ -51,7 +51,7 @@ def export(plan_relative, bundle_relative):
     bundle = owned(bundle_relative)
     assert not bundle.exists(), 'Inspect an existing export before restarting'
     bundle.mkdir(parents=True)
-    output = bundle / 'object_traces.f32'
+    output = bundle / 'object_traces.f64'
     digest = hashlib.sha256()
     rows = []
     offset = 0
@@ -73,21 +73,32 @@ def export(plan_relative, bundle_relative):
                 orientation = obs['object_quat'][()]
                 n = record['frames']
                 assert position.shape == (n, 3) and orientation.shape == (n, 4)
-                assert position.dtype == np.float32 and orientation.dtype == np.float32
+                assert all(a.dtype.kind == 'f' and a.dtype.itemsize in (4, 8)
+                           for a in (position, orientation)), (position.dtype, orientation.dtype)
                 values = np.concatenate([position, orientation], axis=1)
-                payload = values.astype('<f4', copy=False).tobytes(order='C')
-                assert len(payload) == n * 7 * 4
+                packed = values.astype('<f8', copy=False)
+                position_sha = hashlib.sha256(position.tobytes(order='C')).hexdigest()
+                orientation_sha = hashlib.sha256(orientation.tobytes(order='C')).hexdigest()
+                assert hashlib.sha256(packed[:, :3].astype(position.dtype).tobytes()).hexdigest() == position_sha
+                assert hashlib.sha256(packed[:, 3:].astype(orientation.dtype).tobytes()).hexdigest() == orientation_sha
+                payload = packed.tobytes(order='C')
+                assert len(payload) == n * 7 * 8
                 stream.write(payload)
                 digest.update(payload)
             assert stamp(source) == before, 'Source changed during numeric export'
             rows.append({'record': record, 'offset_bytes': offset,
                          'trace_bytes': len(payload), 'source_stat': before,
-                         'metadata_sha256': hashlib.sha256(raw_metadata.encode()).hexdigest(),
+                         'position_dtype': position.dtype.str,
+                         'orientation_dtype': orientation.dtype.str,
+                         'position_array_sha256': position_sha,
+                         'orientation_array_sha256': orientation_sha,
+                         'metadata_sha256': hashlib.sha256(
+                             raw_metadata.encode() if isinstance(raw_metadata, str) else bytes(raw_metadata)).hexdigest(),
                          'recorded_phys_held': metadata.get('phys_held')})
             offset += len(payload)
     assert output.stat().st_size == offset
-    manifest = {'format': 'uncompressed_f32_object_trace_v1', 'at': time.time(),
-                'dtype': '<f4', 'columns': ['object_x', 'object_y', 'object_z',
+    manifest = {'format': 'uncompressed_f64_object_trace_v2', 'at': time.time(),
+                'dtype': '<f8', 'columns': ['object_x', 'object_y', 'object_z',
                                           'quat_0', 'quat_1', 'quat_2', 'quat_3'],
                 'bytes': offset, 'sha256': digest.hexdigest(), 'rows': rows,
                 'source_plan_sha256': hashlib.sha256(plan_bytes).hexdigest(),
@@ -135,9 +146,9 @@ def analyze(bundle_relative):
     bundle = owned(bundle_relative)
     manifest_path = bundle / 'manifest.json'
     manifest = json.loads(manifest_path.read_text())
-    assert manifest['format'] == 'uncompressed_f32_object_trace_v1'
+    assert manifest['format'] == 'uncompressed_f64_object_trace_v2'
     assert manifest['complete_collection_export'], 'Join verified host exports before full-cohort analysis'
-    payload = (bundle / 'object_traces.f32').read_bytes()
+    payload = (bundle / 'object_traces.f64').read_bytes()
     assert len(payload) == manifest['bytes']
     assert hashlib.sha256(payload).hexdigest() == manifest['sha256']
     records = []
@@ -146,11 +157,15 @@ def analyze(bundle_relative):
         episode = row['record']
         assert row['offset_bytes'] == offset
         n = episode['frames']
-        values = np.frombuffer(payload, dtype='<f4', count=n * 7, offset=offset).reshape(n, 7)
+        values = np.frombuffer(payload, dtype='<f8', count=n * 7, offset=offset).reshape(n, 7)
+        position = values[:, :3].astype(row['position_dtype'])
+        orientation = values[:, 3:].astype(row['orientation_dtype'])
+        assert hashlib.sha256(position.tobytes()).hexdigest() == row['position_array_sha256']
+        assert hashlib.sha256(orientation.tobytes()).hexdigest() == row['orientation_array_sha256']
         offset += row['trace_bytes']
         # score() promotes object positions to Python float before rule1.
-        bad_height = np.asarray(values[:, 2], dtype=float) < FALLEN_FRAC * TABLE_TOP_Z
-        bad_horizontal = np.abs(object_tilt_deg(values[:, 3:]) - HORIZ_DEG) <= HORIZ_TOL
+        bad_height = np.asarray(position[:, 2], dtype=float) < FALLEN_FRAC * TABLE_TOP_Z
+        bad_horizontal = np.abs(object_tilt_deg(orientation) - HORIZ_DEG) <= HORIZ_TOL
 
         def first(values):
             indices = np.flatnonzero(values)
