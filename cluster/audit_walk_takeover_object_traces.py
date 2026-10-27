@@ -38,8 +38,13 @@ def export(plan_relative, bundle_relative):
     plan_bytes = plan_path.read_bytes()
     plan = json.loads(plan_bytes)
     records = plan['episodes']
-    assert len(records) == 200
-    assert sorted(r['motion_id'] for r in records) == list(range(200))
+    attempted = plan['attempted_motion_ids']
+    skipped = [r['motion_id'] for r in plan['unrecorded_attempts']]
+    observed = [r['motion_id'] for r in records]
+    assert sorted(attempted) == list(range(200))
+    assert len(observed) == len(set(observed))
+    assert not set(observed).intersection(skipped)
+    assert sorted(observed + skipped) == attempted
     bundle = owned(bundle_relative)
     assert not bundle.exists(), 'Inspect an existing export before restarting'
     bundle.mkdir(parents=True)
@@ -83,6 +88,8 @@ def export(plan_relative, bundle_relative):
                                           'quat_0', 'quat_1', 'quat_2', 'quat_3'],
                 'bytes': offset, 'sha256': digest.hexdigest(), 'rows': rows,
                 'source_plan_sha256': hashlib.sha256(plan_bytes).hexdigest(),
+                'attempted_motion_ids': attempted,
+                'unrecorded_attempts': plan['unrecorded_attempts'],
                 'compression': False, 'images_decoded': False,
                 'policy_queries_executed': False, 'analysis_executed': False,
                 'cpu_affinity': sorted(os.sched_getaffinity(0))}
@@ -161,9 +168,13 @@ def analyze(bundle_relative):
                             k is not None and first_bad is not None and first_bad > k,
                         'recorded_phys_held': row['recorded_phys_held'],
                         'expert_controlled_frames': n - episode['student_frames']})
-    assert len(records) == 200 and offset == len(payload)
+    assert len(records) == len(manifest['rows']) and offset == len(payload)
+    skipped = manifest['unrecorded_attempts']
+    assert sorted([r['motion_id'] for r in records] +
+                  [r['motion_id'] for r in skipped]) == list(range(200))
     report = {'at': time.time(), 'provisional': False, 'attempted_references': 200,
               'summary': summarize(records), 'per_episode': records,
+              'unrecorded_attempts': skipped,
               'first50_summary': summarize([r for r in records if r['motion_id'] < 50]),
               'filter_thresholds': {'minimum_object_height': FALLEN_FRAC * TABLE_TOP_Z,
                                     'horizontal_degrees': HORIZ_DEG,
@@ -178,6 +189,8 @@ def analyze(bundle_relative):
                          'it does not establish that an expert could have repaired the state.',
                          'Recorded phys_held is an existing separate episode-level proxy; '
                          'it does not establish successful post-takeover recovery.',
+                         'Attempt141 terminated before a reference grasp was observed and '
+                         'has no saved rescue recording; its event chronology is unavailable.',
                          'No held-out performance result or timing-only causal conclusion.']}
     target = bundle / 'filter_chronology_full200.json'
     assert not target.exists(), 'Inspect an existing analysis before restarting'
