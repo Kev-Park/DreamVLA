@@ -33,6 +33,27 @@ def configure(directory):
     STATE_DIRECTORY=Path(directory)
     wire.call=call
 
+def observe_training_resources(observe, directory):
+    """Keep Adroit job observations alive if a Berkeley connection is held.
+
+    Only read-only telemetry is optional here. Launches and transfers retain
+    their existing host/resource checks, and held hosts receive no SSH retries.
+    """
+    try:
+        observe()
+    except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        directory = Path(directory)
+        held = [host for host in ('biped', 'bluesclues')
+                if (directory / (host + '.connection_hold.json')).exists()]
+        if not held or (directory / 'adroit.connection_hold.json').exists():
+            raise
+        save(directory / 'resource_attention.json', {
+            'at': time.time(),
+            'alerts': ['Berkeley resource observation unavailable: ' + repr(exc)],
+            'held_hosts': held,
+            'action': 'Ask operator to restore held connection; no host retries. Continue observing the existing Adroit job. No Berkeley launches or transfers.'})
+
+
 TAG='walk200_v3_late1s_20261024'
 WORK='dline/'+TAG
 
@@ -369,6 +390,7 @@ def main():
     state.update(pid=os.getpid(),status='relaying_collection',heartbeat=time.time())
     state.pop('error',None)
     state['raw_archival']='Independent archive worker;never on the training dependency path'
+    save(state_file,state)
     def record(**kwargs):
         state.update(heartbeat=time.time(),**kwargs);save(state_file,state)
     last_resource_review=0
@@ -498,7 +520,7 @@ def main():
             record(status='training',dataset=ready)
             training=submit('finetune',ready);record(training_submission=training)
         while True:
-            observe_resources()
+            observe_training_resources(observe_resources, directory)
             observed=job_state(training['job_id'])
             if observed['state'] in ('OBSERVATION_TIMEOUT','OBSERVATION_ERROR'):
                 state['queue_observation_attention']={'since':state.get('queue_observation_attention',{}).get('since',time.time()),'latest':observed}
