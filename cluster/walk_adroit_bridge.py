@@ -5,6 +5,7 @@ streams between SSH channels, then SHA-256 inventories verify every file.
 The bridge never cancels/restarts jobs because a queue observation times out.
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -62,8 +63,19 @@ def ssh(host, command, single_cpu=False):
 
 
 def call(host, script, timeout=90, single_cpu=False):
-    command = ssh(host, "python3 -", single_cpu=True) if single_cpu else ssh(host, "python3 -")
-    p = subprocess.run(command, input=script.encode(), capture_output=True,
+    # Small Adroit control reads need no streamed stdin. Keeping their source
+    # in the remote command avoids an unnecessary WSL/SSH input stream. Bound
+    # the encoded command size below Windows' command-line limit; larger data
+    # payloads retain the existing stdin transport.
+    inline = host == 'adroit' and len(script.encode('utf-8')) <= 6000
+    # Encode source so WSL's additional command parsing cannot alter Python
+    # backslashes, quotes or newlines. The remote Python still executes exactly
+    # the original UTF-8 bytes; this is command transport, not data compression.
+    encoded = base64.b64encode(script.encode('utf-8')).decode('ascii') if inline else None
+    remote = ('python3 -c ' + shlex.quote("exec(__import__('base64').b64decode('" + encoded + "'))")) if inline else 'python3 -'
+    command = ssh(host, remote, single_cpu=single_cpu)
+    payload = {'stdin': subprocess.DEVNULL} if inline else {'input': script.encode()}
+    p = subprocess.run(command, **payload, capture_output=True,
                        timeout=timeout, creationflags=FLAGS)
     if p.returncode:
         error = RuntimeError if p.returncode == 255 else RemoteCommandError
