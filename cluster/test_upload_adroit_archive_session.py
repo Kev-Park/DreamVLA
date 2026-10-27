@@ -20,7 +20,7 @@ def incomplete(count=None):
 
 
 class UploadTests(unittest.TestCase):
-    def run_upload(self, events):
+    def run_upload(self, events, **options):
         requests = []
         def opener(request, **kwargs):
             requests.append(request)
@@ -29,7 +29,7 @@ class UploadTests(unittest.TestCase):
                 raise event
             return io.BytesIO(json.dumps(event).encode())
         result = transfer(io.BytesIO(DATA), URI, len(DATA), DIGEST, lambda _: None,
-                          opener=opener, sleep=lambda _: None, chunk=len(DATA))
+                          opener=opener, sleep=lambda _: None, chunk=len(DATA), **options)
         return result, requests
 
     def result(self, **changes):
@@ -58,6 +58,19 @@ class UploadTests(unittest.TestCase):
     def test_digest_mismatch_fails(self):
         wrong = self.result();wrong['md5Checksum'] = '0' * 32
         with self.assertRaises(ValueError):self.run_upload([wrong])
+
+    def test_provider_sha256_is_verified_when_required(self):
+        sha=hashlib.sha256(DATA).hexdigest()
+        result,_=self.run_upload([self.result(sha256Checksum=sha)],expected_sha256=sha)
+        self.assertEqual(result['sha256Checksum'],sha)
+
+    def test_provider_sha256_mismatch_fails(self):
+        with self.assertRaisesRegex(ValueError,'SHA256 mismatch'):
+            self.run_upload([self.result(sha256Checksum='0'*64)],expected_sha256=hashlib.sha256(DATA).hexdigest())
+
+    def test_missing_provider_sha256_cannot_authorize_verification(self):
+        with self.assertRaisesRegex(ValueError,'missing provider checksum'):
+            self.run_upload([self.result()],expected_sha256=hashlib.sha256(DATA).hexdigest())
 
     def test_non_retryable_http_failure_is_sanitized(self):
         with self.assertRaisesRegex(RuntimeError, '^Upload HTTP 403; source retained$'):

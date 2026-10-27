@@ -48,7 +48,7 @@ def validate_session(uri):
 
 
 def transfer(stream, uri, total, digest, progress, opener=urllib.request.urlopen,
-             sleep=time.sleep, chunk=CHUNK, retries=4):
+             sleep=time.sleep, chunk=CHUNK, retries=4, expected_sha256=None):
     validate_session(uri)
     if total <= 0 or chunk <= 0 or chunk % (256 * 1024):
         raise ValueError('Invalid source or chunk size')
@@ -74,6 +74,8 @@ def transfer(stream, uri, total, digest, progress, opener=urllib.request.urlopen
             if (int(result['size']) != total or result['md5Checksum'] != digest
                     or not result.get('id')):
                 raise ValueError('Completed upload checksum or size mismatch')
+            if expected_sha256 is not None and result.get('sha256Checksum') != expected_sha256:
+                raise ValueError('Completed upload SHA256 mismatch or missing provider checksum')
             progress(total)
             return result
         except urllib.error.HTTPError as error:
@@ -157,11 +159,14 @@ def main():
                    started=started, acknowledged_bytes=offset, total_bytes=row['bytes']))
         progress(0)
         with path.open('rb') as stream:
-            response = transfer(stream, request['uri'], row['bytes'], request['md5'], progress)
+            response = transfer(stream, request['uri'], row['bytes'], request['md5'], progress,
+                                expected_sha256=sha.hexdigest() if request.get('require_provider_sha256') else None)
         source_path(root, row)
         receipt = dict(success=True, pid=os.getpid(), started=started, completed=time.time(),
                        file_id=response['id'], bytes=int(response['size']), md5=response['md5Checksum'],
                        sha256=sha.hexdigest(), source_retained=True, oauth_received=False)
+        if request.get('require_provider_sha256'):
+            receipt['drive_metadata'] = response
     except Exception as error:
         # Exceptions from networking can contain the capability URI: never log
         # their repr or traceback. The local controller reconciles the session.
