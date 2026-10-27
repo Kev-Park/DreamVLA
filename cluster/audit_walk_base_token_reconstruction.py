@@ -26,6 +26,68 @@ def definitions(path, names, namespace):
     return {n.name: hashlib.sha256(ast.dump(n).encode()).hexdigest() for n in selected}
 
 
+def reference_feature_library(base, repo, payloads):
+    """Use native interpolation for the two reference fields the encoder reads.
+
+    Auxiliary spatial buffers satisfy the native method's unused return fields.
+    The public result exposes only joints and root rotation so those buffers
+    cannot accidentally be used to reconstruct other task observations.
+    """
+    import joblib
+    import numpy as np
+    import torch
+    import isaac_utils.rotations as rotations
+    path = repo / 'Training/source/isaaclab_tasks/isaaclab_tasks/utils/motion_lib/motion_lib_base.py'
+    tree = ast.parse(path.read_text())
+    original = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                    and any(isinstance(m, ast.FunctionDef) and m.name == 'get_motion_state' for m in n.body))
+    methods = [n for n in original.body if isinstance(n, ast.FunctionDef) and n.name in ('get_motion_state', '_calc_frame_blend')]
+    assert len(methods) == 2
+    container = ast.ClassDef(name='NativeMotionReferenceAudit', bases=[], keywords=[], body=methods, decorator_list=[])
+    ns = {'torch': torch, 'slerp': rotations.slerp}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[container], type_ignores=[])), str(path), 'exec'), ns)
+    native_names = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == 'JointNamesOrder' for t in n.targets))
+    joints, quats, proof, by_source = [], [], [], {}
+    for source, identity in payloads.items():
+        assert identity['pool'] in ('StitchMAX200v3', 'StitchMAX100v3_eval')
+        assert Path(identity['reference_name']).name == identity['reference_name']
+        file = base / 'ref_motions' / identity['pool'] / identity['reference_name']
+        assert file.resolve().is_relative_to(base.resolve())
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+        assert digest == identity['sha256'], 'Reference payload differs: ' + str(file)
+        data = joblib.load(file)
+        assert not any(k in data for k in ('punch_pos_real', 'kick_pos_real', 'squat_pos_real'))
+        p = torch.as_tensor(np.array(data['joints']), dtype=torch.float32).clone()
+        if p.shape[1] == 27:
+            p = torch.cat([p[:, :13], p.new_zeros((len(p), 2)), p[:, 13:]], dim=1)
+        q = torch.as_tensor(np.array(data['global_pose'].rotation().wxyz), dtype=torch.float32).clone()
+        assert p.shape[1] == 29 and q.shape == (len(p), 4)
+        by_source[source] = len(joints)
+        joints.append(p); quats.append(q)
+        proof.append({'source': source, **identity, 'verified_sha256': digest, 'frames': len(p), 'native_dt': .05})
+    count, frames = len(joints), max(map(len, joints))
+    obj = ns['NativeMotionReferenceAudit']()
+    obj._motion_num_frames = torch.tensor([len(p) for p in joints], dtype=torch.int32)
+    obj._motion_dt = torch.full((count,), .05, dtype=torch.float32)
+    obj._motion_lengths = obj._motion_num_frames * obj._motion_dt
+    def padded(values):
+        return torch.stack([torch.cat([v, v[-1:].expand(frames-len(v), *v.shape[1:])]) for v in values])
+    obj.dof_pos = padded(joints); obj.quats = padded(quats)
+    obj.transl = torch.zeros(count, frames, 3)
+    obj.local_keypts = torch.zeros(count, frames, 1, 3); obj.global_keypts = torch.zeros_like(obj.local_keypts)
+    obj.offsets = torch.zeros(count, 3); obj.grab_pos = torch.zeros(count, 3)
+    obj.switch_idxs = torch.zeros(count, dtype=torch.long); obj._contact_lead = 0; obj.object_poses = None
+    class ReferenceFeaturesOnly:
+        def get_motion_state(self, ids, times):
+            state = obj.get_motion_state(ids, times)
+            return {k: state[k] for k in ('dof_pos', 'root_rot')}
+    return ReferenceFeaturesOnly(), by_source, native_names, {
+        'references': proof, 'motion_lib_source_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'rotation_source_sha256': hashlib.sha256(Path(rotations.__file__).read_bytes()).hexdigest(),
+        'native_interpolation_ast_sha256': {n.name: hashlib.sha256(ast.dump(n).encode()).hexdigest() for n in methods}}
+
+
 def main():
     base = Path.home() / 'kevin'
     parser = argparse.ArgumentParser(description=__doc__)
@@ -126,6 +188,29 @@ def main():
                    'Final token equality can mask base-token differences in saturated coordinates; it does not certify every base coordinate.',
                    'This is feature/token validation only: neither residual expert has been queried on saved VLA evaluation inputs.',
                    'Held-out reference identity, interpolation, input layout and native normalization still require validation before conditional expert comparisons.']}
+    if 'reference_payloads' in data:
+        previous_base = obj._base_token.clone()
+        library, by_source, loaded_names, proof = reference_feature_library(base, repo, data['reference_payloads'])
+        assert loaded_names == ref_names, 'Reference joint-name layout differs'
+        ids = torch.tensor([by_source[r['source_name']] for r in rows])
+        times = (obj.unwrapped.episode_length_buf * .02).unsqueeze(1) + obj._future_offsets
+        windows = library.get_motion_state(ids.repeat_interleave(10), times.flatten())
+        pos_error = (windows['dof_pos'].reshape_as(pos) - pos).abs().max()
+        quat_error = (windows['root_rot'].reshape_as(quat) - quat).abs().max()
+        obj.unwrapped.motion_ids = ids; obj.unwrapped.motion_lib = library
+        with torch.inference_mode():
+            obj._update_base_token()
+            final = obj.expert_token(latent)
+        base_exact = (obj._base_token == previous_base).all(dim=1)
+        label_exact = (final == target).all(dim=1)
+        passed = bool(pos_error < 1e-5 and quat_error < 1e-5 and base_exact.all() and label_exact.all())
+        result['reference_pickle_validation'] = {**proof, 'passed': passed,
+            'reference_joint_max_abs_error': float(pos_error), 'reference_quat_max_abs_error': float(quat_error),
+            'complete_base_tokens_equal_recorded_window_reconstruction': int(base_exact.sum()),
+            'complete_final_tokens_equal_recorded_expert_labels': int(label_exact.sum()),
+            'max_base_token_abs_error': float((obj._base_token - previous_base).abs().max()),
+            'max_final_token_abs_error': float((final - target).abs().max())}
+        if not passed: result['status'] = 'reference_pickle_validation_mismatch'
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps({k: result[k] for k in ('status', 'samples', 'exact_complete_token_matches', 'exact_coordinate_matches', 'coordinates', 'max_abs_error')}))
