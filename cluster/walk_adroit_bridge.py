@@ -77,22 +77,34 @@ def save(path, data):
     tmp.replace(path)
 
 
-def inventory(host, relative, inference=False, single_cpu=False):
-    script = """import hashlib,json,pathlib
+def inventory_script(relative, inference=False):
+    return """import hashlib,json,pathlib
 b=(pathlib.Path.home()/'kevin').resolve();p=b/REL
 assert p.resolve().is_relative_to(b) and p.is_dir(),str(p)
 rows=[]
 skip={'optimizer.pt','scheduler.pt','rng_state.pth','training_args.bin'} if INFERENCE else set()
 for f in sorted(p.rglob('*')):
  if f.is_file() and f.name not in skip:
-  assert not f.is_symlink(),str(f)
+  expected_digest=None
+  if f.is_symlink():
+   assert INFERENCE and f.suffix=='.safetensors','Unexpected inventory symlink: '+str(f)
+   target=f.resolve(strict=True)
+   assert target.is_relative_to(b/'checkpoints/_shared_weights/sha256') and target.suffix=='.safetensors','Weight link leaves the owned canonical store: '+str(f)
+   expected_digest=target.stem
+   assert len(expected_digest)==64 and all(c in '0123456789abcdef' for c in expected_digest),'Invalid canonical weight identity'
   h=hashlib.sha256()
   with f.open('rb') as stream:
    for chunk in iter(lambda:stream.read(8*1024*1024),b''):h.update(chunk)
-  rows.append({'path':str(f.relative_to(p)),'bytes':f.stat().st_size,'sha256':h.hexdigest()})
+  digest=h.hexdigest()
+  assert expected_digest is None or digest==expected_digest,'Canonical weight content differs from its SHA256 identity: '+str(f)
+  rows.append({'path':str(f.relative_to(p)),'bytes':f.stat().st_size,'sha256':digest})
 assert rows
 print(json.dumps(rows))
 """.replace("REL", repr(relative)).replace("INFERENCE", repr(inference))
+
+
+def inventory(host, relative, inference=False, single_cpu=False):
+    script = inventory_script(relative, inference)
     return call(host, script, timeout=1800, **({'single_cpu': True} if single_cpu else {}))
 
 
@@ -115,7 +127,8 @@ print(json.dumps({'ready':True}))
              "inference_and_trainer_metadata_only": inference, "blue_transport_single_cpu": blue_single_cpu}
     save(state_dir/(label+".transfer.json"), state)
     members = [str(PurePosixPath(relative)/r['path']) for r in before] if inference else [relative]
-    producer_cmd = ssh(source, "tar -C ~/kevin -cf - -- "+' '.join(map(shlex.quote,members)),
+    archive = 'tar --dereference' if inference else 'tar'
+    producer_cmd = ssh(source, archive+" -C ~/kevin -cf - -- "+' '.join(map(shlex.quote,members)),
                        **({'single_cpu': True} if blue_single_cpu and source == 'bluesclues' else {}))
     consumer_cmd = ssh(destination, "tar -C ~/kevin -xf -",
                        **({'single_cpu': True} if blue_single_cpu and destination == 'bluesclues' else {}))
