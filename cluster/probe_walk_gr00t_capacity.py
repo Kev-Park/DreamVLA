@@ -8,6 +8,7 @@ import statistics
 import subprocess
 import sys
 import time
+import traceback
 
 
 class CapacityComplete(BaseException):
@@ -90,8 +91,9 @@ def main():
         except CapacityComplete:
             result.update(status='capacity_fits',completed_steps=3,
                 measured_step_seconds=timings,steady_step_seconds=statistics.median(timings[1:]))
-        except torch.cuda.OutOfMemoryError:
-            result.update(status='out_of_memory',capacity_fits=False)
+        except torch.cuda.OutOfMemoryError as error:
+            result.update(status='out_of_memory',capacity_fits=False,
+                out_of_memory_message=str(error),out_of_memory_traceback=traceback.format_exc())
         else:
             raise AssertionError('Official trainer returned without the three-step capacity callback')
     except BaseException as error:
