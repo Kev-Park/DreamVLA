@@ -4,7 +4,6 @@ Only this job's reservations/affinity are changed. The grant is issued after the
 Adroit copy is confirmed canceled without starting any reference attempts.
 """
 import argparse
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -13,29 +12,55 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-from pick_original_base_collect import save
-
-
 ROOT = Path.home() / 'kevin'
 
 
-def account_ticks():
-    total = 0
+def account_cpu_snapshot():
+    """Read the kernel account counter, verifying that it covers every UID process."""
+    group = '/user.slice/user-%d.slice' % os.getuid()
+    complete = True
     for p in Path('/proc').iterdir():
         if p.name.isdigit():
             try:
                 if p.stat().st_uid == os.getuid():
-                    values = (p / 'stat').read_text().rsplit(')', 1)[1].split()
-                    total += int(values[11]) + int(values[12])
-            except (OSError, ValueError):
-                pass
-    return total
+                    membership = (p / 'cgroup').read_text().strip()
+                    complete &= membership == '0::'+group or membership.startswith('0::'+group+'/')
+            except OSError:
+                if p.exists():
+                    complete = False
+    try:
+        fields = dict(line.split() for line in
+                      (Path('/sys/fs/cgroup') / group.lstrip('/') / 'cpu.stat').read_text().splitlines())
+        return dict(usage_usec=int(fields['usage_usec']), time=time.monotonic(), complete=complete)
+    except (OSError, ValueError, KeyError):
+        return dict(usage_usec=None, time=time.monotonic(), complete=False)
+
+
+def account_cpu_fraction(before, after, logical_cpus):
+    elapsed = after['time']-before['time']
+    if (not before['complete'] or not after['complete'] or elapsed <= 0 or not logical_cpus
+            or before['usage_usec'] is None or after['usage_usec'] is None
+            or after['usage_usec'] < before['usage_usec']):
+        return None
+    return (after['usage_usec']-before['usage_usec']) / 1e6 / elapsed / logical_cpus
+
+
+def revalidated_capacity(previous, current):
+    """A stale free-device result or incomplete CPU sample cannot authorize launch."""
+    if (not previous.get('cpu_measurement_complete') or not current.get('cpu_measurement_complete')
+            or previous.get('cpu_fraction') is None or current.get('cpu_fraction') is None):
+        return None
+    return dict(cpu_fraction=max(previous['cpu_fraction'], current['cpu_fraction']),
+                cpu_measurement_complete=True,
+                occupied=sorted(set(previous['occupied']) | set(current['occupied'])),
+                free=sorted(set(previous['free']) & set(current['free'])))
 
 
 def capacity():
-    start, when = account_ticks(), time.monotonic()
+    before = account_cpu_snapshot()
     time.sleep(2)
-    cpu = max(0, account_ticks()-start) / os.sysconf('SC_CLK_TCK') / (time.monotonic()-when) / os.cpu_count()
+    after = account_cpu_snapshot()
+    cpu = account_cpu_fraction(before, after, os.cpu_count())
     xml = ET.fromstring(subprocess.check_output(['nvidia-smi', '-q', '-x'], text=True, timeout=10))
     occupied, free = set(), []
     for index, gpu in enumerate(xml.findall('gpu')):
@@ -50,16 +75,28 @@ def capacity():
         used = int(gpu.findtext('fb_memory_usage/used').split()[0])
         if not processes and used < 128:
             free.append(index)
-    return dict(cpu_fraction=cpu, occupied=sorted(occupied), free=free)
+    return dict(cpu_fraction=cpu, cpu_measurement_complete=cpu is not None,
+                cpu_measurement='kernel_user_slice' if cpu is not None else 'unavailable',
+                observed_at=time.time(), occupied=sorted(occupied), free=free)
 
 
 def reserve(snapshot):
+    import fcntl
+    from pick_original_base_collect import save
+    if (not snapshot.get('cpu_measurement_complete') or snapshot['cpu_fraction'] is None
+            or snapshot['cpu_fraction'] + 4 / os.cpu_count() > .20 or not snapshot['free']):
+        return None
     directory = ROOT / 'dline'
     path = directory / 'gpu_slots.json'
     with (directory / 'gpu_slots.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         entries = json.loads(path.read_text()) if path.exists() else []
         live = [e for e in entries if Path('/proc', str(e['owner'])).exists()]
+        # Other users do not use this account's registry. Re-read global GPU
+        # occupancy and CPU capacity inside the lock immediately before reserving.
+        snapshot = revalidated_capacity(snapshot, capacity())
+        if snapshot is None:
+            return None
         occupied = set(snapshot['occupied']) | {e['gpu'] for e in live}
         # Account for the graphics context Isaac may also create on physical GPU 0.
         candidates = [g for g in snapshot['free'] if g not in occupied and len(occupied | {g, 0}) <= 5]
@@ -72,6 +109,8 @@ def reserve(snapshot):
 
 
 def release(gpu):
+    import fcntl
+    from pick_original_base_collect import save
     directory = ROOT / 'dline'
     path = directory / 'gpu_slots.json'
     with (directory / 'gpu_slots.lock').open('a+') as lock:
@@ -82,6 +121,8 @@ def release(gpu):
 
 
 def main():
+    import fcntl
+    from pick_original_base_collect import save
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('request', type=Path)
     a = parser.parse_args()
