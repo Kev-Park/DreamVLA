@@ -17,7 +17,9 @@ PREFIXES = (
     'checkpoints/walk200_v3_dagger57_20261013_r0/',
     'checkpoints/walk200_v3_dagger57_20261013_r3/',
     'checkpoints/walk200_v3_late1s_20261024_r3/checkpoint-109629/',
+    'checkpoints/walk200_v3_late1s_20261024_r3/checkpoint-109629.recovery_partial_20261029/',
     'dline/walk_checkpoint_block_recovery_20261028/staged_checkpoint/',
+    'dline/walk_late_checkpoint_drive_relay_20261028/',
     'dline/walk200_v3_late1s_20261024/raw/',
     'dline/walk200_v3_histwindow65_20261029/raw/',
 )
