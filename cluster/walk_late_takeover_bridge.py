@@ -421,7 +421,7 @@ def main():
         if time.time()-last_resource_review<300:return
         last_resource_review=time.time();snapshots={};alerts=[]
         health=collector_health();record(collector_health=health)
-        for host in ('biped','bluesclues'):
+        for host in sorted({COLLECTION_HOST,'bluesclues',EVALUATION_HOST}):
             data=resources(host);snapshots[host]=data
             save(directory/(host+'.resources.latest.json'),data)
             with (directory/(host+'.resources.history.jsonl')).open('a') as stream:stream.write(json.dumps(data)+'\n')
