@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import random
 import time
 
 from upload_adroit_archive_session import atomic, transfer, validate_session
@@ -80,15 +81,19 @@ def main():
                    'acknowledged_bytes': offset, 'total_bytes': row['bytes']})
 
         def quota_wait(offset, attempt, delay):
+            actual_delay = min(300, 60 * 2**min(attempt - 1, 3)) + random.uniform(0, 5)
             atomic(args.output / 'progress.json', {'pid': os.getpid(), 'at': time.time(),
                    'acknowledged_bytes': offset, 'total_bytes': row['bytes'],
                    'phase': 'drive_rate_limit_wait', 'retry': attempt,
-                   'next_query_at': time.time() + delay})
+                   'next_query_at': time.time() + actual_delay})
+            # The common transfer helper sleeps its original delay afterward.
+            # Add only the remainder here, preserving its reconciliation logic.
+            time.sleep(max(0, actual_delay - delay))
 
         with path.open('rb') as stream:
             metadata = transfer(stream, request['uri'], row['bytes'], row['md5'], progress,
                                 expected_sha256=row['sha256'], quota_wait=quota_wait,
-                                quota_retries=60)
+                                quota_retries=60, chunk=128 * 1024**2)
         source(root, row)
         value = {'success': True, 'pid': os.getpid(), 'started': started, 'at': time.time(),
                  'source_retained': True, 'oauth_received': False, 'drive_metadata': metadata, **digest}
