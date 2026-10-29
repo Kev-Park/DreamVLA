@@ -56,6 +56,7 @@ def observe_training_resources(observe, directory):
 
 TAG='walk200_v3_late1s_20261024'
 WORK='dline/'+TAG
+COLLECTION_HOST='biped'
 
 
 def read_remote(host,relative):
@@ -63,7 +64,7 @@ def read_remote(host,relative):
 
 
 def collector_health():
-    health=call('biped',r'''
+    health=call(COLLECTION_HOST,r'''
 import json,pathlib,time
 w=pathlib.Path.home()/'kevin'/WORK;s=json.loads((w/'workflow.json').read_text())
 keys=('status','controller_pid','completed_attempts','active_batch','error','heartbeat')
@@ -456,7 +457,7 @@ def main():
                 report=None
                 while report is None:
                     observe_resources()
-                    observed=stage_observation('biped',batch)
+                    observed=stage_observation(COLLECTION_HOST,batch)
                     report=observed['ready'];record(collector_observation=observed)
                     assert observed['workflow'] is not None,'Collector did not publish workflow; inspect its log'
                     if report is None:time.sleep(30)
@@ -464,11 +465,12 @@ def main():
                 raw=WORK+'/raw/'+batch
                 has_raw=bool(report['episodes'])
                 wait_for_blue_cpu(1,'Verified raw relay;dedicated transport and copy share one CPU')
-                if has_raw:checked_transfer('biped','bluesclues',raw,directory,batch+'_raw_blue')
+                if has_raw and COLLECTION_HOST!='bluesclues':
+                    checked_transfer(COLLECTION_HOST,'bluesclues',raw,directory,batch+'_raw_blue')
                 write_remote('bluesclues',WORK+'/'+batch+'.complete.json',report)
-                if has_raw:
+                if has_raw and COLLECTION_HOST!='bluesclues':
                     expected=json.loads((directory/(batch+'_raw_blue.source_inventory.json')).read_text())
-                    remove_relocated_copy('biped',raw,expected,{'host':'bluesclues','relative':raw})
+                    remove_relocated_copy(COLLECTION_HOST,raw,expected,{'host':'bluesclues','relative':raw})
                 collector=observed['workflow']
                 cpu_cap=30 if collector['completed_attempts']<200 else 20
                 while True:
