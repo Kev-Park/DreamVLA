@@ -87,7 +87,8 @@ def main():
 
         with path.open('rb') as stream:
             metadata = transfer(stream, request['uri'], row['bytes'], row['md5'], progress,
-                                expected_sha256=row['sha256'], quota_wait=quota_wait)
+                                expected_sha256=row['sha256'], quota_wait=quota_wait,
+                                quota_retries=60)
         source(root, row)
         value = {'success': True, 'pid': os.getpid(), 'started': started, 'at': time.time(),
                  'source_retained': True, 'oauth_received': False, 'drive_metadata': metadata, **digest}
