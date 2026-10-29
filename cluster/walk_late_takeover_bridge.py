@@ -57,6 +57,8 @@ def observe_training_resources(observe, directory):
 TAG='walk200_v3_late1s_20261024'
 WORK='dline/'+TAG
 COLLECTION_HOST='biped'
+EVALUATION_HOST='biped'
+EVALUATION_GPU=0
 
 
 def read_remote(host,relative):
@@ -300,9 +302,9 @@ def submitted_training_state(state):
 def start_biped_evaluation(checkpoint_relative,run_name=None):
     """Launch this experiment's control/final evaluation after collection releases GPU0."""
     run_name=run_name or TAG+'_r3'
-    return call('biped',r'''
+    return call(EVALUATION_HOST,r'''
 import fcntl,json,os,pathlib,shlex,subprocess,sys,time,xml.etree.ElementTree as ET
-b=pathlib.Path.home()/'kevin';work=b/WORK;run=RUN_NAME;ready=work/(run+'.eval.json')
+b=pathlib.Path.home()/'kevin';work=b/WORK;run=RUN_NAME;ready=work/(run+'.eval.json');device_id=EVAL_GPU;eval_host=EVAL_HOST
 launch_lock=(work/'evaluation_launch.lock').open('a')
 fcntl.flock(launch_lock,fcntl.LOCK_EX)
 key='evaluate' if run==TAG+'_r3' else 'evaluate_'+run
@@ -340,37 +342,43 @@ else:
   for process in gpu.findall('processes/process_info'):
    proc=pathlib.Path('/proc',process.findtext('pid'))
    if proc.exists() and proc.stat().st_uid==os.getuid():occupied.append({'gpu':device,'pid':proc.name})
- if occupied:
+ if occupied and eval_host=='biped':
   print(json.dumps({'waiting_for_gpu_headroom':True,'account_contexts':occupied}));sys.exit(0)
  # The reservation inside Evaluation.slots needs17GB plus its existing2GB
  # safety margin. Check all-user device memory before starting a controller;
  # another account can occupy GPU0 while our account has no GPU contexts.
- device=tree.findall('gpu')[0]
+ device=tree.findall('gpu')[device_id]
  free_mib=int(device.findtext('fb_memory_usage/free').split()[0])
  reservation_file=b/'dline/gpu_slots.json'
  reservations=json.loads(reservation_file.read_text()) if reservation_file.exists() else []
  pending_mib=sum(row['mb'] for row in reservations
-                 if row['gpu']==0 and pathlib.Path('/proc',str(row['owner'])).exists())
+                 if row['gpu']==device_id and pathlib.Path('/proc',str(row['owner'])).exists())
+ account_devices={row['gpu'] for row in occupied}
+ account_devices.update(row['gpu'] for row in reservations if pathlib.Path('/proc',str(row['owner'])).exists())
+ if eval_host=='bluesclues' and len(account_devices|{device_id,0})>5:
+  print(json.dumps({'waiting_for_gpu_headroom':True,'account_devices':sorted(account_devices)}));sys.exit(0)
  if free_mib-pending_mib<17000+2000:
-  print(json.dumps({'waiting_for_gpu_headroom':True,'compute_gpu':0,
+  print(json.dumps({'waiting_for_gpu_headroom':True,'compute_gpu':device_id,
                    'free_mib':free_mib,'pending_reservations_mib':pending_mib,
                    'required_eval_mib':17000,'safety_margin_mib':2000}));sys.exit(0)
  name='walk_late1s_eval_kevin'
  if subprocess.run(['tmux','has-session','-t',name],capture_output=True).returncode==0:
   print(json.dumps({'waiting_for_gpu_headroom':True,'active_experiment_session':name}));sys.exit(0)
  assert (checkpoint/'model.safetensors.index.json').is_file()
- review={'at':time.time(),'account_cpu':cpu,'cpu_affinity':mask,'compute_gpu':0,
-  'gpu1_graphics_exception':'Existing2026-10-24 approval,at most6MiB,only this experiment',
+ if eval_host=='biped' and TAG!='walk200_v3_late1s_20261024':
+  print(json.dumps({'waiting_for_gpu_headroom':True,'reason':'New experiments require review of the second-device graphics context before Biped evaluation'}));sys.exit(0)
+ review={'at':time.time(),'account_cpu':cpu,'cpu_affinity':mask,'compute_gpu':device_id,
+  'evaluation_host':eval_host,
   'checkpoint':str(checkpoint),'episodes':100,'decoder':'previous full FSQ','run':run}
  (work/(key+'.resource_review.json')).write_text(json.dumps(review,indent=2)+'\n')
  args=[str(b/'wt/locomotion/.venv/bin/python'),'-u',str(b/'wt/locomotion/DreamVLA/cluster/walk_late_takeover_process.py'),
-  'evaluate','--tag',TAG,'--checkpoint',str(checkpoint),'--gpu','0','--run-name',run]
- shell='export XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1\n'
+  'evaluate','--tag',TAG,'--checkpoint',str(checkpoint),'--gpu',str(device_id),'--run-name',run]
+ shell='export XLA_PYTHON_CLIENT_PREALLOCATE=false CUDA_VISIBLE_DEVICES='+str(device_id)+' OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1\n'
  shell+='exec taskset -c '+','.join(map(str,mask))+' '+shlex.join(args)+' > '+shlex.quote(str(work/(key+'.controller.log')))+' 2>&1'
  os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
  subprocess.run(['tmux','new-session','-d','-s',name,'bash','-lc',shell],check=True)
  print(json.dumps({'launched':name,'review':review}))
-'''.replace('WORK',repr(WORK)).replace('TAG',repr(TAG)).replace('CHECKPOINT',repr(checkpoint_relative)).replace('RUN_NAME',repr(run_name)))
+'''.replace('WORK',repr(WORK)).replace('TAG',repr(TAG)).replace('CHECKPOINT',repr(checkpoint_relative)).replace('RUN_NAME',repr(run_name)).replace('EVAL_GPU',repr(EVALUATION_GPU)).replace('EVAL_HOST',repr(EVALUATION_HOST)))
 
 
 def resources(host):
@@ -551,25 +559,25 @@ def main():
         checkpoint=trained['checkpoint_relative']
         record(status='staging_final_checkpoint',trained=trained)
         while True:
-            current=resources('biped');assert current['cpu_measurement_complete'],current
+            current=resources(EVALUATION_HOST);assert current['cpu_measurement_complete'],current
             if current['account_cpu_pct']+2/current['logical_cpus']*100<=20:break
             record(status='waiting_for_cpu_headroom',cpu_stage='final_checkpoint_copy');observe_resources();time.sleep(30)
-        checked_transfer('adroit','biped',checkpoint,directory,'final_checkpoint_biped',inference=True)
+        checked_transfer('adroit',EVALUATION_HOST,checkpoint,directory,'final_checkpoint_'+EVALUATION_HOST,inference=True)
         record(status='starting_evaluation')
         while True:
             launch=start_biped_evaluation(checkpoint);record(evaluation_launch=launch)
             if not any(launch.get(k) for k in ('waiting_for_cpu_headroom','waiting_for_gpu_headroom','waiting_for_control_evaluations')):break
             record(status='waiting_for_evaluation_resources');observe_resources();time.sleep(30)
-        record(status='evaluating',evaluation_host='biped');started=time.time()
+        record(status='evaluating',evaluation_host=EVALUATION_HOST);started=time.time()
         while True:
             observe_resources()
-            results=read_remote('biped',WORK+'/'+TAG+'_r3.eval.json')
-            status=read_remote('biped',WORK+'/evaluate.workflow.json');record(evaluation_state=status)
+            results=read_remote(EVALUATION_HOST,WORK+'/'+TAG+'_r3.eval.json')
+            status=read_remote(EVALUATION_HOST,WORK+'/evaluate.workflow.json');record(evaluation_state=status)
             assert status is not None or time.time()-started<90,'Evaluator did not publish workflow;inspect its log'
             assert not status or status['status']!='failed',status
             if results is not None:break
             if status and status['status']=='running':
-                live=call('biped',"import json,pathlib\nprint(json.dumps(pathlib.Path('/proc',str(PID)).exists()))".replace('PID',repr(status['pid'])))
+                live=call(EVALUATION_HOST,"import json,pathlib\nprint(json.dumps(pathlib.Path('/proc',str(PID)).exists()))".replace('PID',repr(status['pid'])))
                 assert live,('Evaluation controller disappeared',status)
             time.sleep(30)
         assert results and results['episodes']==100
