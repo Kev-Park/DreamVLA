@@ -144,19 +144,19 @@ def main():
             temporary.write_text(json.dumps(value, indent=2)+'\n')
             temporary.replace(path)
         publish('resource_recovery.json', evidence)
+        if args.evaluation_only:
+            # Validate before the error handler: an unrelated abort must never
+            # be replaced by an exception from this recovery preflight.
+            abort = work/'abort.json'
+            if abort.exists():
+                error = json.loads(abort.read_text())
+                assert 'TimeoutExpired' in error['error'] and 'nvidia-smi' in error['error']
+                assert not Path('/proc', str(error['pid'])).exists()
+                preserved = work/f"gpu_observation_abort_{error['pid']}.json"
+                assert not preserved.exists()
+                abort.rename(preserved)
         try:
-            if args.evaluation_only:
-                # Reconcile only the known GPU observation failure. Preserve it;
-                # unrelated evaluation/science failures require separate review.
-                abort = work/'abort.json'
-                if abort.exists():
-                    error = json.loads(abort.read_text())
-                    assert 'TimeoutExpired' in error['error'] and 'nvidia-smi' in error['error']
-                    assert not Path('/proc', str(error['pid'])).exists()
-                    preserved = work/f"gpu_observation_abort_{error['pid']}.json"
-                    assert not preserved.exists()
-                    abort.rename(preserved)
-            else:
+            if not args.evaluation_only:
                 chain.complete_spares(args.request)
             publish('chain.status.json', dict(pid=os.getpid(), phase='running', passing_originals=200,
                     controller_script=Path(__file__).name, resource_recovery=True))
