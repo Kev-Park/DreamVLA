@@ -427,7 +427,7 @@ def main():
             with (directory/(host+'.resources.history.jsonl')).open('a') as stream:stream.write(json.dumps(data)+'\n')
             if not data.get('cpu_measurement_complete'):alerts.append(host+': CPU measurement incomplete')
             collecting=health['completed_attempts']<200
-            cap=30 if host=='bluesclues' and collecting else 20
+            cap=20
             if data['account_cpu_pct']>cap:alerts.append(host+': aggregate account CPU exceeds'+str(cap)+'%')
             if data.get('gpu_snapshot_error'):alerts.append(host+': GPU snapshot incomplete')
             devices=set(data.get('account_gpu_devices',[]))
@@ -444,7 +444,7 @@ def main():
     def wait_for_blue_cpu(extra_cpus,purpose):
         while True:
             collector=collector_health();record(collector_health=collector)
-            cap=30 if collector['completed_attempts']<200 else 20
+            cap=20
             current=resources('bluesclues')
             assert current['cpu_measurement_complete'],current
             review={'purpose':purpose,'account_cpu_pct':current['account_cpu_pct'],'account_cap_pct':cap,'additional_cpu_upper_bound_pct':extra_cpus/current['logical_cpus']*100}
@@ -480,14 +480,14 @@ def main():
                     expected=json.loads((directory/(batch+'_raw_blue.source_inventory.json')).read_text())
                     remove_relocated_copy(COLLECTION_HOST,raw,expected,{'host':'bluesclues','relative':raw})
                 collector=observed['workflow']
-                cpu_cap=30 if collector['completed_attempts']<200 else 20
+                cpu_cap=20
                 while True:
                     review=start_conversion(batch,cpu_cap=cpu_cap)
                     if not review.get('waiting_for_cpu_headroom'):break
                     record(status='waiting_for_cpu_headroom',conversion_launch_review=review)
                     observe_resources();time.sleep(30)
                     collector=collector_health();record(collector_health=collector)
-                    cpu_cap=30 if collector['completed_attempts']<200 else 20
+                    cpu_cap=20
                 record(status='relaying_collection')
                 converted=None
                 conversion_started=time.time()
