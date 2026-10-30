@@ -20,9 +20,19 @@ from stream_directory import transfer
 
 RUN = 'pick50_dagger57_20261013_r2'
 FINAL_RUN = 'pick50_dagger57_20261013_r3'
+ORIGINAL200_FINAL_RUN = 'pick200_original_spares57_v2_r3'
 POOL = 'Holosoma_Pick_29_latband60max_eval'
 OUT = Path(__file__).resolve().parents[2] / 'out'
 STATE = OUT / 'pick_budget_biped_eval_bridge.json'
+
+
+def validate_run_request(request):
+    assert request['host'] in ['adroit', 'biped']
+    allowed = [FINAL_RUN, ORIGINAL200_FINAL_RUN] if request['host'] == 'adroit' else [RUN]
+    assert request['run'] in allowed
+    if request['run'] == ORIGINAL200_FINAL_RUN:
+        assert request['checkpoint_relative'] == f'checkpoints/{ORIGINAL200_FINAL_RUN}/checkpoint-123802'
+        assert request['output_relative'] == f'eval_videos/{ORIGINAL200_FINAL_RUN}'
 
 
 def write(path, value):
@@ -53,9 +63,8 @@ def slurm_worker_gpus(environment):
 def run_worker(request_file):
     root = Path.home() / 'kevin'; work = request_file.parent
     request = json.loads(request_file.read_text())
-    assert request['host'] in ['adroit', 'biped']
+    validate_run_request(request)
     adroit = request['host'] == 'adroit'
-    assert request['run'] == (FINAL_RUN if adroit else RUN)
     assert request['pool'] == POOL and request['episodes'] == 100
     relative = Path(request.get('runtime_relative', 'DreamVLA'))
     assert not relative.is_absolute() and '..' not in relative.parts

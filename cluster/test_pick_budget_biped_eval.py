@@ -6,9 +6,21 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from pick_budget_biped_eval import validate_report, slurm_worker_gpus, run_worker, FINAL_RUN, POOL
+from pick_budget_biped_eval import validate_run_request, ORIGINAL200_FINAL_RUN
 
 
 class EvaluationGateTests(unittest.TestCase):
+    def test_pick200_dispatch_requires_its_exact_completed_checkpoint(self):
+        request = dict(host='adroit', run=ORIGINAL200_FINAL_RUN,
+                       checkpoint_relative=f'checkpoints/{ORIGINAL200_FINAL_RUN}/checkpoint-123802',
+                       output_relative=f'eval_videos/{ORIGINAL200_FINAL_RUN}')
+        validate_run_request(request)
+        for key, value in [('host','biped'), ('run','unreviewed_run'),
+                           ('checkpoint_relative','checkpoints/historical/checkpoint-30000'),
+                           ('output_relative','eval_videos/other')]:
+            with self.subTest(key=key), self.assertRaises(AssertionError):
+                validate_run_request(dict(request, **{key:value}))
+
     def test_adroit_dispatch_preserves_all_holdout_shards_and_seeds(self):
         with tempfile.TemporaryDirectory() as temp:
             home=Path(temp);root=home/'kevin';work=root/'dline/eval';work.mkdir(parents=True)
