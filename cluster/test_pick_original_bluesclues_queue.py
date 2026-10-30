@@ -1,6 +1,7 @@
 """Regression checks for exited processes and stale shared-GPU observations."""
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,7 +10,7 @@ from unittest.mock import MagicMock, Mock
 from types import SimpleNamespace
 
 import pick_original_bluesclues_queue as queue
-from resume_pick200_resource_recovery import acquire_slots
+from resume_pick200_resource_recovery import acquire_slots, verify_completed_training, TAG
 
 
 def snapshot(cpu=.10, free=(4,), occupied=(), complete=True):
@@ -18,6 +19,24 @@ def snapshot(cpu=.10, free=(4,), occupied=(), complete=True):
 
 
 class CapacityTests(unittest.TestCase):
+    def test_gpu_probe_failure_cannot_authorize_allocation_or_abort_wait(self):
+        for error in [subprocess.TimeoutExpired(['nvidia-smi', '-q', '-x'], 10),
+                      subprocess.CalledProcessError(1, ['nvidia-smi']),
+                      OSError('GPU driver unavailable')]:
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(queue, 'account_cpu_snapshot', return_value={}), \
+                    patch.object(queue, 'account_cpu_fraction', return_value=.01), \
+                    patch.object(queue.time, 'sleep'), \
+                    patch.object(queue.subprocess, 'check_output', side_effect=error):
+                current = queue.capacity()
+            self.assertEqual(current['free'], [])
+            self.assertFalse(current['cpu_measurement_complete'])
+            self.assertIn('gpu_observation_error', current)
+            self.assertIsNone(queue.revalidated_capacity(snapshot(), current))
+            # No filesystem/lock/GPU reservation is reached for an unknown sample.
+            if os.name != 'nt':
+                self.assertIsNone(queue.reserve(current))
+
     def test_process_exit_cannot_erase_busy_account_cpu(self):
         # A dead worker's lifetime CPU vanishes from the old live-PID sum.
         legacy_fraction = max(0, 500-100000) / 100 / 2 / 104
@@ -48,6 +67,29 @@ class CapacityTests(unittest.TestCase):
 
 
 class RecoveryLeaseTests(unittest.TestCase):
+    def test_eval_recovery_requires_complete_training_and_every_model_shard(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); work = root/'dline'; work.mkdir()
+            for index in range(4):
+                run = f'{TAG}_r{index}'
+                checkpoint = root/'checkpoints'/run/'checkpoint-57'
+                checkpoint.mkdir(parents=True)
+                dataset = root/'datasets'/run
+                (dataset/'meta').mkdir(parents=True)
+                (dataset/'meta/info.json').write_text(json.dumps(dict(total_frames=160, total_episodes=2)))
+                (checkpoint/'trainer_state.json').write_text(json.dumps(dict(global_step=57, max_steps=57)))
+                (checkpoint/'model.safetensors.index.json').write_text(json.dumps(dict(weight_map={'a':'model-1.safetensors'})))
+                (checkpoint/'model-1.safetensors').write_bytes(b'fixture')
+                receipt = dict(run=run, checkpoint=str(checkpoint), dataset=str(dataset),
+                               frames=160, episodes=2, batch_size=16, steps=57)
+                (work/f'{run}.trained.json').write_text(json.dumps(receipt))
+                if index < 3:
+                    (work/f'{run}.eval.json').write_text(json.dumps(dict(episodes=100)))
+            self.assertEqual(len(verify_completed_training(root, work)), 4)
+            (checkpoint/'model-1.safetensors').unlink()
+            with self.assertRaises(FileNotFoundError):
+                verify_completed_training(root, work)
+
     def test_finetune_uses_one_full_device_without_changing_memory_request(self):
         chain = SimpleNamespace(leases={}, condition=MagicMock(), log=Mock())
         allocator = SimpleNamespace(capacity=Mock(return_value=snapshot()), reserve=Mock(return_value=7))

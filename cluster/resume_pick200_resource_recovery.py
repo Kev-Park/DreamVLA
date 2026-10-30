@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -16,6 +17,31 @@ import sys
 SCIENCE_PIN = '197a3c7f9bce10604f4c8100c0d72d7549978377'
 GROOT_PIN = '29c95b9cda2249b5285c84460c789d4fe3841d97'
 TAG = 'pick200_original_spares57_v2'
+
+
+def verify_completed_training(root, work):
+    """Evaluation recovery must never enter collection or training again."""
+    rows = []
+    for index in range(4):
+        run = f'{TAG}_r{index}'
+        receipt = json.loads((work/f'{run}.trained.json').read_text())
+        checkpoint = root/'checkpoints'/run/f"checkpoint-{receipt['steps']}"
+        assert Path(receipt['checkpoint']).resolve() == checkpoint.resolve()
+        state = json.loads((checkpoint/'trainer_state.json').read_text())
+        info = json.loads((Path(receipt['dataset'])/'meta/info.json').read_text())
+        assert receipt['batch_size'] == 16
+        assert receipt['frames'] == info['total_frames']
+        assert receipt['episodes'] == info['total_episodes']
+        assert receipt['steps'] == state['global_step'] == state['max_steps']
+        assert receipt['steps'] == math.ceil(5.7*receipt['frames']/16)
+        weights = json.loads((checkpoint/'model.safetensors.index.json').read_text())
+        for shard in set(weights['weight_map'].values()):
+            path = checkpoint/shard
+            assert path.parent == checkpoint and path.stat().st_size > 0
+        if index < 3:
+            assert json.loads((work/f'{run}.eval.json').read_text())['episodes'] == 100
+        rows.append(receipt)
+    return rows
 
 
 def acquire_slots(chain, count, mb, allocator):
@@ -55,6 +81,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('request', type=Path)
     parser.add_argument('--preflight-only', action='store_true')
+    parser.add_argument('--evaluation-only', action='store_true',
+                        help='Resume fixed100 evaluation after all four fine-tunes finished')
     args = parser.parse_args()
     root = Path.home()/'kevin'
     frozen = root/'wt/pick200-original-spares'
@@ -74,7 +102,9 @@ def main():
     for i, steps in enumerate([35554, 65953, 95899]):
         trained = json.loads((work/f'{TAG}_r{i}.trained.json').read_text())
         assert trained['steps'] == steps and trained['batch_size'] == 16
-    assert not (work/f'{TAG}_r3.trained.json').exists()
+    completed = verify_completed_training(root, work) if args.evaluation_only else None
+    if not args.evaluation_only:
+        assert not (work/f'{TAG}_r3.trained.json').exists()
 
     # Resolve all scientific imports from the original immutable checkout first.
     sys.path.insert(0, str(frozen/'cluster'))
@@ -96,12 +126,14 @@ def main():
                     controller_script=Path(__file__).name, episodes=707, frames=347512,
                     target_steps=123802, global_batch_size=16, gradient_accumulation_steps=1,
                     scientific_configuration_changed=False)
+    evidence['evaluation_only'] = args.evaluation_only
     if args.preflight_only:
         print(json.dumps(evidence))
         return
-    assert not (work/'abort.json').exists(), 'Preserve/reconcile the failed attempt first'
-    assert not (work/f'ft_{TAG}_r3.log').exists(), 'Never overwrite the failed startup log'
-    assert not (root/'checkpoints'/f'{TAG}_r3').exists(), 'Preserve failed output before fresh initialization'
+    if not args.evaluation_only:
+        assert not (work/'abort.json').exists(), 'Preserve/reconcile the failed attempt first'
+        assert not (work/f'ft_{TAG}_r3.log').exists(), 'Never overwrite the failed startup log'
+        assert not (root/'checkpoints'/f'{TAG}_r3').exists(), 'Preserve failed output before fresh initialization'
     chain = RecoveryChain(request)
     evidence.update(controller_pid=os.getpid(), cpu_affinity=sorted(os.sched_getaffinity(0)))
     with (work/'spare_driver.lock').open('a+') as lock:
@@ -113,10 +145,32 @@ def main():
             temporary.replace(path)
         publish('resource_recovery.json', evidence)
         try:
-            chain.complete_spares(args.request)
+            if args.evaluation_only:
+                # Reconcile only the known GPU observation failure. Preserve it;
+                # unrelated evaluation/science failures require separate review.
+                abort = work/'abort.json'
+                if abort.exists():
+                    error = json.loads(abort.read_text())
+                    assert 'TimeoutExpired' in error['error'] and 'nvidia-smi' in error['error']
+                    assert not Path('/proc', str(error['pid'])).exists()
+                    preserved = work/f"gpu_observation_abort_{error['pid']}.json"
+                    assert not preserved.exists()
+                    abort.rename(preserved)
+            else:
+                chain.complete_spares(args.request)
             publish('chain.status.json', dict(pid=os.getpid(), phase='running', passing_originals=200,
                     controller_script=Path(__file__).name, resource_recovery=True))
-            chain.run()
+            if args.evaluation_only:
+                with (work/'controller.lock').open('a+') as controller_lock:
+                    fcntl.flock(controller_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    for receipt in completed:
+                        chain.evaluate(receipt['run'], Path(receipt['checkpoint']))
+                    for index in range(4):
+                        assert json.loads((work/f'{TAG}_r{index}.eval.json').read_text())['episodes'] == 100
+                    publish('done.json', dict(time=__import__('time').time(), rounds=3, evals=4, budget=200))
+                    chain.log('COMPLETE: evaluation recovery verified all four fixed100 reports')
+            else:
+                chain.run()
             publish('chain.status.json', dict(pid=os.getpid(), phase='done', passing_originals=200,
                     controller_script=Path(__file__).name, resource_recovery=True))
         except BaseException as error:

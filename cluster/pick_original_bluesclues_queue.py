@@ -61,7 +61,14 @@ def capacity():
     time.sleep(2)
     after = account_cpu_snapshot()
     cpu = account_cpu_fraction(before, after, os.cpu_count())
-    xml = ET.fromstring(subprocess.check_output(['nvidia-smi', '-q', '-x'], text=True, timeout=10))
+    try:
+        xml = ET.fromstring(subprocess.check_output(['nvidia-smi', '-q', '-x'], text=True, timeout=10))
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError, ET.ParseError) as error:
+        # A failed observation is neither free capacity nor a failed experiment.
+        # Let the caller's existing wait loop try again without reserving a GPU.
+        return dict(cpu_fraction=None, cpu_measurement_complete=False,
+                    cpu_measurement='unavailable', observed_at=time.time(),
+                    occupied=[], free=[], gpu_observation_error=repr(error))
     occupied, free = set(), []
     for index, gpu in enumerate(xml.findall('gpu')):
         processes = gpu.findall('processes/process_info')
