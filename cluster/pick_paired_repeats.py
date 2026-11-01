@@ -89,6 +89,8 @@ def release_devices(gpus):
 
 def verify_inputs(request):
     runtime = ROOT/'wt/pick200-original-spares'
+    asset = ROOT/'DreamVLA/Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_29dof_with_hands_min_collisions_flat_white.usd'
+    assert asset.is_file(), f'Original evaluation working-directory asset missing: {asset}'
     assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=runtime,
                                    text=True).strip() == PIN
     for name in request['scientific_files']:
@@ -173,7 +175,7 @@ def run(request_file):
                     '--seed', str(task['seed']), '--traj-dump', str(output/f"b{task['shard']}")]
                 try:
                     with (work/f'{label}.log').open('x') as log:
-                        child = subprocess.Popen(command, cwd=runtime/'Training',
+                        child = subprocess.Popen(command, cwd=ROOT/'DreamVLA/Training',
                             env=dict(env, CUDA_VISIBLE_DEVICES=str(gpu)),
                             stdout=log, stderr=subprocess.STDOUT)
                         receipt = dict(task, pid=child.pid, started=time.time(), gpu=gpu,
@@ -183,8 +185,8 @@ def run(request_file):
                     write(work/f'{label}.exit.json', dict(code=code, time=time.time()))
                     assert code == 0, (label, code)
                     paths = list(output.glob(f"b{task['shard']}_*_traj.npz"))
-                    assert sorted(int(re.search(r'_m(\d+)_traj.npz$', p.name)[1])
-                                  for p in paths) == task['ids']
+                    found = sorted(int(re.search(r'_m(\d+)_traj.npz$', p.name)[1]) for p in paths)
+                    assert found == task['ids'], (label, 'Saved trajectory IDs', found, 'expected', task['ids'])
                     assert all(p.stat().st_size > 0 for p in paths)
                     with mutex:
                         completed.append(label)
