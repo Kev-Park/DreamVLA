@@ -36,7 +36,7 @@ def command_for_batch(command, work, name):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tag',required=True)
-    parser.add_argument('--batch',type=int,choices=(18,19),required=True)
+    parser.add_argument('--batch',type=int,choices=(17,18,19),required=True)
     parser.add_argument('--gpu',type=int,required=True)
     args=parser.parse_args()
     assert args.tag=='walk200_v3_histwindow65_20261029'
