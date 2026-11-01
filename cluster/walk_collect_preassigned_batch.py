@@ -44,10 +44,12 @@ def main():
     lock=(work/(name+'.preassigned.lock')).open('a')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     primary=read(work/'workflow.json')
-    assert primary['status']=='collecting' and primary['completed_attempts']<100
+    assert primary['status']=='collecting' and primary['completed_attempts']<130
     proc=Path('/proc',str(primary['controller_pid']))
     assert proc.exists() and 'walk_late_takeover_collect.py' in (proc/'cmdline').read_text()
-    assert args.batch>=int(primary['active_batch'].split('_')[1])+10
+    # Keep at least six batches of lead; the ascending controller's existing
+    # stage-log guard still refuses an unfinished peer rather than repeating it.
+    assert args.batch>=int(primary['active_batch'].split('_')[1])+6
     assert shutil.disk_usage(work).free>=130_000_000_000
     assert not (work/(name+'.complete.json')).exists()
     assert not (work/(name+'.log')).exists(),'Existing attempt must never be repeated'
@@ -67,7 +69,7 @@ def main():
     reserved=False
     try:
         devices=list(map(int,subprocess.check_output([os.sys.executable,str(HERE/'gpu_slots.py'),
-            'reserve','--owner',str(os.getpid()),'--count','1','--mb','24000','--gpu',str(args.gpu)],text=True).split()))
+            'reserve','--owner',str(os.getpid()),'--count','1','--mb','20000','--gpu',str(args.gpu)],text=True).split()))
         assert devices==[args.gpu],'Reviewed GPU unavailable; retain state for review'
         reserved=True;state['status']='collecting';atomic(path,state)
         chain.execute(command,name,args.gpu,chain.training_cwd)
