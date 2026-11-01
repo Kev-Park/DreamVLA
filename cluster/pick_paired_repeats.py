@@ -102,7 +102,7 @@ def verify_inputs(request):
     assert [p.name for p in files] == [r['name'] for r in expected]
     for p, row in zip(files, expected):
         assert hashlib.sha256(p.read_bytes()).hexdigest() == row['sha256']
-    env = json.loads((baseline/'eval_environment.json').read_text())
+    env = dict(original['environment'], HS_EVAL_NO_EE_TERM='1')
     assert env == request['eval_environment'] and env['HS_EVAL_NO_EE_TERM'] == '1'
     for r, step in STEPS.items():
         ck = ROOT/'checkpoints'/f'{TAG}_r{r}'/f'checkpoint-{step}'
@@ -150,6 +150,7 @@ def run(request_file):
             if key.startswith('HS_'):
                 del env[key]
         env.update(request['eval_environment'])
+        env['PYTHONPATH'] = str(runtime/'Training/scripts/reinforcement_learning/rsl_rl')
 
         def worker(lane):
             gpu = request['gpus'][lane//2]
