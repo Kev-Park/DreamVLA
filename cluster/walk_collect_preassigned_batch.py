@@ -36,7 +36,7 @@ def command_for_batch(command, work, name):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tag',required=True)
-    parser.add_argument('--batch',type=int,choices=(17,18,19),required=True)
+    parser.add_argument('--batch',type=int,choices=(16,17,18,19),required=True)
     parser.add_argument('--gpu',type=int,required=True)
     args=parser.parse_args()
     assert args.tag=='walk200_v3_histwindow65_20261029'
@@ -47,9 +47,11 @@ def main():
     assert primary['status']=='collecting' and primary['completed_attempts']<130
     proc=Path('/proc',str(primary['controller_pid']))
     assert proc.exists() and 'walk_late_takeover_collect.py' in (proc/'cmdline').read_text()
-    # Keep at least six batches of lead; the ascending controller's existing
+    # Batch16 may start four batches ahead as the other peers finish. The
+    # ascending controller's existing
     # stage-log guard still refuses an unfinished peer rather than repeating it.
-    assert args.batch>=int(primary['active_batch'].split('_')[1])+6
+    minimum_lead=4 if args.batch==16 else 6
+    assert args.batch>=int(primary['active_batch'].split('_')[1])+minimum_lead
     assert shutil.disk_usage(work).free>=130_000_000_000
     assert not (work/(name+'.complete.json')).exists()
     assert not (work/(name+'.log')).exists(),'Existing attempt must never be repeated'
