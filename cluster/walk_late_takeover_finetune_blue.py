@@ -52,8 +52,7 @@ def main():
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(args.gpu),
                XLA_PYTHON_CLIENT_PREALLOCATE='false', WANDB_MODE='offline',
                TOKENIZERS_PARALLELISM='false', OMP_NUM_THREADS='4',
-               MKL_NUM_THREADS='4', OPENBLAS_NUM_THREADS='1',
-               HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1')
+               MKL_NUM_THREADS='4', OPENBLAS_NUM_THREADS='1')
     state = {'status': 'starting', 'pid': os.getpid(), 'tag': tag,
              'training_host': 'bluesclues', 'gpu': args.gpu,
              'cpu_mask': sorted(os.sched_getaffinity(0)), 'command': command,
