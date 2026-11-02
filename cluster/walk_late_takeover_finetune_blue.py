@@ -89,7 +89,8 @@ def main():
         raise
     finally:
         if child is None or child.poll() is not None:
-            subprocess.run(slots + ['release', '--owner', str(os.getpid())], check=True)
+            subprocess.run(slots + ['release', '--owner', str(os.getpid()),
+                                   '--gpu', str(args.gpu)], check=True)
 
 
 if __name__ == '__main__':
