@@ -23,7 +23,11 @@ def assignment(current_batch,extra_peer=False,devices=None):
         devices=(4,6,7) if extra_peer else (4,6)
     if not devices:
         return None
-    start=max((20+len(devices))//(len(devices)+1),current_batch+3)
+    # Actual expert collection measured ~90 s/100 steps on GPU0 versus
+    # ~28 s on idle peers. Give the slower parent fewer complete batches;
+    # preserve the same three-batch launch lead and canonical batch seeds.
+    effective_workers=1+3*len(devices)
+    start=max((20+effective_workers-1)//effective_workers,current_batch+3)
     if start>=20:
         return None
     return dict(first=start,hold_after=start-1,
@@ -90,7 +94,8 @@ def launch(round_id):
             return dict(status='waiting_for_resources',round=round_id,occupied_requested_gpu=gpu)
     review=dict(status='launching',round=round_id,checkpoint=str(checkpoint),plan=plan,
                 cpu=cpu,mask=mask,account_devices=sorted(own),free_bytes=free,
-                extra_collection_peer=extra,at=time.time(),launched=[])
+                extra_collection_peer=extra,parent_relative_batch_cost=3,
+                at=time.time(),launched=[])
     atomic(receipt,review)
     for gpu,batches in groups.items():
         name=f'walk_skipstart_r{round_id}_peer{gpu}_kevin'
