@@ -18,11 +18,14 @@ from gr00t_budget_chain import ROOT, HERE, atomic, read, checkpoint_ok
 from walk_skipstart_chain import TAG
 
 
-def assignment(current_batch,extra_peer=False):
-    start=max(5 if extra_peer else 7,current_batch+3)
+def assignment(current_batch,extra_peer=False,devices=None):
+    if devices is None:
+        devices=(4,6,7) if extra_peer else (4,6)
+    if not devices:
+        return None
+    start=max((20+len(devices))//(len(devices)+1),current_batch+3)
     if start>=20:
         return None
-    devices=(4,6,7) if extra_peer else (4,6)
     return dict(first=start,hold_after=start-1,
                 groups={gpu:list(range(start+offset,20,len(devices)))
                         for offset,gpu in enumerate(devices)})
@@ -51,11 +54,19 @@ def launch(round_id):
             if q.exists() and q.stat().st_uid==os.getuid():own.add(i)
     slots=[s for s in read(ROOT/'dline/gpu_slots.json') if Path('/proc',str(s['owner'])).exists()]
     own.update(s['gpu'] for s in slots)
-    extra=(free>=80_000_000_000 and len(own|{0,4,5,6,7})<=5
-           and not tree.findall('gpu')[7].findall('processes/process_info')
-           and not any(s['gpu']==7 for s in slots))
+    devices=[]
+    limit=3 if free>=80_000_000_000 else 2
+    for gpu in (4,6,7,9):
+        if (not tree.findall('gpu')[gpu].findall('processes/process_info')
+            and not any(s['gpu']==gpu for s in slots)
+            and len(own|{0,5}|set(devices)|{gpu})<=5):
+            devices.append(gpu)
+        if len(devices)==limit:break
+    if not devices:
+        return dict(status='waiting_for_resources',round=round_id,reason='No idle unreserved peer GPU within account cap')
+    extra=len(devices)==3
     indices=[int(p.name.split('batch')[1].split('.')[0]) for p in w.glob(f'r{round_id}_batch*.process.json')]
-    plan=assignment(max(indices,default=-1),extra_peer=extra)
+    plan=assignment(max(indices,default=-1),devices=devices)
     if plan is None:
         return dict(status='too_late_for_peers',round=round_id)
     groups={gpu:ids for gpu,ids in plan['groups'].items() if ids}

@@ -286,7 +286,7 @@ def main():
     chain = FreshChain()
     if args.dagger_peer_round is not None:
         round_id = args.dagger_peer_round
-        assert args.collection_gpu in (4,6,7)
+        assert args.collection_gpu in (4,6,7,9)
         assert len(set(args.dagger_peer_batches)) == len(args.dagger_peer_batches)
         trained = base.read(chain.work/f'{TAG}_r{round_id-1}.trained.json')
         checkpoint = Path(trained['checkpoint'])
