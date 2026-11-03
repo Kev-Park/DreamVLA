@@ -43,6 +43,7 @@ class FreshChain(WalkChain):
         self.data.mkdir(exist_ok=True)
         self.ids = list(range(200))
         self.sources = []
+        self.collection_gpu = 0
 
     def slots(self, count, mb):
         assert count == 1
@@ -102,7 +103,7 @@ class FreshChain(WalkChain):
                      '--dagger-chunk', '8', '--dagger-rescue', '--dagger-rescue-box', 'file:'+str(self.work/'box.json'),
                      '--dagger-rescue-k-frac', '1.0', '--dagger-rescue-blend', '0',
                      '--dagger-expert-base', 'reference', '--dagger-rollouts', '1']
-        gpu = self.reserve(0, 20000)[0]
+        gpu = self.reserve(self.collection_gpu, 20000)[0]
         try:
             self.execute(args, name, gpu, self.training_cwd)
         finally:
@@ -228,7 +229,28 @@ class FreshChain(WalkChain):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--base-peer-batches', nargs='+', type=int, choices=range(10,20))
+    parser.add_argument('--collection-gpu', type=int, choices=(4,5,6))
+    args = parser.parse_args()
+    assert bool(args.base_peer_batches) == (args.collection_gpu is not None)
     chain = FreshChain()
+    if args.base_peer_batches:
+        # Parent already owns batches0-9. These disjoint future batches must be
+        # completed before the parent arrives; never replace an active worker.
+        assert len(set(args.base_peer_batches)) == len(args.base_peer_batches)
+        chain.collection_gpu = args.collection_gpu
+        order = list(range(200)); random.Random(42).shuffle(order)
+        state = chain.work/f'base_peer_gpu{args.collection_gpu}.json'
+        try:
+            for batch in args.base_peer_batches:
+                base.atomic(state, dict(pid=os.getpid(), batch=batch, at=time.time(), status='collecting'))
+                chain.batch(f'base_initial_{batch:03d}', order[batch*10:(batch+1)*10])
+            base.atomic(state, dict(pid=os.getpid(), at=time.time(), status='complete'))
+        except BaseException as exc:
+            base.atomic(state, dict(pid=os.getpid(), at=time.time(), status='failed', error=repr(exc)))
+            raise
+        return
     try:
         chain.run()
     except BaseException as exc:
