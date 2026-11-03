@@ -24,6 +24,33 @@ from watch_t20max_v3 import command, environment
 TAG = 'walk200_v3_skipstart_20261102'
 
 
+def wait_owned_controller(pid, poll_seconds=30):
+    """Wait for this exact controller, including Python builds without pidfd."""
+    import select
+    proc = Path('/proc')/str(pid)
+    assert proc.stat().st_uid == os.getuid()
+    assert b'walk_skipstart_chain.py' in (proc/'cmdline').read_bytes()
+    if hasattr(os, 'pidfd_open'):
+        fd = os.pidfd_open(pid)
+        try:
+            select.select([fd], [], [])
+        finally:
+            os.close(fd)
+        return
+    # /proc start time prevents a reused PID from being mistaken for the
+    # original process. The caller separately requires its completion receipt.
+    fields = (proc/'stat').read_text().rsplit(')', 1)[1].split()
+    started = fields[19]
+    while True:
+        try:
+            fields = (proc/'stat').read_text().rsplit(')', 1)[1].split()
+        except FileNotFoundError:
+            return
+        if fields[19] != started or fields[0] == 'Z':
+            return
+        time.sleep(poll_seconds)
+
+
 class FreshChain(WalkChain):
     def __init__(self):
         # Avoid creating the old chain's working directory or changing it.
@@ -242,18 +269,20 @@ def main():
     assert bool(args.base_peer_batches or args.dagger_peer_batches) == (args.collection_gpu is not None)
     assert bool(args.dagger_peer_batches) == (args.dagger_peer_round is not None)
     if args.after_pid is not None:
-        import select
         assert args.base_peer_batches and args.collection_gpu in (5,6,7)
-        proc = Path('/proc')/str(args.after_pid)
-        assert proc.stat().st_uid == os.getuid()
-        assert b'walk_skipstart_chain.py' in (proc/'cmdline').read_bytes()
-        fd = os.pidfd_open(args.after_pid)
+        deferred = base.ROOT/'dline'/TAG/f'deferred_base_gpu{args.collection_gpu}.json'
+        base.atomic(deferred, dict(status='waiting', pid=os.getpid(),
+            predecessor_pid=args.after_pid, batches=args.base_peer_batches, at=time.time()))
         try:
-            select.select([fd], [], [])
-        finally:
-            os.close(fd)
-        receipt = base.read(base.ROOT/'dline'/TAG/f'base_peer_gpu{args.collection_gpu}.json')
-        assert receipt['pid'] == args.after_pid and receipt['status'] == 'complete', receipt
+            wait_owned_controller(args.after_pid)
+            receipt = base.read(base.ROOT/'dline'/TAG/f'base_peer_gpu{args.collection_gpu}.json')
+            assert receipt['pid'] == args.after_pid and receipt['status'] == 'complete', receipt
+            base.atomic(deferred, dict(status='ready', pid=os.getpid(),
+                predecessor_pid=args.after_pid, batches=args.base_peer_batches, at=time.time()))
+        except BaseException as exc:
+            base.atomic(deferred, dict(status='failed', pid=os.getpid(),
+                predecessor_pid=args.after_pid, error=repr(exc), at=time.time()))
+            raise
     chain = FreshChain()
     if args.dagger_peer_round is not None:
         round_id = args.dagger_peer_round
@@ -290,8 +319,14 @@ def main():
                 base.atomic(state, dict(pid=os.getpid(), batch=batch, at=time.time(), status='collecting'))
                 chain.batch(f'base_initial_{batch:03d}', order[batch*10:(batch+1)*10])
             base.atomic(state, dict(pid=os.getpid(), at=time.time(), status='complete'))
+            if args.after_pid is not None:
+                base.atomic(deferred, dict(status='complete', pid=os.getpid(),
+                    predecessor_pid=args.after_pid, batches=args.base_peer_batches, at=time.time()))
         except BaseException as exc:
             base.atomic(state, dict(pid=os.getpid(), at=time.time(), status='failed', error=repr(exc)))
+            if args.after_pid is not None:
+                base.atomic(deferred, dict(status='failed', pid=os.getpid(),
+                    predecessor_pid=args.after_pid, error=repr(exc), at=time.time()))
             raise
         return
     try:
