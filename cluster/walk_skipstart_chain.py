@@ -231,13 +231,27 @@ class FreshChain(WalkChain):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--base-peer-batches', nargs='+', type=int, choices=range(7,20))
+    parser.add_argument('--base-peer-batches', nargs='+', type=int, choices=range(4,20))
     parser.add_argument('--collection-gpu', type=int, choices=(4,5,6,7))
+    parser.add_argument('--after-pid', type=int)
     args = parser.parse_args()
     assert bool(args.base_peer_batches) == (args.collection_gpu is not None)
+    if args.after_pid is not None:
+        import select
+        assert args.base_peer_batches and args.collection_gpu in (5,6,7)
+        proc = Path('/proc')/str(args.after_pid)
+        assert proc.stat().st_uid == os.getuid()
+        assert b'walk_skipstart_chain.py' in (proc/'cmdline').read_bytes()
+        fd = os.pidfd_open(args.after_pid)
+        try:
+            select.select([fd], [], [])
+        finally:
+            os.close(fd)
+        receipt = base.read(base.ROOT/'dline'/TAG/f'base_peer_gpu{args.collection_gpu}.json')
+        assert receipt['pid'] == args.after_pid and receipt['status'] == 'complete', receipt
     chain = FreshChain()
     if args.base_peer_batches:
-        # Parent already owns batches0-6. These disjoint future batches must be
+        # Parent owns the initial batches. Disjoint future batches must be
         # completed before the parent arrives; never replace an active worker.
         assert len(set(args.base_peer_batches)) == len(args.base_peer_batches)
         chain.collection_gpu = args.collection_gpu
