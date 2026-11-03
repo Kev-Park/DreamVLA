@@ -68,14 +68,17 @@ def launch():
     slots=[s for s in read(ROOT/'dline/gpu_slots.json') if Path('/proc',str(s['owner'])).exists()]
     own.update(s['gpu'] for s in slots)
     free=shutil.disk_usage(w).free
-    if (projected>20 or len(own|{0,9})>5 or free<65_000_000_000
-        or tree.findall('gpu')[9].findall('processes/process_info')
-        or any(s['gpu']==9 for s in slots)):
+    available=[gpu for gpu in (9,7,6)
+               if not tree.findall('gpu')[gpu].findall('processes/process_info')
+               and not any(s['gpu']==gpu for s in slots)
+               and len(own|{0,gpu})<=5]
+    if projected>20 or free<65_000_000_000 or not available:
         return dict(status='waiting_for_resources',cpu=cpu,projected_cpu_pct=projected,
-                    account_devices=sorted(own),free_bytes=free)
+                    account_devices=sorted(own),free_bytes=free,available_peer_gpus=available)
+    gpu=available[0]
     name='walk_skipstart_earlyfill_kevin'
     assert subprocess.run(['tmux','has-session','-t',name],capture_output=True).returncode!=0
-    review=dict(status='launching',proof=proof,cpu=cpu,mask=mask,gpu=9,
+    review=dict(status='launching',proof=proof,cpu=cpu,mask=mask,gpu=gpu,
                 account_devices=sorted(own),free_bytes=free,tmux=name,at=time.time())
     atomic(receipt,review)
     cmd=[str(ROOT/'wt/locomotion/.venv/bin/python'),'-u',str(Path(__file__)),'--worker']
@@ -86,9 +89,9 @@ def launch():
 
 
 def worker():
-    chain=FreshChain();chain.collection_gpu=9
-    proof=read(chain.work/'early_fill1.launch.json')['proof']
-    state=chain.work/'retry_peer_earlyfill1_gpu9.json'
+    chain=FreshChain();receipt=read(chain.work/'early_fill1.launch.json')
+    chain.collection_gpu=receipt['gpu'];proof=receipt['proof']
+    state=chain.work/f'retry_peer_earlyfill1_gpu{chain.collection_gpu}.json'
     try:
         atomic(state,dict(status='collecting',pid=os.getpid(),batch=0,at=time.time()))
         chain.batch('base_fill1_000',proof['ids'],sampled=True,seed=proof['seed'])
