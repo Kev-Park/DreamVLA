@@ -36,7 +36,11 @@ def retry_ids(reports, sweep):
 
 
 def assignment(total_batches,current_batch):
-    first=max(2,current_batch+3)
+    # Keep the current and next parent batches ahead of peers. Every parent
+    # batch before the last contains ten sequential Isaac attempts, so this
+    # leaves ample lead for launch and archive-gate installation while avoiding
+    # an extra serial ten-reference batch after a late scheduler observation.
+    first=max(2,current_batch+2)
     if first>=total_batches:
         return None
     return dict(first=first,hold_after=first-1,total=total_batches,
