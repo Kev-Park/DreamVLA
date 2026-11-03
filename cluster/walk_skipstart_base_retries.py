@@ -87,6 +87,10 @@ def launch(sweep,is_fill=False):
     assert not (w/'abort.json').exists()
     if (w/'base_manifest.json').exists():
         return dict(status='base_completed',sweep=sweep)
+    # The local archive fence holds the parent at retry3 until this early
+    # batch converts. Do not install a later fill-stage fence prematurely.
+    if is_fill and (w/'early_fill1.launch.json').exists() and not (w/'base_fill1_000.converted.json').exists():
+        return dict(status='waiting_for_early_fill',sweep=sweep)
     reports={p.name.removesuffix('.converted.json'):read(p) for p in w.glob('base_*.converted.json')}
     ids=fill_ids(reports,sweep) if is_fill else retry_ids(reports,sweep)
     if ids is None:
