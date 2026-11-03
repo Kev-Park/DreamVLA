@@ -231,13 +231,13 @@ class FreshChain(WalkChain):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--base-peer-batches', nargs='+', type=int, choices=range(10,20))
-    parser.add_argument('--collection-gpu', type=int, choices=(4,5,6))
+    parser.add_argument('--base-peer-batches', nargs='+', type=int, choices=range(7,20))
+    parser.add_argument('--collection-gpu', type=int, choices=(4,5,6,7))
     args = parser.parse_args()
     assert bool(args.base_peer_batches) == (args.collection_gpu is not None)
     chain = FreshChain()
     if args.base_peer_batches:
-        # Parent already owns batches0-9. These disjoint future batches must be
+        # Parent already owns batches0-6. These disjoint future batches must be
         # completed before the parent arrives; never replace an active worker.
         assert len(set(args.base_peer_batches)) == len(args.base_peer_batches)
         chain.collection_gpu = args.collection_gpu
