@@ -35,17 +35,17 @@ def retry_ids(reports, sweep):
     return ids
 
 
-def assignment(total_batches,current_batch):
+def assignment(total_batches,current_batch,gpus=(4,6)):
     # Keep the current and next parent batches ahead of peers. Every parent
     # batch before the last contains ten sequential Isaac attempts, so this
     # leaves ample lead for launch and archive-gate installation while avoiding
     # an extra serial ten-reference batch after a late scheduler observation.
     first=max(2,current_batch+2)
-    if first>=total_batches:
+    if first>=total_batches or not gpus:
         return None
     return dict(first=first,hold_after=first-1,total=total_batches,
-                groups={g:list(range(first+offset,total_batches,2))
-                        for offset,g in enumerate((4,6))})
+                groups={g:list(range(first+offset,total_batches,len(gpus)))
+                        for offset,g in enumerate(gpus)})
 
 
 def fill_ids(reports, fill):
@@ -98,11 +98,6 @@ def launch(sweep,is_fill=False):
     plan=assignment((len(ids)+9)//10,max(current,default=-1))
     if plan is None:
         return dict(status='too_small_or_late',sweep=sweep)
-    groups={gpu:batches for gpu,batches in plan['groups'].items() if batches}
-    for batches in groups.values():
-        for batch in batches:
-            name=f'{prefix}_{batch:03d}'
-            assert not (w/(name+'.log')).exists() and not (ROOT/'datasets'/TAG/'raw'/name).exists(),name
     cpu=sample_account_cpu(2);assert cpu['cpu_measurement_complete']
     mask=read(ROOT/'dline/cpu_share.json')['shared_mask'][:12]
     assert len(mask)==12
@@ -113,13 +108,23 @@ def launch(sweep,is_fill=False):
         for proc in gpu.findall('processes/process_info'):
             p=Path('/proc',proc.findtext('pid'))
             if p.exists() and p.stat().st_uid==os.getuid():own.add(i)
-    own.update(s['gpu'] for s in read(ROOT/'dline/gpu_slots.json') if Path('/proc',str(s['owner'])).exists())
+    slots=[s for s in read(ROOT/'dline/gpu_slots.json') if Path('/proc',str(s['owner'])).exists()]
+    own.update(s['gpu'] for s in slots)
+    available=tuple(g for g in (4,6)
+                    if not tree.findall('gpu')[g].findall('processes/process_info')
+                    and not any(s['gpu']==g for s in slots))
+    if not available:
+        return dict(status='waiting_for_resources',sweep=sweep,reason='requested GPUs occupied or reserved')
+    plan=assignment((len(ids)+9)//10,max(current,default=-1),available)
+    groups={gpu:batches for gpu,batches in plan['groups'].items() if batches}
+    for batches in groups.values():
+        for batch in batches:
+            name=f'{prefix}_{batch:03d}'
+            assert not (w/(name+'.log')).exists() and not (ROOT/'datasets'/TAG/'raw'/name).exists(),name
     free=shutil.disk_usage(w).free
     if projected>20 or len(own|set(groups)|{0})>5 or free<65_000_000_000:
         return dict(status='waiting_for_resources',sweep=sweep,cpu=cpu,projected_cpu_pct=projected,
                     account_devices=sorted(own),free_bytes=free)
-    if any(tree.findall('gpu')[g].findall('processes/process_info') for g in groups):
-        return dict(status='waiting_for_resources',sweep=sweep,reason='requested GPU occupied')
     review=dict(status='launching',sweep=sweep,is_fill=is_fill,prefix=prefix,ids=ids,
                 seed=(120000 if is_fill else 12000)+sweep,
                 plan=plan,cpu=cpu,mask=mask,account_devices=sorted(own),launched=[],at=time.time())
