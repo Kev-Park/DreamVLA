@@ -110,9 +110,9 @@ def launch(sweep,is_fill=False):
             if p.exists() and p.stat().st_uid==os.getuid():own.add(i)
     slots=[s for s in read(ROOT/'dline/gpu_slots.json') if Path('/proc',str(s['owner'])).exists()]
     own.update(s['gpu'] for s in slots)
-    available=tuple(g for g in (4,6)
+    available=tuple(g for g in (4,6,9)
                     if not tree.findall('gpu')[g].findall('processes/process_info')
-                    and not any(s['gpu']==g for s in slots))
+                    and not any(s['gpu']==g for s in slots))[:2]
     if not available:
         return dict(status='waiting_for_resources',sweep=sweep,reason='requested GPUs occupied or reserved')
     plan=assignment((len(ids)+9)//10,max(current,default=-1),available)
@@ -165,7 +165,7 @@ if __name__=='__main__':
     stage=p.add_mutually_exclusive_group(required=True)
     stage.add_argument('--sweep',type=int,choices=(1,2,3))
     stage.add_argument('--fill',type=int,choices=range(1,31))
-    p.add_argument('--worker-gpu',type=int,choices=(4,6))
+    p.add_argument('--worker-gpu',type=int,choices=(4,6,9))
     args=p.parse_args()
     number=args.fill if args.fill is not None else args.sweep
     if args.worker_gpu is None:print(json.dumps(launch(number,args.fill is not None)))
