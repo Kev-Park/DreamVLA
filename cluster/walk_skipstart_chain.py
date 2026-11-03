@@ -82,8 +82,9 @@ class FreshChain(WalkChain):
             assert result['requested_ids'] == ids
             self.await_archive(name)
             return result
-        while shutil.disk_usage(self.data).free < 25_000_000_000:
-            self.log('WAIT disk: need25GB before next bounded batch; no deletion')
+        reserve = 65_000_000_000 if self.collection_gpu else 25_000_000_000
+        while shutil.disk_usage(self.data).free < reserve:
+            self.log(f'WAIT disk: need{reserve}bytes before next bounded batch; no deletion')
             time.sleep(30)
         raw = self.data/'raw'/name
         raw.mkdir(parents=True, exist_ok=False)
