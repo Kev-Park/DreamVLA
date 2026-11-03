@@ -201,7 +201,11 @@ class FreshChain(WalkChain):
         done = self.work/(name+'.dataset.json')
         if not done.exists():
             assert not out.exists(), 'Incomplete dataset requires reconciliation'
-            self.execute([sys.executable, base.HERE/'merge_lerobot.py', '--shards', *datasets,
+            # Use the exact environment convert_sharded.sh uses for its merges;
+            # the simulation interpreter intentionally has no LeRobot package.
+            wbc = Path(self.env.get('GR00T_WHOLEBODYCONTROL_DIR',
+                                    str(base.ROOT/'GR00T-WholeBodyControl')))
+            self.execute([wbc/'.venv_data_collection/bin/python', base.HERE/'merge_lerobot.py', '--shards', *datasets,
                           '--out', out], 'merge_'+name)
             info = base.read(out/'meta/info.json')
             assert info['total_episodes'] == expected
