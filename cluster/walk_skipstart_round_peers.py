@@ -1,0 +1,96 @@
+"""Task-scoped preflight for future parallel walking DAgger collection.
+
+Never changes or restarts an active collector. Existing account jobs are only
+observed; unavailable resources defer this task rather than modifying them.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import time
+import xml.etree.ElementTree as ET
+
+from account_cpu_usage import sample_account_cpu
+from gr00t_budget_chain import ROOT, HERE, atomic, read, checkpoint_ok
+from walk_skipstart_chain import TAG
+
+
+def assignment(current_batch):
+    start=max(7,current_batch+3)
+    if start>=20:
+        return None
+    return dict(first=start,hold_after=start-1,
+                groups={4:list(range(start,20,2)),6:list(range(start+1,20,2))})
+
+
+def launch(round_id):
+    w=ROOT/'dline'/TAG
+    receipt=w/f'r{round_id}.peers.launch.json'
+    if receipt.exists():
+        prior=read(receipt)
+        assert prior['status']=='complete','Partial launch requires reconciliation, not retry'
+        return prior
+    trained=w/f'{TAG}_r{round_id-1}.trained.json'
+    if not trained.exists():
+        return dict(status='waiting_for_checkpoint',round=round_id)
+    assert not (w/'abort.json').exists(),'Main controller has failed; review before any new work'
+    checkpoint=Path(read(trained)['checkpoint']);assert checkpoint_ok(checkpoint)
+    if (w/f'collection_r{round_id}.json').exists():
+        return dict(status='already_collected',round=round_id)
+    indices=[int(p.name.split('batch')[1].split('.')[0]) for p in w.glob(f'r{round_id}_batch*.process.json')]
+    plan=assignment(max(indices,default=-1))
+    if plan is None:
+        return dict(status='too_late_for_peers',round=round_id)
+    groups={gpu:ids for gpu,ids in plan['groups'].items() if ids}
+    for ids in groups.values():
+        for batch in ids:
+            label=f'r{round_id}_batch{batch:03d}'
+            assert not (w/(label+'.log')).exists(),'Future batch already attempted; reconcile first'
+            assert not (ROOT/'datasets'/TAG/'raw'/label).exists()
+    cpu=sample_account_cpu(2)
+    assert cpu['cpu_measurement_complete']
+    mask=read(ROOT/'dline/cpu_share.json')['shared_mask'][:12]
+    assert len(mask)==12
+    projected=cpu['account_cpu_pct']+(len(mask)+1)/os.cpu_count()*100
+    if projected>20:
+        return dict(status='waiting_for_resources',round=round_id,cpu=cpu,projected_cpu_pct=projected)
+    tree=ET.fromstring(subprocess.check_output(['nvidia-smi','-q','-x'],text=True))
+    own=set()
+    for i,node in enumerate(tree.findall('gpu')):
+        for p in node.findall('processes/process_info'):
+            q=Path('/proc',p.findtext('pid'))
+            if q.exists() and q.stat().st_uid==os.getuid():own.add(i)
+    slots=read(ROOT/'dline/gpu_slots.json')
+    slots=[s for s in slots if Path('/proc',str(s['owner'])).exists()]
+    own.update(s['gpu'] for s in slots)
+    if len(own|set(groups)|{0,5})>5 or shutil.disk_usage(w).free<47_000_000_000:
+        return dict(status='waiting_for_resources',round=round_id,account_devices=sorted(own),
+                    free_bytes=shutil.disk_usage(w).free)
+    for gpu in groups:
+        if tree.findall('gpu')[gpu].findall('processes/process_info'):
+            return dict(status='waiting_for_resources',round=round_id,occupied_requested_gpu=gpu)
+    review=dict(status='launching',round=round_id,checkpoint=str(checkpoint),plan=plan,
+                cpu=cpu,mask=mask,account_devices=sorted(own),at=time.time(),launched=[])
+    atomic(receipt,review)
+    for gpu,batches in groups.items():
+        name=f'walk_skipstart_r{round_id}_peer{gpu}_kevin'
+        assert subprocess.run(['tmux','has-session','-t',name],capture_output=True).returncode!=0
+        cmd=[str(ROOT/'wt/locomotion/.venv/bin/python'),'-u',str(HERE/'walk_skipstart_chain.py'),
+             '--collection-gpu',str(gpu),'--dagger-peer-round',str(round_id),
+             '--dagger-peer-batches',*map(str,batches)]
+        shell='export XLA_PYTHON_CLIENT_PREALLOCATE=false\nexec taskset -c '+','.join(map(str,mask))+' '+shlex.join(cmd)+' > '+shlex.quote(str(w/f'r{round_id}_peer{gpu}.log'))+' 2>&1'
+        subprocess.run(['tmux','new-session','-d','-s',name,'bash','-lc',shell],check=True)
+        review['launched'].append(dict(tmux=name,gpu=gpu,batches=batches,command=cmd))
+        atomic(receipt,review)
+    review.update(status='complete',completed_at=time.time())
+    atomic(receipt,review)
+    return review
+
+
+if __name__=='__main__':
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--round',type=int,choices=(1,2,3),required=True)
+    print(json.dumps(launch(p.parse_args().round)))

@@ -82,7 +82,8 @@ class FreshChain(WalkChain):
             assert result['requested_ids'] == ids
             self.await_archive(name)
             return result
-        reserve = 65_000_000_000 if self.collection_gpu else 25_000_000_000
+        reserve = getattr(self, 'collection_reserve_bytes',
+                          65_000_000_000 if self.collection_gpu else 25_000_000_000)
         while shutil.disk_usage(self.data).free < reserve:
             self.log(f'WAIT disk: need{reserve}bytes before next bounded batch; no deletion')
             time.sleep(30)
@@ -234,8 +235,12 @@ def main():
     parser.add_argument('--base-peer-batches', nargs='+', type=int, choices=range(4,20))
     parser.add_argument('--collection-gpu', type=int, choices=(4,5,6,7))
     parser.add_argument('--after-pid', type=int)
+    parser.add_argument('--dagger-peer-round', type=int, choices=(1,2,3))
+    parser.add_argument('--dagger-peer-batches', nargs='+', type=int, choices=range(7,20))
     args = parser.parse_args()
-    assert bool(args.base_peer_batches) == (args.collection_gpu is not None)
+    assert not (args.base_peer_batches and args.dagger_peer_batches)
+    assert bool(args.base_peer_batches or args.dagger_peer_batches) == (args.collection_gpu is not None)
+    assert bool(args.dagger_peer_batches) == (args.dagger_peer_round is not None)
     if args.after_pid is not None:
         import select
         assert args.base_peer_batches and args.collection_gpu in (5,6,7)
@@ -250,6 +255,29 @@ def main():
         receipt = base.read(base.ROOT/'dline'/TAG/f'base_peer_gpu{args.collection_gpu}.json')
         assert receipt['pid'] == args.after_pid and receipt['status'] == 'complete', receipt
     chain = FreshChain()
+    if args.dagger_peer_round is not None:
+        round_id = args.dagger_peer_round
+        assert args.collection_gpu in (4,6)
+        assert len(set(args.dagger_peer_batches)) == len(args.dagger_peer_batches)
+        trained = base.read(chain.work/f'{TAG}_r{round_id-1}.trained.json')
+        checkpoint = Path(trained['checkpoint'])
+        assert base.checkpoint_ok(checkpoint)
+        chain.collection_gpu = args.collection_gpu
+        # Only three collectors run during DAgger (plus evaluation). Preserve
+        # scratch headroom after the preceding ~25GB checkpoint is saved.
+        chain.collection_reserve_bytes = 45_000_000_000
+        state = chain.work/f'dagger_peer_r{round_id}_gpu{args.collection_gpu}.json'
+        try:
+            for batch in args.dagger_peer_batches:
+                base.atomic(state,dict(pid=os.getpid(),batch=batch,round=round_id,
+                    checkpoint=str(checkpoint),at=time.time(),status='collecting'))
+                chain.batch(f'r{round_id}_batch{batch:03d}',chain.ids[batch*10:(batch+1)*10],
+                            seed=6+round_id,checkpoint=checkpoint)
+            base.atomic(state,dict(pid=os.getpid(),round=round_id,at=time.time(),status='complete'))
+        except BaseException as exc:
+            base.atomic(state,dict(pid=os.getpid(),round=round_id,at=time.time(),status='failed',error=repr(exc)))
+            raise
+        return
     if args.base_peer_batches:
         # Parent owns the initial batches. Disjoint future batches must be
         # completed before the parent arrives; never replace an active worker.
