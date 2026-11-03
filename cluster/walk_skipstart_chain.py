@@ -263,7 +263,7 @@ def main():
     parser.add_argument('--collection-gpu', type=int, choices=(4,5,6,7))
     parser.add_argument('--after-pid', type=int)
     parser.add_argument('--dagger-peer-round', type=int, choices=(1,2,3))
-    parser.add_argument('--dagger-peer-batches', nargs='+', type=int, choices=range(7,20))
+    parser.add_argument('--dagger-peer-batches', nargs='+', type=int, choices=range(5,20))
     args = parser.parse_args()
     assert not (args.base_peer_batches and args.dagger_peer_batches)
     assert bool(args.base_peer_batches or args.dagger_peer_batches) == (args.collection_gpu is not None)
@@ -286,14 +286,14 @@ def main():
     chain = FreshChain()
     if args.dagger_peer_round is not None:
         round_id = args.dagger_peer_round
-        assert args.collection_gpu in (4,6)
+        assert args.collection_gpu in (4,6,7)
         assert len(set(args.dagger_peer_batches)) == len(args.dagger_peer_batches)
         trained = base.read(chain.work/f'{TAG}_r{round_id-1}.trained.json')
         checkpoint = Path(trained['checkpoint'])
         assert base.checkpoint_ok(checkpoint)
         chain.collection_gpu = args.collection_gpu
-        # Only three collectors run during DAgger (plus evaluation). Preserve
-        # scratch headroom after the preceding ~25GB checkpoint is saved.
+        # The launcher uses a fourth collector only with >=80GB scratch free.
+        # Preserve headroom after the preceding ~25GB checkpoint is saved.
         chain.collection_reserve_bytes = 45_000_000_000
         state = chain.work/f'dagger_peer_r{round_id}_gpu{args.collection_gpu}.json'
         try:

@@ -18,12 +18,14 @@ from gr00t_budget_chain import ROOT, HERE, atomic, read, checkpoint_ok
 from walk_skipstart_chain import TAG
 
 
-def assignment(current_batch):
-    start=max(7,current_batch+3)
+def assignment(current_batch,extra_peer=False):
+    start=max(5 if extra_peer else 7,current_batch+3)
     if start>=20:
         return None
+    devices=(4,6,7) if extra_peer else (4,6)
     return dict(first=start,hold_after=start-1,
-                groups={4:list(range(start,20,2)),6:list(range(start+1,20,2))})
+                groups={gpu:list(range(start+offset,20,len(devices)))
+                        for offset,gpu in enumerate(devices)})
 
 
 def launch(round_id):
@@ -40,8 +42,20 @@ def launch(round_id):
     checkpoint=Path(read(trained)['checkpoint']);assert checkpoint_ok(checkpoint)
     if (w/f'collection_r{round_id}.json').exists():
         return dict(status='already_collected',round=round_id)
+    tree=ET.fromstring(subprocess.check_output(['nvidia-smi','-q','-x'],text=True))
+    free=shutil.disk_usage(w).free
+    own=set()
+    for i,node in enumerate(tree.findall('gpu')):
+        for p in node.findall('processes/process_info'):
+            q=Path('/proc',p.findtext('pid'))
+            if q.exists() and q.stat().st_uid==os.getuid():own.add(i)
+    slots=[s for s in read(ROOT/'dline/gpu_slots.json') if Path('/proc',str(s['owner'])).exists()]
+    own.update(s['gpu'] for s in slots)
+    extra=(free>=80_000_000_000 and len(own|{0,4,5,6,7})<=5
+           and not tree.findall('gpu')[7].findall('processes/process_info')
+           and not any(s['gpu']==7 for s in slots))
     indices=[int(p.name.split('batch')[1].split('.')[0]) for p in w.glob(f'r{round_id}_batch*.process.json')]
-    plan=assignment(max(indices,default=-1))
+    plan=assignment(max(indices,default=-1),extra_peer=extra)
     if plan is None:
         return dict(status='too_late_for_peers',round=round_id)
     groups={gpu:ids for gpu,ids in plan['groups'].items() if ids}
@@ -57,23 +71,15 @@ def launch(round_id):
     projected=cpu['account_cpu_pct']+(len(mask)+1)/os.cpu_count()*100
     if projected>20:
         return dict(status='waiting_for_resources',round=round_id,cpu=cpu,projected_cpu_pct=projected)
-    tree=ET.fromstring(subprocess.check_output(['nvidia-smi','-q','-x'],text=True))
-    own=set()
-    for i,node in enumerate(tree.findall('gpu')):
-        for p in node.findall('processes/process_info'):
-            q=Path('/proc',p.findtext('pid'))
-            if q.exists() and q.stat().st_uid==os.getuid():own.add(i)
-    slots=read(ROOT/'dline/gpu_slots.json')
-    slots=[s for s in slots if Path('/proc',str(s['owner'])).exists()]
-    own.update(s['gpu'] for s in slots)
-    if len(own|set(groups)|{0,5})>5 or shutil.disk_usage(w).free<47_000_000_000:
+    if len(own|set(groups)|{0,5})>5 or free<47_000_000_000:
         return dict(status='waiting_for_resources',round=round_id,account_devices=sorted(own),
-                    free_bytes=shutil.disk_usage(w).free)
+                    free_bytes=free)
     for gpu in groups:
-        if tree.findall('gpu')[gpu].findall('processes/process_info'):
+        if tree.findall('gpu')[gpu].findall('processes/process_info') or any(s['gpu']==gpu for s in slots):
             return dict(status='waiting_for_resources',round=round_id,occupied_requested_gpu=gpu)
     review=dict(status='launching',round=round_id,checkpoint=str(checkpoint),plan=plan,
-                cpu=cpu,mask=mask,account_devices=sorted(own),at=time.time(),launched=[])
+                cpu=cpu,mask=mask,account_devices=sorted(own),free_bytes=free,
+                extra_collection_peer=extra,at=time.time(),launched=[])
     atomic(receipt,review)
     for gpu,batches in groups.items():
         name=f'walk_skipstart_r{round_id}_peer{gpu}_kevin'
