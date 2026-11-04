@@ -62,6 +62,26 @@ print = partial(builtins.print, flush=True)
 # Seeding / misc helpers (inlined from the former collect_pick_cam.py)
 # =========================================================================
 
+def _bounded_kit_thread_args(kit_args: str, available_cpus: int) -> tuple[str, int]:
+    """Keep both Kit worker pools within the inherited CPU allocation."""
+    if available_cpus < 1:
+        raise ValueError("The collector needs at least one available logical CPU")
+    prefixes = (
+        "--/plugins/carb.tasking.plugin/threadCount=",
+        "--/plugins/omni.tbb.globalcontrol/maxThreadCount=",
+    )
+    tokens = kit_args.split()
+    requested = {prefix: int(token[len(prefix):])
+                 for token in tokens for prefix in prefixes if token.startswith(prefix)}
+    # SimulationApp defaults both pools to 32. Overriding only Carbonite leaves
+    # TBB at 32, which oversubscribes a collector narrowed to one CPU via taskset.
+    limits = [value if value > 0 else available_cpus for value in requested.values()] or [32]
+    workers = min(available_cpus, *limits)
+    tokens = [token for token in tokens if not token.startswith(prefixes)]
+    tokens.extend(prefix + str(workers) for prefix in prefixes)
+    return " ".join(tokens), workers
+
+
 def _seed_for_rollout(base_seed: int, object_index: int, motion_index: int, rollout_index: int, worker_index: int = 0) -> int:
     return int(base_seed + worker_index * 1_000_000_000 + object_index * 1_000_000 + motion_index * 1_000 + rollout_index)
 
@@ -1453,6 +1473,12 @@ def main() -> None:
 
     args_cli.enable_cameras = True
     args_cli.video = True  # keep viewport render product active (clean ego RTX frames)
+
+    available_cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
+    args_cli.kit_args, worker_threads = _bounded_kit_thread_args(args_cli.kit_args, available_cpus)
+    torch.set_num_threads(min(torch.get_num_threads(), worker_threads))
+    print(f"[INFO] Collector CPU allocation={available_cpus}; Carb/TBB workers={worker_threads}; "
+          f"PyTorch intra-op threads={torch.get_num_threads()}")
 
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
