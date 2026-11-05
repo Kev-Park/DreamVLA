@@ -290,14 +290,14 @@ def main():
     chain = FreshChain()
     if args.dagger_peer_round is not None:
         round_id = args.dagger_peer_round
-        assert args.collection_gpu in (4,6,7,9)
+        assert args.collection_gpu in (0,4,6,7,9)
         assert len(set(args.dagger_peer_batches)) == len(args.dagger_peer_batches)
         trained = base.read(chain.work/f'{TAG}_r{round_id-1}.trained.json')
         checkpoint = Path(trained['checkpoint'])
         assert base.checkpoint_ok(checkpoint)
         chain.collection_gpu = args.collection_gpu
-        # The launcher uses a fourth collector only with >=80GB scratch free.
-        # Preserve headroom after the preceding ~25GB checkpoint is saved.
+        # A serial peer may reuse GPU 0 after the main lane releases it.
+        # Keep the peer's existing disk reserve on every supported device.
         chain.collection_reserve_bytes = 45_000_000_000
         state = chain.work/f'dagger_peer_r{round_id}_gpu{args.collection_gpu}.json'
         try:
