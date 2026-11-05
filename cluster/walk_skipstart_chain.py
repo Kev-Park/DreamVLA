@@ -264,7 +264,7 @@ class FreshChain(WalkChain):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-peer-batches', nargs='+', type=int, choices=range(4,20))
-    parser.add_argument('--collection-gpu', type=int, choices=(4,5,6,7))
+    parser.add_argument('--collection-gpu', type=int, choices=(0,4,5,6,7))
     parser.add_argument('--after-pid', type=int)
     parser.add_argument('--dagger-peer-round', type=int, choices=(1,2,3))
     parser.add_argument('--dagger-peer-batches', nargs='+', type=int, choices=range(5,20))
