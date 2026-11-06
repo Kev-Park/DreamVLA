@@ -19,6 +19,8 @@ BLUE = "sastrygrp-dvij@bluesclues.ist.berkeley.edu"
 BIPED = "dvij@biped.eecs.berkeley.edu"
 FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 ADROIT_CONTROL_PATH = "~/.ssh/cm-adroit"
+SKIPSTART_STUDY = "walk200_v3_skipstart_20261102"
+WALK_STUDIES = tuple(f"walk{n}_v3_dagger57_20261013" for n in (10, 50, 200)) + (SKIPSTART_STUDY,)
 
 
 class RemoteCommandError(RuntimeError):
@@ -215,8 +217,26 @@ def validate_finetune_request(spec):
     assert spec["phase"] == "finetune" and spec["host"] == "adroit"
     assert spec["global_batch_size"] == 16 and spec["passes"] == 5.7
     assert spec['budget'] in (10, 50, 200)
-    assert re.fullmatch(f"walk{spec['budget']}_v3_dagger57_20261013_r[0-3]", spec['run'])
+    prefixes = {f"walk{spec['budget']}_v3_dagger57_20261013"}
+    if spec['budget'] == 200:
+        prefixes.add(SKIPSTART_STUDY)
+    assert any(re.fullmatch(re.escape(prefix)+r"_r[0-3]", spec['run']) for prefix in prefixes)
     assert spec['learning_rate'] == 0.0001 and spec['steps'] > 0
+
+
+def pending_finetune_requests(root):
+    """Discover only the explicitly supported studies, including skip-start."""
+    root = Path(root).resolve()
+    rows = []
+    for tag in WALK_STUDIES:
+        for path in sorted((root/'dline'/tag/'external').glob('finetune_*.request.json')):
+            reply = path.with_name(path.name.replace('.request.json', '.reply.json'))
+            if not reply.exists():
+                spec = json.loads(path.read_text())
+                if spec['host'] == 'adroit':
+                    rows.append({'relative': str(path.relative_to(root)),
+                                 'blue_root': str(root), 'spec': spec})
+    return rows
 
 
 def completed_checkpoint(checkpoint, steps, slurm_state, exit_code):
@@ -341,14 +361,11 @@ def main():
                     stream.write(json.dumps(forecast)+'\n')
                 state['capacity_forecast'] = forecast
                 last_capacity_check = time.time()
-            requests = call("bluesclues", """import pathlib,json
-b=(pathlib.Path.home()/'kevin').resolve();rows=[]
-for budget in [10,50,200]:
- for p in sorted((b/f'dline/walk{budget}_v3_dagger57_20261013/external').glob('finetune_*.request.json')):
-  if not p.with_name(p.name.replace('.request.json','.reply.json')).exists():
-   spec=json.loads(p.read_text())
-   if spec['host']=='adroit':rows.append({'relative':str(p.relative_to(b)),'blue_root':str(b),'spec':spec})
-print(json.dumps(rows))
+            requests = call("bluesclues", """import pathlib,json,sys
+b=pathlib.Path.home()/'kevin'
+sys.path.insert(0,str(b/'wt/locomotion/DreamVLA/cluster'))
+from walk_adroit_bridge import pending_finetune_requests
+print(json.dumps(pending_finetune_requests(b)))
 """)
             for request in requests:
                 process_request(request, args.state_dir)
