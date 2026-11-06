@@ -99,10 +99,6 @@ class FreshChain(WalkChain):
         return super().execute(args, label, gpu, cwd)
 
     def batch(self, name, ids, sampled=False, seed=0, checkpoint=None):
-        import h5py
-        import numpy as np
-        sys.path.insert(0, str(self.sim))
-        from vla_sonic.grasp_success import score
         report = self.work/(name+'.converted.json')
         if report.exists():
             result = base.read(report)
@@ -137,6 +133,17 @@ class FreshChain(WalkChain):
             self.execute(args, name, gpu, self.training_cwd)
         finally:
             self.release(gpu)
+        return self.finish_batch(name, ids, sampled, seed, checkpoint)
+
+    def finish_batch(self, name, ids, sampled=False, seed=0, checkpoint=None):
+        """Validate, filter, convert and archive a closed collection batch."""
+        import h5py
+        import numpy as np
+        sys.path.insert(0, str(self.sim))
+        from vla_sonic.grasp_success import score
+        raw = self.data/'raw'/name
+        report = self.work/(name+'.converted.json')
+        assert not report.exists(), 'Existing conversion must be reused by batch()'
         text = (self.work/(name+'.log')).read_text()
         assert re.findall(r'Collection finished\..*errored=(\d+)', text) == ['0']
         if checkpoint:
@@ -185,6 +192,9 @@ class FreshChain(WalkChain):
             dataset=str(dataset) if kept else None, frames=info['total_frames'],
             archive_source=str(raw), archive_files=manifest, skip_start_frames=0,
             seed=seed, sampled=sampled, completed=time.time())
+        recovery = self.work/(name+'.recovery.json')
+        if recovery.exists():
+            result['technical_recovery'] = base.read(recovery)
         base.atomic(report, result)
         self.await_archive(name)
         return result
