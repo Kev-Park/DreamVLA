@@ -54,7 +54,19 @@ def wait_owned_controller(pid, poll_seconds=30):
 class FreshChain(WalkChain):
     def __init__(self):
         # Avoid creating the old chain's working directory or changing it.
+        inherited_cpus = set(os.sched_getaffinity(0))
         base.Chain.__init__(self, 200, tag=TAG)
+        # A study-specific user exception may be wider than the account's
+        # default manual pool. Preserve the approved inherited allocation for
+        # replacement collectors without changing any other study's defaults.
+        approval = self.work/'four_core_collection_eval_user_approval.json'
+        if approval.exists():
+            grant = base.read(approval)
+            assert grant['authorized'] is True
+            assert grant['scope'] == TAG+' collection and evaluation through round3 only'
+            cpus = inherited_cpus & set(grant['shared_mask'])
+            assert cpus and len(cpus) <= grant['maximum_shared_cores'] == 4
+            os.sched_setaffinity(0, cpus)
         self.expert = base.ROOT/'residuals/T20_max_v3_model_4500.pt'
         self.rollout_steps = 1200
         self.eval_workers = 1
