@@ -41,6 +41,7 @@ from vla_sonic.eval_helpers import flush_render  # noqa: E402
 from vla_sonic.fsq import fsq_lattice_snap
 from vla_sonic.rescue_sampling import takeover_bounds
 import builtins
+import faulthandler
 import os
 import time
 import traceback
@@ -56,6 +57,12 @@ from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
 
 print = partial(builtins.print, flush=True)
+
+
+def _reset_stall_traceback_timer() -> None:
+    """Expose blocked Python call sites without changing simulation execution."""
+    faulthandler.cancel_dump_traceback_later()
+    faulthandler.dump_traceback_later(600, repeat=True)
 
 
 # =========================================================================
@@ -1046,6 +1053,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     terminated_flag = truncated_flag = False
     step_index = 0
     rollout_started = time.monotonic()
+    _reset_stall_traceback_timer()
     if not simulation_app.is_running():
         raise RuntimeError("Simulation app is not running at rollout start.")
 
@@ -1160,6 +1168,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         terminated_flag = bool(torch.as_tensor(terminated).any().item())
         truncated_flag = bool(torch.as_tensor(truncated).any().item())
         if step_index % 100 == 0:
+            _reset_stall_traceback_timer()
             motion_id = getattr(env.unwrapped, "_forced_motion_id", "unknown")
             print(f"[progress] collection motion={motion_id} step={step_index}/{max_steps} "
                   f"elapsed={time.monotonic()-rollout_started:.1f}s", flush=True)
@@ -1892,12 +1901,15 @@ def main() -> None:
 
 
 def _main_with_error_report() -> None:
+    _reset_stall_traceback_timer()
     try:
         main()
     except Exception as exc:
         print(f"[ERROR] collect_sonic_adapter.py failed: {exc}")
         traceback.print_exc()
         raise
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 if __name__ == "__main__":
