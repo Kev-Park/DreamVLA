@@ -78,6 +78,7 @@ def main():
         except FileNotFoundError:
             pass
     assert not (work/'abort.json').exists()
+    (work/'controller.lock').write_text(str(os.getpid()))
     run = TAG+'_r1'
     trained = base.read(work/(run+'.trained.json'))
     assert trained['steps'] == 67542 and base.checkpoint_ok(Path(trained['checkpoint']))
@@ -153,4 +154,10 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except BaseException as exc:
+        base.atomic(base.ROOT/'dline'/TAG/'post_reboot_recovery_state.json',
+                    dict(pid=os.getpid(), status='stopped_for_review',
+                         error=repr(exc), at=time.time()))
+        raise
