@@ -21,6 +21,69 @@ def completed_prefix(text, expected):
     return text[:starts[len(completed)].start()], completed, expected[len(completed):]
 
 
+def verified_recovery_log(original_bytes, suffix, expected, recorded_digest):
+    import gr00t_budget_chain as base
+    # Progress bars contain carriage returns. read_text() normalizes them,
+    # whereas read_bytes() preserves the immutable file's actual identity.
+    text = original_bytes.decode().replace('\r\n', '\n').replace('\r', '\n')
+    digest = hashlib.sha256(original_bytes).hexdigest()
+    legacy_digest = hashlib.sha256(text.encode()).hexdigest()
+    assert recorded_digest in (digest, legacy_digest)
+    prefix, completed, remaining = completed_prefix(text, expected)
+    assert completed == [50, 51, 52] and remaining == list(range(53, 60))
+    base.verify_collection_logs([suffix], remaining)
+    combined = ('[RECOVERY] Derived completed-attempt log; one aborted motion53 '
+        'attempt is preserved in the immutable original log and recovery JSON.\n'
+        + prefix + '\n' + suffix)
+    base.verify_collection_logs([combined], expected)
+    return combined, digest
+
+
+def remaining_batches(chain, checkpoint):
+    import gr00t_budget_chain as base
+    state_file = chain.work/'dagger_peer_r2_gpu0.json'
+    for batch in range(6, 20):
+        base.atomic(state_file, dict(pid=os.getpid(), round=2, batch=batch,
+            checkpoint=str(checkpoint), status='collecting', at=time.time()))
+        chain.batch(f'r2_batch{batch:03d}', list(range(batch*10, batch*10+10)),
+                    seed=8, checkpoint=checkpoint)
+    base.atomic(state_file, dict(pid=os.getpid(), round=2, status='complete', at=time.time()))
+
+
+def resume_completed_suffix(chain, name, expected, checkpoint):
+    """Finalize an already closed suffix; never recollect completed attempts."""
+    import gr00t_budget_chain as base
+    work = chain.work
+    recovery = base.read(work/(name+'.recovery.json'))
+    assert recovery['status'] == 'recollecting_unfinished_suffix'
+    assert recovery['source_checkpoint'] == str(checkpoint)
+    assert recovery['completed_ids_preserved'] == [50, 51, 52]
+    assert recovery['remaining_ids'] == list(range(53, 60))
+    assert not Path('/proc', str(recovery['pid'])).exists()
+    assert 'EXIT r2_batch005_recovery code=0' in (work/(name+'.recovery_controller.log')).read_text()
+    source = work/(name+'.log')
+    preserved = work/(name+'.recovery_original')/source.name
+    assert Path(recovery['original_log']) == preserved
+    original_bytes = source.read_bytes()
+    assert original_bytes == preserved.read_bytes(), 'Original log content changed'
+    suffix = (work/(name+'_recovery.log')).read_text()
+    combined, digest = verified_recovery_log(original_bytes, suffix, expected,
+                                              recovery['original_log_sha256'])
+    recovery['legacy_normalized_text_sha256'] = recovery['original_log_sha256']
+    recovery['original_log_sha256'] = digest
+    recovery['log_hash_basis'] = 'raw_bytes'
+    tmp = source.with_suffix('.recovered.tmp')
+    tmp.write_text(combined)
+    tmp.replace(source)
+    recovery.update(status='completed_suffix', suffix_log=str(work/(name+'_recovery.log')),
+        completed_student_attempts=10, technical_aborted_attempt_count=1,
+        completed_at=time.time(), finalization_resume_pid=os.getpid(),
+        finalization_only_no_new_collection=True)
+    base.atomic(work/(name+'.recovery.json'), recovery)
+    chain.finish_batch(name, expected, seed=8, checkpoint=checkpoint)
+    remaining_batches(chain, checkpoint)
+
+
 def main():
     import h5py
     import gr00t_budget_chain as base
@@ -73,6 +136,12 @@ def main():
         with h5py.File(path, 'r', locking=False) as h:
             raw_ids.append(json.loads(h.attrs['metadata_json'])['motion_id'])
             assert len(h['data/demo_0/actions']) > 0
+    if (work/(name+'.recovery.json')).exists():
+        assert sorted(raw_ids) == expected
+        base.atomic(work/'dagger_peer_r2_gpu0.json', dict(pid=os.getpid(), round=2,
+            batch=5, checkpoint=str(checkpoint), status='finalizing', at=time.time()))
+        resume_completed_suffix(chain, name, expected, checkpoint)
+        return
     assert sorted(raw_ids) == completed
     archive = work/(name+'.recovery_original')
     archive.mkdir(exist_ok=False)
@@ -84,7 +153,8 @@ def main():
     recovery = dict(
         status='recollecting_unfinished_suffix', pid=os.getpid(), at=time.time(),
         original_log=str(archive/source_log.name),
-        original_log_sha256=hashlib.sha256(original.encode()).hexdigest(),
+        original_log_sha256=hashlib.sha256(source_log.read_bytes()).hexdigest(),
+        log_hash_basis='raw_bytes',
         completed_ids_preserved=completed, remaining_ids=remaining,
         technical_aborted_attempts=[dict(motion_id=53, step_last_logged=400,
             actor_pid=172639, reason='No logged progress after two-core test and five-minute four-core recovery; original preserved paused')],
@@ -116,12 +186,9 @@ def main():
         finally:
             chain.release(gpu)
         suffix = (work/(label+'.log')).read_text()
-        base.verify_collection_logs([suffix], remaining)
-        combined = ('[RECOVERY] Derived completed-attempt log; one aborted motion53 '
-            'attempt is preserved in the immutable original log and recovery JSON.\n'
-            + prefix + '\n' + suffix)
-        base.verify_collection_logs([combined], expected)
-        assert hashlib.sha256(source_log.read_bytes()).hexdigest() == recovery['original_log_sha256']
+        combined, digest = verified_recovery_log(source_log.read_bytes(), suffix, expected,
+                                                   recovery['original_log_sha256'])
+        assert digest == recovery['original_log_sha256']
         tmp = source_log.with_suffix('.recovered.tmp')
         tmp.write_text(combined)
         tmp.replace(source_log)
@@ -130,12 +197,7 @@ def main():
             completed_at=time.time())
         base.atomic(work/(name+'.recovery.json'), recovery)
         chain.finish_batch(name, expected, seed=8, checkpoint=checkpoint)
-        for batch in range(6, 20):
-            base.atomic(state_file, dict(pid=os.getpid(), round=2, batch=batch,
-                checkpoint=str(checkpoint), status='collecting', at=time.time()))
-            chain.batch(f'r2_batch{batch:03d}', list(range(batch*10, batch*10+10)),
-                seed=8, checkpoint=checkpoint)
-        base.atomic(state_file, dict(pid=os.getpid(), round=2, status='complete', at=time.time()))
+        remaining_batches(chain, checkpoint)
     except BaseException as exc:
         base.atomic(state_file, dict(pid=os.getpid(), round=2, status='failed',
             error=repr(exc), at=time.time()))
