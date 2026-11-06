@@ -12,7 +12,9 @@ import sys
 import time
 
 import gr00t_budget_chain as base
-from walk_skipstart_chain import TAG
+
+# Keep the metadata gate independent of simulation-only module imports.
+TAG = 'walk200_v3_skipstart_20261102'
 
 
 def process_identity(pid):
