@@ -265,6 +265,56 @@ class FreshChain(WalkChain):
         base.atomic(self.work/f'collection_r{round_id}.json', dict(batches=results, student_attempts=200))
         return results
 
+    def finetune(self, dataset, round_id):
+        """Replay an archived prefix only when no consumer needs its weights."""
+        run = f'{self.tag}_r{round_id}'
+        trained_path = self.work/(run+'.trained.json')
+        if trained_path.exists():
+            trained = base.read(trained_path)
+            checkpoint = Path(trained['checkpoint'])
+            if not base.checkpoint_ok(checkpoint):
+                # The normal parent revisits completed rounds after a restart.
+                # Do not restore/retrain archived weights, or silently accept a
+                # missing checkpoint still needed by evaluation or collection.
+                assert round_id < 3, 'Final checkpoint must remain available'
+                info = base.read(dataset/'meta/info.json')
+                steps = base.steps_for(info['total_frames'])
+                assert trained['run'] == run and trained['dataset'] == str(dataset)
+                assert trained['steps'] == steps
+                assert checkpoint == base.ROOT/'checkpoints'/run/f'checkpoint-{steps}'
+                archive = base.read(self.work/f'checkpoint_{run}.archived.json')
+                assert archive['batch'] == f'checkpoint_{run}'
+                assert archive['checksum_verified'] is True
+                files = {r['path']: r for r in archive['files']}
+                required = [f'checkpoint-{steps}/{name}' for name in (
+                    'config.json', 'trainer_state.json', 'model.safetensors.index.json',
+                    'model-00001-of-00003.safetensors',
+                    'model-00002-of-00003.safetensors',
+                    'model-00003-of-00003.safetensors')]
+                assert all(name in files and files[name]['bytes'] > 0
+                           and re.fullmatch(r'[0-9a-f]{64}', files[name]['sha256'])
+                           for name in required)
+                evaluation = base.read(self.work/(run+'.eval.json'))
+                assert evaluation['episodes'] == 100
+                assert evaluation['pool'] == 'StitchMAX100v3_eval'
+                following = round_id+1
+                collection = base.read(self.work/f'collection_r{following}.json')
+                assert collection['student_attempts'] == 200
+                reports = []
+                for k in range(20):
+                    name = f'r{following}_batch{k:03d}'
+                    report = base.read(self.work/(name+'.converted.json'))
+                    assert report['batch'] == name
+                    assert report['requested_ids'] == self.ids[k*10:(k+1)*10]
+                    receipt = base.read(self.work/(name+'.archived.json'))
+                    assert receipt['batch'] == name and receipt['checksum_verified'] is True
+                    assert receipt['files'] == report['archive_files']
+                    reports.append(report)
+                assert collection['batches'] == reports
+                self.log(f'REUSE archived completed prefix {run}; all consumers finished')
+                return run, checkpoint
+        return super().finetune(dataset, round_id)
+
     def dataset(self, round_id, results, prior):
         shards = [str(prior)]+[r['dataset'] for r in results if r['retained']]
         count = base.read(prior/'meta/info.json')['total_episodes']+sum(r['retained'] for r in results)
