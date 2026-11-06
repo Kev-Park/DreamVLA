@@ -27,7 +27,8 @@ def main():
     from walk_skipstart_chain import FreshChain, TAG
 
     chain = FreshChain()
-    chain.collection_gpu = 4
+    # Reuse the original physical device; do not add another account GPU.
+    chain.collection_gpu = 0
     # One replacement serial lane, not an additional parallel peer batch.
     chain.collection_reserve_bytes = 25_000_000_000
     name = 'r2_batch005'
@@ -43,7 +44,13 @@ def main():
     if old.exists():
         fields = (old/'stat').read_text().rsplit(')', 1)[1].split()
         assert old.stat().st_uid == os.getuid()
-        assert int(fields[19]) == 51971564 and fields[0] in ('Z', 'X')
+        assert int(fields[19]) == 51971564 and fields[0] in ('T', 'Z', 'X')
+        if fields[0] == 'T':
+            assert int(fields[1]) == 47480
+            parent = Path('/proc/47480')
+            parent_fields = (parent/'stat').read_text().rsplit(')', 1)[1].split()
+            assert int(parent_fields[19]) == 46427467
+            assert b'walk_skipstart_chain.py' in (parent/'cmdline').read_bytes()
     for proc in Path('/proc').iterdir():
         if not proc.name.isdigit():
             continue
@@ -52,7 +59,9 @@ def main():
                 continue
             cmd = (proc/'cmdline').read_bytes()
             state = (proc/'stat').read_text().rsplit(')', 1)[1].split()[0]
-            assert not (b'collect_sonic_adapter.py' in cmd and TAG.encode() in cmd and state not in ('Z', 'X'))
+            permitted_original = int(proc.name) == 172639 and state == 'T'
+            assert not (b'collect_sonic_adapter.py' in cmd and TAG.encode() in cmd
+                        and state not in ('Z', 'X') and not permitted_original)
         except FileNotFoundError:
             pass
     source_log = work/(name+'.log')
@@ -78,11 +87,12 @@ def main():
         original_log_sha256=hashlib.sha256(original.encode()).hexdigest(),
         completed_ids_preserved=completed, remaining_ids=remaining,
         technical_aborted_attempts=[dict(motion_id=53, step_last_logged=400,
-            actor_pid=172639, reason='Busy-loop stall; bounded two-core recovery test failed')],
+            actor_pid=172639, reason='No logged progress after two-core test and five-minute four-core recovery; original preserved paused')],
         completed_student_attempts_target=10, seed=8,
         recipe_changed=False, random_stream_reinitialized_for_suffix=True,
         source_checkpoint=str(checkpoint), cpu_mask=sorted(os.sched_getaffinity(0)),
-        gpu=4, original_gpu=0,
+        gpu=0, original_gpu=0,
+        original_actor_preserved_paused=old.exists(),
     )
     base.atomic(work/(name+'.recovery.json'), recovery)
     args = list(receipt['command'])
@@ -96,11 +106,11 @@ def main():
     args[args.index('--dagger-motion-ids')+1] = str(idsfile)
     assert args[args.index('--seed')+1] == '8'
     label = name+'_recovery'
-    state_file = work/'dagger_peer_r2_gpu4.json'
+    state_file = work/'dagger_peer_r2_gpu0.json'
     try:
         base.atomic(state_file, dict(pid=os.getpid(), round=2, batch=5,
             checkpoint=str(checkpoint), status='collecting', at=time.time()))
-        gpu = chain.reserve(4, 20000)[0]
+        gpu = chain.reserve(0, 20000)[0]
         try:
             chain.execute(args, label, gpu, chain.training_cwd)
         finally:
