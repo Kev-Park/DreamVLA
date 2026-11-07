@@ -1,0 +1,1296 @@
+--- PAGE 1 ---
+DreamVLA: From Generated Human Motions to
+Humanoid Vision-Language-Action Policies
+Anonymous Author(s)
+Affiliation
+Address
+email
+Abstract: Training vision-language-action (VLA) policies typically depends on
+1
+substantial robot demonstration data, making human teleoperation a costly and
+2
+cumbersome bottleneck, particularly for whole-body humanoid interaction. Re-
+3
+inforcement learning in simulation offers an alternative for scaling this data, but
+4
+designing task-specific rewards remains challenging. To address this, we pro-
+5
+pose DreamVLA, which uses generated motion trajectories to guide reinforcement
+6
+learning (RL) in simulation, converting them into reliable task execution trajecto-
+7
+ries. These trajectories train VLA models in simulation without new task-specific
+8
+teleoperation data. Our central contribution is a reference-conditioned DAgger
+9
+distillation procedure: after a failed learner rollout, we restart the RL expert from
+10
+a sampled learner state with the same reference suffix and aggregate successful
+11
+corrective trajectories, addressing the distribution shift left by offline imitation.
+12
+We evaluate picking from a platform, opening a drawer, and pressing a button,
+13
+with ablations of DAgger iterations, residual RL, and generated dataset scale.
+14
+Keywords: Humanoid manipulation, synthetic demonstrations, VLA distillation
+15
+1
+Introduction
+16
+Vision-language-action (VLA) models offer a common interface for mapping visual observations
+17
+and natural-language instructions to robot behavior. Models such as OpenVLA and GR00T learn
+18
+from robot demonstrations and can be adapted to downstream tasks through additional training [1, 2].
+19
+For a humanoid, these demonstrations must coordinate reaching, hand interaction, torso motion, foot
+20
+placement, and balance. A hierarchical interface can use a low-level (system-1) controller such as
+21
+SONIC [7] to execute robot motion tokens supplied by a higher-level policy or a human teleoperation
+22
+interface. Using this interface, an operator collects interactive demonstrations for VLA training.
+23
+Collecting this behavior repeatedly across scene configurations demands operator time, a suitable
+24
+teleoperation interface, and careful supervision. Increasing the number of tasks and environmental
+25
+variations therefore increases the human effort required to build useful training data.
+26
+Simulation offers a way to scale this data, but replacing a teleoperator with an autonomous data
+27
+generator introduces a control problem. Reinforcement learning in simulation with sparse task suc-
+28
+cess gives a high-dimensional humanoid little guidance for approaching a target while maintaining
+29
+balance [3]. Dense rewards can support exploration, yet often require task-specific choices about
+30
+reaching, posture, contact, timing, and object progress [9, 12]. A policy can also satisfy parts of a
+31
+reward while producing behavior that is poorly suited to imitation. Consequently, the usefulness of
+32
+simulated demonstrations depends on both physical task completion and the quality of the behavior
+33
+used to achieve it.
+34
+Generative human motion models provide a complementary source of structure. Text and spatial
+35
+constraints can specify the intended behavior and the location of an interaction, yielding whole-
+36
+body motion references with a human motion prior. DreamControl combines such references with
+37
+Submitted to the 10th Conference on Robot Learning (CoRL 2026). Do not distribute.
+
+
+--- PAGE 2 ---
+Figure 1: DreamVLA overview. Task-conditioned human motions are generated with DreamCon-
+trol/OmniControl, retargeted to G1 with OmniRetarget, and augmented with HumanoidMimicGen.
+Residual RL on SONIC produces successful LeRobot demonstrations for GR00T initialization. Our
+DAgger loop restarts the privileged expert from a sampled state of a failed VLA rollout, follows the
+same reference suffix, and aggregates successful recoveries. The final VLA is evaluated on three
+simulated tasks. Motion and simulation reference images are adapted from DreamControl [3].
+RL for humanoid scene interaction [3]. This motivates using generated motion as a scalable source
+38
+of supervision for downstream VLA training. The remaining challenge is to turn kinematic intent
+39
+into repeatable interactions with movable objects, and then transfer that competence to a policy that
+40
+receives images and language. Reward design remains part of this process, but references provide a
+41
+unified framework for task-reward specification.
+42
+We propose DreamVLA, a framework for producing task demonstrations in simulation from gener-
+43
+ated human motions and distilling them into a VLA. We first generate task-conditioned references
+44
+with DreamControl, using OmniControl to constrain relevant human joints at target locations and
+45
+times [4]. After retargeting these motions to the Unitree G1, we train an expert to co-track the hu-
+46
+manoid and the interacting object. We use SONIC as the whole-body control backbone [7], and
+47
+learn residual corrections in its motion-token interface to adapt the reference behavior to contact
+48
+and randomized physics. The resulting expert acts as an automated demonstration generator: mo-
+49
+tion synthesis supplies the intended human-like behavior, and RL supplies the physically executed
+50
+interaction. Successful rollouts are recorded as a LeRobot dataset and used to fine-tune GR00T.
+51
+This construction is analogous to collecting teleoperation data with a generative model supplying
+52
+the motion commands. It removes the need to have a human operate the robot for every downstream
+53
+demonstration while retaining an interface suited to whole-body control. The human motion prior
+54
+and the pretrained control and VLA backbones remain valuable upstream resources. Our claim
+55
+concerns eliminating new task-specific teleoperation collection for the simulated tasks, rather than
+56
+eliminating human data from the pretraining of those resources. We formulate each interactive task
+57
+using motion references, object behavior, and a success specification; the present study evaluates
+58
+three tasks.
+59
+The central research question is how to distill this expert into a VLA that remains competent under
+60
+its own closed-loop execution. Successful expert trajectories are a useful starting point, but they
+61
+emphasize states reached by the expert. A student that grasps slightly late, approaches a handle at
+62
+a different angle, or misaligns its fingertip can visit states absent from that dataset. Its next action
+63
+changes the next observation, allowing small errors to compound. Collecting more clean demonstra-
+64
+tions may improve coverage of nominal behavior without providing the corrective behavior needed
+65
+2
+
+
+--- PAGE 3 ---
+after these deviations. Offline imitation alone therefore leaves a gap between supervised action
+66
+prediction and reliable interaction.
+67
+We address this gap through a reference-conditioned DAgger distillation procedure that collects
+68
+corrective trajectories after learner failures. Standard DAgger aggregates expert labels on states
+69
+encountered by the learner [8], and prior humanoid teacher–student systems such as VIRAL already
+70
+use online DAgger [9]. Our task-specific adaptation queries a generated-motion, residual-SONIC
+71
+expert at a randomly sampled state of a failed learner rollout. The expert resumes with the suffix of
+72
+the same generated reference, and only successful recovery trajectories are added to the aggregate.
+73
+This supplies temporally consistent corrective demonstrations for the language-conditioned VLA
+74
+while retaining the reference context required by the expert.
+75
+The evaluation is organized around picking from a platform, opening a drawer, and pressing a button
+76
+in simulation. These tasks expose distinct interaction requirements: establishing and maintaining a
+77
+grasp, driving an articulated object, and reaching a precise contact target. We present results from
+78
+controlled studies of the number of DAgger iterations, the residual control formulation, and the
+79
+amount of generated training data. Together, task completion, expert data yield, motion fidelity, and
+80
+the student–expert performance gap characterize demonstration quality and the competence retained
+81
+through distillation.
+82
+Our three contributions are:
+83
+1. A generative demonstration framework. We propose a pipeline that uses generated hu-
+84
+man motions and residual RL on a SONIC backbone to collect natural, human-like inter-
+85
+action demonstrations for VLA training in simulation, without task-specific human teleop-
+86
+eration collection.
+87
+2. A DAgger-based VLA distillation method. We propose using the RL expert to supervise
+88
+the VLA on learner-visited states, with reference-conditioned expert recovery and success-
+89
+filtered trajectory aggregation as the methodological contribution.
+90
+3. A three-task simulation study with controlled ablations. We evaluate platform pick-
+91
+ing, drawer opening, and button pressing with controlled ablations of DAgger iterations,
+92
+residual RL, and generated data scale.
+93
+2
+Related Work
+94
+2.1
+Humanoid Motion Tracking and Teleoperation
+95
+Human-motion priors support humanoid tracking and whole-body control [13–19], while cam-
+96
+era, VR, and portable interfaces support teleoperation and demonstration collection [20–25]. We
+97
+use SONIC’s motion-token interface [7] to turn generated references into autonomous interaction
+98
+demonstrations. Generated motions supply the nominal commands in our pipeline, and task-specific
+99
+residual RL adjusts their execution at contact without collecting new teleoperated demonstrations.
+100
+2.2
+Vision-Language-Action Learning for Humanoids
+101
+Humanoid VLAs connect visual-language representations to executable behavior through mul-
+102
+timodal pretraining and reusable motor controllers [2, 26–30].
+Synthetic kinematic and
+103
+optimal-control demonstrations also provide supervision for whole-body visual policies [31, 32].
+104
+DreamVLA uses a generated-motion, residual-SONIC expert to produce physically executed inter-
+105
+actions and reference-conditioned corrective trajectories for GR00T. We fine-tune an existing VLA
+106
+backbone and study demonstration generation and corrective supervision, without introducing a new
+107
+model architecture.
+108
+3
+
+
+--- PAGE 4 ---
+2.3
+Visual Sim-to-Real Across Embodiments
+109
+Across manipulation, legged, and aerial embodiments, visual sim-to-real combines simulated expe-
+110
+rience with perception randomization, privileged supervision, or reconstructed scenes [33–46]. Hu-
+111
+manoid pipelines use teacher–student distillation [9, 12]. We study VLA distillation in simulation.
+112
+Our pipeline shares privileged-to-visual supervision with these humanoid systems, while isolating
+113
+motion-guided expert training and corrective VLA distillation without visual domain randomization.
+114
+2.4
+Motion Generation, Retargeting, and Synthetic Demonstrations
+115
+Language-conditioned motion models provide interaction references [4, 47–51], while retargeting
+116
+and demonstration augmentation adapt motions to robot morphology and new scenes [5, 6, 52–54].
+117
+Generative video and simulated experts offer complementary routes to synthetic policy data [55–
+118
+59]. We build on DreamControl [3] to produce physically executed SONIC demonstrations from
+119
+guided human motion. Residual RL resolves the contact dynamics left by kinematic synthesis, and
+120
+successful-rollout filtering converts the resulting interactions into executable action labels for VLA
+121
+training.
+122
+2.5
+Expert Distillation and Corrective Data Aggregation
+123
+DAgger-style distillation addresses learner-induced distribution shift [8, 9, 60, 61]. Our adaptation
+124
+restores a state from a failed VLA rollout, resumes the expert with the same reference suffix, and
+125
+aggregates only successful corrective trajectories for GR00T action-chunk training. This retains the
+126
+DAgger principle of querying learner-visited states while collecting full, phase-consistent recovery
+127
+segments for action-chunk training.
+128
+3
+Methodology
+129
+DreamVLA comprises four stages: reference generation, residual expert training and successful
+130
+rollout collection, GR00T distillation with iterative expert recovery, and simulation validation (Fig-
+131
+ure 1). Let ℓdenote a task instruction, st the full simulator state, and ot = (It, pt) the student
+132
+observation, consisting of camera images It and robot proprioception pt. The expert uses privileged
+133
+simulator information; the VLA predicts executable commands from ot and ℓ. Privileged object
+134
+states used for expert training and success checks are excluded from the student observation.
+135
+3.1
+Generating Task References with DreamControl
+136
+We follow DreamControl’s trajectory-generation stage [3]. OmniControl [4] samples human mo-
+137
+tions conditioned on an instruction and spatiotemporal constraints,
+138
+H ∼pmotion(H | ℓ, G),
+G = {(jk, vk, tk)}K
+k=1,
+(1)
+where joint jk is guided toward position vk at time tk. Sampling target locations and interaction
+139
+times produces varied references. Wrist targets specify the picking or drawer interaction; an appro-
+140
+priate hand target specifies button contact.
+141
+The generated motions are retargeted to G1 using OmniRetarget [5]. After retargeting, we have a set
+142
+of reference kinematic trajectories denoted by K = {∥0, ∥1, . . . , ∥N−1}. We represent each robot
+143
+reference by root pose, body joint configuration, and hand state, and align the simulated scene with
+144
+its intended interaction frame. We also augment the generated trajectories by modifying the contact
+145
+points using HumanoidMimicGen [6].
+146
+3.2
+Residual RL for Humanoid–Object Co-Tracking
+147
+Expert inputs and object references.
+The privileged expert observes robot joint positions and
+148
+velocities, root linear and angular velocities, gravity projected into the root frame, the previous exe-
+149
+cuted command, and task-relevant object state xt. Following DreamControl’s privileged observation
+150
+4
+
+
+--- PAGE 5 ---
+representation [3], we encode the local reference segment Rt:t+F as current and look-ahead target
+151
+observations:
+152
+Oref
+t
+= [γt|t, γt+∆tobs|t, . . . , γt+F |t],
+(2)
+where ∆tobs = 0.1 s, Kref is the number of sampled frames, and F = (Kref −1)∆tobs. For
+153
+reference time τ, each target observation is
+154
+γτ|t =
+(︁
+qref
+τ , ˙qref
+τ , prel,root
+τ|t
+, prel,key
+τ|t
+, sref,left
+τ
+, sref,right
+τ
+)︁
+.
+(3)
+Here, qref
+τ , ˙qref
+τ
+∈R27 specify target joint angles and velocities; prel,root
+τ|t
+represents the reference
+155
+root’s position and orientation relative to the robot’s current base; and prel,key
+τ|t
+∈R3×41 contains
+156
+reference keypoint coordinates in that same frame. The hand targets sref,left
+τ
+, sref,right
+τ
+∈{0, 1}
+157
+encode open (0) and closed (1) configurations. For keypoint j,
+158
+prel,key,j
+τ|t
+= QT
+t
+(︁
+pref,key,j
+τ
+−probot,root
+t
+)︁
+,
+(4)
+where Qt is the robot root’s rotation in world coordinates. Using the current robot frame for all
+159
+targets preserves spatial tracking errors relevant to contact.
+160
+The object reference ¯xt separately describes intended interaction progress: object pose for picking,
+161
+drawer joint displacement for opening, or button travel for pressing. Co-tracking couples the hu-
+162
+manoid reference to the corresponding object outcome, so matching a hand trajectory alone does
+163
+not satisfy the interaction objective. Reference windows and privileged object state are used by the
+164
+RL expert; the VLA executes without these inputs.
+165
+SONIC backbone and residual token actions.
+SONIC maps motion commands into a shared
+166
+token representation and decodes them with proprioception into robot control commands [7]. We
+167
+use this interface as the backbone for a residual task expert. Let ES denote the motion encoder and
+168
+DS the control decoder. We write the residual formulation as
+169
+znom
+t
+= ES(Rt:t+F ),
+∆zt = πres(st, Rt:t+F , ¯xt:t+F , ℓ),
+(5)
+zE
+t = znom
+t
++ ∆zt,
+abody
+t
+= DS(pt, zE
+t ).
+(6)
+The residual adapts the generated motion to the actual robot–object interaction, while SONIC pro-
+170
+vides the underlying whole-body control prior. The hand commands ahand
+t
+complete the executable
+171
+expert command uE
+t = {zE
+t , ahand
+t
+}. We operate the hand in a binary open/close mode i.e. the hand
+172
+action ahand
+t
+is binary.
+173
+Training objective.
+The expert is trained to maximize return under a reward comprising humanoid
+174
+reference tracking, sparse task-specific rewards, and control regularization:
+175
+rt = whumrhum(st, Rt) + wtaskrtask(st) −wregcreg(uE
+t , uE
+t−1).
+(7)
+The reward structure for the tasks is the same as in DreamControl [3]. The tracking objectives supply
+176
+dense reference supervision; the task objective checks meaningful interaction progress or comple-
+177
+tion. The regularization term discourages excessive corrections and abrupt commands. Reference
+178
+tracking guides the motion strategy, while sparse task rewards specify the interaction outcome.
+179
+Physics domain randomization.
+We randomize robot and object physics during expert training to
+180
+expose the policy to variation in interaction dynamics. Randomized scenes preserve feasibility and
+181
+remain compatible with their target references. Physics randomization addresses control robustness;
+182
+the VLA is trained without visual domain randomization.
+183
+3.3
+Successful Expert Rollouts as a LeRobot Dataset
+184
+After expert training, we execute rollouts over sampled scenes, references, and physical parame-
+185
+ters. An episode is accepted only when its task-specific success predicate S(τ) is satisfied. We
+186
+5
+
+
+--- PAGE 6 ---
+export synchronized images, proprioceptive states, actions, timestamps, episode identifiers, and task
+187
+instructions in LeRobot format [10]. The initial imitation dataset is
+188
+D0 =
+⋃︂
+τ: S(τ)=1
+{(ot, ℓ, uE
+t )}Tτ −1
+t=0 .
+(8)
+where uE
+t = {zE
+t , ahand
+t
+} represents the composed SONIC motion command and the hand command,
+189
+ℓis the language prompt, ot = {It, pt} is the observation consisting of camera images, It, and
+190
+proprioception pt. We use only the robot’s egocentric camera to obtain It. By predicting these
+191
+executable commands, the VLA uses the same low-level backbone without a reference trajectory
+192
+at inference. Each accepted episode contains the executed interaction, including the approach and
+193
+completion phases. This produces successful demonstrations suitable for VLA supervision from
+194
+physically simulated expert behavior.
+195
+Success filtering improves the quality of the initial demonstration set, but changes its distribution.
+196
+Difficult scenes may contribute to fewer accepted episodes and nominal successes may contain little
+197
+corrective behavior. We therefore track both the number of attempted episodes and the number
+198
+retained, along with scene coverage. The DAgger stage extends this dataset with successful expert
+199
+recoveries from learner-induced failures.
+200
+3.4
+GR00T Fine-Tuning and DAgger-Based Distillation
+201
+Offline initialization.
+We fine-tune a pretrained GR00T VLA [2] on D0, conditioning action pre-
+202
+diction on visual observations, robot state, and task instruction. Let U E
+t = (uE
+t , . . . , uE
+t+h−1) denote
+203
+an expert action chunk of horizon h. Constructing action chunks from consecutive samples within
+204
+each episode, the initialization objective is
+205
+θ0 = arg min
+θ
+E(ot,ℓ,U E
+t )∼D0
+[︁
+LGR00T(θ; ot, ℓ, U E
+t )
+]︁
+.
+(9)
+The loss is the native action-training objective of the selected GR00T implementation. Privileged
+206
+object state and reference context remain available to the expert but are excluded from the student.
+207
+Why iterative supervision is needed.
+The initialized student is trained on expert-generated ob-
+208
+servations and then evaluated on observations induced by its own actions. These distributions differ
+209
+whenever perception, timing, or action prediction changes the interaction. This matters particularly
+210
+at contact: a small error can alter whether an object is grasped, whether a drawer handle is engaged,
+211
+or whether a button is actuated. The appropriate next command may then differ substantially from
+212
+the next command in the original successful trajectory. Iterative distillation exposes the VLA to such
+213
+states and obtains expert supervision appropriate to the current interaction.
+214
+Standard DAgger foundation.
+At iteration k, the current student is rolled out and the expert
+215
+labels selected visited states. Denoting that set of states by Vk, the standard aggregation structure is
+216
+Dk+1 = Dk ∪{(ot, ℓ, πE(st, ct)) : st ∈Vk},
+(10)
+followed by training the next student on the aggregate [8]. The context ct denotes whatever reference
+217
+and task information is required to make an expert query well defined. Equation 10 describes the
+218
+established DAgger principle.
+219
+Reference-conditioned recovery DAgger.
+Our adaptation collects successful expert recovery seg-
+220
+ments seeded by states from failed learner rollouts, rather than independently labeling every learner
+221
+state. At iteration k, we use the following procedure:
+222
+1. Sample a reference ∥i ∈K with length Ti and initialize the robot and object according to
+223
+that reference.
+224
+2. Roll out the current VLA πθk until task success or timeout at Ti, saving simulator states
+225
+along the learner trajectory. Successful learner rollouts require no corrective trajectory in
+226
+this procedure.
+227
+6
+
+
+--- PAGE 7 ---
+Table 1: Task setup and success criteria for the three simulated interactions.
+Task
+Interaction setup
+Success predicate
+Pick from plat-
+form
+Reach an object on a platform, grasp it,
+and lift while maintaining balance.
+Object is lifted at least 15 cm above the
+platform and remains held.
+Open drawer
+Approach the handle, establish contact or
+grasp, and pull along the drawer’s
+articulation.
+Drawer displacement exceeds 0.15 m.
+Press button
+Align the interacting hand with the button
+and establish actuating contact.
+The robot’s right index finger contacts the
+button.
+Walk and pick
+Walk to a platform with an object on it,
+reach for the object, grasp it, and lift while
+maintaining balance.
+Object is lifted at least 15 cm above the
+platform and remains held.
+3. For a failed rollout, sample t uniformly from {0, . . . , Ti −1} and restore the saved learner
+228
+state st. Resume the privileged RL expert using the same reference ∥i starting at phase
+229
+t. Retain the resulting corrective segment only if the expert completes the task within the
+230
+remaining reference horizon; otherwise discard it.
+231
+Let ˜︁τi,t denote this expert recovery segment, and let ˜︁sj, ˜︁oj, and ˜︁uE
+j denote its states, observations,
+232
+and executed expert commands. The initial recovery state satisfies ˜︁st = st, while subsequent states
+233
+are induced by the expert. Aggregation therefore takes the trajectory-level form
+234
+Dk+1 = Dk ∪
+⋃︂
+˜︁τi,t: S(˜︁τi,t)=1
+{(˜︁oj, ℓ, ˜︁uE
+j )}
+T rec
+i,t −1
+j=t
+,
+(11)
+where T rec
+i,t
+≤Ti is the recovery termination time in the original reference clock. We fine-tune
+235
+GR00T on the aggregate and repeat. Action chunks are constructed within each accepted segment,
+236
+without crossing episode or recovery boundaries. The student uses the same visual, proprioceptive,
+237
+and language inputs as during offline initialization; simulator state and the reference suffix are used
+238
+only to query the expert. This makes the distinction from standard pointwise DAgger explicit: super-
+239
+vision is provided by successful, reference-conditioned expert continuations from learner-induced
+240
+failures.
+241
+4
+Results
+242
+We evaluate DreamVLA on three simulated interaction tasks and study the effects of DAgger itera-
+243
+tions, residual control, and generated dataset scale.
+244
+4.1
+Three-Task Setup and the Effect of DAgger Iterations
+245
+Task suite.
+We evaluate a simulated Unitree G1 on the three interactive tasks in Table 1. Each task
+246
+requires whole-body coordination and a verifiable task outcome. Table 1 defines the task-specific
+247
+success criteria. Figure 2 shows representative simulation scenes for the three tasks.
+248
+Evaluation and reporting.
+The primary metric is task success rate. The distribution of object,
+249
+button, or drawer-handle locations is the same as the distribution from which target positions are
+250
+chosen for generating their trajectories. We also report per-task expert success, the fraction of at-
+251
+tempted expert rollouts accepted into the dataset, and student performance relative to the expert.
+252
+Secondary measures include falls, time to completion, and robot/object tracking error where rele-
+253
+vant. For each task-success rate evaluation, we use 100 rollouts.
+254
+DAgger iteration ablation.
+We compare the offline student (k = 0) with students after 1, 2, and
+255
+3 aggregation rounds (Table 2). We use 200 initial expert trajectories and collect 200 additional
+256
+successful corrective trajectories per round, giving 800 trajectories at k = 3. The matched offline-
+257
+data control uses 800 successful trajectories collected from the base expert without learner-triggered
+258
+7
+
+
+--- PAGE 8 ---
+(a) Pick from platform
+(b) Open drawer
+(c) Press button
+(d) Walk and pick
+Figure 2: Four-task simulation setup with the Unitree G1: (a) picking from a platform, (b) opening
+a drawer, (c) pressing a button, and (d) walking and picking from a platform. The screenshots are
+cropped to equal-sized panels with comparable robot heights.
+Table 2: DAgger results on all tasks. Success is reported per task with 100 random environment
+settings.
+Distillation variant
+Rounds
+Trajectories
+Pick
+Drawer
+Button
+Walk and
+Pick
+Offline GR00T initialization
+0
+200
+0%
+55%
+50%
+0%
+DAgger with k = 1
+1
+400
+17%
+57%
+55%
+1%
+DAgger with k = 2
+2
+600
+30%
+54%
+61%
+7%
+DAgger with k = 3
+3
+800
+54%
+62%
+72%
+18%
+Matched offline-data control
+0
+800
+0%
+54%
+52%
+0%
+recovery, matching the total trajectory budget of three DAgger rounds. This controls for the amount
+259
+of data when evaluating the usefulness of corrective aggregation.
+260
+4.2
+Effectiveness of Residual RL on SONIC
+261
+This study isolates the choice to learn residual SONIC token commands. We compare both the RL
+262
+and downstream GR00T performance at k = 3. We train RL for the same budget of 3000 training
+263
+iterations. As can be observed from the performance, using residual RL significantly reduces the
+264
+amount of iterations needed for RL to accomplish the task in simulation. We also report perfor-
+265
+mance of using SONIC commands as-is with no residual RL. Without residual adaptation, nominal
+266
+SONIC tracking has a task success rate close to zero. This is because the base SONIC controller has
+267
+some tracking error which makes it hard for deploying zero-shot on precise tasks, also kinematic
+268
+references may not be exactly trackable. Residual RL makes small trajectory corrections needed
+269
+to complete the task while retaining the nominal SONIC motion, and compensates for the forces
+270
+needed to pick an object or open a heavy drawer. Figure 3 compares matched video frames from
+271
+nominal and residual execution. In this rollout, nominal SONIC tips the mustard bottle off the
+272
+counter, whereas residual control retains the bottle in the hand.
+273
+4.3
+Scaling the Generated Dataset
+274
+We vary the number of generated kinematic references while keeping the task mix, observa-
+275
+tion/action schema, and evaluation set fixed. Nested subsets sampled at the episode level allow
+276
+comparisons across data budgets. Increasing the number of generated references leads to more di-
+277
+verse behavior and coverage, and higher success rates across the three tasks. Table 4 reports episode
+278
+counts, frame counts, and per-task success across reference budgets.
+279
+8
+
+
+--- PAGE 9 ---
+Table 3: Expert task success and tracking error for nominal SONIC tracking, residual token RL, and
+absolute token RL. MPJPE is mean per-joint position error; lower is better.
+Expert formulation
+Pick
+Drawer
+Button
+Walk and
+Pick
+MPJPE
+(mm)
+Nominal SONIC tracking
+0%
+30.0%
+68.0%
+17.30%
+24.84
+Residual SONIC token RL
+88.6%
+74.0%
+81.0%
+75.95%
+25.51
+Absolute token RL control
+0%
+0%
+0%
+0%
+62.29
+(a) Nominal SONIC (zero-shot)
+Walking
+1.00 s; f = 50
+Contact / tipping
+5.00 s; f = 250
+Final frame
+14.78 s; f = 739
+(b) Residual SONIC
+Walking
+1.00 s; f = 50
+Contact / tipping
+5.00 s; f = 250
+Final frame
+14.78 s; f = 739
+Figure 3: Matched nominal and residual SONIC execution on the mustard-bottle interaction. Both
+subfigures use video frames 50, 250, and 739 (the final frame), corresponding to 1.00, 5.00, and
+14.78 s, with identical crop coordinates. (a) Left: nominal zero-shot tracking tips the bottle off the
+counter; the bottle is on the floor at the end. (b) Right: residual control retains the bottle in the hand.
+Table 4: Generated-data scaling. Nested reference budgets are fixed at 10, 50, and 200; episode
+counts and held-out task success are reported for each budget.
+References
+Episodes
+Pick
+Drawer
+Button
+Walk and
+Pick
+10
+10
+0%
+4.0%
+0%
+0%
+50
+50
+0%
+15.0%
+15.0%
+0%
+200
+200
+0%
+55%
+50.0%
+0%
+5
+Limitations
+280
+The evaluation is limited to three simulated interaction tasks on a single humanoid embodi-
+281
+ment. Generated motions can be incompatible with robot kinematics or contact requirements, and
+282
+task-specific guidance, filtering, object references, and reward weights remain necessary parts of
+283
+the pipeline. Successful-rollout filtering may underrepresent difficult configurations. Reference-
+284
+conditioned experts may provide unreliable or abrupt corrections on learner-visited states, particu-
+285
+larly during precise interactions.
+286
+6
+Conclusion and Future Work
+287
+We present a framework for turning generated human motion into simulated humanoid demonstra-
+288
+tions and using them to train a VLA. DreamControl supplies task-conditioned references, residual
+289
+RL on a SONIC backbone adapts them to robot–object interaction, and successful rollouts initialize
+290
+GR00T fine-tuning. Reference-conditioned recovery DAgger distills expert behavior under learner-
+291
+induced state distributions by aggregating successful corrective continuations.
+292
+Future work focuses on expanding the task set and the diversity of interacting objects, studying
+293
+longer task sequences, and quantifying data-generation efficiency at larger scale. A further direction
+294
+is sim-to-real deployment, informed by the visual humanoid transfer pipelines of DoorMan and
+295
+VIRAL [9, 12]. Key requirements include validating the control and sensing stack on hardware,
+296
+matching cameras and contact behavior, and studying visual and physical randomization. These
+297
+directions extend the present simulation study; hardware deployment is outside its scope.
+298
+9
+
+
+--- PAGE 10 ---
+References
+299
+[1] M. J. Kim, K. Pertsch, S. Karamcheti, et al. OpenVLA: An Open-Source Vision-Language-
+300
+Action Model. arXiv:2406.09246, 2024. https://arxiv.org/abs/2406.09246.
+301
+[2] J. Bjorck, F. Castañeda, N. Cherniadev, et al. GR00T N1: An Open Foundation Model for
+302
+Generalist Humanoid Robots. arXiv:2503.14734, 2025. https://arxiv.org/abs/2503.
+303
+14734.
+304
+[3] D. Kalaria, S. Harithas, P. Katara, S. Kwak, S. Bhagat, S. S. Sastry, S. Sridhar, S. Vemprala,
+305
+A. Kapoor, and J. Huang. DreamControl: Human-Inspired Whole-Body Humanoid Control
+306
+for Scene Interaction via Guided Diffusion. arXiv:2509.14353, 2025. https://genrobo.
+307
+github.io/DreamControl/static/paper/DreamControl_arxiv.pdf.
+308
+[4] Y. Xie, V. Jampani, L. Zhong, D. Sun, and H. Jiang. OmniControl: Control Any Joint at Any
+309
+Time for Human Motion Generation. In International Conference on Learning Representa-
+310
+tions, 2024. https://arxiv.org/abs/2310.08580.
+311
+[5] L. Yang, X. Huang, Z. Wu, A. Kanazawa, P. Abbeel, C. Sferrazza, C. K. Liu, R. Duan, and
+312
+G. Shi. OmniRetarget: Interaction-Preserving Data Generation for Humanoid Whole-Body
+313
+Loco-Manipulation and Scene Interaction. arXiv:2509.26633, 2025. https://arxiv.org/
+314
+abs/2509.26633.
+315
+[6] K. Lin, A. Mandlekar, C. R. Garrett, N. Chernyadev, Y. Fang, R. Ding, Y. Xie, J. Tran, L. Fan,
+316
+and Y. Zhu. HumanoidMimicGen: Data Generation for Loco-Manipulation via Whole-Body
+317
+Planning. arXiv:2605.27724, 2026. https://arxiv.org/abs/2605.27724.
+318
+[7] Z. Luo, Y. Yuan, T. Wang, C. Li, F. Castañeda, et al. SONIC: Supersizing Motion Tracking
+319
+for Natural Humanoid Whole-Body Control. Science Robotics, 11(117):eaed4592, 2026. doi:
+320
+10.1126/scirobotics.aed4592. https://arxiv.org/abs/2511.07820.
+321
+[8] S. Ross, G. Gordon, and D. Bagnell. A Reduction of Imitation Learning and Structured Predic-
+322
+tion to No-Regret Online Learning. In Proceedings of the Fourteenth International Conference
+323
+on Artificial Intelligence and Statistics, PMLR 15:627–635, 2011. https://proceedings.
+324
+mlr.press/v15/ross11a.html.
+325
+[9] T. He, Z. Wang, H. Xue, Q. Ben, Z. Luo, W. Xiao, Y. Yuan, X. Da, F. Castañeda, S. Sastry,
+326
+C. Liu, G. Shi, L. Fan, and Y. Zhu. VIRAL: Visual Sim-to-Real at Scale for Humanoid Loco-
+327
+Manipulation. arXiv:2511.15200, 2025. https://arxiv.org/abs/2511.15200.
+328
+[10] Hugging Face. LeRobotDataset v3.0: Dataset documentation. Online documentation, accessed
+329
+October 2, 2026. https://huggingface.co/docs/lerobot/lerobot-dataset-v3.
+330
+[11] NVIDIA.
+Isaac-GR00T: Robot Data Preparation Guide.
+Online documentation, accessed
+331
+October 2, 2026.
+https://github.com/NVIDIA/Isaac-GR00T/blob/main/getting_
+332
+started/data_preparation.md.
+333
+[12] H. Xue, T. He, Z. Wang, Q. Ben, W. Xiao, Z. Luo, X. Da, F. Castañeda, G. Shi, S. Sastry,
+334
+L. Fan, and Y. Zhu. Opening the Sim-to-Real Door for Humanoid Pixel-to-Action Policy
+335
+Transfer. arXiv:2512.01061, 2025. https://arxiv.org/abs/2512.01061.
+336
+[13] X. B. Peng, P. Abbeel, S. Levine, et al. DeepMimic: Example-Guided Deep Reinforcement
+337
+Learning of Physics-Based Character Skills. arXiv:1804.02717, 2018. https://arxiv.org/
+338
+abs/1804.02717.
+339
+[14] X. B. Peng, Z. Ma, P. Abbeel, et al. AMP: Adversarial Motion Priors for Stylized Physics-
+340
+Based Character Control. arXiv:2104.02180, 2021. https://arxiv.org/abs/2104.02180.
+341
+[15] Z. Luo, J. Cao, A. Winkler, et al. Perpetual Humanoid Control for Real-time Simulated Avatars.
+342
+arXiv:2305.06456, 2023. https://arxiv.org/abs/2305.06456.
+343
+10
+
+
+--- PAGE 11 ---
+[16] M. Ji, X. Peng, F. Liu, et al. ExBody2: Advanced Expressive Humanoid Whole-Body Control.
+344
+arXiv:2412.13196, 2024. https://arxiv.org/abs/2412.13196.
+345
+[17] Q. Liao, T. E. Truong, X. Huang, et al. BeyondMimic: From Motion Tracking to Versatile
+346
+Humanoid Control via Guided Diffusion. arXiv:2508.08241, 2025. https://arxiv.org/
+347
+abs/2508.08241.
+348
+[18] T. He, J. Gao, W. Xiao, et al. ASAP: Aligning Simulation and Real-World Physics for Learning
+349
+Agile Humanoid Whole-Body Skills. arXiv:2502.01143, 2025. https://arxiv.org/abs/
+350
+2502.01143.
+351
+[19] H. Li, P. Li, Y. Tao, et al. PGMT: Perceptive General Motion Tracking for Humanoid Robots.
+352
+arXiv:2609.08511, 2026. https://arxiv.org/abs/2609.08511.
+353
+[20] T. He, Z. Luo, W. Xiao, et al. Learning Human-to-Humanoid Real-Time Whole-Body Teleop-
+354
+eration. arXiv:2403.04436, 2024. https://arxiv.org/abs/2403.04436.
+355
+[21] T. He, Z. Luo, X. He, et al. OmniH2O: Universal and Dexterous Human-to-Humanoid Whole-
+356
+Body Teleoperation and Learning.
+arXiv:2406.08858, 2024.
+https://arxiv.org/abs/
+357
+2406.08858.
+358
+[22] Z. Fu, Q. Zhao, Q. Wu, et al. HumanPlus: Humanoid Shadowing and Imitation from Humans.
+359
+arXiv:2406.10454, 2024. https://arxiv.org/abs/2406.10454.
+360
+[23] Y. Ze, Z. Chen, J. P. Araújo, et al.
+TWIST: Teleoperated Whole-Body Imitation System.
+361
+arXiv:2505.02833, 2025. https://arxiv.org/abs/2505.02833.
+362
+[24] H. Wang, C. Yu, Y. Hu, et al. HumanoidUMI: Bridging Robot-Free Demonstrations and Hu-
+363
+manoid Whole-Body Manipulation. arXiv:2606.27239, 2026. https://arxiv.org/abs/
+364
+2606.27239.
+365
+[25] Y. Nai, L. Chang, L. Yang, et al. Whole-Body UMI: Transferring UMI Manipulation Skills to
+366
+Humanoid Whole-Body Manipulation via Real-Time Motion Generation. arXiv:2609.22829,
+367
+2026. https://arxiv.org/abs/2609.22829.
+368
+[26] NVIDIA. GR00T N1.6. Model release and technical overview, 2025. Accessed October 8,
+369
+2026. https://research.nvidia.com/labs/gear/gr00t-n1_6/.
+370
+[27] NVIDIA. Isaac GR00T N1.7: Model Card. Model card, 2026. Accessed October 8, 2026.
+371
+https://huggingface.co/nvidia/GR00T-N1.7-3B.
+372
+[28] Figure. Helix: A Vision-Language-Action Model for Generalist Humanoid Control. Technical
+373
+report, 2025. Accessed October 8, 2026. https://www.figure.ai/news/helix.
+374
+[29] Figure. Introducing Helix 02: Full-Body Autonomy. Technical report, 2026. Accessed October
+375
+8, 2026. https://www.figure.ai/news/helix-02.
+376
+[30] Figure.
+Helix
+2.5:
+Zero-Shot
+30-Home
+Generalization.
+Technical
+re-
+377
+port,
+2026.
+Accessed
+October
+8,
+2026.
+https://www.figure.ai/news/
+378
+helix-2-5-zero-shot-30-home-generalization.
+379
+[31] Y. Wang, J. Li, S. Chen, et al. VLK: Learning Humanoid Loco-Manipulation from Synthetic
+380
+Interactions in Reconstructed Scenes. arXiv:2606.30645, 2026. https://arxiv.org/abs/
+381
+2606.30645.
+382
+[32] M. Boukheddimi, O. Adjali, D. Sontag, et al. WOLF-VLA: Whole-Body Humanoid Opti-
+383
+mal Locomotion Framework for Vision-Language-Action Learning. arXiv:2606.25591, 2026.
+384
+https://arxiv.org/abs/2606.25591.
+385
+11
+
+
+--- PAGE 12 ---
+[33] J. Tobin, R. Fong, A. Ray, et al. Domain Randomization for Transferring Deep Neural Net-
+386
+works from Simulation to the Real World. arXiv:1703.06907, 2017. https://arxiv.org/
+387
+abs/1703.06907.
+388
+[34] OpenAI, M. Andrychowicz, B. Baker, et al.
+Learning Dexterous In-Hand Manipulation.
+389
+arXiv:1808.00177, 2018. https://arxiv.org/abs/1808.00177.
+390
+[35] A. Handa, A. Allshire, V. Makoviychuk, et al. DeXtreme: Transfer of Agile In-hand Manipula-
+391
+tion from Simulation to Reality. arXiv:2210.13702, 2022. https://arxiv.org/abs/2210.
+392
+13702.
+393
+[36] A. Bhardwaj, M. Wilder-Smith, M. Mittal, et al. ViserDex: Visual Sim-to-Real for Robust Dex-
+394
+terous In-hand Reorientation. arXiv:2604.11138, 2026. https://arxiv.org/abs/2604.
+395
+11138.
+396
+[37] M. Torne, A. Simeonov, Z. Li, et al. Reconciling Reality through Simulation: A Real-to-Sim-
+397
+to-Real Approach for Robust Manipulation. arXiv:2403.03949, 2024. https://arxiv.org/
+398
+abs/2403.03949.
+399
+[38] Y. Jiang, C. Wang, R. Zhang, et al. TRANSIC: Sim-to-Real Policy Transfer by Learning from
+400
+Online Correction. arXiv:2405.10315, 2024. https://arxiv.org/abs/2405.10315.
+401
+[39] J. Wu, L. Yuan, Z. Sun, et al. DEXTERA: From a Single Image to Deployable Dexterous
+402
+Manipulation via Real-to-Sim-to-Real. arXiv:2609.21045, 2026. https://arxiv.org/abs/
+403
+2609.21045.
+404
+[40] A. Deshpande, M. Guru, R. Hendrix, et al. MolmoB0T: Large-Scale Simulation Enables Zero-
+405
+Shot Manipulation. arXiv:2603.16861, 2026. https://arxiv.org/abs/2603.16861.
+406
+[41] J. Hu, R. Hendrix, A. Farhadi, et al. FLaRe: Achieving Masterful and Adaptive Robot Policies
+407
+with Large-Scale Reinforcement Learning Fine-Tuning. arXiv:2409.16578, 2024. https:
+408
+//arxiv.org/abs/2409.16578.
+409
+[42] T. Miki, J. Lee, J. Hwangbo, et al. Learning robust perceptive locomotion for quadrupedal
+410
+robots in the wild. arXiv:2201.08117, 2022. https://arxiv.org/abs/2201.08117.
+411
+[43] X. Cheng, K. Shi, A. Agarwal, et al. Extreme Parkour with Legged Robots. arXiv:2309.14341,
+412
+2023. https://arxiv.org/abs/2309.14341.
+413
+[44] H. Ha, Y. Gao, Z. Fu, et al.
+UMI on Legs: Making Manipulation Policies Mobile with
+414
+Manipulation-Centric Whole-body Controllers. arXiv:2407.10353, 2024. https://arxiv.
+415
+org/abs/2407.10353.
+416
+[45] A. Cheng, Y. Ji, Z. Yang, et al. NaVILA: Legged Robot Vision-Language-Action Model for
+417
+Navigation. arXiv:2412.04453, 2024. https://arxiv.org/abs/2412.04453.
+418
+[46] A. Loquercio, E. Kaufmann, R. Ranftl, et al.
+Learning High-Speed Flight in the Wild.
+419
+arXiv:2110.05113, 2021. https://arxiv.org/abs/2110.05113.
+420
+[47] G. Tevet, S. Raab, B. Gordon, et al. Human Motion Diffusion Model. arXiv:2209.14916,
+421
+2022. https://arxiv.org/abs/2209.14916.
+422
+[48] J. Zhang, Y. Zhang, X. Cun, et al. T2M-GPT: Generating Human Motion from Textual De-
+423
+scriptions with Discrete Representations. arXiv:2301.06052, 2023. https://arxiv.org/
+424
+abs/2301.06052.
+425
+[49] B. Jiang, X. Chen, W. Liu, et al.
+MotionGPT: Human Motion as a Foreign Language.
+426
+arXiv:2306.14795, 2023. https://arxiv.org/abs/2306.14795.
+427
+12
+
+
+--- PAGE 13 ---
+[50] J. Li, J. Wu, and C. K. Liu.
+Object Motion Guided Human Motion Synthesis.
+428
+arXiv:2309.16237, 2023. https://arxiv.org/abs/2309.16237.
+429
+[51] J. Li, A. Clegg, R. Mottaghi, et al.
+Controllable Human-Object Interaction Synthesis.
+430
+arXiv:2312.03913, 2023. https://arxiv.org/abs/2312.03913.
+431
+[52] J. P. Araujo, Y. Ze, P. Xu, et al. Retargeting Matters: General Motion Retargeting for Humanoid
+432
+Motion Tracking. arXiv:2510.02252, 2025. https://arxiv.org/abs/2510.02252.
+433
+[53] A. Mandlekar, S. Nasiriany, B. Wen, et al. MimicGen: A Data Generation System for Scalable
+434
+Robot Learning using Human Demonstrations. arXiv:2310.17596, 2023. https://arxiv.
+435
+org/abs/2310.17596.
+436
+[54] C. Garrett, A. Mandlekar, B. Wen, et al. SkillMimicGen: Automated Demonstration Gen-
+437
+eration for Efficient Skill Learning and Deployment.
+arXiv:2410.18907, 2024.
+https:
+438
+//arxiv.org/abs/2410.18907.
+439
+[55] H. Bharadhwaj, D. Dwibedi, A. Gupta, et al. Gen2Act: Human Video Generation in Novel
+440
+Scenarios enables Generalizable Robot Manipulation. arXiv:2409.16283, 2024. https://
+441
+arxiv.org/abs/2409.16283.
+442
+[56] J. Jang, S. Ye, Z. Lin, et al. DreamGen: Unlocking Generalization in Robot Learning through
+443
+Video World Models. arXiv:2505.12705, 2025. https://arxiv.org/abs/2505.12705.
+444
+[57] H. Li, I. Zhang, R. Ouyang, et al.
+MimicDreamer: Aligning Human and Robot Demon-
+445
+strations for Scalable VLA Training. arXiv:2509.22199, 2025. https://arxiv.org/abs/
+446
+2509.22199.
+447
+[58] S. Ye, Y. Ge, K. Zheng, et al. World Action Models are Zero-shot Policies. arXiv:2602.15922,
+448
+2026. https://arxiv.org/abs/2602.15922.
+449
+[59] W. Ye, F. Liu, Z. Ding, et al. Video2Policy: Scaling up Manipulation Tasks in Simulation
+450
+through Internet Videos. arXiv:2502.09886, 2025. https://arxiv.org/abs/2502.09886.
+451
+[60] M. Kelly, C. Sidrane, K. Driggs-Campbell, et al. HG-DAgger: Interactive Imitation Learning
+452
+with Human Experts. arXiv:1810.02890, 2018. https://arxiv.org/abs/1810.02890.
+453
+[61] R. Li, Y. Korkmaz, and E. Bıyık. Reward-DAgger: Robot-Gated Interactive Imitation Learning
+454
+with General-Purpose Progress-Based Reward Models.
+arXiv:2610.04054, 2026.
+https:
+455
+//arxiv.org/abs/2610.04054.
+456
+13
