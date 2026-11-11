@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="DreamVLA: From Generated Human Motions to Humanoid Vision-Language-Action Policies. A research project on generated demonstrations and corrective VLA distillation.">
+  <meta name="theme-color" content="#fafaf8">
+  <meta property="og:title" content="DreamVLA">
+  <meta property="og:description" content="From Generated Human Motions to Humanoid Vision-Language-Action Policies">
+  <meta property="og:type" content="website">
+  <title>DreamVLA · Humanoid Vision-Language-Action Policies</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="media.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#abstract">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav container" aria-label="Main navigation">
+      <a class="wordmark" href="#top"><span class="brand-mark" aria-hidden="true">✳</span> DreamVLA</a>
+      <div class="nav-links"><a href="#abstract">Abstract</a><a href="#overview">Overview</a><a href="#results">Results</a><a href="#bibtex">BibTeX <span aria-hidden="true">↗</span></a></div>
+    </nav>
+  </header>
+  <main id="top">
+    <section class="hero container" aria-labelledby="paper-title">
+      <p class="eyebrow"><span></span> Generated motion. Learned interaction.</p>
+      <h1 id="paper-title"><span class="hero-name">Dream<span>VLA</span></span><span class="hero-subtitle">From Generated Human Motions to<br class="desktop-break"> Humanoid Vision-Language-Action Policies</span></h1>
+      <div class="authors" aria-label="Paper authors">
+        <a href="https://kev-park.github.io/" target="_blank" rel="noopener noreferrer">Kevin Park<sup>1,*</sup></a>
+        <a href="https://www.linkedin.com/in/izat-rasyad-840b51181/" target="_blank" rel="noopener noreferrer">Izat Rasyad<sup>2,*</sup></a>
+        <a href="https://dvij542.github.io/" target="_blank" rel="noopener noreferrer">Dvij Kalaria<sup>2</sup></a>
+        <a href="https://people.eecs.berkeley.edu/~sastry/" target="_blank" rel="noopener noreferrer">Shankar Sastry<sup>2</sup></a>
+      </div>
+      <p class="affiliations"><span><sup>1</sup> Princeton University</span><span><sup>2</sup> University of California, Berkeley</span></p>
+      <p class="equal-contribution">* Equal contribution</p>
+      <div class="hero-actions">
+        <a class="button button-dark" href="assets/DreamVLA.pdf" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H6V3h1Zm7 0v5h5M9 12h6M9 16h6"/></svg> Read the paper <span aria-hidden="true">↗</span></a>
+        <a class="button button-light" href="#results"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7V5Z"/></svg> Explore results</a>
+      </div>
+    </section>
+    <section class="abstract-section" id="abstract" aria-labelledby="abstract-title">
+      <div class="reading-container">
+        <p class="section-kicker">The idea</p><h2 id="abstract-title">Abstract</h2>
+        <div class="abstract-copy">
+          <p>Training vision-language-action (VLA) policies typically depends on substantial robot demonstration data, making human teleoperation a costly and cumbersome bottleneck, particularly for whole-body humanoid interaction. Reinforcement learning in simulation offers an alternative for scaling this data, but designing task-specific rewards remains challenging.</p>
+          <p>To address this, we propose <strong>DreamVLA</strong>, which uses generated motion trajectories to guide reinforcement learning (RL) in simulation, converting them into reliable task execution trajectories. These trajectories train VLA models in simulation without new task-specific teleoperation data. Our central contribution is a reference-conditioned DAgger distillation procedure: after a failed learner rollout, we restart the RL expert from a sampled learner state with the same reference suffix and aggregate successful corrective trajectories, addressing the distribution shift left by offline imitation.</p>
+          <p>We evaluate picking from a platform, opening a drawer, pressing a button, and walking and picking from a platform, with ablations of DAgger iterations, residual RL, and generated dataset scale.</p>
+        </div>
+      </div>
+    </section>
+    <section class="overview-section container" id="overview" aria-labelledby="overview-title">
+      <div class="section-heading"><div><p class="section-kicker">From motion to action</p><h2 id="overview-title">A look at DreamVLA</h2></div><span class="status-pill"><span></span> Overview video coming soon</span></div>
+      <figure class="overview-figure"><div id="overview-media"><img src="assets/overview.png" alt="DreamVLA pipeline: generate task-conditioned motions, train a residual RL expert, distill with corrective DAgger, and validate a humanoid VLA in simulation." width="2400" height="1149"></div><figcaption><span class="figure-label">Pipeline overview</span><p>Generated human motions guide a residual RL expert. Successful demonstrations and corrective recoveries train a vision-language-action policy.</p></figcaption></figure>
+    </section>
+    <section class="results-section" id="results" aria-labelledby="results-title">
+      <div class="container">
+        <div class="section-heading"><div><p class="section-kicker">Whole-body interaction</p><h2 id="results-title">Four tasks. One framework.</h2></div><p class="section-description">Explore three rollout episodes for each task.<br>Result videos are coming soon.</p></div>
+        <div class="task-grid" id="task-grid"></div>
+        <noscript><p>Please enable JavaScript to explore the four task carousels: pick from platform, open drawer, press button, and walk and pick.</p></noscript>
+      </div>
+    </section>
+    <section class="plots-section container" id="quantitative-results" aria-labelledby="plots-title">
+      <div class="section-heading"><div><p class="section-kicker">Learning from more experience</p><h2 id="plots-title">What improves task success?</h2></div><p class="section-description">Reported results across all four tasks.<br> 100 evaluation rollouts per task.</p></div>
+      <div class="plots-grid">
+        <figure class="plot-card">
+          <div class="plot-heading"><span class="plot-index">01 / Corrective learning</span><h3>More DAgger rounds, stronger policies</h3></div>
+          <a href="assets/results-dagger.svg" target="_blank" rel="noopener" aria-label="Open full-size DAgger success plot"><img src="assets/results-dagger.svg" width="620" height="410" alt="Task success at DAgger rounds 0, 1, 2, 3: picking 0, 17, 30, 54 percent; drawer 55, 57, 54, 62; button 50, 55, 61, 72; walking and picking 0, 1, 7, 18." loading="lazy"></a>
+          <figcaption><strong>Picking reaches 54% after three rounds.</strong> Starting with 200 trajectories, each round adds 200 successful corrective trajectories. The matched offline control with 800 trajectories achieves 0% on picking. <a href="assets/DreamVLA.pdf#page=8" target="_blank" rel="noopener">Paper, Table 2 ↗</a></figcaption>
+          <details><summary>View reported values</summary><div class="table-scroll"><table><caption>DAgger task success (%)</caption><thead><tr><th scope="col">Task / rounds</th><th scope="col">0</th><th scope="col">1</th><th scope="col">2</th><th scope="col">3</th></tr></thead><tbody><tr><th scope="row">Pick from platform</th><td>0</td><td>17</td><td>30</td><td>54</td></tr><tr><th scope="row">Open drawer</th><td>55</td><td>57</td><td>54</td><td>62</td></tr><tr><th scope="row">Press button</th><td>50</td><td>55</td><td>61</td><td>72</td></tr><tr><th scope="row">Walk and pick</th><td>0</td><td>1</td><td>7</td><td>18</td></tr></tbody></table></div></details>
+        </figure>
+        <figure class="plot-card">
+          <div class="plot-heading"><span class="plot-index">02 / Data scaling</span><h3>More generated data helps interaction</h3></div>
+          <a href="assets/results-scaling.svg" target="_blank" rel="noopener" aria-label="Open full-size training-data scaling plot"><img src="assets/results-scaling.svg" width="620" height="410" alt="Task success with 10, 50, and 200 training episodes: drawer 4, 15, 55 percent; button 0, 15, 50 percent; both picking tasks remain at 0 percent." loading="lazy"></a>
+          <figcaption><strong>Drawer and button success rise with more data.</strong> Generated-reference budgets of 10, 50, and 200 have matching episode counts. Both picking curves overlap at 0% throughout this study. <a href="assets/DreamVLA.pdf#page=9" target="_blank" rel="noopener">Paper, Table 4 ↗</a></figcaption>
+          <details><summary>View reported values</summary><div class="table-scroll"><table><caption>Training-data task success (%)</caption><thead><tr><th scope="col">Task / episodes</th><th scope="col">10</th><th scope="col">50</th><th scope="col">200</th></tr></thead><tbody><tr><th scope="row">Pick from platform</th><td>0</td><td>0</td><td>0</td></tr><tr><th scope="row">Open drawer</th><td>4</td><td>15</td><td>55</td></tr><tr><th scope="row">Press button</th><td>0</td><td>15</td><td>50</td></tr><tr><th scope="row">Walk and pick</th><td>0</td><td>0</td><td>0</td></tr></tbody></table></div></details>
+        </figure>
+      </div>
+    </section>
+    <section class="citation-section reading-container" id="bibtex" aria-labelledby="bibtex-title">
+      <div class="section-heading"><div><p class="section-kicker">Build on this work</p><h2 id="bibtex-title">BibTeX</h2></div><button class="copy-button" id="copy-citation" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></svg><span>Copy citation</span></button></div>
+      <pre tabindex="0" aria-label="BibTeX citation"><code id="citation">@misc{park2026dreamvla,
+  title  = {DreamVLA: From Generated Human Motions to
+            Humanoid Vision-Language-Action Policies},
+  author = {Park, Kevin and Rasyad, Izat and
+            Kalaria, Dvij and Sastry, Shankar},
+  year   = {2026}
+}</code></pre>
+      <p class="copy-status" id="copy-status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+  <footer class="site-footer container"><a class="wordmark" href="#top"><span class="brand-mark" aria-hidden="true">✳</span> DreamVLA</a><p>Princeton University &amp; UC Berkeley</p><a href="https://genrobo.github.io/DreamControl/" target="_blank" rel="noopener">Inspired by DreamControl <span aria-hidden="true">↗</span></a></footer>
+</body>
+</html>

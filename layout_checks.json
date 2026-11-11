@@ -1,45 +1,32 @@
 {
-  "poster_inches": [
+  "schema_version": 1,
+  "theme": "website",
+  "theme_reference": "https://ember-center-berkeley.github.io/DreamVLA/",
+  "pages": 1,
+  "size_inches": [
     48,
     36
   ],
-  "page_points": [
-    3456,
-    2592
-  ],
-  "text_elements": 129,
-  "text_within_page": true,
-  "anonymous": false,
-  "source_pdf": "K:/Downloads/DreamVLA_overleaf.pdf",
-  "walking_retained_counts_source": "out/walking_all12_legacy_results_20261022.json",
-  "data": {
-    "pick": [
-      0,
-      17,
-      30,
-      54
-    ],
-    "drawer": [
-      55,
-      57,
-      54,
-      62
-    ],
-    "button": [
-      50,
-      55,
-      61,
-      72
-    ],
-    "walk_and_pick": [
-      0,
-      1,
-      7,
-      18
-    ]
+  "files": {
+    "DreamVLA_CoRL_poster.pdf": "4cd1f5c778f88e0e3e2b125a7a41f5638ee36f4e1a5851139ea0b631591740ae",
+    "DreamVLA_CoRL_poster.svg": "43f4877768f1c472ba1280805b5e3bb5014d141fdb88ee86a8027ed1e86f7666",
+    "DreamVLA_CoRL_poster_preview.png": "f8bab941436c2ccd2c123dbc01ffd0679812a7df37aca988f1a40e8e414a1ac6"
   },
-  "notes": [
-    "No common per-round retained trajectory counts asserted across all tasks.",
-    "No aggregate MPJPE or unsupported absolute-token comparison included."
-  ]
+  "semantic_text_sha256": "15c168e78b3ce9dcbfe0ffe5fe14fcb639973c842fdf0892739abe95cd70d9fe",
+  "image_payload_sha256": [
+    "3a20a009f6212f9cf25a4993b8329ee001a5096c15da199ede66deb92b80ed5b",
+    "a377cefe5e7dfa905dc9a8f370a42b96448bfc937987e5e84afecbc8daafeb4d",
+    "2f9da5db198205689b6eb60f3155ffd602cb61808be2c932e164e5bdf49308c6",
+    "7c823f8c6603ed429a8f9b0dc0310280d0328614a10da89540165c678afa4262",
+    "6eda5ffaac6afffe728597db74368c8391c075d75c491ec1002cd6ee468dfabe",
+    "0ea7741d3b5d3c570196c7c8672610cac696a76c94d1c64c1b1ab68b2f9f43d5"
+  ],
+  "data_sha256": "7ce70711ba6db5ca79007b79219f6adf7448795364aa3def47f0bd52c407e213",
+  "declared_source_pdf_sha256": "4d4f62ff639e409b9154c601b137954f24805a4714b4bc7939fac85402ab1c66",
+  "source_pdf_bundled": false,
+  "source_values_reviewed_before_publication": true,
+  "embedded_fonts": 5,
+  "text_lines": 130,
+  "svg_valid_xml": true,
+  "anonymous": false
 }

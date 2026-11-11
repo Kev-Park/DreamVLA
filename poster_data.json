@@ -1,0 +1,52 @@
+{
+  "content_status": "reviewed_against_uploaded_paper",
+  "source_pdf": null,
+  "source_pdf_sha256": "4d4f62ff639e409b9154c601b137954f24805a4714b4bc7939fac85402ab1c66",
+  "dagger_rounds": 3,
+  "evaluation_rollouts": 100,
+  "evaluation_note": "100 random environment settings per task; paper Table 2.",
+  "series": [
+    {"name": "Pick", "values": [0, 17, 30, 54], "offline_control": 0},
+    {"name": "Drawer", "values": [51, 55, 54, 60], "offline_control": 54},
+    {"name": "Button", "values": [59, 58, 62, 69], "offline_control": 57},
+    {"name": "Walk + pick", "values": [0, 1, 7, 18], "offline_control": 0}
+  ],
+  "trajectory_budgets": [200, 400, 600, 800],
+  "offline_control_trajectories": 800,
+  "scaling": [
+    {"references": 10, "episodes": 10, "success": [0, 13, 0, 0]},
+    {"references": 50, "episodes": 50, "success": [0, 51, 14, 0]},
+    {"references": 200, "episodes": 200, "success": [0, 51, 59, 0]}
+  ],
+  "aggregation_description": "Add successful reference-conditioned continuations, build action chunks within each segment, and repeat for three DAgger rounds.",
+  "retained_count_note": "200 initial + 200 successful corrections per round = 800 total trajectories. Offline control: 800 expert-only trajectories.",
+  "main_finding": "With 800 trajectories, DAgger reaches 54% pick, 60% drawer, 69% button, and 18% walk-and-pick success.",
+  "results_footer": "Results: uploaded paper, Tables 2 & 4; Fig. 3",
+  "expert_ablation": {
+    "source": "Table 3, PDF page 9; Section 4.2, page 8",
+    "learned_formulation_rl_iterations_as_reported": 3000,
+    "displayed_in_current_poster": false,
+    "rows": [
+      {"name": "Nominal SONIC tracking", "success": [0, 30, 68, 17.30], "mpjpe_mm": 24.84},
+      {"name": "Residual SONIC token RL", "success": [88.6, 74, 81, 75.95], "mpjpe_mm": 25.51},
+      {"name": "Absolute token RL control", "success": [0, 0, 0, 0], "mpjpe_mm": 62.29}
+    ]
+  },
+  "sources": {
+    "title_authors_affiliations": "PDF page 1; unchanged from the upstream poster",
+    "residual_composition": "Section 3.2, page 5, equations 5–6; additive notation retained as written in the paper",
+    "student_inputs_and_action_chunks": "Sections 3.3–3.4, page 6; egocentric RGB, proprioception, language, executed tokens and hand commands",
+    "recovery_protocol": "Section 3.4, pages 6–7; uniform time from a failed rollout, same reference suffix, successful continuations only",
+    "evaluation_distribution": "Section 4.1, page 7; target-location distribution matches reference-generation distribution",
+    "series_and_offline_control": "Table 2, PDF page 8; task order Pick, Drawer, Button, Walk and Pick",
+    "trajectory_budgets": "Section 4.1, page 7, and Table 2, page 8",
+    "scaling": "Table 4, PDF page 9; reference counts and episode counts both transcribed as reported",
+    "scene_and_comparison_images": "Figures 2–3, PDF pages 8–9; visually checked against the existing upstream assets"
+  },
+  "render_notes": [
+    "All displayed success values are transcribed from Tables 2 and 4 of the uploaded PDF.",
+    "The previous walking-specific 200→314→416→535 note was removed; this PDF instead reports 200→400→600→800 for its DAgger study.",
+    "The poster summarizes the supplied paper; it does not independently audit experiment checkpoints or logs.",
+    "Table 3 is recorded in the data file for traceability, not added to the current poster layout; no MPJPE averaging was inferred."
+  ]
+}
