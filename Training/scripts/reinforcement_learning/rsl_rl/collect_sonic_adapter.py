@@ -39,7 +39,9 @@ import argparse
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 from vla_sonic.eval_helpers import flush_render  # noqa: E402
 from vla_sonic.fsq import fsq_lattice_snap
+from vla_sonic.rescue_sampling import takeover_bounds
 import builtins
+import faulthandler
 import os
 import time
 import traceback
@@ -57,9 +59,35 @@ import cli_args  # isort: skip
 print = partial(builtins.print, flush=True)
 
 
+def _reset_stall_traceback_timer() -> None:
+    """Expose blocked Python call sites without changing simulation execution."""
+    faulthandler.cancel_dump_traceback_later()
+    faulthandler.dump_traceback_later(600, repeat=True)
+
+
 # =========================================================================
 # Seeding / misc helpers (inlined from the former collect_pick_cam.py)
 # =========================================================================
+
+def _bounded_kit_thread_args(kit_args: str, available_cpus: int) -> tuple[str, int]:
+    """Keep both Kit worker pools within the inherited CPU allocation."""
+    if available_cpus < 1:
+        raise ValueError("The collector needs at least one available logical CPU")
+    prefixes = (
+        "--/plugins/carb.tasking.plugin/threadCount=",
+        "--/plugins/omni.tbb.globalcontrol/maxThreadCount=",
+    )
+    tokens = kit_args.split()
+    requested = {prefix: int(token[len(prefix):])
+                 for token in tokens for prefix in prefixes if token.startswith(prefix)}
+    # SimulationApp defaults both pools to 32. Overriding only Carbonite leaves
+    # TBB at 32, which oversubscribes a collector narrowed to one CPU via taskset.
+    limits = [value if value > 0 else available_cpus for value in requested.values()] or [32]
+    workers = min(available_cpus, *limits)
+    tokens = [token for token in tokens if not token.startswith(prefixes)]
+    tokens.extend(prefix + str(workers) for prefix in prefixes)
+    return " ".join(tokens), workers
+
 
 def _seed_for_rollout(base_seed: int, object_index: int, motion_index: int, rollout_index: int, worker_index: int = 0) -> int:
     return int(base_seed + worker_index * 1_000_000_000 + object_index * 1_000_000 + motion_index * 1_000 + rollout_index)
@@ -72,6 +100,13 @@ def _set_all_seeds(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def _read_motion_ids(path: str, total_motions: int) -> list[int]:
+    ids = [int(x) for x in Path(path).read_text().split()]
+    if not ids or len(ids) != len(set(ids)) or not all(0 <= m < total_motions for m in ids):
+        raise ValueError("Motion IDs must be nonempty, unique, and inside the loaded reference library")
+    return ids
 
 
 def _frame_to_uint8_rgb(frame: np.ndarray) -> np.ndarray:
@@ -887,14 +922,13 @@ def selftest_restore(env, policy, n_pre: int, n_post: int) -> bool:
     return ok
 
 
-def score_written_episode(path, box: str) -> tuple[bool, dict]:
-    """4-rule verdict on a written episode, reusing the same path as the offline filter.
+def _score_episode_arrays(obj_pos, obj_quat, root_pos, root_quat, wrist, box: str) -> tuple[bool, dict]:
+    """Use the offline four-rule scorer on the recorder's float64 representation.
 
     box: "af60" for the post-audit calibration, "af60v7" for the af60v7 grasp, "preaudit" for the original. This is explicit on
     purpose -- the pre-audit box rejects 100% of post-audit grasps (the bottle sits ~10 cm higher in
     the palm), which would make every rollout read as a failure and trigger a rescue every time.
     """
-    import h5py
     from vla_sonic.grasp_success import score, BOX_LO, BOX_HI, BOX_LO_AF60, BOX_HI_AF60, BOX_LO_AF60V7, BOX_HI_AF60V7
     if box.startswith("file:"):                    # a box calibrated from an expert's own demos (calibrate_box.py)
         import json as _json
@@ -902,14 +936,33 @@ def score_written_episode(path, box: str) -> tuple[bool, dict]:
         lo, hi = np.asarray(_b["lo"], dtype=np.float64), np.asarray(_b["hi"], dtype=np.float64)
     else:
         lo, hi = {"af60": (BOX_LO_AF60, BOX_HI_AF60), "af60v7": (BOX_LO_AF60V7, BOX_HI_AF60V7)}.get(box, (BOX_LO, BOX_HI))
-    with h5py.File(str(path), "r", locking=False) as h:
-        g = h["data/demo_0"]
-        r = score(g["obs/object_pos"][()], g["obs/object_quat"][()],
-                  g["obs/robot0_root_pos_w"][()], g["obs/robot0_root_quat_w"][()],
-                  g["teleop/right_wrist"][()], box_lo=lo, box_hi=hi)
+    # RolloutRecorder converts each of these columns to float64 before writing.
+    # Match that conversion before arithmetic, including quaternion products.
+    arrays = [np.asarray(value, dtype=np.float64)
+              for value in (obj_pos, obj_quat, root_pos, root_quat, wrist)]
+    r = score(*arrays, box_lo=lo, box_hi=hi)
     why = [t for t, cond in (("fell", r["fallen_height"]), ("horiz", r["fallen_horizontal"]),
                              ("slip", r["slipping"]), ("notbox", not r["in_box_at_end"])) if cond]
     return bool(r["success"]), {"why": "+".join(why) or "-", "max_tilt": float(r["max_tilt"])}
+
+
+def score_written_episode(path, box: str) -> tuple[bool, dict]:
+    """Four-rule verdict from the same stored columns used by the offline filter."""
+    import h5py
+    with h5py.File(str(path), "r", locking=False) as h:
+        g = h["data/demo_0"]
+        return _score_episode_arrays(
+            g["obs/object_pos"][()], g["obs/object_quat"][()],
+            g["obs/robot0_root_pos_w"][()], g["obs/robot0_root_quat_w"][()],
+            g["teleop/right_wrist"][()], box)
+
+
+def score_rollout_episode(raw_state, teleop, box: str) -> tuple[bool, dict]:
+    """Score pending recording without writing images that would be discarded."""
+    return _score_episode_arrays(
+        raw_state["object"]["root_pos_w"], raw_state["object"]["root_quat_w"],
+        raw_state["robot"]["root_pos_w"], raw_state["robot"]["root_quat_w"],
+        teleop["right_wrist"], box)
 
 
 def dagger_closed_pose(demo_root: str, max_files: int = 8) -> np.ndarray:
@@ -999,6 +1052,8 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
 
     terminated_flag = truncated_flag = False
     step_index = 0
+    rollout_started = time.monotonic()
+    _reset_stall_traceback_timer()
     if not simulation_app.is_running():
         raise RuntimeError("Simulation app is not running at rollout start.")
 
@@ -1112,6 +1167,11 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
         flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
         terminated_flag = bool(torch.as_tensor(terminated).any().item())
         truncated_flag = bool(torch.as_tensor(truncated).any().item())
+        if step_index % 100 == 0:
+            _reset_stall_traceback_timer()
+            motion_id = getattr(env.unwrapped, "_forced_motion_id", "unknown")
+            print(f"[progress] collection motion={motion_id} step={step_index}/{max_steps} "
+                  f"elapsed={time.monotonic()-rollout_started:.1f}s", flush=True)
         if terminated_flag or truncated_flag:
             # Which termination term ended the episode (read BEFORE the next step; the manager
             # keeps the per-term flags of the step that terminated). time_out = the reference
@@ -1235,6 +1295,11 @@ def main() -> None:
                              "the env the residual policies are trained in). Run with the same HS_REWORK "
                              "env vars as training.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--motion-ids", type=str, default=None,
+                        help="Expert collection: whitespace-separated original-library motion IDs.")
+    parser.add_argument("--sample-expert-actions", action="store_true",
+                        help="Sample the loaded expert's learned Normal action distribution for "
+                             "base collection retries. DAgger labels remain deterministic.")
     state_group = parser.add_mutually_exclusive_group()
     state_group.add_argument("--state-on", dest="state_on", action="store_true")
     state_group.add_argument("--state-off", dest="state_on", action="store_false")
@@ -1294,11 +1359,12 @@ def main() -> None:
     parser.add_argument("--dagger-vla-checkpoint", type=str, default=None,
                         help="DAgger mode: GR00T checkpoint that DRIVES the robot (with prob 1-beta per chunk) while "
                              "the residual labels every state. Rollouts are written regardless of success.")
-    parser.add_argument("--dagger-motion-ids", type=str, default=None,
-                        help="Explicit reference IDs for student rollouts; closed-pose calibration still uses demo-root.")
     parser.add_argument("--dagger-demo-root", type=str, default=None,
                         help="DAgger: collector HDF5 root of the demonstrations -- sweeps only its motion ids and "
-                             "takes the closed-finger label pose from it.")
+                        "takes the closed-finger label pose from it.")
+    parser.add_argument("--dagger-motion-ids", type=str, default=None,
+                        help="Whitespace-separated original-library motion IDs for DAgger. Overrides "
+                             "demo-derived IDs while using --dagger-demo-root for the closed-hand pose.")
     parser.add_argument("--dagger-beta", type=float, default=0.5, help="DAgger: P(expert drives) per re-plan chunk.")
     parser.add_argument("--dagger-diagnostics", action="store_true", default=False,
                         help="Record per-frame VLA uncertainty signals (FSQ lattice residual, expert/VLA token "
@@ -1347,6 +1413,9 @@ def main() -> None:
                         help="Sample the takeover frame from U[0, k_frac * grab_idx). 1.0 = uniform up to the "
                              "reference grasp (original rule); smaller hands over earlier, before the hand "
                              "reaches the bottle.")
+    parser.add_argument("--dagger-rescue-window-s", type=float, default=None,
+                        help="Instead sample uniformly in the final N seconds before reference grasp, "
+                             "clipped at episode start. Requires k-frac=1; omitted preserves the original rule.")
     parser.add_argument("--dagger-rescue-box", type=str, default=None,
                         help="Palm-box calibration for the failure verdict. Explicit on purpose: the wrong\n"
                              "one rejects every episode and rescues every rollout.")
@@ -1394,6 +1463,20 @@ def main() -> None:
     cli_args.add_rsl_rl_args(parser)
     AppLauncher.add_app_launcher_args(parser)
     args_cli = parser.parse_args()
+    if args_cli.dagger_rescue_window_s is not None:
+        if not args_cli.dagger_rescue:
+            parser.error("--dagger-rescue-window-s requires --dagger-rescue")
+        try:
+            takeover_bounds(1, k_frac=args_cli.dagger_rescue_k_frac,
+                            window_s=args_cli.dagger_rescue_window_s)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args_cli.sample_expert_actions and args_cli.dagger_vla_checkpoint:
+        parser.error("--sample-expert-actions is only for expert base collection")
+    if args_cli.motion_ids and args_cli.dagger_vla_checkpoint:
+        parser.error("Use --dagger-motion-ids for DAgger collection")
+    if args_cli.dagger_motion_ids and not args_cli.dagger_vla_checkpoint:
+        parser.error("--dagger-motion-ids requires --dagger-vla-checkpoint")
 
     _set_all_seeds(args_cli.seed)
     if args_cli.num_envs != 1:
@@ -1402,6 +1485,12 @@ def main() -> None:
 
     args_cli.enable_cameras = True
     args_cli.video = True  # keep viewport render product active (clean ego RTX frames)
+
+    available_cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
+    args_cli.kit_args, worker_threads = _bounded_kit_thread_args(args_cli.kit_args, available_cpus)
+    torch.set_num_threads(min(torch.get_num_threads(), worker_threads))
+    print(f"[INFO] Collector CPU allocation={available_cpus}; Carb/TBB workers={worker_threads}; "
+          f"PyTorch intra-op threads={torch.get_num_threads()}")
 
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
@@ -1511,6 +1600,58 @@ def main() -> None:
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=device)
     runner.load(resume_path)
     policy = runner.get_inference_policy(device=env.unwrapped.device)
+    if args_cli.sample_expert_actions:
+        from vla_sonic.sample_expert import sampled_inference_policy
+        policy = sampled_inference_policy(runner, policy)
+        print("[collect_sonic_adapter] Sampling the expert's learned action distribution")
+
+    grasp_gate = GraspGate(env, pad=args_cli.grasp_gate_pad, hold=args_cli.grasp_gate_hold,
+                           release=args_cli.grasp_gate_release,
+                           up_max_deg=args_cli.grasp_gate_up_deg, stall=args_cli.grasp_gate_stall,
+                           stall_eps=args_cli.grasp_gate_stall_eps) if args_cli.grasp_gate else None
+    if grasp_gate is not None:
+        print(f"[grasp-gate] palm-frame box lo={np.round(grasp_gate.lo,3).tolist()} hi={np.round(grasp_gate.hi,3).tolist()} "
+              f"hold={grasp_gate.hold} stall={grasp_gate.stall} release={grasp_gate.release} up<={grasp_gate.up_max_deg:.0f}deg "
+              f"drives={args_cli.grasp_gate_drives}")
+    dagger = None; dagger_closed = None; dagger_motions = None
+    if args_cli.dagger_vla_checkpoint:
+        from gr00t.policy.gr00t_policy import Gr00tPolicy
+        from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter
+        from vla_sonic.simple_robot_model import SimpleG1RobotModel
+        from vla_sonic.eval_helpers import demo_motion_ids
+        if not args_cli.dagger_demo_root:
+            raise SystemExit("--dagger-demo-root is required in DAgger mode")
+        dagger_motions = demo_motion_ids(args_cli.dagger_demo_root)
+        if args_cli.dagger_motion_ids:
+            dagger_motions = _read_motion_ids(args_cli.dagger_motion_ids, int(env.unwrapped.total_motions))
+        dagger_closed = dagger_closed_pose(args_cli.dagger_demo_root)
+        vla = Gr00tPolicy(embodiment_tag="unitree_g1_sonic", model_path=args_cli.dagger_vla_checkpoint, device=device)
+        obs_adapter = ObsToPolicyAdapter(env, ObsAdapterConfig(language_instruction="pick up the mustard bottle",
+                                                               robot_model=SimpleG1RobotModel.build(),
+                                                               camera_scene_key="camera_robot"))
+        if args_cli.dagger_rescue:
+            _box = args_cli.dagger_rescue_box
+            if _box is None or not (_box in ("preaudit", "af60", "af60v7") or (_box.startswith("file:") and os.path.isfile(_box[5:]))):
+                raise SystemExit("--dagger-rescue requires --dagger-rescue-box preaudit | af60 | af60v7 | file:<calibrated box json>: "
+                                 "the wrong calibration rejects every episode and rescues every rollout.")
+            if grasp_gate is not None:
+                raise SystemExit("--dagger-rescue forbids the grasp gate -- the residual's own finger head supplies the grasp label. Drop --grasp-gate.")
+            if abs(float(args_cli.dagger_beta)) > 1e-9:
+                print("[rescue] forcing --dagger-beta 0: the student must drive all of pass A")
+                args_cli.dagger_beta = 0.0
+        dagger = DaggerDriver(env, vla, obs_adapter, beta=args_cli.dagger_beta, chunk=args_cli.dagger_chunk,
+                              diagnostics=args_cli.dagger_diagnostics,
+                              trigger=args_cli.dagger_trigger, trigger_thr=args_cli.dagger_trigger_thr,
+                              trigger_smooth=args_cli.dagger_trigger_smooth,
+                              trigger_budget=args_cli.dagger_trigger_budget,
+                              trigger_lr=args_cli.dagger_trigger_lr,
+                              expert_base=args_cli.dagger_expert_base,
+                              blend=args_cli.dagger_rescue_blend,
+                              close_thres=args_cli.dagger_finger_close_thres, seed=args_cli.seed)
+        print(f"[DAgger] VLA {args_cli.dagger_vla_checkpoint} drives with P={1-args_cli.dagger_beta:.2f} per "
+              f"{args_cli.dagger_chunk}-step chunk; expert labels every state. {len(dagger_motions)} demo motions x "
+              f"{args_cli.dagger_rollouts} rollouts. closed-pose label (mean|q| {np.abs(dagger_closed).mean():.2f}) "
+              f"= {np.round(dagger_closed, 2).tolist()}")
 
     grasp_gate = GraspGate(env, pad=args_cli.grasp_gate_pad, hold=args_cli.grasp_gate_hold,
                            release=args_cli.grasp_gate_release,
@@ -1624,6 +1765,12 @@ def main() -> None:
                     raise ValueError("--motions-from must contain nonempty, unique motion IDs")
                 if any(mid < m_lo or mid >= m_hi for mid in selected):
                     raise ValueError("--motions-from contains an ID outside the motion range")
+            if args_cli.motion_ids:
+                if args_cli.motions_from is not None:
+                    raise ValueError("Use only one of --motion-ids and --motions-from")
+                selected = _read_motion_ids(args_cli.motion_ids, total_motions)
+                if not all(m_lo <= m < m_hi for m in selected):
+                    raise ValueError("Expert motion IDs must be inside the requested range")
             sweep = [(m, 0) for m in selected]
         for motion_id, rollout_idx in sweep:
             if written >= target_successes or not simulation_app.is_running():
@@ -1665,8 +1812,8 @@ def main() -> None:
 
             if args_cli.dagger_rescue:
                 # ---- pass A: the student drove the whole episode (beta forced to 0) -------------
-                # Written first so the verdict comes from the same 4-rule path as the offline
-                # filter, rather than a second in-memory implementation that could drift from it.
+                # Use the same scorer and float64 columns as the offline filter. Failed
+                # student recordings were immediately deleted; avoid their image writes.
                 passA_name = f"_passA__motion_{motion_id:03d}{suffix}.hdf5"
                 final_name = f"sonic_adapter__{motion_tag}__motion_{motion_id:03d}{suffix}.hdf5"
 
@@ -1687,21 +1834,22 @@ def main() -> None:
                                            env_args=_build_env_args(env, task_name=args_cli.task))
                     return recorder.output_dir / name
 
-                pA = _write(passA_name, camera_frames, raw_state, meta, teleop_payload,
-                            {"rescue": {"pass": "A", "takeover_at": None}})
-                okA, whyA = score_written_episode(pA, args_cli.dagger_rescue_box)
+                okA, whyA = score_rollout_episode(raw_state, teleop_payload, args_cli.dagger_rescue_box)
                 grab_idx = int(meta.get("grab_idx", -1))
                 print(f"[rescue] motion {motion_id}: pass A 4-rule {'PASS' if okA else 'FAIL'} "
                       f"({whyA['why']}), grab_idx={grab_idx}, steps={meta['num_steps']}")
 
                 if okA:
+                    pA = _write(passA_name, camera_frames, raw_state, meta, teleop_payload,
+                                {"rescue": {"pass": "A", "takeover_at": None}})
+                    assert score_written_episode(pA, args_cli.dagger_rescue_box) == (okA, whyA), \
+                        "In-memory and recorded student verdicts differ"
                     os.replace(pA, recorder.output_dir / final_name)
                     written += 1
                     print(f"[rescue] WROTE student success {written} -> {final_name}")
                     continue
 
                 # ---- pass B: independent sibling, expert takes over at k -----------------------
-                pA.unlink(missing_ok=True)
                 if grab_idx <= 0:
                     rejected_nograsp += 1
                     print(f"[rescue] SKIP motion {motion_id}: no reference grasp frame "
@@ -1709,10 +1857,13 @@ def main() -> None:
                     continue
                 # k ~ U[0, k_frac * grab_idx). k_frac=1 is the original uniform-to-grab rule; a small
                 # k_frac hands over early, while the hand is still away from the bottle.
-                k_hi = max(1, int(round(float(args_cli.dagger_rescue_k_frac) * grab_idx)))
-                k = int(np.random.default_rng(args_cli.seed + motion_id * 7919 + rollout_idx).integers(0, k_hi))
+                k_lo, k_hi = takeover_bounds(
+                    grab_idx, k_frac=args_cli.dagger_rescue_k_frac,
+                    window_s=args_cli.dagger_rescue_window_s, step_dt=float(env.unwrapped.step_dt))
+                k = int(np.random.default_rng(args_cli.seed + motion_id * 7919 + rollout_idx).integers(k_lo, k_hi))
                 print(f"[rescue] motion {motion_id}: re-rolling with expert takeover at k={k} "
-                      f"of grab_idx={grab_idx} (expert_base={args_cli.dagger_expert_base})")
+                      f"of grab_idx={grab_idx} bounds=[{k_lo},{k_hi}) "
+                      f"(expert_base={args_cli.dagger_expert_base})")
                 dagger.takeover_at = k
                 try:
                     camB, rsB, metaB, tpB = _run_rollout_adapter(
@@ -1736,6 +1887,8 @@ def main() -> None:
                                         "passA_success": False, "passA_why": whyA["why"],
                                         "expert_base": args_cli.dagger_expert_base,
                                         "blend": int(args_cli.dagger_rescue_blend),
+                                        "window_s": args_cli.dagger_rescue_window_s,
+                                        "takeover_bounds": [k_lo, k_hi],
                                         "k_frac": float(args_cli.dagger_rescue_k_frac)}})
                 okB, whyB = score_written_episode(pB, args_cli.dagger_rescue_box)
                 written += 1
@@ -1786,6 +1939,7 @@ def main() -> None:
                 "encoder_mode": args_cli.encoder_mode,
                 "waist_dof": int(args_cli.waist_dof),
                 "checkpoint": str(resume_path),
+                "sampled_expert_actions": args_cli.sample_expert_actions,
                 **meta,
             }
             env_args = _build_env_args(env, task_name=args_cli.task)
@@ -1813,12 +1967,15 @@ def main() -> None:
 
 
 def _main_with_error_report() -> None:
+    _reset_stall_traceback_timer()
     try:
         main()
     except Exception as exc:
         print(f"[ERROR] collect_sonic_adapter.py failed: {exc}")
         traceback.print_exc()
         raise
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 if __name__ == "__main__":

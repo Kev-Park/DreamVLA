@@ -60,10 +60,20 @@ parser.add_argument("--camera-offset", type=str, default="2.6,2.6,1.4",
                     help="Camera eye offset from the robot root (x,y,z, metres) when --camera-track.")
 parser.add_argument("--camera-look-z", type=float, default=0.9,
                     help="Height above the robot root xy that the camera looks at when --camera-track.")
+parser.add_argument("--camera-view", type=str, default="third", choices=["third", "ego"],
+                    help="Which already-injected camera feeds the video: 'third' (default) = the static "
+                         "kitchen third-person camera; 'ego' = the robot's D435 head camera "
+                         "(torso_link/d435_link), i.e. what the robot sees. --camera-track/-offset/"
+                         "-look-z only aim the third-person camera and are ignored for 'ego', which is "
+                         "rigidly mounted to the torso.")
 parser.add_argument("--encoder-mode", type=str, default="g1", choices=["g1", "teleop"],
                     help="Native .pt only. g1 = full-body joint reference encoder (default). teleop = the "
                          "checkpoint VR 3-point head: reference wrists+torso point and lower-body command; "
                          "SONIC synthesizes the whole body itself.")
+parser.add_argument("--no-video", action="store_true", default=False,
+                    help="Skip camera capture and video encoding. For data-capture runs (--dump-track) "
+                         "the RTX render + per-step annotator flush dominates wall time; disabling it "
+                         "makes a 60-clip capture practical.")
 parser.add_argument("--physics-preset", type=str, default="training", choices=["training", "deploy"],
                     help="Physics substep preset (both 50 Hz control): 'training' (default) = 200 Hz/dec-4 "
                          "(gear_sonic training), 'deploy' = 500 Hz/dec-10.")
@@ -170,6 +180,19 @@ parser.add_argument(
          "time_out). Training (train_sonic_adapter.py) and eval (eval_sonic_adapter.py) are "
          "unaffected — they use their own cfgs and always keep terminations.")
 parser.add_argument(
+    "--overlay-ref-path", type=str, default=None,
+    help="Second reference dataset to draw as BLUE spheres alongside the loaded one. Use it to "
+         "compare two parameterisations of the same clips (e.g. the planner-reparameterised "
+         "reference vs the unparsed retarget it came from). Motion ids are matched by position "
+         "in the sorted file list, so both dirs must hold the same pick_<id>.pkl set.")
+parser.add_argument(
+    "--overlay-ref-align-grab", action="store_true", default=False,
+    help="With --overlay-ref-path: match the comparison clip by FILE NAME (not list position), shift "
+         "it in time so its grab frame coincides with the primary's, and move it rigidly about the "
+         "bottle (yaw by the root-heading difference at the grab, translate its grab-time object "
+         "onto the primary's). The overlay is then drawn in the bottle + root-heading frame used to "
+         "compare a stitched walking pick against its static source clip.")
+parser.add_argument(
     "--overlay-ref", action="store_true", default=True,
     help="Draw the tracked REFERENCE motion as an overlay on top of the (physics) residual "
          "playback: 39 spheres at the reference link world positions, updated every frame "
@@ -184,6 +207,12 @@ parser.add_argument(
          "palm (right_rubber_hand projected forward by --hand-fk-forward toward the grasp point), "
          "YELLOW = synthesized object ref (object rest until grasp, then tracks the palm). Render-only viz.",
 )
+parser.add_argument(
+    "--overlay-palm-normal", action="store_true", default=False,
+    help="Draw the sim hand PALM NORMAL as a dotted MAGENTA vector (hand +y, the axis refine_al_29 "
+         "HS_PALM_NORMAL mode aims at the bottle) and the FINGER axis as a short dotted ORANGE vector "
+         "(hand +x, what the legacy pointing term aims). Read from right_wrist_yaw_link, which shares "
+         "the rubber-hand frame (identity child rotation in the URDF). Pure viz.")
 parser.add_argument(
     "--hand-fk-forward", type=float, default=1.5,
     help="Forward projection factor for the CYAN palm marker: palm = hand + f*(hand - wrist) along the "
@@ -256,7 +285,8 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 # SONIC adapter wiring (same as train_sonic_adapter.py)
 from vla_sonic.token_action_wrapper import load_frozen_decoder
 from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
-from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+from vla_sonic.physics_overrides import (apply_sonic_physics_overrides,
+                                          apply_object_mass_override, apply_hand_gain_override)
 from vla_sonic.robot_29dof import apply_29dof_waist_override
 from vla_sonic.adapter_actor_critic import AdapterActorCritic
 
@@ -302,7 +332,9 @@ def _inject_cameras(env_cfg) -> None:
             focal_length=7.6, focus_distance=400.0,
             horizontal_aperture=20.0, clipping_range=(0.01, 100.0),
         ),
-        data_types=["rgb"], height=480, width=640,
+        data_types=["rgb"],
+        height=(int(args_cli.render_height) if args_cli.camera_view == "ego" else 480),
+        width=(int(args_cli.render_width) if args_cli.camera_view == "ego" else 640),
         offset=CameraCfg.OffsetCfg(
             pos=(0.05, 0.0, 0.36),
             rot=(0.568, 0.421, -0.421, -0.568), convention="opengl",
@@ -570,6 +602,65 @@ def _make_ref_overlay_markers():
     return markers, marker_indices
 
 
+def _make_alt_overlay_markers():
+    """BLUE spheres for the --overlay-ref-path comparison dataset (all 39 links, one prototype)."""
+    cfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/alt_ref_keypts",
+        markers={"alt": sim_utils.SphereCfg(
+            radius=0.026,
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.15, 0.35, 0.95)))},
+    )
+    return VisualizationMarkers(cfg), [0] * _N_KEYPTS
+
+
+def _load_alt_motion_lib(env, path, device):
+    """Load a SECOND MotionLibRobot for the comparison overlay (viz only; never touches obs)."""
+    from isaaclab_tasks.utils.motion_lib.motion_lib_robot import MotionLibRobot
+    from isaaclab_tasks.utils.repo_paths import dataset as _resolve_dataset
+    lib = MotionLibRobot(num_envs=env.unwrapped.scene.num_envs, device=device,
+                         motion_file=str(_resolve_dataset(path)))
+    lib.load_motions()
+    print(f"[overlay-ref-path] loaded {lib.num_motions()} comparison motions from {path} (BLUE)")
+    return lib
+
+
+def _yaw_wxyz(q):
+    return torch.atan2(2 * (q[..., 0] * q[..., 3] + q[..., 1] * q[..., 2]),
+                       1 - 2 * (q[..., 2] ** 2 + q[..., 3] ** 2))
+
+
+def _update_alt_overlay_markers(env, lib, markers, marker_indices, device):
+    """Draw the comparison dataset's keypoints at the same motion time as the primary, or -- with
+    --overlay-ref-align-grab -- grab-aligned in the bottle + root-heading frame."""
+    unw = env.unwrapped
+    with torch.inference_mode():
+        t = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.clone().detach().to(
+            device=device, dtype=torch.float32)
+        if not args_cli.overlay_ref_align_grab:
+            ids = torch.clamp(unw.motion_ids, max=lib.num_motions() - 1)
+            res = lib.get_motion_state(ids, t)
+            gk = res["global_keypts"].to(device) + unw.scene.env_origins.unsqueeze(1)
+        else:
+            if not hasattr(lib, "_name_to_id"):
+                lib._name_to_id = {os.path.basename(str(f)): i for i, f in enumerate(lib._motion_data_load)}
+            pml = unw.motion_lib
+            pid = unw.motion_ids[:1]
+            aid = torch.tensor([lib._name_to_id[os.path.basename(str(pml._motion_data_load[int(pid)]))]],
+                               device=device, dtype=torch.long)
+            pg = pml.switch_idxs[pid] * pml._motion_dt[pid]          # primary grab time (s)
+            ag = lib.switch_idxs[aid] * lib._motion_dt[aid]          # comparison grab time (s)
+            rp = pml.get_motion_state(pid, pg); ra = lib.get_motion_state(aid, ag)
+            dyaw = _yaw_wxyz(rp["root_rot"]) - _yaw_wxyz(ra["root_rot"])
+            c, s_ = torch.cos(dyaw), torch.sin(dyaw)
+            Rz = torch.stack([torch.cat([c, -s_, torch.zeros_like(c)]), torch.cat([s_, c, torch.zeros_like(c)]),
+                              torch.tensor([0.0, 0.0, 1.0], device=device)]).to(device)
+            a_anchor = ra["object_poses"][0, :3]; p_anchor = rp["object_poses"][0, :3]
+            res = lib.get_motion_state(aid, torch.clamp(t[:1] - pg + ag, min=0.0))
+            gk = ((res["global_keypts"][0] - a_anchor) @ Rz.T + p_anchor).unsqueeze(0)                 + unw.scene.env_origins[:1].unsqueeze(1)
+    markers.visualize(translations=gk[0],
+                      marker_indices=torch.tensor(marker_indices, device=device, dtype=torch.long))
+
+
 def _update_ref_overlay_markers(env, markers, marker_indices, device):
     """Place the spheres at this step's reference link world positions."""
     unw = env.unwrapped
@@ -632,7 +723,16 @@ def _update_obj_candidate_markers(env, markers, device, hand_fwd: float = 1.5):
         gk = res["global_keypts"].to(device) + origin.unsqueeze(1)                  # (N, 39, 3)
         hand = gk[:, -1, :]                                                         # right_rubber_hand (wrist/palm-base)
         wrist = gk[:, -2, :]                                                        # right_wrist_yaw
-        palm = hand + hand_fwd * (hand - wrist)                                     # forward-projected grasp point (CYAN)
+        if os.environ.get("HS_REWORK_PALM_NORMAL", "0") == "1":
+            # palm FACE, same derivation as motion_tracking_pick_env._synth_object_ref_pos:
+            # +x = (hand - wrist)/|.|, +y = up x +x (LEVEL keeps hand z vertical), palm = hand + reach*y
+            _x = (hand - wrist); _x = _x / _x.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+            _up = torch.zeros_like(_x); _up[:, 2] = 1.0
+            _y = torch.cross(_up, _x, dim=-1); _y = _y / _y.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+            _reach = float(os.environ.get("HS_REWORK_PALM_REACH", os.environ.get("HS_PALM_REACH", "0.07")))
+            palm = hand + _reach * float(os.environ.get("HS_PALM_NORMAL_SIGN", "+1")) * _y        # palm-face point (CYAN)
+        else:
+            palm = hand + hand_fwd * (hand - wrist)                                 # forward-projected grasp point (CYAN)
         obj_rest = res["object_poses"][:, :3].to(device) + origin                  # holosoma object (static pre-grab)
         is_closed = res["is_closed"].to(device).float().unsqueeze(-1)              # (N, 1); 1 = post-grasp
         # SYNTHESIZED object ref (YELLOW): rest until grasp, then track the palm.
@@ -695,6 +795,60 @@ def _overlay_contact_pos(frame_rgb, d, r, closed):
         cv2.putText(frame_rgb, txt, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(frame_rgb, txt, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1, cv2.LINE_AA)
     return frame_rgb
+
+# =========================================================================
+# Palm-normal overlay (--overlay-palm-normal). The refine grasp geometry lives in the
+# right_rubber_hand frame: +x = fingertip axis, -y = palm face (measured), +z kept vertical by the
+# LEVEL term. In the sim articulation the hand is attached to right_wrist_yaw_link with identity
+# rotation and a 0.0536 m x-offset, so that link quaternion IS the hand frame. Draw -y as a dotted
+# vector out of the palm and +x as a shorter one along the fingers, so palm-vs-bottle correspondence
+# is visible in an egocentric render.
+# =========================================================================
+_PN_NORMAL_T = (0.04, 0.08, 0.12, 0.16, 0.20, 0.24)  # m along the palm normal; starts past the palm surface
+_PN_FINGER_T = (0.06, 0.12, 0.18)                     # m along the fingertip axis
+# Dots start >= 4 cm out and are 1.8 cm: at 2 cm / 1.2 cm the chain sat inside the hand mesh and the
+# ego camera (which sees the BACK of the right hand) hid the palm-side vector almost entirely.
+_PN_HAND_OFFSET = (0.0536, 0.0030, 0.0022)          # right_rubber_hand origin in the wrist_yaw frame
+_PN_SIGN = float(os.environ.get("HS_PALM_NORMAL_SIGN", "+1"))   # palm face = hand +y; same knob as refine_al_29
+
+
+def _make_palm_normal_markers():
+    cfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/palm_normal",
+        markers={
+            "normal": sim_utils.SphereCfg(radius=0.018,
+                                          visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.1, 0.9))),
+            "finger": sim_utils.SphereCfg(radius=0.014,
+                                          visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.55, 0.0))),
+        },
+    )
+    return VisualizationMarkers(cfg)
+
+
+def _quat_wxyz_to_mat(q):
+    """(4,) wxyz -> (3,3) rotation, torch."""
+    w, x, y, z = q
+    return torch.stack([
+        torch.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)]),
+        torch.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)]),
+        torch.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]),
+    ])
+
+
+def _update_palm_normal_markers(env, markers, device, body_idx: int):
+    """Dotted palm-normal (-y, magenta) and finger-axis (+x, orange) vectors from the sim hand, env 0."""
+    unw = env.unwrapped
+    robot = unw.scene["robot"]
+    with torch.inference_mode():
+        pos = robot.data.body_pos_w[0, body_idx]
+        R = _quat_wxyz_to_mat(robot.data.body_quat_w[0, body_idx])
+        hand = pos + R @ torch.tensor(_PN_HAND_OFFSET, device=device, dtype=pos.dtype)
+        normal = _PN_SIGN * R[:, 1]                       # palm normal (+y by default)
+        finger = R[:, 0]
+        pts = [hand + t * normal for t in _PN_NORMAL_T] + [hand + t * finger for t in _PN_FINGER_T]
+        idx = [0] * len(_PN_NORMAL_T) + [1] * len(_PN_FINGER_T)
+    markers.visualize(translations=torch.stack(pts, dim=0),
+                      marker_indices=torch.tensor(idx, device=device, dtype=torch.long))
 
 
 class VideoWriter:
@@ -915,6 +1069,12 @@ def main():
 
     # Match the SONIC decoder's training-time physics — same as train_sonic_adapter.py.
     apply_sonic_physics_overrides(env_cfg, preset=args_cli.physics_preset)
+    # The object-mass and hand-gain overrides are DEFAULT ON (physics_overrides.py), but the
+    # montage renderer never invoked them, so rendered clips silently ran the stock mass and
+    # hand gains while collect/eval/play_vla used the overridden ones -- i.e. the videos did
+    # not show the physics the rest of the pipeline was using.
+    apply_object_mass_override(env_cfg)
+    apply_hand_gain_override(env_cfg)
 
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
@@ -974,7 +1134,9 @@ def main():
     for _ in range(60):
         _APP.update()
 
-    device = agent_cfg.device
+    # The playback environment follows --device; the training config may still
+    # default to cuda:0. Load the frozen modules on the environment's actual GPU.
+    device = env.unwrapped.device
     if args_cli.reference_pd:
         # ---- reference-PD: NO SONIC decoder/encoder. Wrap with the plain RSL-RL wrapper so
         # the env's NATIVE JointPositionAction is what env.step applies (PD physics). ----
@@ -1045,7 +1207,7 @@ def main():
     print("[play_sonic_adapter] warm-up env.step + flush to populate camera buffers...")
     zero_action = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
     env.step(zero_action)
-    flush_render(env)
+    flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
     # Open the writer AFTER the warm-up so we know the camera is ready.
     if log_dir is not None:
@@ -1075,12 +1237,16 @@ def main():
     )
     if args_cli.reference_playback:
         _write_reference_pose(env, ref_joint_map, device)  # frame 0 = reference at reset
-        flush_render(env)
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
     if args_cli.reference_pd:
         policy = _make_reference_pd_policy(env, ref_joint_map, device)
 
     # Reference-overlay markers (created once, after reset so motion_lib/motion_ids exist).
     ref_markers, ref_marker_indices = _make_ref_overlay_markers() if args_cli.overlay_ref else (None, None)
+    alt_lib = alt_markers = alt_marker_indices = None
+    if args_cli.overlay_ref_path:
+        alt_lib = _load_alt_motion_lib(env, args_cli.overlay_ref_path, device)
+        alt_markers, alt_marker_indices = _make_alt_overlay_markers()
     if args_cli.overlay_ref:
         _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)  # frame 0
         print(f"[overlay-ref] {_N_KEYPTS} reference-keypoint spheres enabled "
@@ -1088,6 +1254,10 @@ def main():
 
     # Object-reference candidate markers (#4 diagnostic).
     obj_cand_markers = _make_obj_candidate_markers() if args_cli.overlay_obj_candidates else None
+    palm_normal_markers = _make_palm_normal_markers() if args_cli.overlay_palm_normal else None
+    if palm_normal_markers is not None:
+        _pn_idx = list(env.unwrapped.scene["robot"].data.body_names).index("right_wrist_yaw_link")
+        print(f"[overlay-palm-normal] MAGENTA = palm normal (hand {'+' if _PN_SIGN > 0 else '-'}y), ORANGE = finger axis (hand +x); body idx {_pn_idx}")
     if args_cli.overlay_obj_candidates:
         _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)  # frame 0
     cp_markers = _make_contact_pos_markers() if args_cli.overlay_contact_pos else None
@@ -1128,9 +1298,26 @@ def main():
         _cidx = [_csn.index(n) for n in _trk_names] if all(n in _csn for n in _trk_names) else []
         _trk = {"names": _trk_names, "idx": _tidx, "cidx": _cidx, "seg": [], "mid": [], "step": [],
                 "hand_pos": [], "obj_pos": [], "is_closed": [], "contact_f": [], "root_pos": [], "root_quat": [],
-                "ref_root_pos": [], "joint_names": list(_rb.data.joint_names),
-                "computed_torque": [], "applied_torque": [], "joint_pos": [],
+                "ref_root_pos": [], "joint_pos": [], "ref_order_joint_pos": [],
+                "ref_joint_pos": [], "ref_root_quat": [],
+                # behaviour-comparison fields
+                "hand_quat": [], "hand_lin_vel": [], "obj_quat": [], "obj_lin_vel": [], "obj_ang_vel": [],
+                "action": [], "finger_q": [], "ref_obj_pose": [], "done": [],
+                "joint_names": list(_rb.data.joint_names),
+                "computed_torque": [], "applied_torque": [],
                 "effort_limit": _rb.data.joint_effort_limits[0].cpu().numpy()}
+        _fjn = [n for n in _rb.data.joint_names if re.match(r"right_hand_.*_joint", n)]
+        _trk["fidx"] = [list(_rb.data.joint_names).index(n) for n in _fjn]
+        _trk["finger_names"] = _fjn
+        # articulation joint indices in motion_lib.joint_names order, so robot and reference
+        # joint vectors are directly comparable
+        try:
+            _jn = list(env.unwrapped.motion_lib.joint_names)
+            _ajn = list(env.unwrapped.scene["robot"].data.joint_names)
+            _trk["jidx"] = [_ajn.index(n) for n in _jn]
+        except Exception as _e:
+            _trk["jidx"] = None
+            print(f"[dump-track] joint index map unavailable ({_e}); dumping raw articulation order")
         print(f"[dump-track] {len(_tidx)} right-hand bodies: {_trk['names']}")
 
     for _seg_i, _mid in enumerate(_mlist):
@@ -1147,9 +1334,11 @@ def main():
                 _write_reference_pose(env, ref_joint_map, device)
             if args_cli.overlay_ref:
                 _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
+            if alt_lib is not None:
+                _update_alt_overlay_markers(env, alt_lib, alt_markers, alt_marker_indices, device)
             if args_cli.camera_track:
                 _aim_camera_at_robot(env, device)
-        flush_render(env)
+        flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
         print(f"[montage] segment {_seg_i + 1}/{len(_mlist)}: motion_id={_mid}")
 
         for _s in range(_seg):
@@ -1171,10 +1360,14 @@ def main():
             # (before the render flush so they appear in this frame).
             if args_cli.overlay_ref:
                 _update_ref_overlay_markers(env, ref_markers, ref_marker_indices, device)
+            if alt_lib is not None:
+                _update_alt_overlay_markers(env, alt_lib, alt_markers, alt_marker_indices, device)
             if args_cli.overlay_obj_candidates:
                 _update_obj_candidate_markers(env, obj_cand_markers, device, args_cli.hand_fk_forward)
             if cp_markers is not None:
                 _cp = _update_contact_pos_markers(env, cp_markers, device)
+            if palm_normal_markers is not None:
+                _update_palm_normal_markers(env, palm_normal_markers, device, _pn_idx)
 
             if _trk is not None:
                 _uwt = env.unwrapped
@@ -1198,57 +1391,80 @@ def main():
                 _rst = _uwt.motion_lib.get_motion_state(_uwt.motion_ids, _mtt)
                 _trk["is_closed"].append(bool(_rst["is_closed"].reshape(-1)[0].item() > 0.5))
                 _trk["ref_root_pos"].append((_rst["root_pos"].reshape(-1, 3)[0]).cpu().numpy())
+                # Joint-level record: lets the ROBOT's own gait (stride, cadence, foot placement) be
+                # reconstructed by FK and compared against the reference's, which root-only data
+                # cannot distinguish -- under-stepping and under-cadence look identical in root drift.
+                _jp = _uwt.scene["robot"].data.joint_pos[0]
+                _trk["ref_order_joint_pos"].append(_jp[_trk["jidx"]].cpu().numpy() if _trk.get("jidx") is not None else _jp.cpu().numpy())
+                _trk["ref_joint_pos"].append(_rst["dof_pos"].reshape(len(_uwt.motion_ids), -1)[0].cpu().numpy())
+                _trk["ref_root_quat"].append(_rst["root_rot"].reshape(-1, 4)[0].cpu().numpy())
                 _trk["seg"].append(_seg_i); _trk["mid"].append(int(_mid)); _trk["step"].append(_s)
+                _rd = _uwt.scene["robot"].data
+                try:
+                    _od = _uwt.scene["object"].data
+                except KeyError:  # Preserve MotionOnly replay diagnostics.
+                    _od = None
+                _trk["hand_quat"].append(_rd.body_quat_w[0, _trk["idx"]].cpu().numpy())            # (10,4) wxyz
+                _trk["hand_lin_vel"].append(_rd.body_lin_vel_w[0, _trk["idx"]].cpu().numpy())      # (10,3)
+                _trk["obj_quat"].append(_od.root_quat_w[0].cpu().numpy() if _od is not None else np.array([1., 0., 0., 0.], dtype=np.float32))
+                _trk["obj_lin_vel"].append(_od.root_lin_vel_w[0].cpu().numpy() if _od is not None else np.zeros(3, dtype=np.float32))
+                _trk["obj_ang_vel"].append(_od.root_ang_vel_w[0].cpu().numpy() if _od is not None else np.zeros(3, dtype=np.float32))
+                _trk["action"].append(actions[0].detach().float().cpu().numpy())                  # raw policy output (residual + hand cmd)
+                _trk["finger_q"].append(_rd.joint_pos[0, _trk["fidx"]].cpu().numpy())
+                _trk["ref_obj_pose"].append(_rst["object_poses"].reshape(-1, 7)[0].cpu().numpy() if "object_poses" in _rst else np.zeros(7, dtype=np.float32))
+                _trk["done"].append(bool(dones.reshape(-1)[0].item()))
 
-            # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
-            flush_render(env)
+            if not args_cli.no_video:
+                # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
+                flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
 
-            # 3. read + write the frame
-            frame = _read_camera_rgb(env, "camera_robot" if args_cli.ego else "camera")
-            if frame is None:
-                print(f"[WARN] step {timestep}: third-person camera 'camera' returned no frame")
-            else:
-                if timestep < 5 and _prev_frame is not None:
-                    diff = int(np.abs(frame.astype(np.int32) - _prev_frame.astype(np.int32)).max())
-                    print(f"[step {timestep}] camera max_pixel_diff_from_prev={diff}")
-                _prev_frame = frame.copy()
+                # 3. read + write the frame
+                _cam_key = "camera_robot" if args_cli.camera_view == "ego" else "camera"
+                frame = _read_camera_rgb(env, _cam_key)
+                if frame is None:
+                    print(f"[WARN] step {timestep}: camera '{_cam_key}' returned no frame")
+                else:
+                    if timestep < 5 and _prev_frame is not None:
+                        diff = int(np.abs(frame.astype(np.int32) - _prev_frame.astype(np.int32)).max())
+                        print(f"[step {timestep}] camera max_pixel_diff_from_prev={diff}")
+                    _prev_frame = frame.copy()
 
-                label = (f"motion {_mid}   [{_seg_i + 1}/{len(_mlist)}]   "
-                         f"t {_s * 0.02:4.1f}s")
-                if not args_cli.no_stability:
-                    _st, _mg = _stability_margin(env)
-                    if stab_markers is not None:
-                        _update_stability_markers(env, stab_markers)
-                    if _st is not None:
-                        label += ("   STABLE" if _st else "   UNSTABLE")
-                        if _mg == _mg:  # not NaN
-                            label += f" ({_mg:+.3f} m)"
-                        else:
-                            label += " (flight)"
-                if args_cli.reference_pd:
-                    label = "REFERENCE-PD  " + label
-                elif args_cli.reference_playback:
-                    label = "REFERENCE  " + label
-                elif args_cli.zero_residual:
-                    label = "ZERO-SHOT  " + label
-                if args_cli.overlay_ref:
-                    label = label + "  [ref overlay: R-arm red]"
-                if args_cli.overlay_contact:
-                    _uwc = env.unwrapped
-                    _mtc = _uwc.episode_length_buf * _uwc.step_dt + _uwc.start_motion_times.clone().detach().to(device=_uwc.device, dtype=torch.float32)
-                    _resc = _uwc.motion_lib.get_motion_state(_uwc.motion_ids, _mtc)
-                    _icc = bool(_resc["is_closed"].reshape(-1)[0].item() > 0.5)
-                    frame = _overlay_contact(frame, _icc)
-                if _cp is not None:
-                    frame = _overlay_contact_pos(frame, *_cp)
-                writer.write(frame if args_cli.clean else _overlay(frame, label))
+                    label = (f"motion {_mid}   [{_seg_i + 1}/{len(_mlist)}]   "
+                             f"t {_s * 0.02:4.1f}s")
+                    if not args_cli.no_stability:
+                        _st, _mg = _stability_margin(env)
+                        if stab_markers is not None:
+                            _update_stability_markers(env, stab_markers)
+                        if _st is not None:
+                            label += ("   STABLE" if _st else "   UNSTABLE")
+                            if _mg == _mg:  # not NaN
+                                label += f" ({_mg:+.3f} m)"
+                            else:
+                                label += " (flight)"
+                    if args_cli.reference_pd:
+                        label = "REFERENCE-PD  " + label
+                    elif args_cli.reference_playback:
+                        label = "REFERENCE  " + label
+                    elif args_cli.zero_residual:
+                        label = "ZERO-SHOT  " + label
+                    if args_cli.overlay_ref:
+                        label = label + "  [ref overlay: R-arm red]"
+                    if args_cli.overlay_contact:
+                        _uwc = env.unwrapped
+                        _mtc = _uwc.episode_length_buf * _uwc.step_dt + _uwc.start_motion_times.clone().detach().to(device=_uwc.device, dtype=torch.float32)
+                        _resc = _uwc.motion_lib.get_motion_state(_uwc.motion_ids, _mtc)
+                        _icc = bool(_resc["is_closed"].reshape(-1)[0].item() > 0.5)
+                        frame = _overlay_contact(frame, _icc)
+                    if _cp is not None:
+                        frame = _overlay_contact_pos(frame, *_cp)
+                    writer.write(frame if args_cli.clean else _overlay(frame, label))
 
-            timestep += 1
+                timestep += 1
 
-            sleep_time = dt - (time.time() - start_time)
-            if args_cli.real_time and sleep_time > 0:
-                time.sleep(sleep_time)
+                sleep_time = dt - (time.time() - start_time)
+                if args_cli.real_time and sleep_time > 0:
+                    time.sleep(sleep_time)
 
     writer.close()
 
@@ -1258,9 +1474,19 @@ def main():
                  is_closed=np.array(_trk["is_closed"]),
                  root_pos=np.stack(_trk["root_pos"]), root_quat=np.stack(_trk["root_quat"]), ref_root_pos=np.stack(_trk["ref_root_pos"]),
                  contact_f=(np.stack(_trk["contact_f"]) if _trk["contact_f"] else np.zeros((0, 0))),
+                 joint_pos=np.stack(_trk["joint_pos"]),
+                 ref_order_joint_pos=np.stack(_trk["ref_order_joint_pos"]),
+                 ref_joint_pos=np.stack(_trk["ref_joint_pos"]),
+                 ref_root_quat=np.stack(_trk["ref_root_quat"]),
+                 hand_quat=np.stack(_trk["hand_quat"]), hand_lin_vel=np.stack(_trk["hand_lin_vel"]),
+                 obj_quat=np.stack(_trk["obj_quat"]), obj_lin_vel=np.stack(_trk["obj_lin_vel"]),
+                 obj_ang_vel=np.stack(_trk["obj_ang_vel"]), action=np.stack(_trk["action"]),
+                 finger_q=np.stack(_trk["finger_q"]), finger_names=np.array(_trk["finger_names"]),
+                 ref_obj_pose=np.stack(_trk["ref_obj_pose"]), done=np.array(_trk["done"]),
                  joint_names=np.array(_trk["joint_names"]), effort_limit=_trk["effort_limit"],
-                 computed_torque=np.stack(_trk["computed_torque"]), applied_torque=np.stack(_trk["applied_torque"]),
-                 joint_pos=np.stack(_trk["joint_pos"]))
+                 computed_torque=np.stack(_trk["computed_torque"]),
+                 applied_torque=np.stack(_trk["applied_torque"]),
+                 clip_files=np.array([str(x) for x in getattr(env.unwrapped.motion_lib, "_motion_data_load", [])]))
         print(f"[dump-track] wrote {args_cli.dump_track}: {len(_trk['step'])} steps")
     env.close()
 

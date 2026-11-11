@@ -1,0 +1,193 @@
+"""Re-synthesize the lower body with SONIC's own kinematic planner.
+
+Motivation
+----------
+The retargeted lower body is dense per-joint targets taken from a human walk. latband60loco
+showed the policy cannot track it: held-upright fell 67.9% -> 6.3%, 54% of episodes never
+reached the object, and 99.9% of episodes ended in time_out rather than a fall -- the robot
+does not fall over, it simply never gets where the reference goes.
+
+This module drops those dense targets entirely and instead **reparameterises the reference as
+commands the SONIC stack was trained to follow**: a planar velocity and a pelvis height.
+`planner_sonic.onnx` -- the same kinematic planner the deploy path runs -- turns those commands
+into a gait. The resulting legs and root are in-distribution for SONIC by construction, because
+SONIC's own planner produced them.
+
+What is kept from the retarget: the waist (3) and both arms (14), i.e. the manipulation, plus
+the root path as the thing the velocity command aims at (not as dense state). What is replaced:
+the root trajectory that is actually written to the reference, and the 12 leg joints.
+
+Conventions
+-----------
+planner_sonic.onnx works in the MuJoCo Z-up world frame. Its ``mujoco_qpos`` is
+``[0:3] root pos | [3:7] root quat (w,x,y,z) | [7:36] 29 joints``, and those 29 joints are in
+MUJOCO body-tree order, which is byte-identical to ``refine_al_29.JOINT_NAMES_29`` (left leg 6,
+right leg 6, waist 3, left arm 7, right arm 7) -- so columns map 1:1 with no permutation.
+
+"""
+
+from __future__ import annotations
+
+import os
+
+import numpy as np
+
+PLANNER_HZ = 30.0
+FRAMES_PER_TOKEN = 4          # planner frames per token; also the command horizon
+REPLAN_EVERY = 3              # emitted frames between replans (10 Hz)
+MAX_CMD_SPEED = 1.2           # m/s ceiling on the commanded speed (WALK mode territory)
+_DEFAULT_ANGLES_29 = np.array([
+    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
+    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
+     0.0,   0.0, 0.0,
+     0.2,   0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
+     0.2,  -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
+], dtype=np.float32)
+
+
+def _yaw_of(quat_wxyz: np.ndarray) -> np.ndarray:
+    w, x, y, z = quat_wxyz[:, 0], quat_wxyz[:, 1], quat_wxyz[:, 2], quat_wxyz[:, 3]
+    return np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _yaw_to_quat(yaw: np.ndarray) -> np.ndarray:
+    return np.stack([np.cos(yaw / 2.0), np.zeros_like(yaw), np.zeros_like(yaw), np.sin(yaw / 2.0)], axis=1)
+
+
+def _resample(a: np.ndarray, n_out: int) -> np.ndarray:
+    """Linear resample along axis 0 to n_out samples (endpoints preserved)."""
+    n_in = a.shape[0]
+    if n_in == n_out:
+        return a.copy()
+    src = np.linspace(0.0, n_in - 1.0, n_out)
+    lo = np.floor(src).astype(int); hi = np.minimum(lo + 1, n_in - 1)
+    t = (src - lo).reshape(-1, *([1] * (a.ndim - 1)))
+    return a[lo] * (1.0 - t) + a[hi] * t
+
+
+def _unwrap_resample_angle(ang: np.ndarray, n_out: int) -> np.ndarray:
+    return _resample(np.unwrap(ang), n_out)
+
+
+def plan_lower_body(base_pos: np.ndarray, base_quat: np.ndarray, fps: float = 20.0,
+                    onnx_path: str | None = None, seed: int = 1234, verbose: bool = True,
+                    path_mode: str | None = None, grab_idx: int | None = None):
+    """Replace the root + legs with a planner-generated gait driven by locomotion COMMANDS.
+
+    Args:
+        base_pos:  (F,3) reference root position (pre-grounding).
+        base_quat: (F,4) reference root quaternion, wxyz.
+        fps:       reference frame rate (holosoma refs are 20 Hz).
+        path_mode: "ref" (default, HS_PLANNER_PATH) commands toward the retargeted root path;
+                   "linear" commands toward a straight line from the start pose to the grasp
+                   stance, keeping only those two poses from the retarget.
+
+    Returns:
+        (base_pos_new (F,3), base_quat_new (F,4 wxyz), legs (F,12)) at the reference rate/length.
+    """
+    from vla_sonic.planner_wrapper import PlannerWrapper
+    from vla_sonic.frame_transforms import speed_to_mode
+    from vla_sonic.repo_paths import gear_sonic_deploy
+
+    path_mode = (path_mode or os.environ.get("HS_PLANNER_PATH", "ref")).lower()
+    if path_mode not in ("ref", "linear"):
+        raise ValueError(f"HS_PLANNER_PATH must be ref|linear, got {path_mode!r}")
+    if onnx_path is None:
+        onnx_path = os.environ.get("HS_PLANNER_ONNX") or gear_sonic_deploy(
+            "planner", "target_vel", "V2", "planner_sonic.onnx")
+
+    F = base_pos.shape[0]
+    n_plan = max(FRAMES_PER_TOKEN + 1, int(round(F * PLANNER_HZ / fps)))
+
+    # Reference path as COMMANDS, at planner rate.
+    ref_xy = _resample(base_pos[:, :2].astype(np.float64), n_plan)
+    ref_z = _resample(base_pos[:, 2].astype(np.float64), n_plan)
+    ref_yaw = _unwrap_resample_angle(_yaw_of(base_quat.astype(np.float64)), n_plan)
+    ref_speed = np.concatenate([[0.0], np.linalg.norm(np.diff(ref_xy, axis=0), axis=1) * PLANNER_HZ])
+
+    if path_mode == "linear":
+        # "Fake" path: ignore the human's wander entirely and walk a STRAIGHT line from the start
+        # pose to the grasp stance, arriving at the grab frame and holding after it. The retarget
+        # keeps only two poses -- where the robot starts and where it must stand to reach the
+        # object -- so the approach becomes whatever gait the planner produces between them,
+        # rather than a resampled human path. Heading interpolates start -> grab the same way.
+        g_ref = (F - 1) if grab_idx is None else int(np.clip(grab_idx, 1, F - 1))
+        g = int(round(g_ref * PLANNER_HZ / fps))
+        g = int(np.clip(g, 1, n_plan - 1))
+        t = np.clip(np.arange(n_plan) / float(g), 0.0, 1.0)[:, None]
+        ref_xy = ref_xy[0][None, :] * (1.0 - t) + ref_xy[g][None, :] * t
+        y0, yg = ref_yaw[0], ref_yaw[g]
+        ref_yaw = y0 + (yg - y0) * t[:, 0]
+        ref_z = np.full(n_plan, float(np.median(ref_z)))     # single height command, no bobbing
+        ref_speed = np.concatenate([[0.0], np.linalg.norm(np.diff(ref_xy, axis=0), axis=1) * PLANNER_HZ])
+
+    planner = PlannerWrapper(onnx_path)
+
+    # Context bootstrap: 4 frames standing at the reference's START pose, so the planner is in
+    # our world frame from frame 0 (the canned origin-standing context would make it walk in
+    # from somewhere else and need a rigid fix-up afterwards).
+    ctx = np.zeros((1, 4, 36), dtype=np.float32)
+    ctx[0, :, 0:2] = ref_xy[0]
+    ctx[0, :, 2] = ref_z[0]
+    ctx[0, :, 3:7] = _yaw_to_quat(np.array([ref_yaw[0]]))[0]
+    ctx[0, :, 7:36] = _DEFAULT_ANGLES_29
+
+    out_qpos = np.zeros((n_plan, 36), dtype=np.float32)
+    cached = None
+    cache_i = 0
+    n_replans = 0
+    for k in range(n_plan):
+        if k % REPLAN_EVERY == 0 or cached is None or cache_i >= cached.shape[0]:
+            idx = np.clip(np.arange(k, k + FRAMES_PER_TOKEN), 0, n_plan - 1)
+            # COMMANDS derived from the reference root alone: a planar velocity and a pelvis
+            # height -- the signals a teleoperator's joystick produces. The velocity is CLOSED
+            # LOOP on the reference path: v = (ref position at the end of this token - where the
+            # planner will actually be) / token duration. That is still a velocity command, and
+            # it is what a human driving the robot does -- look at the gap, push the stick
+            # accordingly. Commanding the reference's own speed OPEN LOOP instead overshoots
+            # badly (measured: 0.75-0.92 m of reference travel became 1.11-1.63 m, leaving the
+            # hand 0.34-0.74 m past the object), because the planner's achieved speed exceeds
+            # the commanded one and nothing ever corrects the accumulated error.
+            here = ctx[0, -1, 0:2].astype(np.float64)      # where the next plan takes effect
+            err = ref_xy[idx[-1]] - here
+            nrm = float(np.linalg.norm(err))
+            spd = float(np.clip(nrm / (FRAMES_PER_TOKEN / PLANNER_HZ), 0.0, MAX_CMD_SPEED))
+            move = np.array([[err[0] / nrm, err[1] / nrm, 0.0]], dtype=np.float32) if nrm > 1e-6 \
+                else np.array([[np.cos(ref_yaw[k]), np.sin(ref_yaw[k]), 0.0]], dtype=np.float32)
+            face = np.array([[np.cos(ref_yaw[k]), np.sin(ref_yaw[k]), 0.0]], dtype=np.float32)
+            res = planner.run(
+                context_mujoco_qpos=ctx,
+                target_vel=np.array([spd], dtype=np.float32),
+                mode=np.array([speed_to_mode(spd)], dtype=np.int64),
+                movement_direction=move,
+                facing_direction=face,
+                height=np.array([ref_z[k]], dtype=np.float32),
+                random_seed=seed,
+            )
+            cached = res.mujoco_qpos[0][: res.num_pred_frames]
+            cache_i = 0
+            n_replans += 1
+            # Context for the NEXT replan is frames 3..6 of THIS prediction -- the state the
+            # robot will be in when that plan takes effect, matching the deploy-side
+            # UpdateContextFromMotion (gen_time = now + look_ahead; context[n] = out(gen_time +
+            # n/30)). Feeding the frames already PLAYED instead makes the planner re-plan from a
+            # stale state and it deadlocks in place: measured 0.03 m/s versus 0.45 m/s
+            # (SLOW_WALK) / 1.55 m/s (WALK) with this scheme.
+            if len(cached) >= FRAMES_PER_TOKEN + REPLAN_EVERY:
+                ctx = cached[REPLAN_EVERY:REPLAN_EVERY + FRAMES_PER_TOKEN][None].copy()
+        out_qpos[k] = cached[cache_i]
+        cache_i += 1
+
+    # Back to the reference rate/length.
+    pos = _resample(out_qpos[:, 0:3].astype(np.float64), F)
+    yaw = _unwrap_resample_angle(_yaw_of(out_qpos[:, 3:7].astype(np.float64)), F)
+    legs = _resample(out_qpos[:, 7:19].astype(np.float64), F)      # cols 0..11 == both legs
+    quat = _yaw_to_quat(yaw)                                       # upright root (roll/pitch dropped)
+    if verbose:
+        err = np.linalg.norm(pos[:, :2] - base_pos[:, :2], axis=1)
+        ref_travel = float(np.linalg.norm(base_pos[-1, :2] - base_pos[0, :2]))
+        got_travel = float(np.linalg.norm(pos[-1, :2] - pos[0, :2]))
+        print(f"[planner-lower] path={path_mode} {n_plan} frames @ {PLANNER_HZ:.0f} Hz, {n_replans} replans; "
+              f"net travel ref {ref_travel:.2f} m -> planner {got_travel:.2f} m; "
+              f"drift vs reference: med {np.median(err):.3f} m end {err[-1]:.3f} m")
+    return pos, quat, legs

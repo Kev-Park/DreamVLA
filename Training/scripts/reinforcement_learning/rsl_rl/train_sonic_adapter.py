@@ -85,14 +85,15 @@ parser.add_argument(
 )
 parser.add_argument(
     "--residual-transform", type=str, default="additive_free",
-    choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped"],
+    choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped", "direct"],
     help="How the policy latent transforms the frozen base TOKEN (the FSQ snap re-bounds it "
          "either way, so all are safe). additive = base + scale*tanh(z) (anchor, current). "
          "multiplicative = base*(1+scale*tanh(z)) (in-family per-dim gate). multiplicative_free = "
          "base*(1+scale*z) (UNCLIPPED per-dim scale factor; zero-init head starts it at exactly 1.0; "
          "use --residual-scale 0.1). additive_free = base + scale*z (UNCLIPPED per-dim OFFSET, no tanh; "
          "unlike the multiplicative family it can move a base dimension that sits at zero; "
-         "use --residual-scale 0.1). unclamped = base+z (no anchor). REWARD_REWORK_PLAN #3 test set.",
+         "use --residual-scale 0.1). unclamped = base+z. direct = z (no base addition or scale; "
+         "usual FSQ lattice rounding/clamping, unchanged observations and finger command).",
 )
 parser.add_argument(
     "--start-pregrab-margin", type=float, default=None,
@@ -220,7 +221,8 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 # SONIC wrappers (imported after app launch; depend on onnx2torch + isaaclab_rl)
 from vla_sonic.token_action_wrapper import load_frozen_decoder
 from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
-from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+from vla_sonic.physics_overrides import (apply_sonic_physics_overrides, apply_object_mass_override,
+                                         apply_hand_gain_override)
 from vla_sonic.robot_29dof import apply_29dof_waist_override
 from vla_sonic.adapter_actor_critic import AdapterActorCritic
 
@@ -388,6 +390,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # Match the SONIC decoder's training-time physics.
     apply_sonic_physics_overrides(env_cfg)
+    # Object mass and hand gains, which now DEFAULT to the measured/tuned values
+    # (0.603 kg; stiffness 15, effort 10, velocity 3). collect_sonic_adapter.py and
+    # play_motion_montage.py already applied these, so omitting them here trained the
+    # residual against a 0.1 kg bottle and a soft hand while its demos, its renders and
+    # its references were all produced at the real values.
+    apply_object_mass_override(env_cfg)
+    apply_hand_gain_override(env_cfg)
 
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
@@ -522,13 +531,28 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         runner.load(resume_path)
+        if agent_cfg.class_name == "OnPolicyRunner":
+            # RSL stores the last completed (zero-based) update in `iter`.
+            # Preserve the global exploration schedule and the requested total
+            # update budget when resuming, rather than starting both over.
+            completed_updates = int(runner.current_learning_iteration) + 1
+            runner.current_learning_iteration = completed_updates
+            _update_counter["n"] = completed_updates
+            runner.alg.learning_rate = float(runner.alg.optimizer.param_groups[0]["lr"])
+            print(f"[train_sonic_adapter] RESUME: {completed_updates} completed updates, "
+                  f"target {agent_cfg.max_iterations}, lr={runner.alg.learning_rate}")
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
 
     # run training
-    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    remaining_iterations = agent_cfg.max_iterations
+    if agent_cfg.resume and agent_cfg.class_name == "OnPolicyRunner":
+        remaining_iterations -= completed_updates
+        if remaining_iterations <= 0:
+            raise ValueError("Resume checkpoint already reached the requested total update count")
+    runner.learn(num_learning_iterations=remaining_iterations, init_at_random_ep_len=True)
 
     # close the simulator
     env.close()

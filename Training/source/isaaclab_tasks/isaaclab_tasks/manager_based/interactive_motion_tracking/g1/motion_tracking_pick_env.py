@@ -7,7 +7,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, hoi_relative_body_pos_tracking_exp, hoi_relative_body_ori_tracking_exp, HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS, HOI_RARM_BODY_NAMES, HOI_RARM_KEYPT_IDXS, HOI_BODY_NAMES_NO_RARM, HOI_BODY_KEYPT_IDXS_NO_RARM, exceeded_anchor_height, exceeded_anchor_ori, exceeded_body_height, tracking_time_out, HOI_EE_BODY_NAMES, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
+from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import anti_shake_ang_vel_l2, keypts_deviation_ref_l2, joint_deviation_ref_l1, position_tracking_error, orientation_tracking_error, right_hand_state_target_reward, right_hand_binary_match_reward, target_ref, target_ref_slim, root_below_threshold, root_angle_below_threshold, current_time_enc, anchor_pos_tracking_exp, anchor_ori_tracking_exp, relative_keypts_tracking_exp, relative_body_ori_tracking_exp, global_keypts_tracking_exp, global_body_ori_tracking_exp, hoi_relative_body_pos_tracking_exp, hoi_relative_body_ori_tracking_exp, HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS, HOI_RARM_BODY_NAMES, HOI_RARM_KEYPT_IDXS, HOI_BODY_NAMES_NO_RARM, HOI_BODY_KEYPT_IDXS_NO_RARM, exceeded_anchor_height, exceeded_anchor_ori, exceeded_body_height, tracking_time_out, HOI_EE_BODY_NAMES, lower_body_keypt_vel_tracking, body_linvel_tracking_exp, body_angvel_tracking_exp, _FULL_BODY_NAMES, _FULL_BODY_KEYPT_IDXS
 import numpy as np
 import os
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -278,7 +278,24 @@ _OBJ_LOCAL_PTS = torch.tensor([[sx * 0.025, sy * 0.025, sz * 0.10] for sx in (-1
 REWORK_HEIGHT_BACKSTOP = float(os.environ.get("HS_REWORK_HEIGHT_BACKSTOP", "0.2")) # smaller root-height backstop (<0.3)
 # Forward-projection factor for the grasp PALM (= render CYAN, = refine_al_29 HAND_FWD). The synthesized
 # object reference tracks this palm post-grasp. MUST match refine_al_29.HAND_FWD baked into the dataset.
+OBJ_MAX_ANGVEL = float(os.environ.get("HS_OBJ_MAX_ANGVEL", "1000.0"))  # deg/s; 100 = the old USD clamp (port of g1 a4e35c9)
 REWORK_HAND_FWD = float(os.environ.get("HS_REWORK_HAND_FWD", "1.5"))
+# PALM-NORMAL object reference (HS_REWORK_PALM_NORMAL=1): post-grasp the object reference sits
+# PALM_REACH out along the reference hand's +y (the palm face) instead of HAND_FWD along the fingers.
+# Must be set when training on references built with refine_al_29 HS_PALM_NORMAL=1, which pulls the
+# palm-face point onto the object; with the legacy forward-projected point the env would declare
+# the object ~10-15 cm out past the fingertips and reward the residual for holding it there.
+# The reference hand's +y is derived from keypoints: the rubber hand sits at +0.0536 m along the
+# wrist-yaw link's x with identity rotation, so (hand - wrist_yaw) IS hand +x in world; the LEVEL
+# term holds hand z vertical (hard, <= 0.03); hence +y = up x x. Same reach/sign knobs as the refine.
+REWORK_PALM_NORMAL = os.environ.get("HS_REWORK_PALM_NORMAL", "0") == "1"
+REWORK_PALM_REACH = float(os.environ.get("HS_REWORK_PALM_REACH", os.environ.get("HS_PALM_REACH", "0.07")))
+REWORK_PALM_SIGN = float(os.environ.get("HS_PALM_NORMAL_SIGN", "+1"))
+# Closure-match (right-hand binary match vs the reference is_closed schedule) weight, HOI env only.
+# Port of g1 e9be33f. Was 0.3: under the 15/10/3 hand af60v4 learned to close ~1.5 s LATE (closing
+# on time punched the bottle and cost arm-tracking reward; 0.3/step was too cheap to stop it).
+# Forcing the schedule at eval took that checkpoint 0.8% -> 74% held, so this term must be able to win.
+REWORK_HAND_MATCH_W = float(os.environ.get("HS_REWORK_HAND_MATCH_W", "1.0"))
 REWORK_OBJ_W = float(os.environ.get("HS_REWORK_OBJ_W", "2.0"))  # #4 object_tracking weight (env-tunable; 2.0 matches ResMimic)
 # Closure-match (right-hand binary match vs the reference is_closed schedule) weight, HOI env only.
 # Was 0.3: under the 15/10/3 hand af60v4 learned to close ~1.5 s LATE (closing on time punched the
@@ -297,6 +314,26 @@ REWORK_GLOBAL_TRACK = os.environ.get("HS_REWORK_GLOBAL_TRACK", "0") == "1"
 REWORK_GLOBAL_ORI = os.environ.get("HS_REWORK_GLOBAL_ORI", "0") == "1"
 REWORK_RARM_W = float(os.environ.get("HS_REWORK_RARM_W", "0.5"))  # right-arm relative-tracking weight when hybrid on (LadderMan omega/2)
 REWORK_OBJ_GATE = os.environ.get("HS_REWORK_OBJ_GATE", "0") == "1"  # #2 gate object reward by reference contact (is_closed): c_hat*r + (1-c_hat)
+# HS_REWORK_CLOSE_ON_ARRIVAL=1: the close is tied to the HAND ARRIVING, not only to the reference clock.
+# A per-env latch trips the first step the sim palm point (wrist + 0.12 m along hand x, the contact
+# reward's grasp point) is within HS_REWORK_ARRIVE_D of the bottle while the bottle is upright, and
+# stays set until reset. The finger open->closed ramp then starts at min(arrival, reference grab), and
+# the object-reward gates open at arrival too (the synthesized object reference still says REST until
+# the reference grab, so an early grasp is rewarded for holding the bottle still, not for lifting it).
+# Motivation (2026-10-06 failure analysis): trained policies touched the bottle 1.5-2.8 s before the
+# reference close and loitered with open fingers; the close itself never deviated from the reference
+# (+1..+2 steps) because the hand-state term pins it and the object terms are gated to the reference.
+REWORK_CLOSE_ON_ARRIVAL = os.environ.get("HS_REWORK_CLOSE_ON_ARRIVAL", "0") == "1"
+REWORK_ARRIVE_D = float(os.environ.get("HS_REWORK_ARRIVE_D", "0.08"))   # m, palm point -> object centre
+# HS_REWORK_ARRIVE_FINGER_D > 0: a SECOND arrival trigger for the OBJECT GATES only -- the nearest right-hand
+# body (fingers, thumb, wrist) within this distance of the bottle centre. The finger-close ramp keeps using
+# the palm latch above. Motivation (T20_arr dump): in 9/15 toppled episodes the fingertips swept the bottle
+# over from 15-20 cm out before the palm point ever came within 8 cm, so the gates never engaged.
+REWORK_ARRIVE_FINGER_D = float(os.environ.get("HS_REWORK_ARRIVE_FINGER_D", "0"))
+if REWORK_CLOSE_ON_ARRIVAL:
+    print(f"[G1PickHOI] HS_REWORK_CLOSE_ON_ARRIVAL=1: finger close ramp + object gates re-anchored to hand arrival "
+          f"(palm point < {REWORK_ARRIVE_D:.2f} m, bottle upright)"
+          + (f"; object gates ALSO open when any right-hand body < {REWORK_ARRIVE_FINGER_D:.2f} m" if REWORK_ARRIVE_FINGER_D > 0 else ""))
 REWORK_CONTACT_POS = os.environ.get("HS_REWORK_CONTACT_POS", "0") == "1"  # LadderMan position contact reward + pos contact-loss termination
 REWORK_CONTACT_POS_W = float(os.environ.get("HS_REWORK_CONTACT_POS_W", "2.0"))
 REWORK_CONTACT_POS_STD = float(os.environ.get("HS_REWORK_CONTACT_POS_STD", "0.12"))
@@ -400,6 +437,14 @@ KEYPTS_MASK_RARM_ONLY = [m if i >= 31 else 0 for i, m in enumerate(KEYPTS_MASK)]
 # #2 equal whole-body tracking: track ALL 39 FK links equally (right arm included), no grasp-driven
 # masking. All-ones so the relative body pos/ori terms cover the full body incl. the task arm/hand.
 KEYPTS_MASK_ALL = [1 for _ in KEYPTS_MASK]
+
+# gear_sonic's VR 5-point set (config/manager_env/commands/terms/motion.yaml:reward_point_body):
+# pelvis + both wrists + both ankles, tracked root-locally. This is the term that separates the
+# TELEOP/planner-mode reward set (rewards/tracking/base_5point_local_feet_acc.yaml) from the dense
+# g1-mode set (base.yaml): the endpoints that matter for teleoperation -- what the hands do and
+# where the feet land -- get their own concentrated kernel (std 0.1, w 2.0) on top of the dense
+# body terms, rather than being averaged away across 39 links.
+KEYPTS_MASK_VR5 = [1 if i in (0, 7, 13, 29, 37) else 0 for i in range(len(KEYPTS_MASK))]
 
 
         
@@ -528,7 +573,17 @@ def _synth_object_ref_pos(motion_res, hand_fwd: float = REWORK_HAND_FWD):
     forward-projected PALM = global_keypts[-1] + hand_fwd*(global_keypts[-1] - global_keypts[-2])
     (= render CYAN, = where refine_al_29 drives the palm). Returns None if fields are missing."""
     gk = motion_res["global_keypts"]                                             # (N,39,3) env-local
-    palm = gk[:, -1, :] + hand_fwd * (gk[:, -1, :] - gk[:, -2, :])               # forward-projected grasp point
+    if REWORK_PALM_NORMAL:
+        # palm FACE: hand origin + reach along hand +y, with +y = up x (hand - wrist_yaw)/|.| -- see
+        # REWORK_PALM_NORMAL above. Matches refine_al_29 HS_PALM_NORMAL's pull point.
+        xax = gk[:, -1, :] - gk[:, -2, :]
+        xax = xax / xax.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        up = torch.zeros_like(xax); up[:, 2] = 1.0
+        yax = torch.cross(up, xax, dim=-1)
+        yax = yax / yax.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        palm = gk[:, -1, :] + REWORK_PALM_REACH * REWORK_PALM_SIGN * yax
+    else:
+        palm = gk[:, -1, :] + hand_fwd * (gk[:, -1, :] - gk[:, -2, :])           # forward-projected grasp point
     if "object_poses" in motion_res:
         rest = motion_res["object_poses"][:, :3]                                 # object rest (static pre-grab)
     elif motion_res.get("grab_pos") is not None:
@@ -616,7 +671,7 @@ def object_tracking_reward(env: ManagerBasedRLEnv, pos_std: float = 0.1, ori_std
         # LadderMan-style contact gating: only require object tracking when the reference says
         # contact is required (is_closed = post-grab hold phase); free (=1) otherwise so the
         # approach phase is not spuriously shaped. c_hat is the ORACLE reference indicator.
-        c_hat = motion_res["is_closed"].float()
+        c_hat = _gate_with_arrival(env, motion_res["is_closed"])
         r = c_hat * r + (1.0 - c_hat)
     return r
 
@@ -645,6 +700,82 @@ def object_contact_reward(env: ManagerBasedRLEnv,
     return c_hat * torch.exp(-lam / (f + 1e-3))
 
 
+def _arrival_latch(env):
+    """(arrived (N,) bool, arrival_frame (N,) float) under HS_REWORK_CLOSE_ON_ARRIVAL. Updated once per
+    env step; cleared on episode reset (episode_length_buf == 0). arrival_frame is in reference-motion
+    FRAME units (same units as motion_lib.switch_idxs) so the hand-state ramp can be re-anchored to it."""
+    n = env.scene.num_envs
+    if not hasattr(env, "_arrived") or env._arrived.shape[0] != n:
+        env._arrived = torch.zeros(n, dtype=torch.bool, device=env.device)
+        env._arrived_any = torch.zeros(n, dtype=torch.bool, device=env.device)
+        env._arrival_frame = torch.full((n,), 1e9, device=env.device)
+        env._arrival_stamp = -1
+        env._arrival_wrist_id = env.scene["robot"].find_bodies("right_wrist_yaw_link")[0][0]
+        env._arrival_hand_ids = torch.tensor(
+            env.scene["robot"].find_bodies("right_(hand_.*|wrist_yaw_link|rubber_hand)")[0],
+            device=env.device, dtype=torch.long)
+    if env._arrival_stamp != int(env.common_step_counter):
+        env._arrival_stamp = int(env.common_step_counter)
+        fresh = env.episode_length_buf == 0
+        env._arrived[fresh] = False
+        env._arrived_any[fresh] = False
+        env._arrival_frame[fresh] = 1e9
+        robot = env.scene["robot"]; obj: RigidObject = env.scene["object"]
+        hand = robot.data.body_pos_w[:, env._arrival_wrist_id, :] - env.scene.env_origins
+        hq = robot.data.body_quat_w[:, env._arrival_wrist_id, :]
+        xax = torch.zeros_like(hand); xax[:, 0] = 1.0
+        palm = hand + math_utils.quat_apply(hq, xax) * 0.12
+        obj_pos = obj.data.root_pos_w - env.scene.env_origins
+        q = obj.data.root_quat_w
+        upright = (1.0 - 2.0 * (q[:, 1] ** 2 + q[:, 2] ** 2)) > 0.7071      # tilt < 45 deg
+        near = torch.norm(palm - obj_pos, dim=1) < REWORK_ARRIVE_D
+        motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+            device=env.device, dtype=torch.float32)
+        frame = motion_times / env.motion_lib._motion_dt[env.motion_ids]
+        trip = near & upright & ~env._arrived
+        env._arrival_frame[trip] = frame[trip]
+        env._arrived |= trip
+        if REWORK_ARRIVE_FINGER_D > 0:
+            hb = robot.data.body_pos_w[:, env._arrival_hand_ids, :] - env.scene.env_origins.unsqueeze(1)
+            dmin = torch.norm(hb - obj_pos.unsqueeze(1), dim=-1).min(dim=1).values
+            env._arrived_any |= (dmin < REWORK_ARRIVE_FINGER_D) & upright
+        env._arrived_any |= env._arrived
+    return env._arrived, env._arrival_frame
+
+
+def _gate_with_arrival(env, is_closed):
+    """Object-reward gate: reference is_closed OR hand arrived (when the flag is on)."""
+    if not REWORK_CLOSE_ON_ARRIVAL:
+        return is_closed.float()
+    _arrival_latch(env)
+    return (is_closed | env._arrived_any).float()      # palm latch OR (optional) finger trigger
+
+
+def right_hand_state_target_reward_arrival(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """right_hand_state_target_reward with the open->closed ramp re-anchored to the EARLIER of the
+    reference grab frame and the arrival frame (+ ramp width), so the policy is rewarded for closing
+    within _RIGHT_HAND_TRANSITION_FRAMES of the hand reaching the bottle instead of loitering open."""
+    import isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env as _mte
+    asset = env.scene["robot"]
+    if not hasattr(env, "_right_finger_joint_ids"):
+        name_to_idx = {n: i for i, n in enumerate(asset.data.joint_names)}
+        env._right_finger_joint_ids = torch.tensor([name_to_idx[n] for n in _mte._RIGHT_FINGER_NAMES],
+                                                   device=env.device, dtype=torch.long)
+        env._right_finger_open_pose = torch.tensor(_mte._RIGHT_FINGER_OPEN_POSE, device=env.device, dtype=torch.float32)
+        env._right_finger_closed_pose = torch.tensor(_mte._RIGHT_FINGER_CLOSED_POSE, device=env.device, dtype=torch.float32)
+    W = float(_mte._RIGHT_HAND_TRANSITION_FRAMES)
+    motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(
+        device=env.device, dtype=torch.float32)
+    current_frame = motion_times / env.motion_lib._motion_dt[env.motion_ids]
+    switch_frame = env.motion_lib.switch_idxs[env.motion_ids]
+    arrived, arrival_frame = _arrival_latch(env)
+    switch_eff = torch.where(arrived, torch.minimum(switch_frame, arrival_frame + W), switch_frame)
+    alpha = torch.clamp((current_frame - (switch_eff - W)) / W, 0.0, 1.0).unsqueeze(1)
+    target = alpha * env._right_finger_closed_pose.unsqueeze(0) + (1.0 - alpha) * env._right_finger_open_pose.unsqueeze(0)
+    actual = asset.data.joint_pos[:, env._right_finger_joint_ids]
+    return torch.exp(-torch.sum(torch.abs(actual - target), dim=1) / _mte._RIGHT_HAND_REWARD_SCALE)
+
+
 def _right_hand_grasp_point(env, asset_cfg, offset_x):
     """Robot right-hand grasp point = wrist link position forward-projected offset_x along its x-axis."""
     robot = env.scene[asset_cfg.name]
@@ -668,7 +799,7 @@ def object_contact_pos_reward(env: ManagerBasedRLEnv,
     r = torch.exp(-d2 / (std * std))
     motion_res, ok = _rework_motion_res(env)
     if ok:
-        c_hat = motion_res["is_closed"].float()
+        c_hat = _gate_with_arrival(env, motion_res["is_closed"])
         r = c_hat * r + (1.0 - c_hat)
     return r
 
@@ -1010,6 +1141,31 @@ class G1Rewards(G1RewardsBase):
             object_contact_pos = RewTerm(func=object_contact_pos_reward, weight=REWORK_CONTACT_POS_W,
                 params={"asset_cfg": SceneEntityCfg("robot", body_names=["right_wrist_yaw_link"]),
                         "std": REWORK_CONTACT_POS_STD, "offset_x": REWORK_CONTACT_POS_OFFX})
+        # ===== TELEOP / PLANNER-MODE REWARD SET (HS_REWORK_TELEOP_REWARDS=1) =====
+        # Mirrors gear_sonic rewards/tracking/base_5point_local_feet_acc.yaml, the set SONIC's own
+        # teleop (VR 3-point + planner lower-body command) mode trains under. Note what it does NOT
+        # do: it does not drop dense lower-body tracking. Every tracking term above stays, so the
+        # legs remain implicitly tracked and the gait cannot drift away from the commanded one --
+        # which works here because the reference legs are now PLANNER output (in-distribution),
+        # not a human walk. base_5point adds exactly three terms on top of base.yaml:
+        #   tracking_vr_5point_local  w 2.0  std 0.1   (pelvis + wrists + ankles, root-local)
+        #   feet_acc                  w -2.5e-7        (joint_acc_l2 on the ankles)
+        #   anti_shake_ang_vel        w -5e-3          (wrist/head angular-velocity above 1.5 rad/s)
+        # Deviation from gear_sonic, deliberate: its 5-point wrist targets carry a +0.18 m local-x
+        # offset (the VR controller sits ahead of the wrist link). Our keypoints are link origins
+        # and both sides use the same convention, so the offset cancels in the difference; the only
+        # residual is a second-order wrist-orientation effect.
+        if os.environ.get("HS_REWORK_TELEOP_REWARDS", "0") == "1":
+            tracking_vr_5point_local = RewTerm(func=relative_keypts_tracking_exp, weight=2.0,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=JointNamesOrder, preserve_order=True),
+                        "std": 0.1, "keypts_mask": KEYPTS_MASK_VR5})
+            feet_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*ankle.*"])})
+            anti_shake_ang_vel = RewTerm(func=anti_shake_ang_vel_l2, weight=-5e-3,
+                params={"asset_cfg": SceneEntityCfg("robot",
+                            body_names=["left_wrist_yaw_link", "right_wrist_yaw_link", "head_link"]),
+                        "threshold": 1.5})
+
         # HS_REWORK_SONIC_ONLY=1: strip everything that is NOT in gear_sonic's native reward set
         # (rewards/tracking/base.yaml = 6 tracking terms + action_rate/joint_limit/undesired_contacts).
         # Drops the pick-task rewards AND the inherited survival/shaping terms. Combine with
@@ -1995,7 +2151,9 @@ class PickHOIRewardsCfg(MotionTrackRewardsCfg):
                     "std": 0.4, "keypt_idxs": HOI_RARM_KEYPT_IDXS})
 
     # finger open/close tracking (swapped to the binary-match variant by the parent env)
-    right_hand_state_target_reward_val = RewTerm(func=right_hand_state_target_reward, weight=REWORK_HAND_MATCH_W)
+    right_hand_state_target_reward_val = RewTerm(
+        func=right_hand_state_target_reward_arrival if REWORK_CLOSE_ON_ARRIVAL else right_hand_state_target_reward,
+        weight=REWORK_HAND_MATCH_W)
     # object-as-reference tracking (point-cloud form under HS_REWORK_OBJ_PC=1),
     # contact-gated by the reference is_closed flag when HS_REWORK_OBJ_GATE=1.
     object_tracking = RewTerm(func=object_tracking_reward, weight=REWORK_OBJ_W,

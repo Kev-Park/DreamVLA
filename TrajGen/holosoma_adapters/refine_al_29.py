@@ -137,6 +137,18 @@ APPROACH_PROPORTIONAL = os.environ.get("HS_APPROACH_PROPORTIONAL", "0") == "1"
 # the taper window starting at taper_start -- so the wall acts alone first, and the pull arrives
 # together with the wall's release.
 PULL_DELAY = os.environ.get("HS_PULL_DELAY", "0") == "1"
+# HS_GEO_AUTHORITY=1: scale the shared push/pull authority by the ROOT's distance to the grasp
+# target instead of leaving it on a pure frame schedule. The schedule fractions (taper_start =
+# 0.203*grab_idx, taper_end = 0.710*grab_idx) were calibrated on the STATIC stitch, where the root
+# is frozen at the grab pose so EVERY milestone sees the same 0.35 m standoff. Under locomotion the
+# same fractions land at 0.93-1.16 m (measured over 3 clips) and one clip finishes its taper still
+# 0.655 m out -- the walls and the palm spring reach full strength while the hand is a metre from
+# the table, which is what makes the arm reach mid-walk. Keying authority to distance makes it
+# position-INVARIANT: full at the static standoff, faded to nothing far away, whichever frame the
+# robot arrives on. GEO_REF is the static standoff the weights were tuned at.
+GEO_AUTHORITY = os.environ.get("HS_GEO_AUTHORITY", "0") == "1"
+GEO_REF = float(os.environ.get("HS_GEO_REF", "0.35"))
+GEO_FAR = float(os.environ.get("HS_GEO_FAR", "0.90"))
 PULL_RAMP_FRAC = float(os.environ.get("HS_PULL_RAMP_FRAC", "0.5"))   # fade-in length as a fraction of (taper_end - taper_start)
 PULL_FLOOR = float(os.environ.get("HS_PULL_FLOOR", "0.0"))           # residual pull strength during the hold (0 = wall acts entirely alone)
 APPROACH_LEAD_FRAC = float(os.environ.get("HS_APPROACH_LEAD_FRAC", "0.290"))
@@ -163,6 +175,17 @@ APPROACH_Z_CLEARANCE = float(os.environ.get("HS_APPROACH_Z_CLEARANCE", "-0.03"))
 # its own smootherstep over the remaining (1 - lag) of the window, still reaching +GATE_END_SLACK
 # at te. 0 = legacy (y and z release together). Encodes "commit leftward first, rise later".
 APPROACH_Z_LAG_FRAC = float(os.environ.get("HS_APPROACH_Z_LAG_FRAC", "0"))
+# z-ceiling SCHEDULE, independent of the y-wall: "start,end" as fractions of the post-pin budget
+# (same convention as LEAD/WINDOW). The ceiling holds at APPROACH_Z_CLEARANCE until start*budget and
+# rises on its own smootherstep to +GATE_END_SLACK at end*budget. Takes precedence over Z_LAG_FRAC.
+# Motivation: with WINDOW 0.35 / LAG 0.5 the ceiling rose over ~9 frames (0.45 s) -- the hand
+# popped up to the bottle's centre height while still in front of it. No existing knob slows the
+# rise without also releasing the y-wall earlier (the centre-seeking that causes the knock).
+# "0.65,1.0" doubles the rise span and ends it AT the grasp instead of LEAD_FRAC before it.
+_zsched = os.environ.get("HS_APPROACH_Z_SCHED", "").strip()
+APPROACH_Z_SCHED = tuple(float(v) for v in _zsched.split(",")) if _zsched else None
+if APPROACH_Z_SCHED is not None:
+    assert len(APPROACH_Z_SCHED) == 2 and 0.0 <= APPROACH_Z_SCHED[0] < APPROACH_Z_SCHED[1] <= 1.0,         f"HS_APPROACH_Z_SCHED must be 'start,end' with 0<=start<end<=1, got {_zsched!r}"
 DOWNVEL_W = float(os.environ.get("HS_DOWNVEL_W", "300.0"))
 LAZINESS_W = float(os.environ.get("HS_LAZINESS_W", "1.0"))                     # rest-pose (INIT) L1 prior weight, [0, grab-40), decaying (1-t/L)^2; 0 disables                      # downward-velocity penalty weight (pre-grab)
 GATE_END_SLACK = float(os.environ.get("HS_GATE_END_SLACK", "0.05"))              # gate line ends this far PAST the object (m)
@@ -208,6 +231,28 @@ LEVEL_CONSTRAINT_TOL = 1e-3
 LEVEL_SCOPE_TAPER = os.environ.get("HS_LEVEL_SCOPE_TAPER", "0") == "1"
 POINT_W = float(os.environ.get("HS_POINT_W", "30.0"))                      # palm-pointing orientation weight (soft)
 POINT_FIXED = os.environ.get("HS_POINT_FIXED", "1") == "1"                   # Option A: constant per-clip azimuth target
+# PALM-NORMAL grasp mode. Legacy drives two FINGER-AXIS points onto the object -- the tip
+# (hand + x*HAND_TIP_OFFSET) and the forward-projected palm (hand + HAND_FWD*(hand - wrist)) -- and
+# aims hand-x (the fingertip axis) at the bearing. With the hand origin ~0.2 m from the target the
+# only geometry that satisfies the pull is fingers pointing AT the bottle: measured on the best
+# refs at the grasp, cos(hand x, bearing) = +0.86 and cos(hand -y, bearing) = +0.47. Fingertips
+# lead, the bottle gets knocked. This mode instead (a) aims the PALM NORMAL (hand -y, measured) at
+# the bearing and (b) pulls a point PALM_REACH along that normal onto the object -- the palm face
+# lands on the bottle side with the fingers tangent, which cannot front-knock. LEVEL still pins
+# hand-z vertical, so all three rotational DOF are determined.
+PALM_NORMAL = os.environ.get("HS_PALM_NORMAL", "0") == "1"
+PALM_NORMAL_SIGN = float(os.environ.get("HS_PALM_NORMAL_SIGN", "+1"))   # palm face is hand +y. The -1 first
+#   committed came from a FK probe showing -y partly toward the bottle on the best refs -- that was the BACK
+#   of the hand (fingers-at-bottle leaves the palm facing away); the --overlay-palm-normal render showed
+#   it. Driving -y at the object pushed the knuckles into the bottle, which is why P1-P3 scored worse.
+PALM_REACH = float(os.environ.get("HS_PALM_REACH", "0.07"))             # m: bottle radius + palm half-thickness
+# HS_PALM_WALLS=1 (palm-normal mode only): the approach walls (y-wall, z-ceiling, x-wall) act on the
+# PALM point instead of the fingertip. With the palm square to the bottle the fingers are tangent,
+# so the tip (hand + 0.22 x) sweeps sideways into the y-wall / x-wall and the solver holds the hand
+# back rather than violate them -- P1-P6 parked the hand origin 15-16 cm out instead of PALM_REACH.
+# The table swept-quad and the tip dynamics terms stay on the tip: fingers still must not hit the
+# table, and tip jerk is still the physical quantity.
+PALM_WALLS = os.environ.get("HS_PALM_WALLS", "0") == "1"
 # Yaw offset (rad) applied to the fixed pointing bearing about world z. Positive = counter-
 # clockwise from above = toward the robot's LEFT = inward for the right hand. The default bearing
 # aims the fingertip axis straight at the target, so the thumb leads the slide-in and is the first
@@ -675,7 +720,12 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             # palm = rubber_hand + HAND_FWD * (rubber_hand - wrist_yaw). Driven to the object below.
             _wy_root = fk_results["right_wrist_yaw_link"].get_matrix()[:, :3, 3]
             _wy_world = torch.bmm(_wy_root.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0] + trans_with_z
-            palm_world = transformed_hand_orig + HAND_FWD * (transformed_hand_orig - _wy_world)
+            if PALM_NORMAL:
+                # pull point PALM_REACH along the palm normal: pulling it onto the object centre puts
+                # the palm FACE on the bottle side (rot_mat here = hand rotation in world)
+                palm_world = transformed_hand_orig + PALM_REACH * (PALM_NORMAL_SIGN * rot_mat[:, :, 1])
+            else:
+                palm_world = transformed_hand_orig + HAND_FWD * (transformed_hand_orig - _wy_world)
 
             # [AUG] Shape anchor: follow the SOURCE palm path, rigidly translated by the object
             # shift and ramped in across the approach (aug_palm_path = p_src(t) + s(t)*delta).
@@ -745,7 +795,8 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 _lvl_s = max(max(grab_idx - LEVEL_SOFT_LEAD, 0), orient_start)
                 up_z = rot_mat[_lvl_s:, 2, 2]                          # world-z component of hand local z
                 cost2[_lvl_s:] += LEVEL_W * _oramp[_lvl_s - orient_start:] * (1.0 - up_z)   # = 1 - cos(tilt), soft window only
-                _xaxis = rot_mat[orient_start:, :, 0]                  # hand local x (fingertip axis) in world
+                _xaxis = (PALM_NORMAL_SIGN * rot_mat[orient_start:, :, 1] if PALM_NORMAL
+                          else rot_mat[orient_start:, :, 0])      # palm normal (-y) in this mode, else legacy fingertip axis x
                 if POINT_FIXED and point_fixed_dir is not None:
                     # OPTION A: CONSTANT per-clip azimuth (bearing from the RAW reference hand at
                     # release-start to the object; set in refine_arm). A ROTATING pointing target was
@@ -919,7 +970,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 _sline = 1.0 - (1.0 - _sline) ** APPROACH_EASE_OUT
             x_clear_t = (1.0 - _sline) * APPROACH_X_STANDOFF + _sline * (-GATE_END_SLACK)
             y_clear_t = (1.0 - _sline) * APPROACH_GATE_CLEARANCE + _sline * (-GATE_END_SLACK)
-            if APPROACH_Z_LAG_FRAC > 0:
+            if APPROACH_Z_SCHED is not None:
+                # own window for z: [start, end] fractions of the post-pin budget, clamped into the
+                # pre-grab frame range and kept strictly increasing.
+                _av_z = max(grab_idx - PIN_FIRST_N, 1)
+                _zs = float(max(min(PIN_FIRST_N + int(round(_av_z * APPROACH_Z_SCHED[0])), _n_pre - 1), 1))
+                _ze = float(max(min(PIN_FIRST_N + int(round(_av_z * APPROACH_Z_SCHED[1])), _n_pre), int(_zs) + 1))
+                _sz = _smooth01((frame_pre - _zs) / float(max(_ze - _zs, 1.0)))
+                if APPROACH_EASE_OUT != 1.0:
+                    _sz = 1.0 - (1.0 - _sz) ** APPROACH_EASE_OUT
+            elif APPROACH_Z_LAG_FRAC > 0:
                 _zs = taper_start + APPROACH_Z_LAG_FRAC * float(taper_end - taper_start)
                 _sz = _smooth01((frame_pre - _zs) / float(max(taper_end - _zs, 1.0)))
                 if APPROACH_EASE_OUT != 1.0:
@@ -930,9 +990,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
             x_gate_t = _obj_x - x_clear_t                                   # moving X line -> ends slack PAST obj
             y_gate_t = _obj_y - y_clear_t                                   # moving Y line -> ends slack LEFT of obj
             z_gate_t = _obj_z + z_clear_t                                   # moving Z line -> ends slack ABOVE obj
-            hand_x = transformed_tip[1:grab_idx, 0]                         # (G-1,) tip forward pos
-            hand_y = transformed_tip[1:grab_idx, 1]                         # (G-1,) tip lateral pos
-            hand_z = transformed_tip[1:grab_idx, 2]                         # (G-1,) tip height
+            _wall_pt = palm_world if (PALM_NORMAL and PALM_WALLS) else transformed_tip   # see PALM_WALLS
+            hand_x = _wall_pt[1:grab_idx, 0]                                # (G-1,) wall-point forward pos
+            hand_y = _wall_pt[1:grab_idx, 1]                                # (G-1,) wall-point lateral pos
+            hand_z = _wall_pt[1:grab_idx, 2]                                # (G-1,) wall-point height
             approach_pen = (_gate_pen(torch.relu(hand_y - y_gate_t))
                             + _gate_pen(torch.relu(hand_z - z_gate_t)))
             if APPROACH_X_STANDOFF > 0:
@@ -952,6 +1013,16 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                 else:
                     ramp_end = max(min(grab_idx - 40, taper_start, n_trans), 1)
                 pre_ramp = _smooth01(frame_ids / float(ramp_end))
+                _geo = None
+                if GEO_AUTHORITY and palm_target is not None:
+                    _gt0 = (palm_target_traj[1:]
+                            if palm_target_traj is not None else palm_target.unsqueeze(0))
+                    _droot = torch.norm(trans[1:, :2] - _gt0[:, :2], dim=1)
+                    _geo = torch.clamp((GEO_FAR - _droot) / max(GEO_FAR - GEO_REF, 1e-6), 0.0, 1.0)
+                    _geo = _geo[:pre_ramp.shape[0]]
+                    if _geo.shape[0] < pre_ramp.shape[0]:      # target traj shorter than the ramp
+                        _geo = torch.cat([_geo, _geo.new_ones(pre_ramp.shape[0] - _geo.shape[0])])
+                    pre_ramp = pre_ramp * _geo
                 if palm_target is not None:
                     # PULL = saturating spring (Charbonnier, knee PULL_RADIUS): force
                     # W*d/sqrt(d^2+R^2) is MONOTONE in d -> stiffness >= 0 everywhere, so the
@@ -973,7 +1044,10 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
                         # PULL_RAMP_FRAC of the taper window. The walls keep pre_ramp (above).
                         _plen = max(PULL_RAMP_FRAC * float(taper_end - taper_start), 1.0)
                         _pf = _smooth01((frame_ids - float(taper_start)) / _plen)
-                        pull_ramp[:n_trans] = PULL_FLOOR + (1.0 - PULL_FLOOR) * _pf
+                        _pr = PULL_FLOOR + (1.0 - PULL_FLOOR) * _pf
+                        if _geo is not None:
+                            _pr = _pr * _geo[:_pr.shape[0]]    # same geometric authority as the walls
+                        pull_ramp[:n_trans] = _pr
                     else:
                         pull_ramp[:n_trans] = pre_ramp                  # pre-grab: ramp; grab on: full
                     cost2[1:] += pull_ramp * spring
@@ -1118,8 +1192,9 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     LAST_POINT_ORIGIN = _po.detach().cpu().numpy().copy()
     _pf = palm_target - _po
     _pf = torch.tensor([float(_pf[0]), float(_pf[1]), 0.0], device=DEVICE)
-    if POINT_YAW_OFFSET != 0.0:
-        _ca, _sa = float(np.cos(POINT_YAW_OFFSET)), float(np.sin(POINT_YAW_OFFSET))
+    _yaw_eff = 0.0 if PALM_NORMAL else POINT_YAW_OFFSET     # the offset only compensated for aiming x
+    if _yaw_eff != 0.0:
+        _ca, _sa = float(np.cos(_yaw_eff)), float(np.sin(_yaw_eff))
         _pf = torch.tensor([_ca * float(_pf[0]) - _sa * float(_pf[1]),
                             _sa * float(_pf[0]) + _ca * float(_pf[1]), 0.0], device=DEVICE)
     point_fixed_dir = _pf / _pf.norm().clamp(min=1e-6)
@@ -1287,7 +1362,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     fv = float(g_curr.max()) if g_curr is not None else -1.0
     fvl = float(_last_g_level.max()) if _last_g_level is not None else -1.0
     _xe = (obj_grab_x - TABLE_EDGE_BEHIND_OBJECT - TABLE_X_MARGIN) if (TABLE_EDGE_ANCHOR == "object" and obj_grab_x is not None) else float(grab_pos[0] + OFFSET_X - TABLE_X_MARGIN)
-    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} table_tip={TABLE_TIP_OFFSET:.2f} point_yaw={POINT_YAW_OFFSET:+.2f} ease_out={APPROACH_EASE_OUT:.1f} "
+    print(f"[refine-al] grab_idx={grab_idx} grasp_offset(fwd,left)=({GRASP_OFFSET_FWD:+.3f},{GRASP_OFFSET_LEFT:+.3f}) x_edge={_xe:.3f}({TABLE_EDGE_ANCHOR}) tip_offset={HAND_TIP_OFFSET:.2f} table_tip={TABLE_TIP_OFFSET:.2f} point_yaw={POINT_YAW_OFFSET:+.2f} z_sched={APPROACH_Z_SCHED} z_lag={APPROACH_Z_LAG_FRAC} palm_normal={PALM_NORMAL} palm_reach={PALM_REACH} palm_walls={PALM_WALLS} point_w={POINT_W} ease_out={APPROACH_EASE_OUT:.1f} "
           f"AL {'converged' if converged else 'maxiter'} "
           f"final_table_viol={fv:.2e}m final_level_viol={fvl:.2e} "
           f"final_jlim_viol={float(_last_g_jlim.max()) if _last_g_jlim is not None else -1.0:.2e}rad "

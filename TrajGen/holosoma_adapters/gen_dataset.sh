@@ -10,6 +10,19 @@ gpu=$1; out=$2; shift 2
 #   HS_FOOT_STICK_TOL : --retargeter.foot-sticking-tolerance (default 1e-3). LOWER = stricter
 #                       per-frame XY window; foot sticking is relative to the previous frame,
 #                       so a tighter window slows accumulated drift over a clip.
+#   HS_STAND_ALONG_BAND : "lo,hi" two-sided clamp on the grab-frame root->object ALONG-heading
+#                       distance (unset = legacy one-sided HS_STAND_MIN_STANDOFF). Orthogonal to
+#                       HS_STAND_LAT_BAND, so the two compose without conflict.
+#   HS_RETARGET_TIMEOUT : seconds for the holosoma retarget (default 400). Raise it when
+#                       lowering HS_STEP_SIZE or raising HS_SQP_ITERS -- both multiply runtime.
+#   HS_SQP_ITERS      : inner SQP iterations per frame (default 10). Must go UP when
+#                       HS_STEP_SIZE goes down, or the solve no longer converges.
+#   HS_STEP_SIZE      : --retargeter.step-size (default 0.2) = the SQP trust region.
+#                       Smaller = more, shorter steps. Needed when an objective term is only
+#                       locally valid: the learned drift term is BIMODAL at step_size 0.2 --
+#                       lambda<=1 deforms the motion <0.2 deg (loses to laplacian weight 10),
+#                       lambda>=5 deforms it 5-10 deg and overshoots the model's linearity
+#                       radius. Shrinking the region decouples the two.
 #   HS_INPUT_DIR      : Adapter A output / holosoma --data-path (default: pooled ~/kevin/hs_input).
 #   HS_RESULTS        : OmniControl results.npy for Adapter A (default: TrajGen/sample/Pick_sim/results.npy,
 #                       the seed-10 batch latband60 came from). A new generation batch reuses ids 0..N-1,
@@ -70,7 +83,12 @@ HS_INPUT=$(pooled hs_input)
 # (~/kevin/ref_motions/<name>, override REF_MOTIONS_DIR) where every worktree finds it by that name.
 case "$out" in */*|.|..) ;; *) out="$(pooled ref_motions)/$out" ;; esac
 HS_ACT=""
-for A in ~/.holosoma_deps/miniconda3/bin/activate ~/kevin/.holosoma_deps/miniconda3/bin/activate; do
+# ~/kevin FIRST: on biped the other copy carries numpy 2.4.2, which violates holosoma's only
+# declared pin (numpy==2.3.5) and makes the retarget die inside mj_jac with
+# "TypeError: only 0-dimensional arrays can be converted to Python scalars" -- the exact failure
+# the pin exists to prevent. bluesclues has only ~/.holosoma_deps (numpy 2.3.5) so it still
+# resolves correctly there.
+for A in ~/kevin/.holosoma_deps/miniconda3/bin/activate ~/.holosoma_deps/miniconda3/bin/activate; do
   [ -f "$A" ] && { HS_ACT="$A"; break; }
 done
 mkdir -p "$out"
@@ -100,9 +118,9 @@ for id in "$@"; do
       fi
     fi
   fi
-  ( source "$HS_ACT" hsretargeting; cd "$HS"; timeout 400 python examples/robot_retarget.py \
+  ( source "$HS_ACT" hsretargeting; cd "$HS"; timeout ${HS_RETARGET_TIMEOUT:-400} python examples/robot_retarget.py \
       --task-type object_interaction --robot g1 --data-format smplx --task-name "pick_$id" \
-      --data-path "$HS_INPUT" --save-dir "$NPZ_DIR" --task-config.object-name mustard       ${HS_FOOT_STICK_TOL:+--retargeter.foot-sticking-tolerance $HS_FOOT_STICK_TOL} $COM_ARGS \
+      --data-path "$HS_INPUT" --save-dir "$NPZ_DIR" --task-config.object-name mustard       ${HS_FOOT_STICK_TOL:+--retargeter.foot-sticking-tolerance $HS_FOOT_STICK_TOL} ${HS_STEP_SIZE:+--retargeter.step-size $HS_STEP_SIZE} $COM_ARGS \
       ${HS_NO_FOOT_STICK:+--retargeter.no-activate-foot-sticking} \
     ) > "$LOG_DIR/HS_$id.log" 2>&1
   [ -f "$OUT" ] || { echo "$id HOLOSOMA_FAIL"; continue; }

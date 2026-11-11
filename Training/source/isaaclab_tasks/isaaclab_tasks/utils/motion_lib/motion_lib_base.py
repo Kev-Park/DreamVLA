@@ -322,13 +322,13 @@ class MotionLibBase():
         self.joint_names = list(JointNamesOrder)   # 29-DOF (waist roll/pitch tracked); keeps FK + reference in sync
         for i in tqdm.tqdm(range(len(self._motion_data_list))):
             motion_file_data = self._motion_data_list[i]
-            self.transl.append(to_torch(np.array(motion_file_data['global_pose'].translation())[:200]).clone())
+            self.transl.append(to_torch(np.array(motion_file_data['global_pose'].translation())).clone())
             
             self.transl[-1][:,2] += 0.035
             offset = torch.zeros(3)
             
-            self.quats.append(to_torch(np.array(motion_file_data['global_pose'].rotation().wxyz))[:200].clone())
-            self.dof_pos.append(to_torch(np.array(motion_file_data['joints'])[:200]).clone())
+            self.quats.append(to_torch(np.array(motion_file_data['global_pose'].rotation().wxyz)).clone())
+            self.dof_pos.append(to_torch(np.array(motion_file_data['joints'])).clone())
             if self.dof_pos[-1].shape[1] == 27 and len(self.joint_names) == 29:
                 # Legacy 27-DOF pkl (welded waist, original DreamControl motions): insert zero
                 # waist_roll/waist_pitch columns at JointNamesOrder-29 indices 13/14 so FK and the
@@ -340,7 +340,7 @@ class MotionLibBase():
             self.local_keypts.append(self.get_keypts(self.dof_pos[-1], self.joint_names, pk2_robot)[:])
             self.global_keypts.append(self.transform_keypts(self.local_keypts[-1], self.quats[-1], self.transl[-1]))
             if self.object_poses is not None and 'object_poses' in motion_file_data:
-                op = to_torch(np.array(motion_file_data['object_poses'])[:200]).clone()   # (F,7) grounded/aligned to ref
+                op = to_torch(np.array(motion_file_data['object_poses'])).clone()   # (F,7) grounded/aligned to ref
                 op[:, 2] += 0.035   # match the +0.035 root lift applied to transl (keeps object in the ref frame)
                 self.object_poses.append(op)
             else:
@@ -476,29 +476,43 @@ class MotionLibBase():
         self.switch_idxs = torch.tensor(self.switch_idxs).to(self._device).float()
         self.offsets = torch.stack(self.offsets, dim=0).to(self._device).float()
         self.grab_pos = torch.stack(self.grab_pos, dim=0).to(self._device).float()
+        # Motions are loaded at their FULL length (there used to be a hard [:200] cut, which
+        # silently dropped the carry of every >10 s clip and made a mixed-length dataset stackable
+        # only by accident). Stacking needs one frame count, so shorter motions are padded to the
+        # longest by repeating their last frame. The padding is unreachable: every per-frame read
+        # goes through get_motion_state -> _calc_frame_blend, which clamps to each motion's own
+        # _motion_num_frames - 1, and tracking_time_out ends the episode at its own _motion_lengths.
+        # Velocities are finite-differenced per motion on the true frames BEFORE padding, so the
+        # last real frame's velocity is not diluted by a padded copy.
+        _gk_vel = []
+        for _i, _gk in enumerate(self.global_keypts):
+            _dt = float(self._motion_dt[_i])
+            _v = torch.zeros_like(_gk)
+            if _gk.shape[0] >= 3:
+                _v[1:-1] = (_gk[2:] - _gk[:-2]) / (2.0 * _dt)
+                _v[0] = (_gk[1] - _gk[0]) / _dt
+                _v[-1] = (_gk[-1] - _gk[-2]) / _dt
+            _gk_vel.append(_v)
+        _F = max(int(n) for n in self._motion_num_frames)
+        def _pad_stack(seq):
+            return torch.stack([t if t.shape[0] == _F else
+                                torch.cat([t, t[-1:].expand(_F - t.shape[0], *t.shape[1:])], dim=0)
+                                for t in seq], dim=0).to(self._device).float()
         if self.object_poses is not None:
-            self.object_poses = torch.stack(self.object_poses, dim=0).to(self._device).float()   # (M,F,7)
-        self.local_keypts = torch.stack(self.local_keypts, dim=0).to(self._device).float()
-        self.global_keypts = torch.stack(self.global_keypts, dim=0).to(self._device).float()
-        self.body_ang_vel = torch.stack(self.body_ang_vel, dim=0).to(self._device).float()
-        self.transl = torch.stack(self.transl, dim=0).to(self._device).float()
-        self.quats = torch.stack(self.quats, dim=0).to(self._device).float()
-        self.dof_pos = torch.stack(self.dof_pos, dim=0).to(self._device).float()
+            self.object_poses = _pad_stack(self.object_poses)   # (M,F,7)
+        self.local_keypts = _pad_stack(self.local_keypts)
+        self.global_keypts = _pad_stack(self.global_keypts)
+        self.body_ang_vel = _pad_stack(self.body_ang_vel)
+        self.transl = _pad_stack(self.transl)
+        self.quats = _pad_stack(self.quats)
+        self.dof_pos = _pad_stack(self.dof_pos)
+        self.global_keypts_vel = _pad_stack(_gk_vel)               # (M,F,K,3) world lin vel per keypoint
+        if min(int(n) for n in self._motion_num_frames) != _F:
+            print(f"[motion_lib] frames per motion {min(int(n) for n in self._motion_num_frames)}..{_F}; "
+                  f"shorter motions padded with their last frame (never read)")
         self._motion_lengths = torch.tensor(self._motion_lengths, device=self._device, dtype=torch.float32)
         self._motion_num_frames = torch.tensor(self._motion_num_frames, device=self._device, dtype=torch.int32)
         self._motion_dt = torch.tensor(self._motion_dt, device=self._device, dtype=torch.float32)
-        # --- SONIC-format body LINEAR velocity, finite-differenced from the refined stored
-        # frames (motion_lib is position-only; no dataset regeneration needed). Central diff
-        # along the frame axis, one-sided at the ends. Offset-invariant (offset is constant/motion).
-        _gk = self.global_keypts                                   # (M,F,K,3)
-        _dt4 = self._motion_dt.view(-1, 1, 1, 1)                   # (M,1,1,1)
-        _dt3 = self._motion_dt.view(-1, 1, 1)                     # (M,1,1)
-        _vel = torch.zeros_like(_gk)
-        if _gk.shape[1] >= 3:
-            _vel[:, 1:-1] = (_gk[:, 2:] - _gk[:, :-2]) / (2.0 * _dt4)
-            _vel[:, 0]    = (_gk[:, 1]  - _gk[:, 0])   / _dt3
-            _vel[:, -1]   = (_gk[:, -1] - _gk[:, -2])  / _dt3
-        self.global_keypts_vel = _vel                             # (M,F,K,3) world lin vel per keypoint
         self._num_motions = len(self._motion_data_list)
         print(f"Loaded {self._num_motions} motions finally!")
         # import pdb; pdb.set_trace()

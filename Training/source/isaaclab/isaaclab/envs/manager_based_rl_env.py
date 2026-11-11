@@ -95,6 +95,15 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
                 motion_file=str(_resolve_dataset(cfg.ref_motions_path)),
             )
             self.motion_lib.load_motions()
+            # Motions load at full length, so a clip longer than the configured episode would be
+            # cut by the flat episode timeout instead of ending at its own last frame. Raise the
+            # episode cap to the longest loaded motion (never lower it); shorter clips still end at
+            # their own length via tracking_time_out where that termination is configured.
+            _longest_s = float(self.motion_lib._motion_lengths.max())
+            if _longest_s > self.cfg.episode_length_s:
+                print(f"[INFO]: episode_length_s {self.cfg.episode_length_s:.2f} -> {_longest_s:.2f} "
+                      f"(longest reference motion)")
+                self.cfg.episode_length_s = _longest_s
             self.total_motions = self.motion_lib.num_motions()
             self.motion_ids = torch.randint(0, self.total_motions, (self.scene.num_envs,), device=self.device)
             self.start_positions = torch.zeros((self.scene.num_envs, 3), device=self.device)

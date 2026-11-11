@@ -200,47 +200,103 @@ grab_idx = int(max(0, np.argmax(moved > 1e-4) - 1))
 # and pitch are dropped for an upright stance. Root z is deliberately NOT set here: the
 # grounding pass immediately below re-derives it by FK from the standing stance, so the
 # feet land exactly on z=0.
-if os.environ.get("HS_STAND_LOWER", "0") == "1":
+# Grab-frame heading. Both the stitch and the two root corrections below are expressed in it.
+_w, _x, _y, _z = (float(base_quat[grab_idx, k]) for k in range(4))
+_yaw = np.arctan2(2.0 * (_w * _z + _x * _y), 1.0 - 2.0 * (_y * _y + _z * _z))
+STAND_LOWER = os.environ.get("HS_STAND_LOWER", "0") == "1"
+# HS_PLANNER_LOWER=1: discard the retargeted root+legs and re-synthesize them with SONIC's own
+# kinematic planner, driven by a planar velocity command toward the reference root path plus
+# a pelvis-height
+# command (see planner_lower.py). The waist and both arms -- the manipulation -- are untouched.
+# Mutually exclusive with HS_STAND_LOWER (that one pins the legs to a static stance instead).
+PLANNER_LOWER = os.environ.get("HS_PLANNER_LOWER", "0") == "1"
+if PLANNER_LOWER and STAND_LOWER:
+    raise SystemExit("HS_PLANNER_LOWER and HS_STAND_LOWER are mutually exclusive")
+if PLANNER_LOWER:
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "..", "..", "Training", "scripts", "reinforcement_learning", "rsl_rl"))
+    from planner_lower import plan_lower_body
+    base_pos, base_quat, joints[:, :12] = plan_lower_body(base_pos, base_quat, fps=20.0, grab_idx=grab_idx)
+if STAND_LOWER:
     _n_legs = 12
     joints[:, :_n_legs] = np.asarray(_INIT_LEGS, dtype=joints.dtype)[None, :]
-    _w, _x, _y, _z = (float(base_quat[grab_idx, k]) for k in range(4))
-    _yaw = np.arctan2(2.0 * (_w * _z + _x * _y), 1.0 - 2.0 * (_y * _y + _z * _z))
     base_quat[:] = np.array([np.cos(_yaw / 2.0), 0.0, 0.0, np.sin(_yaw / 2.0)])
     base_pos[:, 0] = base_pos[grab_idx, 0]
     base_pos[:, 1] = base_pos[grab_idx, 1]
-    # Minimum stance standoff: the grab-frame root can sit as little as 0.25 m from the object
-    # (pick_35), which parks the INIT hand hanging at the table's front face (env edge = object
-    # x - 0.05) -> spawn collision and an unsolvable table constraint on the pinned first frame.
-    # Push the root straight back along its heading until the along-heading root->object distance
-    # is at least HS_STAND_MIN_STANDOFF. Reach is unaffected (arm ~0.6 m); 0 disables.
+
+# --- root corrections (ALWAYS; independent of the stitch) -----------------------------------
+# Both are RIGID translations of the whole root trajectory (every frame by the same vector),
+# computed from the grab-frame geometry. Under HS_STAND_LOWER every frame equals the grab frame
+# so they read as "move the stance"; with the retargeted lower body kept (locomotion) the same
+# shift moves the entire walk, feet included, so nothing slides and the approach path is
+# preserved -- only where it ends relative to the object changes. Measured on the 60 raw
+# retargets: walks are ~1 m straight-ahead +x approaches (yaw within +-13 deg), the pelvis
+# never crosses the table edge pre-grab, but 40% grab closer than 0.35 m and every clip has
+# the object to the right, several beyond the band -- so both corrections are still needed.
+# Minimum stance standoff: the grab-frame root can sit as little as 0.25 m from the object
+# (pick_35), which parks the INIT hand hanging at the table's front face (env edge = object
+# x - 0.05) -> spawn collision and an unsolvable table constraint on the pinned first frame.
+# Push the root straight back along its heading until the along-heading root->object distance
+# is at least HS_STAND_MIN_STANDOFF. Reach is unaffected (arm ~0.6 m); 0 disables.
+# ALONG-HEADING band. HS_STAND_ALONG_BAND="lo,hi" clamps the grab-frame root->object distance
+# from BOTH sides; unset keeps the legacy one-sided HS_STAND_MIN_STANDOFF push-back. The upper
+# bound is what makes the refine well-posed when the retarget under-travels (e.g. a tighter
+# foot-sticking tolerance removes the slip that was silently supplying reach): the one-sided
+# clamp never pulls the robot IN, so a clip that stops short just fails to reach and the AL
+# refine is handed an impossible target. Note this composes with the lateral band below by
+# construction -- _hdg and _lat_ax are orthonormal in the same grab-frame basis, so the two
+# clamps set independent components of one rigid translation and cannot fight each other. It is
+# also why the repositioning is along-heading ONLY: restoring the full 2D grab-frame position
+# would restore the human's lateral placement, which is exactly what the lateral band exists to
+# discard.
+_hdg = np.array([np.cos(_yaw), np.sin(_yaw)])
+_d_along = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _hdg))
+_along_band = os.environ.get("HS_STAND_ALONG_BAND", "")
+if _along_band:
+    _al_lo, _al_hi = (float(v) for v in _along_band.split(","))
+    _d_along_new = min(max(_d_along, _al_lo), _al_hi)
+    if _d_along_new != _d_along:
+        base_pos[:, :2] -= (_d_along_new - _d_along) * _hdg[None, :]
+        print(f"[root-along] root->object along {_d_along:.3f} m outside [{_al_lo:.2f},{_al_hi:.2f}]; "
+              f"root moved {abs(_d_along_new - _d_along):.3f} m "
+              f"{'back' if _d_along_new > _d_along else 'forward'}")
+else:
     _min_standoff = float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35"))
-    _hdg = np.array([np.cos(_yaw), np.sin(_yaw)])
-    _d_along = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _hdg))
     if _min_standoff > 0 and _d_along < _min_standoff:
         base_pos[:, :2] -= (_min_standoff - _d_along) * _hdg[None, :]
-        print(f"[stand-lower] root->object along heading {_d_along:.3f} m < {_min_standoff:.2f}; "
+        print(f"[root-standoff] root->object along heading {_d_along:.3f} m < {_min_standoff:.2f}; "
               f"root moved back {_min_standoff - _d_along:.3f} m")
-    # Lateral band: the object's LATERAL offset in the heading frame is inherited from where the
-    # human stood (fixH60: -0.07..-0.42 m, always to the robot's right; a human reaches sideways
-    # with a step + torso twist that the pinned stance removes). Measured on fixH60: clips with the
-    # object > 0.30 m to the right hold 7% (fully extended arm), clips with it < 0.12 m hold 15-20%
-    # (side approach into the bottle), the -0.30..-0.20 band holds best. Clamp the offset into
-    # HS_STAND_LAT_BAND ("lo,hi", + = robot's left) by translating the pinned root along its
-    # lateral axis. The AL refine re-solves the arm against the new root->object geometry and the
-    # post-grab palm target is the object trajectory, so the carry stays consistent. "" disables.
-    _lat_band = os.environ.get("HS_STAND_LAT_BAND", "-0.28,-0.15")
-    if _lat_band:
-        _lat_lo, _lat_hi = (float(v) for v in _lat_band.split(","))
-        _lat_ax = np.array([-np.sin(_yaw), np.cos(_yaw)])
-        _d_lat = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _lat_ax))
-        _d_lat_new = min(max(_d_lat, _lat_lo), _lat_hi)
-        if _d_lat_new != _d_lat:
-            base_pos[:, :2] -= (_d_lat_new - _d_lat) * _lat_ax[None, :]
-            print(f"[stand-lower] root->object lateral {_d_lat:+.3f} m outside [{_lat_lo:+.2f},{_lat_hi:+.2f}]; "
-                  f"root moved {abs(_d_lat_new - _d_lat):.3f} m {'right' if _d_lat_new > _d_lat else 'left'}")
+# Lateral band: the object's LATERAL offset in the heading frame is inherited from where the
+# human stood (fixH60: -0.07..-0.42 m, always to the robot's right; a human reaches sideways
+# with a step + torso twist that the pinned stance removes). Measured on fixH60: clips with the
+# object > 0.30 m to the right hold 7% (fully extended arm), clips with it < 0.12 m hold 15-20%
+# (side approach into the bottle), the -0.30..-0.20 band holds best. Clamp the offset into
+# HS_STAND_LAT_BAND ("lo,hi", + = robot's left) by translating the pinned root along its
+# lateral axis. The AL refine re-solves the arm against the new root->object geometry and the
+# post-grab palm target is the object trajectory, so the carry stays consistent. "" disables.
+_lat_band = os.environ.get("HS_STAND_LAT_BAND", "-0.28,-0.15")
+if _lat_band:
+    _lat_lo, _lat_hi = (float(v) for v in _lat_band.split(","))
+    _lat_ax = np.array([-np.sin(_yaw), np.cos(_yaw)])
+    _d_lat = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _lat_ax))
+    _d_lat_new = min(max(_d_lat, _lat_lo), _lat_hi)
+    if _d_lat_new != _d_lat:
+        base_pos[:, :2] -= (_d_lat_new - _d_lat) * _lat_ax[None, :]
+        print(f"[root-latband] root->object lateral {_d_lat:+.3f} m outside [{_lat_lo:+.2f},{_lat_hi:+.2f}]; "
+              f"root moved {abs(_d_lat_new - _d_lat):.3f} m {'right' if _d_lat_new > _d_lat else 'left'}")
+_chk_al = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], _hdg))
+_chk_lat = float(np.dot(obj_pos[grab_idx, :2] - base_pos[grab_idx, :2], np.array([-np.sin(_yaw), np.cos(_yaw)])))
+print(f"[root-final] grab-frame root->object: along {_chk_al:+.3f} m, lateral {_chk_lat:+.3f} m")
+if STAND_LOWER:
     print(f"[stand-lower] legs pinned to INIT stance; root frozen at grab-frame "
           f"xy=({base_pos[grab_idx,0]:.3f},{base_pos[grab_idx,1]:.3f}) yaw={_yaw:+.3f} rad; "
           f"waist+arms kept from the retarget")
+else:
+    _walk = float(np.linalg.norm(np.diff(base_pos[:grab_idx, :2], axis=0), axis=1).sum())
+    _src = "planner-synthesized" if PLANNER_LOWER else "retargeted"
+    print(f"[loco] {_src} lower body + root; root path {_walk:.2f} m before grab, "
+          f"grab-frame yaw={_yaw:+.3f} rad, start {float(np.linalg.norm(obj_pos[grab_idx,:2]-base_pos[0,:2])):.2f} m from object")
 
 # --- per-frame grounding (lowest link-origin -> 0) via g1_{DOF}dof FK ---
 chain = pk.build_chain_from_urdf(open(URDF, "rb").read())
@@ -248,6 +304,45 @@ fk = chain.forward_kinematics(torch.tensor(joints, dtype=torch.float32))
 local = torch.stack([fk[l].get_matrix()[:, :3, 3] for l in fk], dim=1).numpy()   # (F,L,3)
 mz = (np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local) + base_pos[:, None, :])[:, :, 2].min(axis=1)
 base_pos[:, 2] -= mz
+
+# --- HS_DESLIP=1: remove residual foot slip WITHOUT re-introducing the lean --------------------
+# Tightening the foot-sticking tolerance removes slip but not the root travel the Laplacian cost
+# still demands, so the legs absorb the deficit and the pelvis pitches over (measured 11.6 -> 13.3
+# deg). The tolerance is a single dial trading slip against lean; this is the second dial.
+#
+# Retarget LOOSE (low lean, some slip c(t)), then subtract the accumulated slip from the root:
+#     base(t) -= c(t)  =>  foot_world(t) = foot_loose(t) - c(t) = foot at stance ONSET
+# The feet ride the root rigidly, so the shift cancels the slip EXACTLY while leaving `joints`
+# untouched -- the low-lean leg geometry the loose solve found is preserved. Zero IK; FK is already
+# computed above for grounding.
+if os.environ.get("HS_DESLIP", "0") == "1":
+    _world = np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local) + base_pos[:, None, :]
+    _lk = list(fk)
+    _feet = [i for i, l in enumerate(_lk) if l in ("left_ankle_roll_link", "right_ankle_roll_link")]
+    if len(_feet) == 2:
+        _fz = _world[:, _feet, 2]                      # (F,2) foot heights
+        _fxy = _world[:, _feet, :2]                    # (F,2,2)
+        _stance = _fz < (_fz.min() + float(os.environ.get("HS_DESLIP_Z_TOL", "0.02")))
+        _corr = np.zeros((len(base_pos), 2)); _C = np.zeros(2); _onset = [None, None]
+        for t in range(len(base_pos)):
+            _inc = np.zeros(2); _n = 0
+            for k in (0, 1):
+                if _stance[t, k]:
+                    if _onset[k] is None:
+                        _onset[k] = _fxy[t, k].copy()
+                    _inc += _fxy[t, k] - _onset[k]; _n += 1
+                elif _onset[k] is not None:
+                    # stance ended: bank its drift and re-anchor on the next touchdown
+                    _C += _fxy[t - 1, k] - _onset[k] if t > 0 else 0.0
+                    _onset[k] = None
+            _corr[t] = _C + (_inc / _n if _n else 0.0)
+        base_pos[:, :2] -= _corr
+        _res = float(np.linalg.norm(_corr[-1]))
+        print(f"[deslip] removed {_res*100:.1f} cm of accumulated foot slip from the root "
+              f"(stance z-tol {float(os.environ.get('HS_DESLIP_Z_TOL','0.02'))*100:.0f} cm); "
+              f"joints untouched so the lean is unchanged")
+    else:
+        print(f"[deslip] SKIPPED: expected 2 ankle_roll links, found {len(_feet)}")
 # Ground the object by a CONSTANT shift (the robot's grounding at the grab frame), NOT the per-frame mz.
 # mz swings a few cm as the robot walks (swing/stance foot), so a per-frame shift made the object bob
 # vertically even while it should rest still on the table. A constant shift keeps the object stable and
@@ -340,6 +435,93 @@ if REFINE_AFTER_LEADIN and not NO_LEADIN:
 # refine_motions_al.py: swept-quad table, tip/wrist speed-accel-jerk, hard DOF speed limits,
 # laziness, outward-swing approach shaping) -> smooth reaches, no fast punch-through.
 # HS_REFINE_MODE=simple: the lightweight per-frame penetration refine (refine_right_arm_table).
+#
+# HS_GATE_SHAPING=1: don't start shaping the arm until the walking root has reached the place the
+# STATIC (HS_STAND_LOWER) spawn would have put it. With locomotion the refine otherwise owns the
+# whole trajectory and shapes the reach from frame 0, i.e. while the robot is still ~1 m out --
+# which is what made the grasp shaping look like it fired at the spawn point.
+#
+# The trigger needs no new threshold: the static spawn IS the grab-frame root pose after the
+# along/lateral band clamps above, and in locomotion those same clamps are ONE RIGID translation
+# of the whole walk, so the walking root passes through that identical pose at grab_idx. Gating on
+# "along-heading root->object distance has entered the band the static spawn is clamped to" is
+# therefore the same geometric condition, just reached earlier in time.
+#
+# It is expressed through refine_al_29's existing HS_PIN_FIRST_FRAMES, which holds the first N
+# frames out of the decision variables (and is already honoured by the taper bounds, the hard
+# levelness window and the table constraint), so no refine-side change is needed.
+if os.environ.get("HS_GATE_SHAPING", "0") == "1" and not STAND_LOWER and 0 < grab_idx < F:
+    _gmode = os.environ.get("HS_GATE_MODE", "along")
+    if _gmode == "stance":
+        # Gate on the FEET, not on distance: the last frame either foot is still moving is the
+        # final stance; start shaping HS_GATE_STANCE_LEAD frames before it. The along-heading
+        # trigger fires while the robot is still walking (measured 7-29 frames early) because
+        # closing distance and finishing the step are different events -- the root stops closing
+        # long before the feet are set. `local` is the per-frame link FK from the grounding pass
+        # directly above, so no extra kinematics are needed.
+        _fi = [i for i, l in enumerate(fk) if l in ("left_ankle_roll_link", "right_ankle_roll_link")]
+        _fw = (np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local)
+               + base_pos[:, None, :])[:, _fi, :2]                      # (F,2,2)
+        # Use the CONTACT TRANSITION, not a speed threshold. A planted foot keeps jittering
+        # 0.8-3.8 mm/frame while the pose settles, which a speed test counts as "still stepping"
+        # and pushes the gate ~20 frames past the real footfall. The last frame either foot is
+        # AIRBORNE, plus one, is the final plant by definition and is immune to that jitter.
+        _fz = (np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local)
+               + base_pos[:, None, :])[:, _fi, 2]                       # (F,2) foot heights
+        _down = _fz < (_fz.min() + float(os.environ.get("HS_GATE_CONTACT_BAND", "0.02")))
+        _air = np.nonzero(~_down[:grab_idx].all(axis=1))[0]             # a foot off the ground
+        _fs = int(_air[-1]) + 1 if len(_air) else 0
+        _hit = np.array([max(_fs - int(os.environ.get("HS_GATE_STANCE_LEAD", "5")), 0)])
+        _gate_hi = float("nan")
+    else:
+        _gate_hi = (float(_along_band.split(",")[1]) if _along_band
+                    else float(os.environ.get("HS_STAND_MIN_STANDOFF", "0.35")))
+        _d_along_t = (obj_pos[grab_idx, :2] - base_pos[:, :2]) @ _hdg
+        _hit = np.nonzero(_d_along_t[:grab_idx] <= _gate_hi)[0]
+    # HS_GATE_MAX_VEL: additionally require the root to be SLOW at the gate. Either trigger can
+    # still fire mid-stride (the feet are set for that step, but the body is still travelling at
+    # up to 72% of peak walk speed a few frames before the grab), so push the gate forward until
+    # the root drops below this speed. 0 disables. m/s, assuming 20 fps.
+    _vmax = float(os.environ.get("HS_GATE_MAX_VEL", "0"))
+    if _vmax > 0 and len(_hit):
+        _rsp = np.concatenate([[0.0], np.linalg.norm(np.diff(base_pos[:, :2], axis=0), axis=1) * 20.0])
+        _slow = np.nonzero(_rsp[:grab_idx] <= _vmax)[0]
+        _slow = _slow[_slow >= _hit[0]]
+        if len(_slow):
+            if int(_slow[0]) != int(_hit[0]):
+                print(f"[gate-vel] root still at {_rsp[_hit[0]]:.3f} m/s at frame {int(_hit[0])}; "
+                      f"advanced to frame {int(_slow[0])} (<= {_vmax:.3f} m/s)")
+            _hit = np.array([int(_slow[0])])
+        else:
+            # report the min over the window actually searched (gate..grab), not the whole clip:
+            # the leading frames are stationary, so a global min reads as self-contradictory.
+            _w = _rsp[int(_hit[0]):grab_idx]
+            print(f"[gate-vel] root never drops to {_vmax:.3f} m/s between the stance gate "
+                  f"(frame {int(_hit[0])}) and the grab (min {_w.min() if len(_w) else float('nan'):.3f} "
+                  f"m/s over that window); keeping the stance gate")
+    # Leave the solver a working budget: never pin past grab_idx - HS_GATE_MIN_BUDGET frames.
+    _budget = int(os.environ.get("HS_GATE_MIN_BUDGET", "25"))
+    _gate = int(_hit[0]) if len(_hit) else 0
+    _gate = max(min(_gate, grab_idx - _budget), 0)
+    # refine_al_29 reads PIN_FIRST_N from the environment at MODULE IMPORT time, and this file
+    # already imported it at the soft-joint-limit clamp far above, so setting the env var here is
+    # too late -- it would silently stay 0 and the gate would be a no-op. Set the module attribute
+    # directly; every use of PIN_FIRST_N inside refine_al_29 is a module-global read at call time.
+    import refine_al_29 as _r29gate
+    _r29gate.PIN_FIRST_N = _gate
+    os.environ["HS_PIN_FIRST_FRAMES"] = str(_gate)   # kept for any later/child import
+    print(f"[gate-shaping] root->object along heading enters {_gate_hi:.2f} m at frame "
+          f"{int(_hit[0]) if len(_hit) else -1}; pinning first {_gate} frames "
+          f"(grab_idx={grab_idx}, budget={grab_idx - _gate} frames)")
+
+if REFINE_ARM and 0 < grab_idx < F:
+    _mode = os.environ.get("HS_REFINE_MODE", "al")
+    if _mode == "al":
+        import refine_al_29
+        joints = refine_al_29.refine_arm(joints, base_pos, base_quat, obj_pos[grab_idx], grab_idx, fps=20.0, obj_traj=obj_pos)
+    else:
+        joints = refine_right_arm_table(joints, base_pos, base_quat, grab_idx, chain)
+
 # --- FREEZE_FOR grab hold (length-preserving) ---
 def freeze_hold(a):
     # len(a), not the load-time F: under HS_REFINE_AFTER_LEADIN the lead-in is already prepended
@@ -413,7 +595,8 @@ with open(out_base + ".pkl", "wb") as f:
     pickle.dump(pkl, f)
 _wr = np.linalg.norm(joints[:, 13]) if DOF == 29 else 0.0
 _wp = np.linalg.norm(joints[:, 14]) if DOF == 29 else 0.0
-print(f"wrote {out_base}.pkl  {DOF}-DOF  frames {F}->{joints.shape[0]} (lead-in {PAUSE}+{INTERP}) "
+print(f"wrote {out_base}.pkl  {DOF}-DOF  frames {F}->{joints.shape[0]} "
+      f"({'no lead-in' if NO_LEADIN else f'lead-in {PAUSE}+{INTERP}'}) "
       f"grab_idx={grab_idx}  ground_shift[{mz.min():.3f},{mz.max():.3f}]  "
       f"waist_roll|pitch L2={_wr:.3f}|{_wp:.3f}  frame0 |dq/dt|@20fps="
       f"{np.linalg.norm((joints[1]-joints[0])/0.05):.3f} (want ~0)")

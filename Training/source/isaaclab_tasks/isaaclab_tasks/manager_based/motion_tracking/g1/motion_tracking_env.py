@@ -397,6 +397,22 @@ def anchor_ori_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = 
     return torch.exp(-(angle ** 2) / (std * std))
 
 
+def anti_shake_ang_vel_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+                          threshold: float = 1.5) -> torch.Tensor:
+    """Deadzoned angular-velocity penalty on small links (wrists, head).
+
+    Port of gear_sonic ``anti_shake_ang_vel_l2`` (rewards/terms/anti_shake_ang_vel.yaml,
+    threshold 1.5 rad/s, weight -5e-3): speeds below the threshold are free, so intentional
+    motion is unpenalised while high-frequency jitter is taxed. Returns a POSITIVE penalty --
+    use a negative weight. Reads the robot's own body angular velocities (gear_sonic reads the
+    same quantity off its tracking command's cached robot state).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    ang_vel = asset.data.body_ang_vel_w[:, asset_cfg.body_ids]            # (E,B,3)
+    excess = torch.relu(torch.linalg.norm(ang_vel, dim=-1) - threshold)   # (E,B)
+    return (excess * excess).mean(dim=-1)
+
+
 def relative_keypts_tracking_exp(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), std: float = 0.3, keypts_mask: List = KEYPTS_MASK, eps: float = 0.0) -> torch.Tensor:
     """Relative (root-anchored) body keypoint tracking, exp(-mean_sq_err / std^2) over masked
     keypoints. Reference and robot keypoints are both expressed in the robot's current root

@@ -76,11 +76,14 @@ parser.add_argument("--sonic-encoder-onnx", type=str,
 parser.add_argument("--residual-scale", type=float, default=0.1,
                     help="Residual bound — MUST match the value used by train_sonic_adapter.py.")
 parser.add_argument("--residual-transform", type=str, default="additive_free",
-                    choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped"],
+                    choices=["additive", "additive_free", "multiplicative", "multiplicative_free", "unclamped", "direct"],
                     help="Token residual transform — MUST match train_sonic_adapter.py for this checkpoint.")
 parser.add_argument("--zero-residual", action="store_true", default=False,
                     help="Evaluate the frozen-SONIC base (residual=0, fingers open) as a "
                          "baseline. No checkpoint required.")
+parser.add_argument("--reference-grasp", action="store_true",
+                    help="With --zero-residual, command the right fingers using the reference "
+                         "motion library's is_closed schedule (including the recipe's contact lead).")
 parser.add_argument("--lift-thres", type=float, default=0.95,
                     help="Bottle z (m) above which a frame counts as 'lifted'. Matches the "
                          "env's object_above height_thres (object rests at 0.9; 0.95 = a "
@@ -100,6 +103,10 @@ cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+if args_cli.reference_grasp and not args_cli.zero_residual:
+    parser.error("--reference-grasp requires --zero-residual")
+if args_cli.zero_residual and args_cli.residual_transform == "direct":
+    parser.error("--zero-residual is a frozen encoder baseline; direct token mode has no base addition")
 
 # Headless eval: cameras off unless HS_EVAL_CAMERAS=1 (A/B against the camera-enabled,
 # render_mode="rgb_array" env the collector / montage / VLA scripts build).
@@ -139,7 +146,8 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 # SONIC adapter wiring (same as train_sonic_adapter.py / play_sonic_adapter.py)
 from vla_sonic.token_action_wrapper import load_frozen_decoder
 from vla_sonic.token_adapter_wrapper import TokenAdapterVecEnvWrapper, load_frozen_encoder
-from vla_sonic.physics_overrides import apply_sonic_physics_overrides
+from vla_sonic.physics_overrides import (apply_sonic_physics_overrides, apply_object_mass_override,
+                                         apply_hand_gain_override)
 from vla_sonic.robot_29dof import apply_29dof_waist_override
 from vla_sonic.adapter_actor_critic import AdapterActorCritic
 
@@ -188,6 +196,10 @@ def main():
 
     # Match SONIC decoder's training-time physics.
     apply_sonic_physics_overrides(env_cfg)
+    # Same object-mass / hand-gain defaults as training and collection -- a policy scored
+    # under different dynamics than it trained in is not being measured on its own task.
+    apply_object_mass_override(env_cfg)
+    apply_hand_gain_override(env_cfg)
 
     # 29-DOF strict-fidelity articulation (actuated waist roll/pitch) to match SONIC training.
     if args_cli.waist_dof == 29:
@@ -274,15 +286,23 @@ def main():
 
     # ---- policy: trained adapter, or the zero-residual baseline ----
     if args_cli.zero_residual:
-        print("[eval_sonic_adapter] ZERO-RESIDUAL baseline: residual=0, fingers open (frozen SONIC).")
+        grasp_mode = "reference is_closed schedule" if args_cli.reference_grasp else "open"
+        print(f"[eval_sonic_adapter] ZERO-RESIDUAL baseline: residual=0, fingers={grasp_mode} (frozen SONIC).")
 
         def policy(obs):
-            return torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
+            actions = torch.zeros((env.num_envs, env.num_actions), device=device, dtype=torch.float32)
+            if args_cli.reference_grasp:
+                from vla_sonic.reference_grasp import reference_finger_command
+                actions[:, 64] = reference_finger_command(env.unwrapped)
+            return actions
     else:
         print(f"[INFO] Loading model checkpoint from: {resume_path}")
         ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=device)
         ppo_runner.load(resume_path)
         policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
+
+    from vla_sonic.eval_mpjpe import EpisodeMPJPE
+    mpjpe = EpisodeMPJPE(env.unwrapped)
 
     # ---- per-env episode trackers ----
     num_envs = env.num_envs
@@ -560,6 +580,7 @@ def main():
     while completed_episodes < target_episodes and step_count < max_steps:
         per_env_motion_id.copy_(env.unwrapped.motion_ids)
         with torch.inference_mode():
+            mpjpe.sample()
             actions = policy(obs).clone()
             if FORCE_FINGER_REF:
                 # Diagnostic: replace the policy's finger scalar with the REFERENCE grasp schedule
@@ -712,6 +733,7 @@ def main():
         dones_bool = dones.bool() if dones.dtype != torch.bool else dones
         if dones_bool.any():
             done_idxs = torch.where(dones_bool)[0]
+            mpjpe.finish(done_idxs)
             for _tn in term_names:
                 try:
                     _term_dones_now[_tn] = _tm.get_term(_tn)[done_idxs].bool()
@@ -870,6 +892,9 @@ def main():
     elapsed = time.time() - t_start
     print(f"\n[eval_sonic_adapter] DONE — {completed_episodes} episodes in {elapsed:.1f}s "
           f"({step_count} steps, {step_count/max(elapsed,1e-6):.0f} steps/s)")
+
+    import json
+    print("[MPJPE] " + json.dumps(mpjpe.result()))
 
     # ---- final report ----
     n_succ_total = float(env.unwrapped.n_successes.sum().item())
