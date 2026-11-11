@@ -56,7 +56,7 @@ def main():
     env = None
     video = None
     try:
-        app = AppLauncher(args, multi_gpu=False).app
+        app = AppLauncher(args, multi_gpu=False, fast_shutdown=False).app
         import gymnasium as gym
         import numpy as np
         from PIL import Image

@@ -19,6 +19,7 @@ def simulation_config(gpu):
     if gpu < 0:
         raise ValueError('GPU must be a nonnegative physical-device index')
     return dict(headless=True, active_gpu=gpu, physics_gpu=gpu, multi_gpu=False,
+                fast_shutdown=False,
                 width=128, height=128, renderer='RayTracedLighting')
 
 
@@ -117,6 +118,12 @@ def main():
         timeline.play()
         for _ in range(8):
             app.update()
+        # This raw-stage gate does not construct the legacy World/context that
+        # normally registers the default initialization callbacks.
+        SimulationManager.initialize_physics()
+        receipt['manual_physics_initialization_requested'] = True
+        receipt['usd_stage_id'] = context.get_stage_id()
+        receipt['physics_steps_before_tensor_view'] = SimulationManager.get_num_physics_steps()
         # The SDK explicitly rejects NumPy views for GPU pipelines. Exercise the
         # same Torch frontend as the real task assets instead of a CPU-only view.
         sim = tensors.create_simulation_view('torch', backend='physx')
@@ -221,9 +228,13 @@ def main():
         receipt.update(completed=False, error=traceback.format_exc(), finished=time.time())
         raise
     finally:
+        # Preserve failure evidence before SDK teardown. Fast shutdown can exit
+        # the process directly; an exit code alone must never establish a pass.
+        (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
         try:
             if app is not None:
                 app.close()
+                receipt['application_closed'] = True
         except BaseException:
             receipt.update(completed=False, cleanup_error=traceback.format_exc())
             raise
