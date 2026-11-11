@@ -1,0 +1,6 @@
+# Foundation probe only. Project/GR00T dependencies are validated separately.
+isaacsim[all,extscache]==6.2.0.0
+torch==2.11.0
+torchvision==0.26.0
+numpy>=2,<3
+pillow>=12.3.0

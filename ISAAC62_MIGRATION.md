@@ -69,3 +69,28 @@ behavioral equivalence. Runtime, visual and optimization evidence is still requi
 Initial merge audit artifacts and test receipts are under the EMBER workspace's
 `out/isaac62_migration/`. The 6.2 runtime is not yet validated. Do not resume the
 existing full DAgger study or mark this migration complete from static checks.
+
+## Isolated foundation gate
+
+`cluster/isaac62/setup_environment.sh` creates a new environment only at
+`~/kevin/envs/dreamcontrol_62`; it refuses to overwrite an existing environment.
+It pins Python 3.12, Sim 6.2.0.0 and Torch 2.11/cu128, and does not install the
+project's legacy packages or GR00T. The existing `dreamcontrol_51` is untouched.
+
+After reviewing account-wide utilization and obtaining any required CPU exception,
+run the setup in an identified tmux session under a bounded CPU allocation. Then
+run `cluster/isaac62/probe_physics_render.py` on one manually selected GPU with an
+external timeout. It checks GPU PhysX, reset through the public tensor API, fixed
+physics-step accounting, rendering without extra physics steps, RGB camera output
+and local asset authoring. Its output defaults to `~/kevin/eval_videos/` and must
+be pulled to local `out/` for review. It does not load a robot or learned policy.
+
+The foundation gate is prepared but has not run. Project imports, actual robot
+physics, model compatibility and all capability gates above remain open.
+
+The existing Isaac-GR00T fork pins Torch 2.7.1, NumPy 1.26.4 and compiled
+FlashAttention/TorchCodec builds. Do not install it into the foundation environment
+with ignored dependency checks. Validate a supported unified dependency set or use
+its existing inference-service boundary, preserving diagnostic features as well as
+actions. GR00T fine-tuning and teacher-forced offline checks remain separate from
+the simulator migration.
