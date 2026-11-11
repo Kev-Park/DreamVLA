@@ -248,3 +248,23 @@ under the legacy interpreter while the client runs in the new frontend. These
 remain transport fixtures, not real checkpoint inference. Readiness publication
 is now atomic and exclusive: a descriptor is complete when it becomes visible,
 and an existing descriptor is never overwritten.
+
+On 2026-11-11, the isolated Biped CPU runtime passed 73 contracts on Python
+3.12.13, Torch 2.11.0+cpu and NumPy 2.3.1. Ten additional service contracts passed
+with the client in this runtime and the fixture server in the existing GR00T
+Python 3.10.20/Torch 2.7.1 environment. Reports are in workspace
+`out/isaac62_migration/target_4cd4cb8.json` and
+`cross_interpreter_4cd4cb8.json`. These are CPU and fixture-service checks only.
+
+`cluster/isaac62/probe_residual_checkpoint.py` also strictly loaded three existing
+trained checkpoints into the merged `AdapterActorCritic`, using explicit ELU
+activation and checkpoint-derived MLP dimensions, in both the legacy and target
+CPU runtimes. For eight identical synthetic observations, the largest absolute
+actor-output differences were 4.77e-7 for T20_max_v3/model_4500, 2.38e-7 for
+T20_max/model_4999 and 4.77e-7 for af60v7/model_4999. Critic differences were at
+most 1.91e-6. Inputs were identical and all outputs finite; the original weights
+were not modified. The checkpoint hashes, per-runtime package versions and arrays
+are in workspace `out/isaac62_migration/isaac62_residual_parity_9994e4b/`.
+This verifies trained MLP weight compatibility for the stated inputs/activation;
+it does not establish simulation behavior, CUDA parity, SONIC decoder compatibility
+or task success. GPU physics, policy-in-simulation and rendering gates remain open.
