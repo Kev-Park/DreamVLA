@@ -153,7 +153,10 @@ def main():
         initial_steps = SimulationManager.get_num_physics_steps()
         positions = []; quaternions = []; velocities = []; images = []; camera_stats = []
         for frame in range(args.frames):
-            SimulationManager.step(steps=4)
+            # GPU setup enables Fabric and disables PhysX-to-USD writes. A
+            # paused app.update() renders, but does not synchronize the latest
+            # physics transforms into Fabric on our behalf.
+            SimulationManager.step(steps=4, update_fabric=True)
             before_render = SimulationManager.get_num_physics_steps()
             app.update()
             assert SimulationManager.get_num_physics_steps() == before_render, 'Render advanced physics while paused'
@@ -190,6 +193,12 @@ def main():
         assert len(images) >= 16, 'Camera delivered too few images'
         assert any(float(image.mean()) > 0 for _, image in images), 'Camera output is entirely black'
         assert any(float(image.std()) > 0 for _, image in images), 'Camera output is entirely constant'
+        # A static camera must actually see the falling body move; otherwise
+        # nonblack frames could conceal stale renderer transforms.
+        reference_image = images[0][1].astype(np.int16)
+        image_change = max(float(np.abs(image.astype(np.int16)-reference_image).mean())
+                           for _, image in images[1:])
+        assert image_change > .1, 'Rendered scene did not change as the body fell'
         for i in sorted({0, len(images)//2, len(images)-1}):
             frame, image = images[i]
             Image.fromarray(image).save(output/f'frame_{frame:04d}.png')
@@ -204,6 +213,7 @@ def main():
                        first_freefall_velocity=velocities[0].tolist(),
                        gpu_dynamics_verified=True, simulation_device=str(SimulationManager.get_device()),
                        physics_steps=actual_steps, capture_frames=len(trajectory),
+                       maximum_image_mean_absolute_change=image_change,
                        image_frames=len(images), z_min=float(trajectory[:, 2].min()),
                        z_max=float(trajectory[:, 2].max()), camera_stats=camera_stats)
         rgb.detach([product])
