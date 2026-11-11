@@ -6,6 +6,7 @@ This gate does not establish robot/task/policy compatibility.
 import argparse
 import importlib.metadata
 import json
+import math
 from pathlib import Path
 import subprocess
 import sys
@@ -78,6 +79,10 @@ def main():
         cube = UsdGeom.Cube.Define(stage, '/World/ProbeCube')
         cube.CreateSizeAttr(.2)
         cube.AddTranslateOp().Set(Gf.Vec3d(0., 0., 1.))
+        # USD authors quaternions as real+imaginary components; the tensor API
+        # must independently expose XYZW. Identity alone cannot detect a swap.
+        authored_xyzw = [math.sin(math.pi/8), 0., 0., math.cos(math.pi/8)]
+        cube.AddOrientOp().Set(Gf.Quatf(authored_xyzw[3], Gf.Vec3f(*authored_xyzw[:3])))
         cube.CreateDisplayColorAttr([Gf.Vec3f(.8, .15, .1)])
         UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
         UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
@@ -112,12 +117,24 @@ def main():
         initial = body.get_transforms().clone()
         assert isinstance(initial, torch.Tensor) and initial.device == device, initial.device
         assert initial.shape == (1, 7), initial.shape
-        initial[0] = torch.tensor([0., 0., 1., 0., 0., 0., 1.], device=device)
+        authored = torch.tensor(authored_xyzw, dtype=initial.dtype, device=device)
+
+        def check_quaternion(actual, expected):
+            assert abs(float(torch.linalg.vector_norm(actual))-1.) < 1e-4
+            # Equivalent quaternion signs are physically identical.
+            distance = min(float(torch.linalg.vector_norm(actual-expected)),
+                           float(torch.linalg.vector_norm(actual+expected)))
+            assert distance < 1e-4, 'USD/tensor quaternion convention differs'
+
+        check_quaternion(initial[0, 3:], authored)
+        reset_xyzw = [0., 0., math.sin(math.pi/6), math.cos(math.pi/6)]
+        reset_rotation = torch.tensor(reset_xyzw, dtype=initial.dtype, device=device)
+        initial[0] = torch.tensor([0., 0., 1., *reset_xyzw], device=device)
         ids = torch.tensor([0], dtype=torch.int32, device=device)
         body.set_transforms(initial, ids)
         body.set_velocities(torch.zeros((1, 6), dtype=torch.float32, device=device), ids)
         initial_steps = SimulationManager.get_num_physics_steps()
-        positions = []; images = []; camera_stats = []
+        positions = []; quaternions = []; velocities = []; images = []; camera_stats = []
         for frame in range(args.frames):
             SimulationManager.step(steps=4)
             before_render = SimulationManager.get_num_physics_steps()
@@ -126,6 +143,16 @@ def main():
             transforms = body.get_transforms().detach().cpu().numpy().copy()
             assert transforms.shape == (1, 7) and np.isfinite(transforms).all(), transforms
             positions.append(transforms[0, :3])
+            quaternions.append(transforms[0, 3:])
+            velocity = body.get_velocities().detach().cpu().numpy().copy()
+            assert velocity.shape == (1, 6) and np.isfinite(velocity).all(), velocity
+            velocities.append(velocity[0])
+            if frame == 0:
+                check_quaternion(torch.as_tensor(transforms[0, 3:], device=device), reset_rotation)
+                # Four 5 ms steps in free fall independently test timing, units
+                # and world-frame linear-velocity ordering before floor contact.
+                assert abs(float(velocity[0, 2])+9.81*.005*4) < .005
+                assert abs(float(velocity[0, 0])) < 1e-4 and abs(float(velocity[0, 1])) < 1e-4
             image = np.asarray(rgb.get_data())
             if image.size:
                 assert image.shape[:2] == (128, 128), image.shape
@@ -146,10 +173,15 @@ def main():
         for i in sorted({0, len(images)//2, len(images)-1}):
             frame, image = images[i]
             Image.fromarray(image).save(output/f'frame_{frame:04d}.png')
-        np.savez(output/'trajectory.npz', position=trajectory)
+        np.savez(output/'trajectory.npz', position=trajectory,
+                 quaternion_xyzw=np.stack(quaternions), velocity=np.stack(velocities))
         (output/'nvidia_after.xml').write_text(subprocess.check_output(['nvidia-smi', '-q', '-x'], text=True))
         receipt.update(completed=True, finished=time.time(), physics_backend='PhysX',
                        tensor_frontend='torch',
+                       usd_tensor_quaternion_order_verified=True,
+                       tensor_reset_quaternion_order_verified=True,
+                       authored_quaternion_xyzw=authored_xyzw, reset_quaternion_xyzw=reset_xyzw,
+                       first_freefall_velocity=velocities[0].tolist(),
                        gpu_dynamics_verified=True, simulation_device=str(SimulationManager.get_device()),
                        physics_steps=actual_steps, capture_frames=len(trajectory),
                        image_frames=len(images), z_min=float(trajectory[:, 2].min()),
