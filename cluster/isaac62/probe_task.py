@@ -220,6 +220,9 @@ def main():
                     video.stderr.close()
             if env is not None:
                 env.close()
+        except BaseException:
+            receipt.update(completed=False, cleanup_error=traceback.format_exc())
+            raise
         finally:
             try:
                 if app is not None:

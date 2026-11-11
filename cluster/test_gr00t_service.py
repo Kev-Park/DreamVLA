@@ -5,6 +5,7 @@ from pathlib import Path
 import random
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 
@@ -19,8 +20,12 @@ from vla_sonic.gr00t_service import PolicyService, PolicyServiceClient, capture_
 class FixturePolicy:
     def __init__(self):
         self.model = SimpleNamespace(backbone=torch.nn.Identity())
+        self.calls = 0
 
     def get_action(self, observation, options=None):
+        self.calls += 1
+        if options and options.get('delay'):
+            time.sleep(options['delay'])
         image = observation['video']['ego_view']
         state = observation['state']['joint_pos']
         assert image.dtype == np.uint8 and image.shape == (1, 1, 4, 4, 3)
@@ -30,7 +35,10 @@ class FixturePolicy:
         features = self.model.backbone(torch.from_numpy(state.copy()))
         noise = torch.randn(1, 8, 4)
         mixed = noise+float(np.random.rand())+random.random()+features
-        return {'motion_token': mixed.detach().numpy()}, {'options': options}
+        info = {'options': options}
+        if options and options.get('count_calls'):
+            info['calls'] = self.calls
+        return {'motion_token': mixed.detach().numpy()}, info
 
     def reset(self, options=None):
         return {'reset': True, 'options': options, 'sample': float(torch.rand(()))}
@@ -150,6 +158,18 @@ class InferenceServiceContract(unittest.TestCase):
         descriptor = {**self.descriptor, 'checkpoint': {**self.descriptor['checkpoint'], 'config_sha256': 'wrong'}}
         with self.assertRaisesRegex(ValueError, 'checkpoint differs'):
             self.client(descriptor)
+
+    def test_timeout_is_explicit_without_automatically_repeating_inference(self):
+        with self.client() as client:
+            baseline = client.get_action(self.observation(), {'count_calls': True})[1]['calls']
+            client.timeout_ms = 40
+            client._connect()
+            with self.assertRaisesRegex(TimeoutError, 'not automatically retried'):
+                client.get_action(self.observation(), {'delay': .2})
+            client.timeout_ms = 1000
+            client._connect()
+            after = client.get_action(self.observation(), {'count_calls': True})[1]['calls']
+            self.assertEqual(after, baseline+2)
 
     def test_wrong_session_token_cannot_use_model(self):
         descriptor = {**self.descriptor, 'api_token': 'wrong'}

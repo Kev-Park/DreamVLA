@@ -9,8 +9,14 @@ prefix="$owned/envs/dreamcontrol_62"
     echo 'Create and inspect the isolated foundation environment first.' >&2; exit 2;
 }
 command -v uv >/dev/null
-export UV_CACHE_DIR="$owned/cache/uv_isaac62"
-export UV_PYTHON_INSTALL_DIR="$owned/envs/managed_python_isaac62"
+store=$("$prefix/bin/python" - "$prefix/dreamvla_install_receipt.json" "$owned" <<'PY'
+import json,sys
+with open(sys.argv[1]) as stream:
+    print(json.load(stream).get('storage_root',sys.argv[2]))
+PY
+)
+export UV_CACHE_DIR="$store/cache/uv_isaac62"
+export UV_PYTHON_INSTALL_DIR="$store/envs/managed_python_isaac62"
 export UV_CONCURRENT_DOWNLOADS=2 UV_CONCURRENT_BUILDS=1 UV_CONCURRENT_INSTALLS=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 "$prefix/bin/python" - <<'PY'

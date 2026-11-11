@@ -128,7 +128,10 @@ not evidence that the packages import or run inside Kit.
 `setup_project.sh` installs the vendored framework, custom motion libraries,
 RSL-RL 3.0.1 and both SONIC loaders into the isolated foundation environment.
 It does not install GR00T or change its model implementation. UV's cache and
-managed Python installation are explicitly kept under `~/kevin`.
+managed Python installation are kept under `~/kevin` by default. An alternate
+storage root can be selected with `DREAMVLA62_STORE` only after the operator has
+reviewed and authorized that location; the normal environment entry point remains
+`~/kevin/envs/dreamcontrol_62`. The installer does not move or delete existing data.
 
 The old hand-retargeting dependency required NumPy <2; the maintained 0.5.0
 release supports NumPy 2. The old `flatdict` dependency failed metadata building
