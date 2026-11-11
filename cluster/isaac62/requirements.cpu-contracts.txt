@@ -1,0 +1,13 @@
+# CPU-only validation of the target Python/Torch/NumPy interfaces; no simulator.
+torch==2.11.0+cpu
+numpy==2.3.1
+h5py==3.16.0
+tensordict==0.15.5
+rsl-rl-lib==3.0.1
+msgpack==1.1.0
+msgpack-numpy==0.4.8
+pyzmq==27.0.1
+# Match shared runtime dependencies in requirements.project.lock.
+filelock==3.25.2
+fsspec==2026.2.0
+pillow==12.3.0

@@ -14,6 +14,7 @@ import logging
 import os
 from pathlib import Path
 import random
+import tempfile
 import uuid
 
 import msgpack_numpy as mnp
@@ -22,6 +23,23 @@ import torch
 import zmq
 
 PROTOCOL_VERSION = 1
+
+
+def publish_descriptor(path, descriptor):
+    """Publish a complete owner-only descriptor atomically, without replacing one."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=path.name+'.', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(descriptor, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Same-directory hard-link creation is atomic and refuses an existing
+        # target. Readers never observe a partially written JSON document.
+        os.link(temporary, path)
+    finally:
+        os.unlink(temporary)
 
 
 def _writable_arrays(value):

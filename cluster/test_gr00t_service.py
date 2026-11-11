@@ -1,8 +1,10 @@
 """CPU loopback tests for RNG, diagnostic and action parity across processes."""
 import ast
-import multiprocessing
+import json
+import os
 from pathlib import Path
 import random
+import subprocess
 import sys
 import tempfile
 import time
@@ -14,7 +16,7 @@ import torch
 
 SCRIPTS = Path(__file__).resolve().parents[1]/'Training/scripts/reinforcement_learning/rsl_rl'
 sys.path.insert(0, str(SCRIPTS))
-from vla_sonic.gr00t_service import PolicyService, PolicyServiceClient, capture_rng, restore_rng
+from vla_sonic.gr00t_service import PolicyService, PolicyServiceClient, capture_rng, restore_rng, publish_descriptor
 
 
 class FixturePolicy:
@@ -44,9 +46,10 @@ class FixturePolicy:
         return {'reset': True, 'options': options, 'sample': float(torch.rand(()))}
 
 
-def serve_fixture(checkpoint, queue):
+def serve_fixture(checkpoint, ready_file):
     torch.set_num_threads(1)
-    PolicyService(FixturePolicy(), checkpoint, 'cpu', 'fixture').serve(queue.put)
+    PolicyService(FixturePolicy(), checkpoint, 'cpu', 'fixture').serve(
+        lambda descriptor: publish_descriptor(ready_file, descriptor))
 
 
 class InferenceServiceContract(unittest.TestCase):
@@ -55,33 +58,45 @@ class InferenceServiceContract(unittest.TestCase):
         cls.directory = tempfile.TemporaryDirectory()
         cls.checkpoint = Path(cls.directory.name)
         (cls.checkpoint/'config.json').write_text('{"model_type":"fixture"}')
-        context = multiprocessing.get_context('spawn')
-        cls.queue = context.Queue()
-        cls.process = context.Process(target=serve_fixture, args=(str(cls.checkpoint), cls.queue))
-        cls.process.start()
+        ready_file = cls.checkpoint/'ready.json'
+        cls.server_log = (cls.checkpoint/'server.log').open('w')
+        python = os.environ.get('DREAMVLA_TEST_SERVER_PYTHON', sys.executable)
+        cls.process = subprocess.Popen([python, str(Path(__file__).resolve()), '--fixture-server',
+                                        str(cls.checkpoint), str(ready_file)],
+                                       stdout=cls.server_log, stderr=subprocess.STDOUT)
         try:
-            cls.descriptor = cls.queue.get(timeout=30)
+            deadline = time.monotonic()+30
+            while not ready_file.is_file():
+                if cls.process.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError('Fixture server did not publish readiness: '+
+                                       (cls.checkpoint/'server.log').read_text())
+                time.sleep(.02)
+            cls.descriptor = json.loads(ready_file.read_text())
         except BaseException:
-            if cls.process.is_alive():
-                cls.process.terminate()
-            cls.process.join(timeout=10)
-            cls.queue.close()
-            cls.queue.join_thread()
+            cls.stop_process()
+            cls.server_log.close()
             cls.directory.cleanup()
             raise
+
+    @classmethod
+    def stop_process(cls):
+        if cls.process.poll() is None:
+            cls.process.terminate()
+        try:
+            cls.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            cls.process.kill()
+            cls.process.wait(timeout=10)
 
     @classmethod
     def tearDownClass(cls):
         try:
             with cls.client() as client:
                 client.shutdown_server()
-            cls.process.join(timeout=10)
+            cls.process.wait(timeout=10)
         finally:
-            if cls.process.is_alive():
-                cls.process.terminate()
-                cls.process.join(timeout=10)
-            cls.queue.close()
-            cls.queue.join_thread()
+            cls.stop_process()
+            cls.server_log.close()
             cls.directory.cleanup()
 
     @classmethod
@@ -183,5 +198,30 @@ class InferenceServiceContract(unittest.TestCase):
             self.assertIn('motion_token', client.get_action(self.observation())[0])
 
 
+class DescriptorPublication(unittest.TestCase):
+    def test_complete_owner_only_descriptor_and_no_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'ready.json'
+            publish_descriptor(path, {'session': 'first'})
+            self.assertEqual(json.loads(path.read_text()), {'session': 'first'})
+            if os.name == 'posix':
+                self.assertEqual(path.stat().st_mode & 0o077, 0)
+            with self.assertRaises(FileExistsError):
+                publish_descriptor(path, {'session': 'second'})
+            self.assertEqual(json.loads(path.read_text()), {'session': 'first'})
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+
+    def test_failed_serialization_never_publishes_partial_readiness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'ready.json'
+            with self.assertRaises(TypeError):
+                publish_descriptor(path, {'invalid': object()})
+            self.assertFalse(path.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+
 if __name__ == '__main__':
-    unittest.main()
+    if sys.argv[1:2] == ['--fixture-server']:
+        serve_fixture(sys.argv[2], sys.argv[3])
+    else:
+        unittest.main()

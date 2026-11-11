@@ -233,3 +233,18 @@ foundation probe: the SDK explicitly rejects NumPy tensor views for a GPU physic
 pipeline. The probe now uses the same Torch/CUDA tensor frontend as project assets
 for state reads and resets, converting to NumPy only when saving CPU artifacts.
 This is source-verified; the foundation gate still needs an actual GPU run.
+
+## Target frontend CPU checks
+
+`setup_cpu_contracts.sh` prepares a separate, small Python 3.12/Torch 2.11 CPU
+environment under `~/kevin/envs/dreamcontrol_62_cpu_contracts`. It has no Isaac or
+CUDA packages and cannot validate GPU physics/rendering. The shared NumPy,
+TensorDict, RSL-RL and serialization versions match the target runtime. The
+CPU-only dependency lock is separate so it cannot replace the CUDA build in the
+real simulator environment. Existing environments are not modified.
+
+The service tests can use `DREAMVLA_TEST_SERVER_PYTHON` to run their fixture server
+under the legacy interpreter while the client runs in the new frontend. These
+remain transport fixtures, not real checkpoint inference. Readiness publication
+is now atomic and exclusive: a descriptor is complete when it becomes visible,
+and an existing descriptor is never overwritten.
