@@ -1,5 +1,5 @@
-# Generated from requirements.project.txt for Linux x86_64/glibc 2.35/Python 3.12.
 absl-py==2.4.0
+accelerate==1.15.0
 aiobotocore==2.26.0
 aiodns==3.1.1
 aiofiles==23.2.1

@@ -3,6 +3,8 @@
 msgpack==1.1.0
 msgpack-numpy==0.4.8
 pyzmq==27.0.1
+# Native SONIC trainer metadata references Accelerate types during loading.
+accelerate
 daqp==0.8.5 ; platform_system == 'Linux' and (platform_machine in 'x86_64,AMD64,aarch64,arm64')
 dex-retargeting==0.5.0 ; platform_system == 'Linux' and (platform_machine in 'x86_64,AMD64')
 easydict
