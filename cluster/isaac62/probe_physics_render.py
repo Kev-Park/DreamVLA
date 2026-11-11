@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import traceback
 
 
 def simulation_config(gpu):
@@ -44,6 +45,7 @@ def main():
     app = SimulationApp(receipt['config'])
     try:
         import numpy as np
+        import torch
         import omni.physics.tensors as tensors
         import omni.replicator.core as rep
         import omni.timeline
@@ -89,12 +91,16 @@ def main():
         rgb = rep.AnnotatorRegistry.get_annotator('rgb', device='cpu')
         rgb.attach([product])
         stage.GetRootLayer().Export(str(output/'probe_scene.usda'))
-        SimulationManager.setup_simulation(dt=.005, device=f'cuda:{args.gpu}')
+        device = torch.device(f'cuda:{args.gpu}')
+        torch.cuda.set_device(device)
+        SimulationManager.setup_simulation(dt=.005, device=str(device))
         timeline = omni.timeline.get_timeline_interface()
         timeline.play()
         for _ in range(8):
             app.update()
-        sim = tensors.create_simulation_view('numpy')
+        # The SDK explicitly rejects NumPy views for GPU pipelines. Exercise the
+        # same Torch frontend as the real task assets instead of a CPU-only view.
+        sim = tensors.create_simulation_view('torch', backend='physx')
         sim.set_subspace_roots('/')
         body = sim.create_rigid_body_view('/World/ProbeCube')
         assert SimulationManager.get_active_physics_engine() == 'physx'
@@ -103,11 +109,13 @@ def main():
         assert len(scenes) == 1 and scenes[0].get_enabled_gpu_dynamics()
         timeline.pause()
         # Reset through the same public tensor API used by policy environments.
-        initial = np.asarray(body.get_transforms()).copy()
-        initial[0, 2] = 1.
-        ids = np.array([0], dtype=np.int32)
+        initial = body.get_transforms().clone()
+        assert isinstance(initial, torch.Tensor) and initial.device == device, initial.device
+        assert initial.shape == (1, 7), initial.shape
+        initial[0] = torch.tensor([0., 0., 1., 0., 0., 0., 1.], device=device)
+        ids = torch.tensor([0], dtype=torch.int32, device=device)
         body.set_transforms(initial, ids)
-        body.set_velocities(np.zeros((1, 6), dtype=np.float32), ids)
+        body.set_velocities(torch.zeros((1, 6), dtype=torch.float32, device=device), ids)
         initial_steps = SimulationManager.get_num_physics_steps()
         positions = []; images = []; camera_stats = []
         for frame in range(args.frames):
@@ -115,13 +123,14 @@ def main():
             before_render = SimulationManager.get_num_physics_steps()
             app.update()
             assert SimulationManager.get_num_physics_steps() == before_render, 'Render advanced physics while paused'
-            transforms = np.asarray(body.get_transforms()).copy()
+            transforms = body.get_transforms().detach().cpu().numpy().copy()
             assert transforms.shape == (1, 7) and np.isfinite(transforms).all(), transforms
             positions.append(transforms[0, :3])
             image = np.asarray(rgb.get_data())
             if image.size:
                 assert image.shape[:2] == (128, 128), image.shape
                 assert np.isfinite(image).all()
+                assert image.dtype == np.uint8, image.dtype
                 camera_stats.append(dict(frame=frame, minimum=int(image.min()),
                                          maximum=int(image.max()), mean=float(image.mean())))
                 images.append((frame, image[..., :3].astype(np.uint8).copy()))
@@ -133,20 +142,30 @@ def main():
         assert float(trajectory[:, 2].min()) < .99, 'Dynamic body did not fall'
         assert len(images) >= 16, 'Camera delivered too few images'
         assert any(float(image.mean()) > 0 for _, image in images), 'Camera output is entirely black'
+        assert any(float(image.std()) > 0 for _, image in images), 'Camera output is entirely constant'
         for i in sorted({0, len(images)//2, len(images)-1}):
             frame, image = images[i]
             Image.fromarray(image).save(output/f'frame_{frame:04d}.png')
         np.savez(output/'trajectory.npz', position=trajectory)
         (output/'nvidia_after.xml').write_text(subprocess.check_output(['nvidia-smi', '-q', '-x'], text=True))
         receipt.update(completed=True, finished=time.time(), physics_backend='PhysX',
+                       tensor_frontend='torch',
                        gpu_dynamics_verified=True, simulation_device=str(SimulationManager.get_device()),
                        physics_steps=actual_steps, capture_frames=len(trajectory),
                        image_frames=len(images), z_min=float(trajectory[:, 2].min()),
                        z_max=float(trajectory[:, 2].max()), camera_stats=camera_stats)
         rgb.detach([product])
+    except BaseException:
+        receipt.update(completed=False, error=traceback.format_exc(), finished=time.time())
+        raise
     finally:
-        app.close()
-        (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
+        try:
+            app.close()
+        except BaseException:
+            receipt.update(completed=False, cleanup_error=traceback.format_exc())
+            raise
+        finally:
+            (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
     print(json.dumps({k:v for k,v in receipt.items() if k != 'camera_stats'}, indent=2))
 
 

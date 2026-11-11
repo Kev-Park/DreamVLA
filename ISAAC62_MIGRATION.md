@@ -62,8 +62,8 @@ or a file-surface audit is not completion.
 
 ## Evidence and status
 
-`cluster/audit_capability_union.py` checks the project file, top-level symbol and
-CLI-option union against both recorded parents. It deliberately does not claim
+`cluster/audit_capability_union.py` checks the project file, declared symbol,
+class member and CLI-option union against both recorded parents. It deliberately does not claim
 behavioral equivalence. Runtime, visual and optimization evidence is still required.
 
 Initial merge audit artifacts and test receipts are under the EMBER workspace's
@@ -220,3 +220,16 @@ episode subsets against a directly constructed dataset, including all numeric
 columns, embedded HF schema, per-episode statistics and video bytes. Its video
 fixtures are opaque bytes, so this test does not establish video codec validity.
 Cached shard-level global/relative quantiles must remain absent from merged output.
+
+On 2026-11-11 all nine catalog and real parquet round-trip tests passed on
+Bluesclues in the existing `.venv_data_collection`, with CUDA disabled and one
+logical CPU. Numeric columns, HF schema metadata, per-episode statistics and
+opaque video bytes matched for both shard concatenation and reordered subsets.
+Reports were copied by native SCP to workspace
+`out/isaac62_migration/blue_data_contracts_f1d9e66.json` and its `.log` companion.
+
+Reviewing the actual 6.2 physics wheel also identified an error in the prepared
+foundation probe: the SDK explicitly rejects NumPy tensor views for a GPU physics
+pipeline. The probe now uses the same Torch/CUDA tensor frontend as project assets
+for state reads and resets, converting to NumPy only when saving CPU artifacts.
+This is source-verified; the foundation gate still needs an actual GPU run.

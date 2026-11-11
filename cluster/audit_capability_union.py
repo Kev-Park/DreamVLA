@@ -1,6 +1,6 @@
 """Audit the merged project surface against both recorded branch parents.
 
-This checks files, top-level symbols and CLI options, not simulator behavior.
+This checks files, declared symbols/class members and CLI options, not simulator behavior.
 Runtime/physics/rendering gates must be recorded separately.
 """
 import argparse
@@ -24,7 +24,27 @@ PREFIXES = (
 
 def surface(text):
     tree = ast.parse(text)
-    symbols = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    symbols = set()
+
+    def declared(body, prefix=''):
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                name = prefix+node.name
+                symbols.add(name)
+                if isinstance(node, ast.ClassDef):
+                    declared(node.body, name+'.')
+            elif prefix and isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                symbols.update(prefix+target.id for target in targets if isinstance(target, ast.Name))
+            elif prefix and isinstance(node, (ast.If, ast.Try)):
+                declared(node.body, prefix)
+                declared(node.orelse, prefix)
+                if isinstance(node, ast.Try):
+                    declared(node.finalbody, prefix)
+                    for handler in node.handlers:
+                        declared(handler.body, prefix)
+
+    declared(tree.body)
     options = {a.value for node in ast.walk(tree)
                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                and node.func.attr == 'add_argument' for a in node.args
@@ -58,7 +78,7 @@ def audit(repo):
                     findings.append(dict(parent=label, file=name, kind=kind, missing=sorted(missing)))
     return dict(parents=PARENTS, project_file_counts=counts, findings=findings,
                 baseline_syntax_errors=baseline_errors,
-                scope='Project file/symbol/CLI union only; this does not establish semantic or runtime equivalence')
+                scope='Project file/declared symbol/class member/CLI union only; this does not establish semantic or runtime equivalence')
 
 
 def main():
