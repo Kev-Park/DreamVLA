@@ -335,3 +335,16 @@ parameters, retaining both trainer logs and checkpoints. It requires explicit
 reference, SONIC checkpoint and asset-directory paths and a manually reviewed
 GPU allocation. Its checkpoint schema was checked against installed RSL-RL
 3.0.1 source; the actual simulator-connected gate has not yet run.
+
+Serialized policy checks found a pre-existing recurrent export bug in both the
+legacy and target Torch runtimes: assigning an undecorated bound reset method
+removed `reset()` from the saved TorchScript interface. The exporter now keeps
+the decorated reset method on the class and clears available hidden/cell buffers.
+Four output/state tests pass in both runtimes at `8e21349`, covering feedforward,
+normalized feedforward, GRU and LSTM policies. Recurrent sequence outputs match
+the native modules, and resetting restores the first action. Evidence is in
+workspace `out/isaac62_migration/isaac62_export_8e21349.json`; failing controls are
+retained at `policy_export_b4bfd35.json` and `policy_export_legacy_b4bfd35.json`.
+These use small fixtures, not trained-policy or simulator behavior. ONNX export
+remains unvalidated; its target project dependency set already includes
+`onnxscript`, which is absent from the separate CPU contract environment.

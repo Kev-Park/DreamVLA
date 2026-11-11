@@ -1,4 +1,4 @@
-﻿"""Serialized policy output/state contracts; run remotely in the target CPU env."""
+"""Serialized policy output/state contracts; run remotely in the target CPU env."""
 import importlib.util
 from pathlib import Path
 from tempfile import TemporaryDirectory
