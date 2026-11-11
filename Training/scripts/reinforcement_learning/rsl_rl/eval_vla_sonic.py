@@ -80,6 +80,8 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--max-steps-per-episode", type=int, default=500)
     parser.add_argument("--chunk-size", type=int, default=8,
                         help="Execute first N of the VLA's predicted steps before replanning.")
+    parser.add_argument("--gr00t-service", default=None,
+                        help="Local inference-service descriptor for GR00T in its separate model environment.")
     parser.add_argument("--vla-checkpoint", default=None,
                         help="Path to the unitree_g1_sonic fine-tuned GR00T checkpoint dir "
                              "(the VLA that emits motion_token + hand joints).")
@@ -471,11 +473,12 @@ def main() -> int:
         if not args.vla_checkpoint:
             raise SystemExit("--vla-checkpoint is required unless --replay-hdf5 is given")
         print(f"[vla] loading {args.vla_checkpoint}  (embodiment={args.embodiment_tag})")
-        from gr00t.policy.gr00t_policy import Gr00tPolicy
-        policy = Gr00tPolicy(
+        from vla_sonic.gr00t_runtime import load_gr00t_policy
+        policy = load_gr00t_policy(
             embodiment_tag=args.embodiment_tag,
             model_path=args.vla_checkpoint,
             device="cuda:0",
+            service_descriptor=args.gr00t_service,
         )
 
     # --- 3. SONIC decoder: the same frozen decoder + proprio-history wrapper the residual

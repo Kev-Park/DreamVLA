@@ -486,6 +486,10 @@ class DaggerDriver:
         diagnostics off no hook is registered at all. Pooled over the token axis so each frame
         yields one vector, which is what a density model fitted on the training set consumes.
         """
+        enable_remote_features = getattr(self.vla, "enable_backbone_features", None)
+        if callable(enable_remote_features):
+            enable_remote_features()
+            return
         backbone = getattr(getattr(self.vla, "model", None), "backbone", None)
         if backbone is None:
             raise RuntimeError("VLA policy exposes no .model.backbone -- cannot capture features.")
@@ -498,6 +502,12 @@ class DaggerDriver:
                 self._feat = f.detach().float().mean(dim=1)[0].cpu().numpy().astype(np.float16)
 
         backbone.register_forward_hook(_grab)
+
+    def _query_vla(self):
+        out = self.vla.get_action(self.obs_adapter())
+        if hasattr(self.vla, "last_backbone_feature"):
+            self._feat = self.vla.last_backbone_feature
+        return out[0] if isinstance(out, tuple) else out
 
     def diag_record(self, expert_tok) -> dict:
         """Per-frame uncertainty signals, all derived from quantities already computed.
@@ -536,15 +546,13 @@ class DaggerDriver:
                         or (self.takeover_at is not None
                             and self.n_frames < self.takeover_at + self.blend))
             if need_vla:
-                out = self.vla.get_action(self.obs_adapter())
-                self._chunk = out[0] if isinstance(out, tuple) else out
+                self._chunk = self._query_vla()
             elif self.takeover_at is not None:
                 pass                                     # expert-only from here on; no chunk needed
             else:
                 self._expert_drives = bool(self.rng.random() < self.beta)
                 if not self._expert_drives:
-                    out = self.vla.get_action(self.obs_adapter())
-                    self._chunk = out[0] if isinstance(out, tuple) else out
+                    self._chunk = self._query_vla()
         t = self._chunk_step; self._chunk_step += 1
         frame = self.n_frames; self.n_frames += 1
         in_blend = False
@@ -1357,6 +1365,8 @@ def main() -> None:
                              "prepend). The recorded trajectory begins at the skip frame.")
     parser.add_argument("--start-pregrab-margin", type=float, default=None,
                         help="Start episodes this many seconds before the grab (drops prepend + walk).")
+    parser.add_argument("--gr00t-service", default=None,
+                        help="Local inference-service descriptor for GR00T in its separate model environment.")
     parser.add_argument("--dagger-vla-checkpoint", type=str, default=None,
                         help="DAgger mode: GR00T checkpoint that DRIVES the robot (with prob 1-beta per chunk) while "
                              "the residual labels every state. Rollouts are written regardless of success.")
@@ -1464,6 +1474,8 @@ def main() -> None:
     cli_args.add_rsl_rl_args(parser)
     AppLauncher.add_app_launcher_args(parser)
     args_cli = parser.parse_args()
+    if args_cli.gr00t_service and not args_cli.dagger_vla_checkpoint:
+        parser.error("--gr00t-service requires --dagger-vla-checkpoint")
     if args_cli.dagger_rescue_window_s is not None:
         if not args_cli.dagger_rescue:
             parser.error("--dagger-rescue-window-s requires --dagger-rescue")
@@ -1616,7 +1628,7 @@ def main() -> None:
               f"drives={args_cli.grasp_gate_drives}")
     dagger = None; dagger_closed = None; dagger_motions = None
     if args_cli.dagger_vla_checkpoint:
-        from gr00t.policy.gr00t_policy import Gr00tPolicy
+        from vla_sonic.gr00t_runtime import load_gr00t_policy
         from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter
         from vla_sonic.simple_robot_model import SimpleG1RobotModel
         from vla_sonic.eval_helpers import demo_motion_ids
@@ -1626,57 +1638,8 @@ def main() -> None:
         if args_cli.dagger_motion_ids:
             dagger_motions = _read_motion_ids(args_cli.dagger_motion_ids, int(env.unwrapped.total_motions))
         dagger_closed = dagger_closed_pose(args_cli.dagger_demo_root)
-        vla = Gr00tPolicy(embodiment_tag="unitree_g1_sonic", model_path=args_cli.dagger_vla_checkpoint, device=device)
-        obs_adapter = ObsToPolicyAdapter(env, ObsAdapterConfig(language_instruction="pick up the mustard bottle",
-                                                               robot_model=SimpleG1RobotModel.build(),
-                                                               camera_scene_key="camera_robot"))
-        if args_cli.dagger_rescue:
-            _box = args_cli.dagger_rescue_box
-            if _box is None or not (_box in ("preaudit", "af60", "af60v7") or (_box.startswith("file:") and os.path.isfile(_box[5:]))):
-                raise SystemExit("--dagger-rescue requires --dagger-rescue-box preaudit | af60 | af60v7 | file:<calibrated box json>: "
-                                 "the wrong calibration rejects every episode and rescues every rollout.")
-            if grasp_gate is not None:
-                raise SystemExit("--dagger-rescue forbids the grasp gate -- the residual's own finger head supplies the grasp label. Drop --grasp-gate.")
-            if abs(float(args_cli.dagger_beta)) > 1e-9:
-                print("[rescue] forcing --dagger-beta 0: the student must drive all of pass A")
-                args_cli.dagger_beta = 0.0
-        dagger = DaggerDriver(env, vla, obs_adapter, beta=args_cli.dagger_beta, chunk=args_cli.dagger_chunk,
-                              diagnostics=args_cli.dagger_diagnostics,
-                              trigger=args_cli.dagger_trigger, trigger_thr=args_cli.dagger_trigger_thr,
-                              trigger_smooth=args_cli.dagger_trigger_smooth,
-                              trigger_budget=args_cli.dagger_trigger_budget,
-                              trigger_lr=args_cli.dagger_trigger_lr,
-                              expert_base=args_cli.dagger_expert_base,
-                              blend=args_cli.dagger_rescue_blend,
-                              close_thres=args_cli.dagger_finger_close_thres, seed=args_cli.seed)
-        print(f"[DAgger] VLA {args_cli.dagger_vla_checkpoint} drives with P={1-args_cli.dagger_beta:.2f} per "
-              f"{args_cli.dagger_chunk}-step chunk; expert labels every state. {len(dagger_motions)} demo motions x "
-              f"{args_cli.dagger_rollouts} rollouts. closed-pose label (mean|q| {np.abs(dagger_closed).mean():.2f}) "
-              f"= {np.round(dagger_closed, 2).tolist()}")
-
-    grasp_gate = GraspGate(env, pad=args_cli.grasp_gate_pad, hold=args_cli.grasp_gate_hold,
-                           release=args_cli.grasp_gate_release,
-                           up_max_deg=args_cli.grasp_gate_up_deg, stall=args_cli.grasp_gate_stall,
-                           stall_eps=args_cli.grasp_gate_stall_eps) if args_cli.grasp_gate else None
-    if grasp_gate is not None:
-        print(f"[grasp-gate] palm-frame box lo={np.round(grasp_gate.lo,3).tolist()} hi={np.round(grasp_gate.hi,3).tolist()} "
-              f"hold={grasp_gate.hold} stall={grasp_gate.stall} release={grasp_gate.release} up<={grasp_gate.up_max_deg:.0f}deg "
-              f"drives={args_cli.grasp_gate_drives}")
-    dagger = None; dagger_closed = None; dagger_motions = None
-    if args_cli.dagger_vla_checkpoint:
-        from gr00t.policy.gr00t_policy import Gr00tPolicy
-        from vla_sonic.obs_to_policy import ObsAdapterConfig, ObsToPolicyAdapter
-        from vla_sonic.simple_robot_model import SimpleG1RobotModel
-        from vla_sonic.eval_helpers import demo_motion_ids
-        if not args_cli.dagger_demo_root:
-            raise SystemExit("--dagger-demo-root is required in DAgger mode")
-        dagger_motions = demo_motion_ids(args_cli.dagger_demo_root)
-        if args_cli.dagger_motion_ids:
-            dagger_motions = [int(x) for x in Path(args_cli.dagger_motion_ids).read_text().split()]
-            if not dagger_motions or len(set(dagger_motions)) != len(dagger_motions) or min(dagger_motions) < 0:
-                raise SystemExit("DAgger reference IDs must be nonempty, unique and nonnegative")
-        dagger_closed = dagger_closed_pose(args_cli.dagger_demo_root)
-        vla = Gr00tPolicy(embodiment_tag="unitree_g1_sonic", model_path=args_cli.dagger_vla_checkpoint, device=device)
+        vla = load_gr00t_policy(embodiment_tag="unitree_g1_sonic", model_path=args_cli.dagger_vla_checkpoint,
+                               device=device, service_descriptor=args_cli.gr00t_service)
         obs_adapter = ObsToPolicyAdapter(env, ObsAdapterConfig(language_instruction="pick up the mustard bottle",
                                                                robot_model=SimpleG1RobotModel.build(),
                                                                camera_scene_key="camera_robot"))

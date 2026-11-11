@@ -121,7 +121,7 @@ the simulator migration.
 This integration branch now targets Python 3.12, NumPy 2 and Torch 2.11 in its
 vendored package metadata. Existing 5.1 studies must continue using their pinned
 source and `dreamcontrol_51`; do not pull this branch into their live checkout.
-The matching project dependency set (250 packages) resolves against the pinned
+The matching project dependency set (253 packages) resolves against the pinned
 foundation, and the five editable package metadata builds also resolve. This is
 not evidence that the packages import or run inside Kit.
 
@@ -169,3 +169,34 @@ sensor PNGs, plus an MP4 checked with ffprobe for frame count and resolution.
 It uses zero actions; learned-policy, optimizer, collection and task-performance
 gates still require their own tests and paired renders for user review. Neither
 this real-task gate nor the foundation gate has run yet.
+
+## GR00T environment boundary
+
+The existing GR00T fork pins Torch 2.7.1, NumPy 1.26.4 and compiled extensions.
+The new `serve_gr00t_policy.py` entry point is intended to run that unchanged
+policy in its existing model environment, on the same host as the new simulator.
+The simulator-side client does not import GR00T or load its compiled extensions.
+No model architecture, weights, processor, attention backend or fine-tuning recipe
+is changed by this service path.
+
+Collection, evaluation and clean playback accept `--gr00t-service <ready.json>`
+alongside the existing checkpoint argument. The client verifies the live session,
+embodiment, resolved checkpoint directory and configuration digest. Requests use
+loopback-only ZeroMQ and MessagePack/NumPy arrays; a token remains in an owner-only
+descriptor file. The service owner must shut it down after its consumers finish.
+All service and simulator processes count toward the normal account resource caps.
+
+Each call explicitly transfers Python, NumPy, Torch CPU and the selected CUDA
+generator state in both directions. Optional backbone diagnostics preserve the
+existing pooling and float16 representation. Failed or timed-out requests raise
+errors and are not automatically retried. CPU process-to-process tests cover the
+wire contract; actual-model parity across the two Torch versions and GPU runtime
+tests remain required before enabling this path in a study. Do not describe a
+transport fixture test as learned-policy validation.
+
+During integration, a duplicated collector setup block was found in the merge.
+It loaded two GR00T models and replaced the first DAgger driver. The second block
+was removed; a regression test executes the actual setup and checks a single
+model/driver, reference ordering/bounds and the expert-only path. The test fails
+on `67a8510` because that version loads twice. This fix does not change the
+accepted takeover, labeling or decoder recipe.
