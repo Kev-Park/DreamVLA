@@ -38,7 +38,7 @@ assert m.version('torch') == '2.11.0+cpu'
 assert m.version('numpy') == '2.3.1'
 assert torch.version.cuda is None
 receipt = {'installed_at': time.time(), 'python': sys.version, 'prefix': sys.argv[1],
-           'packages': {key: m.version(key) for key in ('torch', 'numpy', 'tensordict', 'rsl-rl-lib', 'h5py', 'pyzmq')},
+           'packages': {key: m.version(key) for key in ('torch', 'numpy', 'scipy', 'tensordict', 'rsl-rl-lib', 'h5py', 'pyzmq')},
            'cuda_build': False, 'isaacsim_installed': False, 'legacy_environment_modified': False,
            'disk_free_after': shutil.disk_usage(sys.argv[1]).free}
 (Path(sys.argv[1])/'dreamvla_cpu_contract_install_receipt.json').write_text(json.dumps(receipt, indent=2))

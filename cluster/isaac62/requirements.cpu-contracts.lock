@@ -19,6 +19,7 @@ protobuf==7.36.2
 pyvers==0.2.3
 pyzmq==27.0.1
 rsl-rl-lib==3.0.1
+scipy==1.17.0
 setuptools==81.0.0
 smmap==5.0.3
 sympy==1.14.0
