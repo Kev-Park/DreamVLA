@@ -12,3 +12,5 @@ pyzmq==27.0.1
 filelock==3.25.2
 fsspec==2026.2.0
 pillow==12.3.0
+# Native SONIC checkpoints contain Transformers trainer metadata.
+transformers==5.17.0
