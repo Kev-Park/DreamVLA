@@ -42,9 +42,10 @@ def main():
                    scope='Foundation only; no robot, learned policy or study controller')
     (output/'receipt.json').write_text(json.dumps(receipt, indent=2))
 
-    from isaacsim import SimulationApp
-    app = SimulationApp(receipt['config'])
+    app = None
     try:
+        from isaacsim import SimulationApp
+        app = SimulationApp(receipt['config'])
         import numpy as np
         import torch
         import omni.physics.tensors as tensors
@@ -115,6 +116,7 @@ def main():
         timeline.pause()
         # Reset through the same public tensor API used by policy environments.
         initial = body.get_transforms().clone()
+        receipt['initial_tensor_transform'] = initial.detach().cpu().tolist()
         assert isinstance(initial, torch.Tensor) and initial.device == device, initial.device
         assert initial.shape == (1, 7), initial.shape
         authored = torch.tensor(authored_xyzw, dtype=initial.dtype, device=device)
@@ -124,7 +126,9 @@ def main():
             # Equivalent quaternion signs are physically identical.
             distance = min(float(torch.linalg.vector_norm(actual-expected)),
                            float(torch.linalg.vector_norm(actual+expected)))
-            assert distance < 1e-4, 'USD/tensor quaternion convention differs'
+            assert distance < 1e-4, (
+                f'USD/tensor quaternion convention differs: distance={distance}, '
+                f'actual={actual.tolist()}, expected={expected.tolist()}')
 
         check_quaternion(initial[0, 3:], authored)
         reset_xyzw = [0., 0., math.sin(math.pi/6), math.cos(math.pi/6)]
@@ -148,10 +152,13 @@ def main():
             assert velocity.shape == (1, 6) and np.isfinite(velocity).all(), velocity
             velocities.append(velocity[0])
             if frame == 0:
+                receipt['first_stepped_transform'] = transforms.tolist()
+                receipt['first_stepped_velocity'] = velocity.tolist()
+                receipt['expected_freefall_velocity_z'] = -9.81*.005*4
                 check_quaternion(torch.as_tensor(transforms[0, 3:], device=device), reset_rotation)
                 # Four 5 ms steps in free fall independently test timing, units
                 # and world-frame linear-velocity ordering before floor contact.
-                assert abs(float(velocity[0, 2])+9.81*.005*4) < .005
+                assert abs(float(velocity[0, 2])+9.81*.005*4) < .005, velocity.tolist()
                 assert abs(float(velocity[0, 0])) < 1e-4 and abs(float(velocity[0, 1])) < 1e-4
             image = np.asarray(rgb.get_data())
             if image.size:
@@ -192,7 +199,8 @@ def main():
         raise
     finally:
         try:
-            app.close()
+            if app is not None:
+                app.close()
         except BaseException:
             receipt.update(completed=False, cleanup_error=traceback.format_exc())
             raise
