@@ -44,23 +44,56 @@ def _jsonl(p: Path) -> list[dict]:
 
 
 def select_episodes(episodes: list[dict], indices: list[int] | None) -> list[dict]:
+    if any(type(e.get('episode_index')) is not int or e['episode_index'] < 0 for e in episodes):
+        raise ValueError('Source episode indices must be nonnegative integers')
+    catalog = {e['episode_index']: e for e in episodes}
+    if len(catalog) != len(episodes):
+        raise ValueError('Source episode metadata contains duplicate indices')
     if indices is None:
         return sorted(episodes, key=lambda e: e['episode_index'])
     if not indices or any(type(i) is not int for i in indices) or len(indices) != len(set(indices)):
         raise ValueError('Episode selection must be a nonempty list of unique integer indices')
-    catalog = {e['episode_index']: e for e in episodes}
-    if len(catalog) != len(episodes) or not set(indices) <= catalog.keys():
+    if not set(indices) <= catalog.keys():
         raise ValueError('Episode selection contains missing indices or source metadata has duplicates')
     return [catalog[i] for i in indices]
 
 
+def validate_catalog(episodes: list[dict], stats: list[dict], info: dict,
+                     indices: list[int] | None = None) -> tuple[list[dict], dict]:
+    """Reject incomplete/corrupt shard catalogs before publishing any output."""
+    ordered = select_episodes(episodes, None)
+    if any(type(e.get('length')) is not int or e['length'] <= 0 for e in ordered):
+        raise ValueError('Source episode lengths must be positive integers')
+    if len(ordered) != info['total_episodes'] or sum(e['length'] for e in ordered) != info['total_frames']:
+        raise ValueError('Source episode catalog totals disagree with info.json')
+    if any(type(row.get('episode_index')) is not int or not isinstance(row.get('stats'), dict)
+           for row in stats):
+        raise ValueError('Invalid episode statistics metadata')
+    lookup = {row['episode_index']: row['stats'] for row in stats}
+    if len(lookup) != len(stats) or set(lookup) != {e['episode_index'] for e in ordered}:
+        raise ValueError('Episode statistics must cover each source episode exactly once')
+    return select_episodes(episodes, indices), lookup
+
+
+def validate_modalities(modalities: list[dict | None]) -> None:
+    if any(value != modalities[0] for value in modalities[1:]):
+        raise ValueError('Source modality.json files differ or are missing from some shards')
+
+
 def merge(shards: list[Path], out: Path, episode_indices: list[int] | None = None) -> None:
+    if not shards:
+        raise ValueError('At least one source shard is required')
     if out.exists():
         sys.exit(f"{out} exists; refusing to overwrite")
     infos = [json.loads((s / "meta" / "info.json").read_text()) for s in shards]
     if episode_indices is not None and len(shards) != 1:
         raise ValueError('Episode selection requires exactly one source dataset')
-    episode_lists = [select_episodes(_jsonl(s / 'meta' / 'episodes.jsonl'), episode_indices) for s in shards]
+    catalogs = [validate_catalog(_jsonl(s / 'meta' / 'episodes.jsonl'),
+                                 _jsonl(s / 'meta' / 'episodes_stats.jsonl'), info, episode_indices)
+                for s, info in zip(shards, infos)]
+    modalities = [json.loads((s / 'meta' / 'modality.json').read_text())
+                  if (s / 'meta' / 'modality.json').exists() else None for s in shards]
+    validate_modalities(modalities)
     base = infos[0]
     for s, inf in zip(shards, infos):
         for k in ("features", "fps", "codebase_version", "robot_type", "chunks_size", "script_config",
@@ -85,8 +118,7 @@ def merge(shards: list[Path], out: Path, episode_indices: list[int] | None = Non
     st_w = jsonlines.open(out / "meta" / "episodes_stats.jsonl", "w")
 
     g_ep = g_frame = 0
-    for s, eps in zip(shards, episode_lists):
-        sts = {e["episode_index"]: e["stats"] for e in _jsonl(s / "meta" / "episodes_stats.jsonl")}
+    for s, (eps, sts) in zip(shards, catalogs):
         for e in eps:
             li, n = e["episode_index"], e["length"]
             src = s / data_tpl.format(episode_chunk=li // chunks_size, episode_index=li)
@@ -99,6 +131,8 @@ def merge(shards: list[Path], out: Path, episode_indices: list[int] | None = Non
             ix_arr = np.arange(g_frame, g_frame + n)
             for col, arr in (("episode_index", ep_arr), ("index", ix_arr)):
                 i = tbl.schema.get_field_index(col)
+                if i < 0:
+                    raise ValueError(f'{src}: required column {col!r} is missing')
                 f = tbl.schema.field(i)
                 tbl = tbl.set_column(i, f, pa.array(arr, type=f.type))
             datasets.Dataset(tbl).to_parquet(str(dst))

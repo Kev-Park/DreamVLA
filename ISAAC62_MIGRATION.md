@@ -203,3 +203,20 @@ was removed; a regression test executes the actual setup and checks a single
 model/driver, reference ordering/bounds and the expert-only path. The test fails
 on `67a8510` because that version loads twice. This fix does not change the
 accepted takeover, labeling or decoder recipe.
+
+## Dataset preservation checks
+
+The merged LeRobot utility now rejects duplicate/noninteger source episode IDs,
+inconsistent catalog totals, missing/duplicate episode statistics and mismatched
+modality metadata before starting an output. Valid source ordering and explicit
+subset ordering remain unchanged. Required parquet index columns are checked
+explicitly before rewriting indices. These validations do not change labels,
+filtering or normalization rules.
+
+`test_merge_lerobot_catalog.py` covers metadata failure cases without the converter
+environment. `test_merge_lerobot_roundtrip.py` uses the baseline converter's real
+datasets/pyarrow/LeRobot libraries to compare contiguous shard merging and reordered
+episode subsets against a directly constructed dataset, including all numeric
+columns, embedded HF schema, per-episode statistics and video bytes. Its video
+fixtures are opaque bytes, so this test does not establish video codec validity.
+Cached shard-level global/relative quantiles must remain absent from merged output.
