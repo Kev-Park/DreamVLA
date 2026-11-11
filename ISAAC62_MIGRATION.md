@@ -115,3 +115,57 @@ with ignored dependency checks. Validate a supported unified dependency set or u
 its existing inference-service boundary, preserving diagnostic features as well as
 actions. GR00T fine-tuning and teacher-forced offline checks remain separate from
 the simulator migration.
+
+## Vendored project port
+
+This integration branch now targets Python 3.12, NumPy 2 and Torch 2.11 in its
+vendored package metadata. Existing 5.1 studies must continue using their pinned
+source and `dreamcontrol_51`; do not pull this branch into their live checkout.
+The matching project dependency set (250 packages) resolves against the pinned
+foundation, and the five editable package metadata builds also resolve. This is
+not evidence that the packages import or run inside Kit.
+
+`setup_project.sh` installs the vendored framework, custom motion libraries,
+RSL-RL 3.0.1 and both SONIC loaders into the isolated foundation environment.
+It does not install GR00T or change its model implementation. UV's cache and
+managed Python installation are explicitly kept under `~/kevin`.
+
+The old hand-retargeting dependency required NumPy <2; the maintained 0.5.0
+release supports NumPy 2. The old `flatdict` dependency failed metadata building
+with modern setuptools. Its sole runtime use was replaced with the project's
+`flatten_dict`; tests check every authored rendering-preset key and retain scalar
+types and array-valued settings. Retargeting runtime tests remain open.
+
+Official 6.2 wheel source was inspected without installation using bounded HTTP
+range reads (receipts under workspace `out/isaac62_migration/sdk_source`). The
+public tensor classes now live in `omni.physics.tensors.api`. The SDK still
+maintains a Torch simulation view separately from its new Warp-only accessor.
+Do not mechanically replace `get_physics_sim_view()` with
+`get_physics_simulation_view()`: our asset/controller interface must remain Torch.
+Kinematic reset now calls the public view method instead of its private backend.
+
+An eager annotation for the removed `SoftBodyView` type prevented importing the
+asset package, including rigid tasks. Postponed annotation evaluation fixes that
+import dependency. It does **not** port legacy deformable simulation: the old
+nodal-state APIs were removed and remain an explicit compatibility gap requiring
+separate treatment if used. No deformable runtime capability is claimed.
+
+`probe_task.py` is the next gate after the foundation probe. Run it from the
+project's `Training` directory with an explicitly reviewed GPU, task and reference
+pool, for example:
+
+```bash
+~/kevin/envs/dreamcontrol_62/bin/python ../cluster/isaac62/probe_task.py \
+  --task Isaac-Motion-Tracking-Pick-Cam-BinaryFingers-v0 \
+  --ref-motions-path /path/to/reviewed/reference/pool --device cuda:0 \
+  --output ~/kevin/eval_videos/isaac62_pick_smoke
+```
+
+This bounded gate checks actual project-task initialization, reset and stepping,
+finite observations/rewards/states, normalized root quaternions, Torch tensors,
+PhysX selection, and cameras that do not advance physics. It saves the resolved
+configuration, GPU process inventory, state traces, third-person and available
+sensor PNGs, plus an MP4 checked with ffprobe for frame count and resolution.
+It uses zero actions; learned-policy, optimizer, collection and task-performance
+gates still require their own tests and paired renders for user review. Neither
+this real-task gate nor the foundation gate has run yet.

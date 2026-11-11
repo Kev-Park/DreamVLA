@@ -20,7 +20,7 @@ import torch
 from typing import TYPE_CHECKING, Literal
 
 import carb
-import omni.physics.tensors.impl.api as physx
+import omni.physics.tensors.api as physx
 from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.core.utils.stage import get_current_stage
 from pxr import Gf, Sdf, UsdGeom, Vt

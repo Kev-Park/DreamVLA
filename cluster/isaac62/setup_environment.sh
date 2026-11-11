@@ -24,6 +24,8 @@ if [[ -e "$prefix" ]]; then
     exit 2
 fi
 mkdir -p "$owned/envs"
+export UV_CACHE_DIR="$owned/cache/uv_isaac62"
+export UV_PYTHON_INSTALL_DIR="$owned/envs/managed_python_isaac62"
 export UV_CONCURRENT_DOWNLOADS=2 UV_CONCURRENT_BUILDS=1 UV_CONCURRENT_INSTALLS=1
 export OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1
 uv venv --python 3.12 --managed-python "$prefix"

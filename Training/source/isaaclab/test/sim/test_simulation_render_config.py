@@ -18,13 +18,13 @@ import os
 import toml
 
 import carb
-import flatdict
 import pytest
 from isaacsim.core.utils.carb import get_carb_setting
 from isaacsim.core.version import get_version
 
 from isaaclab.sim.simulation_cfg import RenderCfg, SimulationCfg
 from isaaclab.sim.simulation_context import SimulationContext
+from isaaclab.utils.dict import flatten_dict
 
 
 @pytest.mark.skip(reason="Timeline not stopped")
@@ -116,7 +116,7 @@ def test_render_cfg_presets():
         preset_filename = os.path.join(isaaclab_app_exp_path, f"rendering_modes/{rendering_mode}.kit")
         with open(preset_filename) as file:
             preset_dict = toml.load(file)
-        preset_dict = dict(flatdict.FlatDict(preset_dict, delimiter="."))
+        preset_dict = flatten_dict(preset_dict)
 
         render_cfg = RenderCfg(
             rendering_mode=rendering_mode,

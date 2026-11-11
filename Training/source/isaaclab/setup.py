@@ -18,8 +18,8 @@ EXTENSION_TOML_DATA = toml.load(os.path.join(EXTENSION_PATH, "config", "extensio
 # Minimum dependencies required prior to installation
 INSTALL_REQUIRES = [
     # generic
-    "numpy<2",
-    "torch>=2.7",
+    "numpy>=2,<3",
+    "torch>=2.11,<2.12",
     "onnx>=1.18.0",  # 1.16.2 throws access violation on Windows
     "prettytable==3.3.0",
     "toml",
@@ -35,14 +35,13 @@ INSTALL_REQUIRES = [
     "einops",  # needed for transformers, doesn't always auto-install
     "warp-lang",
     # make sure this is consistent with isaac sim version
-    "pillow==11.3.0",
+    "pillow>=12.3.0,<13",
     # livestream
-    "starlette==0.45.3",
+    "starlette>=1.3.1,<2",
     # testing
     "pytest",
     "pytest-mock",
     "junitparser",
-    "flatdict==4.0.1",
     "flaky",
 ]
 
@@ -51,9 +50,10 @@ SUPPORTED_ARCHS_ARM = "platform_machine in 'x86_64,AMD64,aarch64,arm64'"
 SUPPORTED_ARCHS = "platform_machine in 'x86_64,AMD64'"
 INSTALL_REQUIRES += [
     # required by isaaclab.isaaclab.controllers.pink_ik
-    f"pin-pink==3.1.0 ; platform_system == 'Linux' and ({SUPPORTED_ARCHS_ARM})",
+    f"pin-pink==3.3.0 ; platform_system == 'Linux' and ({SUPPORTED_ARCHS_ARM})",
+    f"daqp==0.8.5 ; platform_system == 'Linux' and ({SUPPORTED_ARCHS_ARM})",
     # required by isaaclab.devices.openxr.retargeters.humanoid.fourier.gr1_t2_dex_retargeting_utils
-    f"dex-retargeting==0.4.6 ; platform_system == 'Linux' and ({SUPPORTED_ARCHS})",
+    f"dex-retargeting==0.5.0 ; platform_system == 'Linux' and ({SUPPORTED_ARCHS})",
 ]
 
 PYTORCH_INDEX_URL = ["https://download.pytorch.org/whl/cu128"]
@@ -69,7 +69,7 @@ setup(
     keywords=EXTENSION_TOML_DATA["package"]["keywords"],
     license="BSD-3-Clause",
     include_package_data=True,
-    python_requires=">=3.10",
+    python_requires=">=3.12,<3.13",
     install_requires=INSTALL_REQUIRES,
     dependency_links=PYTORCH_INDEX_URL,
     packages=["isaaclab"],

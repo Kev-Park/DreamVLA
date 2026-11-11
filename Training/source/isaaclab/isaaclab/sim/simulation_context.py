@@ -20,7 +20,6 @@ from datetime import datetime
 from typing import Any
 
 import carb
-import flatdict
 import isaacsim.core.utils.stage as stage_utils
 import omni.log
 import omni.physx
@@ -33,6 +32,7 @@ from isaacsim.core.version import get_version
 from pxr import Gf, PhysxSchema, Sdf, Usd, UsdPhysics
 
 from isaaclab.sim.utils import create_new_stage_in_memory, use_stage
+from isaaclab.utils.dict import flatten_dict
 
 from .simulation_cfg import SimulationCfg
 from .spawners import DomeLightCfg, GroundPlaneCfg
@@ -496,7 +496,7 @@ class SimulationContext(_SimulationContext):
             torch.cuda.set_device(self.device)
         # enable kinematic rendering with fabric
         if self.physics_sim_view:
-            self.physics_sim_view._backend.initialize_kinematic_bodies()
+            self.physics_sim_view.initialize_kinematic_bodies()
         # perform additional rendering steps to warm up replicator buffers
         # this is only needed for the first time we set the simulation
         if not soft:
@@ -726,7 +726,7 @@ class SimulationContext(_SimulationContext):
             preset_filename = os.path.join(isaaclab_app_exp_path, f"rendering_modes/{rendering_mode}.kit")
             with open(preset_filename) as file:
                 preset_dict = toml.load(file)
-            preset_dict = dict(flatdict.FlatDict(preset_dict, delimiter="."))
+            preset_dict = flatten_dict(preset_dict)
 
             # set presets
             for key, value in preset_dict.items():

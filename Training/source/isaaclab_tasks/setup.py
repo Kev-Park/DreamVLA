@@ -18,13 +18,19 @@ EXTENSION_TOML_DATA = toml.load(os.path.join(EXTENSION_PATH, "config", "extensio
 # Minimum dependencies required prior to installation
 INSTALL_REQUIRES = [
     # generic
-    "numpy<2",
-    "torch>=2.7",
-    "torchvision>=0.14.1",  # ensure compatibility with torch 1.13.1
+    "numpy>=2,<3",
+    "torch>=2.11,<2.12",
+    "torchvision>=0.26,<0.27",
     "protobuf>=4.25.8,!=5.26.0",
     # basic logger
     "tensorboard",
-    "numba",
+    "numba>=0.63.1",
+    # custom motion libraries used by both g1 and locomotion
+    "joblib",
+    "easydict",
+    "loguru",
+    "rich",
+    "pytorch-kinematics",
 ]
 
 PYTORCH_INDEX_URL = ["https://download.pytorch.org/whl/cu128"]
@@ -39,7 +45,7 @@ setup(
     description=EXTENSION_TOML_DATA["package"]["description"],
     keywords=EXTENSION_TOML_DATA["package"]["keywords"],
     include_package_data=True,
-    python_requires=">=3.10",
+    python_requires=">=3.12,<3.13",
     install_requires=INSTALL_REQUIRES,
     dependency_links=PYTORCH_INDEX_URL,
     packages=["isaaclab_tasks"],

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import omni.kit.app
 import omni.log
-import omni.physics.tensors.impl.api as physx
+import omni.physics.tensors.api as physx
 import omni.timeline
 from isaacsim.core.simulation_manager import SimulationManager
 from pxr import UsdPhysics

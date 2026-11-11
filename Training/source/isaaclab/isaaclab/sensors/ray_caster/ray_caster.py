@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import omni.log
-import omni.physics.tensors.impl.api as physx
+import omni.physics.tensors.api as physx
 import warp as wp
 from isaacsim.core.prims import XFormPrim
 from isaacsim.core.simulation_manager import SimulationManager

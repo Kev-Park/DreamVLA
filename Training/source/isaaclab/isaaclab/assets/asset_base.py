@@ -310,6 +310,9 @@ class AssetBase(ABC):
         """
         if not self._is_initialized:
             # obtain simulation related information
+            # Keep the SDK's Torch frontend. In Sim 6.2 the similarly named
+            # get_physics_simulation_view() returns a separate Warp-only view;
+            # substituting it would change all asset tensor types.
             self._backend = SimulationManager.get_backend()
             self._device = SimulationManager.get_physics_sim_device()
             # initialize the asset

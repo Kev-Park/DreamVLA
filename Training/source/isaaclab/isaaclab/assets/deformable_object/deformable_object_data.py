@@ -3,10 +3,12 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+from __future__ import annotations
+
 import torch
 import weakref
 
-import omni.physics.tensors.impl.api as physx
+import omni.physics.tensors.api as physx
 
 import isaaclab.utils.math as math_utils
 from isaaclab.utils.buffers import TimestampedBuffer

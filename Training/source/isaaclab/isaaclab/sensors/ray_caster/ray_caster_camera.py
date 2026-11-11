@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 import isaacsim.core.utils.stage as stage_utils
-import omni.physics.tensors.impl.api as physx
+import omni.physics.tensors.api as physx
 from isaacsim.core.prims import XFormPrim
 
 import isaaclab.utils.math as math_utils

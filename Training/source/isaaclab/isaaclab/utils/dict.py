@@ -20,6 +20,22 @@ Dictionary <-> Class operations.
 """
 
 
+def flatten_dict(data: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
+    """Flatten nested mappings into dotted setting names, retaining leaf values.
+
+    Lists and tuples remain complete values rather than becoming indexed keys.
+    This is used to translate TOML rendering presets into Carb setting paths.
+    """
+    result = {}
+    for key, value in data.items():
+        name = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, Mapping):
+            result.update(flatten_dict(value, name))
+        else:
+            result[name] = value
+    return result
+
+
 def class_to_dict(obj: object) -> dict[str, Any]:
     """Convert an object into dictionary recursively.
 

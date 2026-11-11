@@ -19,21 +19,21 @@ EXTENSION_TOML_DATA = toml.load(os.path.join(EXTENSION_PATH, "config", "extensio
 # Minimum dependencies required prior to installation
 INSTALL_REQUIRES = [
     # generic
-    "numpy<2",
-    "torch>=2.7",
-    "torchvision>=0.14.1",  # ensure compatibility with torch 1.13.1
+    "numpy>=2,<3",
+    "torch>=2.11,<2.12",
+    "torchvision>=0.26,<0.27",
     "protobuf>=4.25.8,!=5.26.0",
     # configuration management
     "hydra-core",
     # data collection
-    "h5py",
+    "h5py>=3.15.0",
     # basic logger
     "tensorboard",
     # video recording
     "moviepy",
     # make sure this is consistent with isaac sim version
-    "pillow==11.3.0",
-    "packaging<24",
+    "pillow>=12.3.0,<13",
+    "packaging>=24",
 ]
 
 PYTORCH_INDEX_URL = ["https://download.pytorch.org/whl/cu128"]
@@ -67,7 +67,7 @@ setup(
     description=EXTENSION_TOML_DATA["package"]["description"],
     keywords=EXTENSION_TOML_DATA["package"]["keywords"],
     include_package_data=True,
-    python_requires=">=3.10",
+    python_requires=">=3.12,<3.13",
     install_requires=INSTALL_REQUIRES,
     dependency_links=PYTORCH_INDEX_URL,
     extras_require=EXTRAS_REQUIRE,

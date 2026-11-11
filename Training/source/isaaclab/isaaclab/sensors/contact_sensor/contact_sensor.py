@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import carb
-import omni.physics.tensors.impl.api as physx
+import omni.physics.tensors.api as physx
 from isaacsim.core.simulation_manager import SimulationManager
 from pxr import PhysxSchema
 
