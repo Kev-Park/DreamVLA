@@ -286,3 +286,17 @@ After the dependency update, the same 73 CPU contracts and ten cross-interpreter
 service contracts passed again at `1f86c86`; the corresponding report names are
 `target_1f86c86.json` and `cross_interpreter_1f86c86.json` in the workspace evidence
 directory. No GPU was allocated by these checks.
+
+The real GR00T CUDA/service gate subsequently passed on Biped GPU 0 using the
+existing Python 3.10/Torch 2.7.1 model environment and the historical walking R2
+`checkpoint-92967`. Direct inference and service inference matched exactly for
+all 40 predicted motion tokens and both hand trajectories on one fixed synthetic
+observation. Backbone features and Python/NumPy/Torch CPU/CUDA RNG advancement
+also matched exactly. Peak model allocation was 6,352,286,208 bytes. Both owned
+CUDA contexts were released afterward. Evidence copied by native SCP is in
+workspace `out/isaac62_migration/isaac62_real_gr00t_4cda30d_online/`.
+The first attempt's forced Hugging Face offline mode prevented tokenizer metadata
+lookup; the successful retry used normal access without environment/package/model
+changes. This validates a real checkpoint through the service, but both CUDA
+processes used the existing model runtime: new-runtime CUDA/Isaac integration and
+actual task behavior remain unverified.
