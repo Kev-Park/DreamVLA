@@ -932,7 +932,8 @@ def _score_episode_arrays(obj_pos, obj_quat, root_pos, root_quat, wrist, box: st
     from vla_sonic.grasp_success import score, BOX_LO, BOX_HI, BOX_LO_AF60, BOX_HI_AF60, BOX_LO_AF60V7, BOX_HI_AF60V7
     if box.startswith("file:"):                    # a box calibrated from an expert's own demos (calibrate_box.py)
         import json as _json
-        _b = _json.load(open(box[5:]))
+        with open(box[5:], encoding="utf-8") as box_file:
+            _b = _json.load(box_file)
         lo, hi = np.asarray(_b["lo"], dtype=np.float64), np.asarray(_b["hi"], dtype=np.float64)
     else:
         lo, hi = {"af60": (BOX_LO_AF60, BOX_HI_AF60), "af60v7": (BOX_LO_AF60V7, BOX_HI_AF60V7)}.get(box, (BOX_LO, BOX_HI))

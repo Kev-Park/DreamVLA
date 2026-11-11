@@ -88,6 +88,27 @@ be pulled to local `out/` for review. It does not load a robot or learned policy
 The foundation gate is prepared but has not run. Project imports, actual robot
 physics, model compatibility and all capability gates above remain open.
 
+The Linux x86_64/Python 3.12 foundation dependency set has been resolved against
+the actual `manylinux_2_35` wheel platform. The installer uses the resulting
+`requirements.sim.lock`, including explicit CUDA 12.8 Torch, TorchVision and
+TorchAudio builds. It checks glibc >= 2.35 and at least 50 GiB free before
+creating an environment. RHEL 9 hosts require an appropriate container rather
+than a host pip installation. Dependency resolution proves package compatibility
+only; it does not prove extension loading or runtime behavior.
+
+On 2026-11-11, 47 CPU-only regression tests passed in Biped's existing
+`dreamcontrol_51` environment using a Git-exported copy of commit `076f63f` and
+one logical CPU, with CUDA disabled. These cover direct-token decoder contracts,
+collector in-memory/HDF5 verdict agreement, both reservation interfaces, retry
+recovery, checkpoint integrity and account CPU measurement. Receipts and logs are
+in workspace `out/isaac62_migration/biped_cpu_contracts.json`. These tests do not
+establish compatibility with the new Torch/Sim versions.
+
+NumPy 2 removed `np.float_`, which broke the motion JSON encoder even for array
+inputs. The encoder now uses NumPy's public scalar base classes. Local NumPy 2
+round-trip tests cover scalar metadata, empty/scalar/multidimensional arrays,
+dtype preservation and legacy ndarray JSON. Existing file format is unchanged.
+
 The existing Isaac-GR00T fork pins Torch 2.7.1, NumPy 1.26.4 and compiled
 FlashAttention/TorchCodec builds. Do not install it into the foundation environment
 with ignored dependency checks. Validate a supported unified dependency set or use
