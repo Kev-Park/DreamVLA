@@ -49,7 +49,8 @@ def main():
     owner = str(os.getpid())
     try:
         allocation = subprocess.run(
-            [*slots, 'take', '--owner', owner, '--mb', '8000', '--gpu', str(args.gpu)],
+            [*slots, 'reserve', '--owner', owner, '--count', '1',
+             '--mb', '8000', '--gpu', str(args.gpu)],
             capture_output=True, text=True, check=True, timeout=20)
         if allocation.stdout.strip() != str(args.gpu):
             raise RuntimeError('Reviewed GPU could not be reserved; no simulator launched')
