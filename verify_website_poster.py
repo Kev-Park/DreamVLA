@@ -34,7 +34,7 @@ def inspect(directory):
     with pymupdf.open(directory / FILES[0]) as pdf:
         assert len(pdf) == 1
         assert (pdf[0].rect.width, pdf[0].rect.height) == (3456, 2592)
-        assert len(images) == 6
+        assert len(images) == 10
         fonts = len(pdf[0].get_fonts())
         text_lines = len(pdf[0].get_text().splitlines())
     data = json.loads((ROOT / 'poster_data.json').read_text())
@@ -78,7 +78,7 @@ def main():
         assert actual[key] == expected[key], f'Poster mismatch: {key}'
     if directory == ROOT:
         assert actual['files'] == expected['files'], 'Committed artifact bytes changed.'
-    print('PASS: poster text, six figures, quantitative data, source hash, and print size.')
+    print('PASS: poster text, six figures, conference logo, two affiliation crests, project QR, quantitative data, source hash, and print size.')
 
 
 if __name__ == '__main__':

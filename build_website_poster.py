@@ -97,11 +97,13 @@ for key, path in FONT_FILES.items():
 svg.append('</style></defs>')
 text_boxes = []
 image_records = []
+Y_OFFSET = 0
 
 def rgb(color):
     return tuple(int(color[i:i+2], 16) / 255 for i in (1, 3, 5))
 
 def rect(x, y, w, h, fill, stroke=None, sw=1, radius=0):
+    y += Y_OFFSET
     if radius:
         r = min(radius, w / 2, h / 2)
         k = .5522847498
@@ -122,11 +124,13 @@ def rect(x, y, w, h, fill, stroke=None, sw=1, radius=0):
     svg.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{radius}" fill="{fill or "none"}" stroke="{stroke or "none"}" stroke-width="{sw}"/>')
 
 def line(x1, y1, x2, y2, color=GRID, sw=2, dash=None):
+    y1 += Y_OFFSET; y2 += Y_OFFSET
     page.draw_line((x1,y1),(x2,y2), color=rgb(color),width=sw,
                    dashes='[10 7] 0' if dash else None)
     svg.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="{sw}"'+(' stroke-dasharray="10 7"' if dash else '')+'/>')
 
 def circle(x,y,r,fill):
+    y += Y_OFFSET
     page.draw_circle((x,y),r,color=None,fill=rgb(fill))
     svg.append(f'<circle cx="{x}" cy="{y}" r="{r}" fill="{fill}"/>')
 
@@ -150,6 +154,7 @@ def measure(s, font, size):
     return sum(FONTS[key].text_length(part,fontsize=size) for key,part in font_runs(s,font))
 
 def text(x,y,s,size=30,color=INK,bold=False,align='left',maxw=None,font=None):
+    y += Y_OFFSET
     font = font or ('bold' if bold else 'regular')
     width = measure(s,font,size)
     if maxw is not None:
@@ -191,10 +196,21 @@ def para(x,y,s,width,size=30,color=INK,bold=False,leading=1.32):
     return yy
 
 def image(path,x,y,w,h):
+    y += Y_OFFSET
     path=Path(path)
     page.insert_image(fitz.Rect(x,y,x+w,y+h),filename=str(path),keep_proportion=True)
+    # Multiply composites the supplied seal's white background with the paper.
+    blend_style = ''
+    if path.name == 'berkeley_color_seal.png':
+        gs = doc.get_new_xref()
+        doc.update_object(gs, '<< /Type /ExtGState /BM /Multiply >>')
+        resources = int(doc.xref_get_key(page.xref, 'Resources')[1].split()[0])
+        doc.xref_set_key(resources, 'ExtGState/LogoMultiply', f'{gs} 0 R')
+        content = page.get_contents()[-1]
+        doc.update_stream(content, b'q /LogoMultiply gs\n' + doc.xref_stream(content) + b'\nQ')
+        blend_style = ' style="mix-blend-mode:multiply"'
     mime='image/jpeg' if path.suffix.lower() in ('.jpg','.jpeg') else 'image/png'
-    svg.append(f'<image x="{x}" y="{y}" width="{w}" height="{h}" preserveAspectRatio="xMidYMid meet" xlink:href="data:{mime};base64,{base64.b64encode(path.read_bytes()).decode()}"/>')
+    svg.append(f'<image{blend_style} x="{x}" y="{y}" width="{w}" height="{h}" preserveAspectRatio="xMidYMid meet" xlink:href="data:{mime};base64,{base64.b64encode(path.read_bytes()).decode()}"/>')
     image_records.append({'source':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
 
 def heading(x,y,num,s):
@@ -217,14 +233,33 @@ rect(0,0,W,H,PAPER)
 if WEBSITE:
     # Website-style navigation rule, quiet centered hero, and green VLA wordmark.
     line(84,68,W-84,68,GRID,1.5)
-    text(84,22,'CoRL 2026  |  Workshop poster',23,MUTED,font='medium')
-    text(W-84,22,'ember-center-berkeley.github.io/DreamVLA',23,MUTED,align='right')
     text(W/2,86,'DreamVLA',108,INK,True,align='center',font='display')
     text(W/2,214,'From Generated Human Motions to Humanoid Vision-Language-Action Policies',47,INK,True,align='center',maxw=3288)
     text(W/2,284,'Kevin Park¹*   Izat Rasyad²*   Dvij Kalaria²   Shankar Sastry²',29,TEAL,align='center',font='medium')
-    text(W/2,328,'¹ Princeton University     ² University of California, Berkeley     * Equal contribution',23,MUTED,align='center')
+    text(W/2,326,'kp034@princeton.edu, {izat,dvijk,sastry}@berkeley.edu',24,MUTED,align='center')
+    affiliation_parts = [('princeton_shield.png', '¹ Princeton University'),
+                         ('berkeley_color_seal.png', '² University of California, Berkeley'),
+                         (None, '* Equal contribution')]
+    affiliation_widths = [FONTS['regular'].text_length(label, fontsize=23) + (50 if icon == 'berkeley_color_seal.png' else 50 if icon else 0)
+                          for icon, label in affiliation_parts]
+    affiliation_x = (W - sum(affiliation_widths) - 60) / 2
+    for (icon, label), width in zip(affiliation_parts, affiliation_widths):
+        if icon:
+            if icon == 'berkeley_color_seal.png':
+                image(ASSETS / icon, affiliation_x-16, 362, 71, 40)
+            else:
+                image(ASSETS / icon, affiliation_x, 362, 38, 40)
+        text(affiliation_x + (50 if icon == 'berkeley_color_seal.png' else 50 if icon else 0), 370, label, 23, MUTED)
+        affiliation_x += width + 30
+    image(ASSETS / 'corl_official.png', 97, 146, 381, 184)
+    image(ASSETS / 'project_qr.png', 3114, 120, 226, 226)
+    site_url = 'https://ember-center-berkeley.github.io/DreamVLA/'
+    site_width = text(W/2,411,'ember-center-berkeley.github.io/DreamVLA',36,TEAL,True,align='center')
+    page.insert_link({'kind':fitz.LINK_URI,
+                      'from':fitz.Rect(W/2-site_width/2,407,W/2+site_width/2,454),
+                      'uri':site_url})
     for card_x in (60,1176,2292):
-        rect(card_x,500,1104,1938,WHITE,GRID,1.2,radius=20)
+        rect(card_x,590,1104,1938,WHITE,GRID,1.2,radius=20)
 else:
     rect(0,0,W,350,NAVY)
     text(84,48,'DreamVLA',110,WHITE,True)
@@ -233,8 +268,9 @@ else:
     text(84,313,'¹ Princeton University     ² University of California, Berkeley     * Equal contribution',26,'#dce8ef')
     text(W-84,110,'ember-center-berkeley.github.io/DreamVLA',31,'#dce8ef',align='right')
     text(W-84,278,'CoRL 2026  |  Workshop poster',28,'#dce8ef',align='right')
-rect(84,369,3288,93,PALE,radius=14 if WEBSITE else 0)
-text(W/2 if WEBSITE else 120,393,'Generated motion → residual expert → corrective recovery → vision-language-action policy',37,NAVY,True,align='center' if WEBSITE else 'left',maxw=3216)
+Y_OFFSET = 90
+rect(84,420 if WEBSITE else 369,3288,65 if WEBSITE else 93,PALE,radius=14 if WEBSITE else 0)
+text(W/2 if WEBSITE else 120,434 if WEBSITE else 393,'Generated motion → residual expert → vision-language-action policy',32 if WEBSITE else 37,NAVY,True,align='center' if WEBSITE else 'left',maxw=3216)
 
 X1,X2,X3 = 84,1200,2316
 heading(X1,522,'01','Generate demonstrations')
@@ -244,9 +280,9 @@ heading(X3,522,'03','Measure closed-loop success')
 # Left column: expert data pipeline and four scenes.
 para(X1,610,'Replace repeated task-specific teleoperation with generated motion and physically executed expert demonstrations.',1056,32)
 stages=[
-    (750,'Generate and retarget','Task text + contact constraints → OmniControl human motion → OmniRetarget G1 references. Augment with HumanoidMimicGen.'),
-    (935,'Adapt contact with residual RL','SONIC supplies a whole-body motion prior. A privileged residual expert co-tracks the robot and task object under randomized physics.'),
-    (1120,'Keep successful expert rollouts','Record egocentric RGB, proprioception, executed tokens, hand commands, and language in LeRobot format. Initialize GR00T on accepted episodes.'),
+    (750,'Generate and retarget','Task text + contact constraints → OmniControl human motion → OmniRetarget G1 references.'),
+    (935,'Adapt contact with residual RL','Preserve frozen SONIC tracking priors with a privileged residual expert that tracks both robot and task objects under randomized physics.'),
+    (1120,'Keep successful expert rollouts','Record egocentric RGB, proprioception, executed tokens, hand commands, and language in LeRobot format. Initialize GR00T N1.7 on successful episodes.'),
 ]
 for i,(yy,title,body) in enumerate(stages):
     circle(X1+23,yy+22,22,TEAL)
@@ -286,7 +322,7 @@ text(X2+260,1710,'Nominal SONIC',30,NAVY,True,align='center')
 text(X2+796,1710,'Residual SONIC',30,TEAL,True,align='center')
 image(next(ASSETS.glob('comparison_2.*')),X2+30,1758,460,526)
 image(next(ASSETS.glob('comparison_5.*')),X2+566,1758,460,526)
-para(X2,2310,'Matched final frames from the paper: nominal tracking loses the bottle; residual execution retains it.',1056,29)
+para(X2,2310,'Nominal tracking loses the bottle; residual execution retains it.',1056,29)
 
 # Right column: native vector chart.
 px,py,pw,ph=X3+83,658,874,470
@@ -338,15 +374,12 @@ for i,row in enumerate(scale_rows):
     yy=1988+i*67
     for j,s in enumerate(row):text(cols[j],yy,s,30,INK,align='left' if j==0 else 'right')
 line(X3,2190,X3+1056,2190,GRID,2)
-rect(X3,2221,1056,184,PALE,radius=12 if WEBSITE else 0)
+rect(X3,2221,1056,212,PALE,radius=12 if WEBSITE else 0)
 text(X3+25,2242,'Main finding',31,TEAL,True)
-para(X3+25,2291,DATA['main_finding'],1004,30,NAVY)
+para(X3+25,2291,DATA['main_finding'],1004,28,NAVY)
 
 # Footer: scope and short citations, no unsupported hardware claims or fake links.
-line(84,2467,W-84,2467,NAVY,2)
-text(84,2487,'Scope: simulation only; pretrained motion, control, and VLA backbones remain in use.',25,NAVY,True)
-text(84,2530,'Built on DreamControl / OmniControl · OmniRetarget · HumanoidMimicGen · SONIC · GR00T. DAgger: Ross et al., AISTATS 2011.',22,MUTED)
-text(W-84,2530,DATA.get('results_footer', 'Results: supplied paper, Tables 2–4'),22,MUTED,align='right')
+
 
 svg.append('</svg>')
 for box in text_boxes:
