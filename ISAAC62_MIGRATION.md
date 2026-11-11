@@ -310,3 +310,18 @@ cross-interpreter service checks, at `972b8c7`. Local reports are
 `out/isaac62_migration/target_972b8c7.json` and
 `cross_interpreter_972b8c7.json`. Mesh construction does not substitute for the
 outstanding terrain-in-simulation and rendering gates.
+
+The real saved-data gate also passed through the existing GR00T loader and its
+default TorchCodec backend. One complete episode from each of `latband60_v1`,
+`pick50_dagger57_20261013_r2/lerobot/ds`, and
+`walk200_v3_late1s_20261024_r3/lerobot/ds` supplied 499, 499 and 607 frames,
+respectively. All decoded episode lengths matched parquet and catalog lengths;
+every loaded state/action column, including the 64-dimensional motion token and
+both finger targets, matched its original parquet slice exactly. Nine sampled
+nonblack, nonconstant RGB frames and the report were pulled into workspace
+`out/isaac62_migration/isaac62_real_dataset_17c0386_nested/`.
+The first attempt correctly reported two parent directories without `meta/info.json`;
+the rerun used their verified nested LeRobot roots. The check used one CPU core,
+CUDA disabled, and the unchanged existing Torch 2.7.1/NumPy 1.26.4 model environment.
+It validates these saved episodes and the existing codec path, not all datasets,
+new-runtime normalization, Isaac 6.2 camera rendering or task behavior.
