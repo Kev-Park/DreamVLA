@@ -300,3 +300,13 @@ lookup; the successful retry used normal access without environment/package/mode
 changes. This validates a real checkpoint through the service, but both CUDA
 processes used the existing model runtime: new-runtime CUDA/Isaac integration and
 actual task behavior remain unverified.
+
+A further NumPy 2 source audit found the star-terrain generator using removed
+`np.math` aliases. It now calls the same standard-library `math` functions
+directly. The actual mesh functions, with target NumPy/SciPy/Trimesh versions,
+passed finite-geometry, origin and configured-bound checks for 4, 5 and 7 bars.
+The complete target CPU contract count is now 74; all passed, along with ten
+cross-interpreter service checks, at `972b8c7`. Local reports are
+`out/isaac62_migration/target_972b8c7.json` and
+`cross_interpreter_972b8c7.json`. Mesh construction does not substitute for the
+outstanding terrain-in-simulation and rendering gates.
