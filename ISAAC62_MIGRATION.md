@@ -268,3 +268,21 @@ are in workspace `out/isaac62_migration/isaac62_residual_parity_9994e4b/`.
 This verifies trained MLP weight compatibility for the stated inputs/activation;
 it does not establish simulation behavior, CUDA parity, SONIC decoder compatibility
 or task success. GPU physics, policy-in-simulation and rendering gates remain open.
+
+The native SONIC loader was then exercised against the existing 1.1 GB
+`model_step_100000.pt` checkpoint with both its `g1` and `teleop` encoder heads and
+the shared decoder. The lean CPU profile initially failed because serialized
+trainer metadata requires Transformers and Accelerate. Transformers was already
+in the intended simulator profile; Accelerate was missing and is now explicitly
+declared in both profiles. All other simulator lock versions were retained.
+No checkpoint conversion, loader workaround or control convention change was used.
+On four fixed synthetic inputs per module, both encoder outputs and the decoder
+outputs matched exactly between the legacy and target CPU runtimes. Reports,
+hashes and arrays are in workspace
+`out/isaac62_migration/isaac62_sonic_parity_1f86c86/`; earlier dependency-failure
+artifacts remain alongside them. This does not establish CUDA, FSQ/control-loop,
+physics or rendering equivalence.
+After the dependency update, the same 73 CPU contracts and ten cross-interpreter
+service contracts passed again at `1f86c86`; the corresponding report names are
+`target_1f86c86.json` and `cross_interpreter_1f86c86.json` in the workspace evidence
+directory. No GPU was allocated by these checks.
