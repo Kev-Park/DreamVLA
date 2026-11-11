@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 import numpy as np
 import scipy.spatial.transform as tf
 import torch
@@ -693,11 +694,11 @@ def star_terrain(
         # length changes since the bar is connected to a square border
         bar_length = cfg.size[0]
         if yaw < 0.25 * np.pi:
-            bar_length /= np.math.cos(yaw)
+            bar_length /= math.cos(yaw)
         elif yaw < 0.75 * np.pi:
-            bar_length /= np.math.sin(yaw)
+            bar_length /= math.sin(yaw)
         else:
-            bar_length /= np.math.cos(np.pi - yaw)
+            bar_length /= math.cos(np.pi - yaw)
         # compute the transform of the bar
         transform[0:3, 0:3] = tf.Rotation.from_euler("z", yaw).as_matrix()
         # add the bar to the mesh

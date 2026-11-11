@@ -15,3 +15,4 @@ pillow==12.3.0
 # Native SONIC checkpoints contain Transformers trainer metadata.
 transformers==5.17.0
 accelerate
+trimesh==4.11.1
