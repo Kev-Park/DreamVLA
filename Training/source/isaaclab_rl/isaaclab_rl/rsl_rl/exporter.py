@@ -69,10 +69,8 @@ class _TorchPolicyExporter(torch.nn.Module):
             if self.rnn_type == "lstm":
                 self.register_buffer("cell_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
                 self.forward = self.forward_lstm
-                self.reset = self.reset_memory
             elif self.rnn_type == "gru":
                 self.forward = self.forward_gru
-                self.reset = self.reset_memory
             else:
                 raise NotImplementedError(f"Unsupported RNN type: {self.rnn_type}")
         # copy normalizer if exists
@@ -101,12 +99,17 @@ class _TorchPolicyExporter(torch.nn.Module):
 
     @torch.jit.export
     def reset(self):
-        pass
+        # Keep the decorated method on the class. Rebinding it to an undecorated
+        # bound method in __init__ drops it from the serialized JIT interface.
+        # hasattr also lets TorchScript compile the feedforward exporter, which
+        # has neither recurrent-state buffer.
+        if hasattr(self, "hidden_state"):
+            self.hidden_state.zero_()
+        if hasattr(self, "cell_state"):
+            self.cell_state.zero_()
 
     def reset_memory(self):
-        self.hidden_state[:] = 0.0
-        if hasattr(self, "cell_state"):
-            self.cell_state[:] = 0.0
+        self.reset()
 
     def export(self, path, filename):
         os.makedirs(path, exist_ok=True)
