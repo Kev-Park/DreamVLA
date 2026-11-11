@@ -325,3 +325,13 @@ the rerun used their verified nested LeRobot roots. The check used one CPU core,
 CUDA disabled, and the unchanged existing Torch 2.7.1/NumPy 1.26.4 model environment.
 It validates these saved episodes and the existing codec path, not all datasets,
 new-runtime normalization, Isaac 6.2 camera rendering or task behavior.
+
+`cluster/isaac62/probe_train_resume.py` prepares the simulator-connected residual
+training gate using the actual `train_sonic_adapter.py` entry point: two updates,
+save, then one resumed update. Its four environments, 16-step rollouts and one
+PPO epoch/minibatch are smoke settings, not a study recipe. It checks checkpoint
+iteration counts, continued optimizer steps, finite model state and changed
+parameters, retaining both trainer logs and checkpoints. It requires explicit
+reference, SONIC checkpoint and asset-directory paths and a manually reviewed
+GPU allocation. Its checkpoint schema was checked against installed RSL-RL
+3.0.1 source; the actual simulator-connected gate has not yet run.
