@@ -7,6 +7,7 @@ import argparse
 import importlib.metadata
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -43,7 +44,18 @@ def main():
     (output/'receipt.json').write_text(json.dumps(receipt, indent=2))
 
     app = None
+    reserved = False
+    slots = [sys.executable, str(Path(__file__).resolve().parents[2]/'cluster/gpu_slots.py')]
+    owner = str(os.getpid())
     try:
+        allocation = subprocess.run(
+            [*slots, 'take', '--owner', owner, '--mb', '8000', '--gpu', str(args.gpu)],
+            capture_output=True, text=True, check=True, timeout=20)
+        if allocation.stdout.strip() != str(args.gpu):
+            raise RuntimeError('Reviewed GPU could not be reserved; no simulator launched')
+        reserved = True
+        receipt['startup_reservation_mb'] = 8000
+        receipt['reservation_owner'] = os.getpid()
         from isaacsim import SimulationApp
         app = SimulationApp(receipt['config'])
         import numpy as np
@@ -205,7 +217,16 @@ def main():
             receipt.update(completed=False, cleanup_error=traceback.format_exc())
             raise
         finally:
-            (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
+            try:
+                if reserved:
+                    subprocess.run([*slots, 'release', '--owner', owner, '--gpu', str(args.gpu)],
+                                   check=True, timeout=20)
+                    receipt['startup_reservation_released'] = True
+            except BaseException:
+                receipt.update(completed=False, reservation_cleanup_error=traceback.format_exc())
+                raise
+            finally:
+                (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
     print(json.dumps({k:v for k,v in receipt.items() if k != 'camera_stats'}, indent=2))
 
 
