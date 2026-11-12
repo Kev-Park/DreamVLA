@@ -11,63 +11,6 @@ import time
 import traceback
 
 
-def convert_copy(source, destination):
-    """Use the installed NVIDIA converter without editing source layers."""
-    from pxr import Usd
-    from isaacsim.core.utils.extensions import enable_extension
-    enable_extension('omni.physx.asset_validator')
-    from omni.physxassetvalidator.scripts.deformableSchemaChecker import DeformableSchemaChecker
-    if destination.exists() or source.resolve()==destination.resolve():
-        raise ValueError('Conversion requires a new output file')
-    digest=hashlib.sha256(source.read_bytes()).hexdigest()
-    original=Usd.Stage.Open(str(source))
-    if original is None:raise ValueError('Cannot open input USD')
-    # The SDK rewrites editable layer stacks. Flatten into an anonymous layer
-    # so referenced assets and the source file cannot receive those edits.
-    stage=Usd.Stage.Open(original.Flatten())
-    # Keep authored versus registered API discovery visible: removed USD schemas
-    # may remain in file metadata while GetAppliedSchemas omits them.
-    for label, current in (("original", original), ("flattened", stage)):
-        rows=[]
-        for prim in current.Traverse():
-            authored=prim.GetMetadata("apiSchemas")
-            if "Deformable" in str(authored):
-                rows.append(dict(path=str(prim.GetPath()), authored=str(authored),
-                                 registered=list(prim.GetAppliedSchemas())))
-        print(json.dumps({"schema_discovery":label,"rows":rows}),flush=True)
-    from legacy_volume_usd import authored_apis, convert_cooked_volumes
-    old=[]
-    for prim in stage.Traverse():
-        schemas=authored_apis(prim)
-        if 'PhysxDeformableBodyMaterialAPI' in schemas:
-            attr=prim.GetAttribute('physxDeformableBodyMaterial:dampingScale')
-            if attr and attr.HasAuthoredValueOpinion() and attr.Get()!=1.:
-                raise NotImplementedError('Non-neutral dampingScale is removed by the SDK converter')
-        if 'PhysxDeformableBodyAPI' not in schemas:continue
-        density=prim.GetAttribute('physics:density');mass=prim.GetAttribute('physics:mass')
-        if density and density.HasAuthoredValueOpinion() and (not mass or not mass.Get() or mass.Get()<0):
-            raise NotImplementedError('SDK conversion drops body-only density without explicit mass')
-        def size(name):
-            value=prim.GetAttribute(name).Get()
-            return len(value) if value is not None else 0
-        row=dict(path=str(prim.GetPath()),simulation_nodes=size('physxDeformable:simulationPoints'),
-                 simulation_elements=size('physxDeformable:simulationIndices')//4,
-                 collision_nodes=size('physxDeformable:collisionPoints'),
-                 collision_elements=size('physxDeformable:collisionIndices')//4)
-        if min(row[k] for k in row if k!='path')<=0:
-            raise ValueError('Legacy asset must contain cooked simulation and collision meshes')
-        old.append(row)
-    if not old:raise ValueError('No legacy volume deformable found')
-    conversion=convert_cooked_volumes(stage,DeformableSchemaChecker)
-    for row in old:
-        prim=stage.GetPrimAtPath(row['path'])
-        if not prim.HasAPI('OmniPhysicsDeformableBodyAPI') or 'PhysxDeformableBodyAPI' in authored_apis(prim):
-            raise RuntimeError('SDK failed to convert legacy body '+row['path'])
-    if not stage.GetRootLayer().Export(str(destination)):
-        raise RuntimeError('Could not export converted copy')
-    if hashlib.sha256(source.read_bytes()).hexdigest()!=digest:
-        raise RuntimeError('Source USD changed during isolated conversion')
-    return dict(source_sha256=digest,legacy_bodies=old,converter='metadata-driven volume conversion with installed SDK geometry helpers', conversion=conversion)
 
 
 def main():
@@ -92,6 +35,9 @@ def main():
         from isaaclab.assets import DeformableObject,DeformableObjectCfg
         from isaacsim.core.utils.stage import open_stage
         torch.set_num_threads(1)
+        from check_legacy_volume_rejections import run_checks
+        receipt['rejection_checks'] = run_checks()
+        from legacy_volume_usd import convert_copy
         receipt['conversion']=convert_copy(source,output/'converted.usda')
         assert open_stage(str(output/'converted.usda'))
         sim=sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005,device='cuda:0'))
