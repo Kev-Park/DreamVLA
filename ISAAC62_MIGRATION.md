@@ -912,3 +912,31 @@ not policy or task-success validation.
 The latest Bluesclues capacity check still has all ten GPUs occupied by other
 accounts, with at most20.5GiB free on any device. No optimizer test is launched
 into that insufficient headroom. The Adroit access hold remains unchanged.
+
+
+### Actual human-motion input export parity (2026-11-12)
+
+`f5affef` exercises the unmodified Adapter A (`export_to_holosoma.py`) against
+original OmniControl `Pick_sim/results.npy`, SHA256
+696637ac3f7fa6f649479feb75a2b6b86af7fe28cc1c64de576e7ca84b5e8aaf.
+The existing5.1 and target6.2 profiles each export motion0 into separate new
+validation directories, CPU-only on one core. Both produce195frames,22joints,
+finite joint/object/height arrays and identity object quaternions. All three
+output arrays match exactly, under the preset1e-6 absolute gate. The original
+results file hash remains unchanged. The fixture finishes with exit zero;
+account CPU remains below0.01% at the surrounding samples and no GPU is used.
+
+The first launcher attempt constructed the baseline interpreter under~/kevin
+instead of~/miniconda3; it failed before either exporter ran. That log is kept.
+The corrected launcher uses the existing approved profile; no packages or
+source data are changed. Local receipts, actual commands/logs and both NPZs:
+`out/isaac62_migration/isaac62_human_motion_export_f5affef_retry/`.
+This adds actual input-export coverage before the already tested raw-walking
+Adapter B. It does not establish full OmniControl diffusion sampling or holosoma
+optimization; the expected holosoma executable is absent at Biped's shared path.
+
+Implicit-material deformable stress remains unsupported: the installed SDK's
+own diagnostic implementation substitutes zero modulus/Poisson values when no
+material is bound, which does not establish the solver's actual default material.
+The bridge therefore keeps its explicit error rather than inventing a constitutive
+response. Explicit-material diagnostic paths remain independently validated.
