@@ -74,9 +74,10 @@ def main():
             receipt['phases'].append(phase)
             cmd = [*command, '--output-directory', str(output/name), *extra]
             phase['command'] = cmd
+            phase['timeout_seconds'] = 300 * (args.max_expert_attempts if name == 'expert' else 1)
             with (output/(name+'.log')).open('w') as stream:
                 result = subprocess.run(cmd, cwd=args.asset_cwd, stdout=stream,
-                                        stderr=subprocess.STDOUT, timeout=300)
+                                        stderr=subprocess.STDOUT, timeout=phase['timeout_seconds'])
             phase['returncode'] = result.returncode
             log = (output/(name+'.log')).read_text()
             phase['marker_present'] = marker in log
