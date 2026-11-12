@@ -271,8 +271,10 @@ class DeformableObject(AssetBase):
         template_prim_path = template_prim.GetPath().pathString
 
         # find deformable root prims
+        legacy = hasattr(PhysxSchema, 'PhysxDeformableBodyAPI')
         root_prims = sim_utils.get_all_matching_child_prims(
             template_prim_path, predicate=lambda prim: prim.HasAPI(PhysxSchema.PhysxDeformableBodyAPI)
+            if legacy else prim.HasAPI('OmniPhysicsDeformableBodyAPI')
         )
         if len(root_prims) == 0:
             raise RuntimeError(
@@ -301,7 +303,8 @@ class DeformableObject(AssetBase):
             if len(material_paths) > 0:
                 for mat_path in material_paths:
                     mat_prim = root_prim.GetStage().GetPrimAtPath(mat_path)
-                    if mat_prim.HasAPI(PhysxSchema.PhysxDeformableBodyMaterialAPI):
+                    if (mat_prim.HasAPI(PhysxSchema.PhysxDeformableBodyMaterialAPI) if legacy
+                            else mat_prim.HasAPI('OmniPhysicsDeformableMaterialAPI')):
                         material_prim = mat_prim
                         break
         if material_prim is None:
@@ -317,7 +320,12 @@ class DeformableObject(AssetBase):
         root_prim_path = root_prim.GetPath().pathString
         root_prim_path_expr = self.cfg.prim_path + root_prim_path[len(template_prim_path) :]
         # -- object view
-        self._root_physx_view = self._physics_sim_view.create_soft_body_view(root_prim_path_expr.replace(".*", "*"))
+        if legacy:
+            self._root_physx_view = self._physics_sim_view.create_soft_body_view(root_prim_path_expr.replace(".*", "*"))
+        else:
+            from .volume_deformable_view import VolumeDeformableView
+            view = self._physics_sim_view.create_volume_deformable_body_view(root_prim_path_expr.replace(".*", "*"))
+            self._root_physx_view = VolumeDeformableView(view, root_prim_path_expr, root_prim.GetStage())
 
         # Return if the asset is not found
         if self._root_physx_view._backend is None:
@@ -334,9 +342,9 @@ class DeformableObject(AssetBase):
             else:
                 material_prim_path_expr = material_prim_path
             # -- material view
-            self._material_physx_view = self._physics_sim_view.create_soft_body_material_view(
-                material_prim_path_expr.replace(".*", "*")
-            )
+            factory = (self._physics_sim_view.create_soft_body_material_view if legacy
+                       else self._physics_sim_view.create_deformable_material_view)
+            self._material_physx_view = factory(material_prim_path_expr.replace(".*", "*"))
         else:
             self._material_physx_view = None
 

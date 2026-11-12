@@ -115,6 +115,23 @@ def spawn_deformable_body_material(prim_path: str, cfg: physics_materials_cfg.De
     if not prim.IsA(UsdShade.Material):
         raise ValueError(f"A prim already exists at path: '{prim_path}' but is not a material.")
     # retrieve the deformable-body api
+    if not hasattr(PhysxSchema, 'PhysxDeformableBodyMaterialAPI'):
+        if cfg.damping_scale != 1.0:
+            raise NotImplementedError('Isaac Sim 6.2 removed non-neutral deformable damping_scale; it cannot be ignored')
+        prim.ApplyAPI('OmniPhysicsBaseMaterialAPI')
+        prim.ApplyAPI('OmniPhysicsDeformableMaterialAPI')
+        prim.ApplyAPI('PhysxDeformableMaterialAPI')
+        names = dict(density='omniphysics:density', dynamic_friction='omniphysics:dynamicFriction',
+                     youngs_modulus='omniphysics:youngsModulus', poissons_ratio='omniphysics:poissonsRatio',
+                     elasticity_damping='physxDeformableMaterial:elasticityDamping')
+        for name, attr_name in names.items():
+            value = getattr(cfg, name)
+            if value is None:
+                continue
+            attr = prim.GetAttribute(attr_name)
+            if not attr or not attr.Set(value):
+                raise RuntimeError(f'Cannot set deformable material property {attr_name} on {prim_path}')
+        return prim
     physx_deformable_body_material_api = PhysxSchema.PhysxDeformableBodyMaterialAPI(prim)
     if not physx_deformable_body_material_api:
         physx_deformable_body_material_api = PhysxSchema.PhysxDeformableBodyMaterialAPI.Apply(prim)

@@ -823,6 +823,10 @@ def define_deformable_body_properties(
     if stage is None:
         stage = get_current_stage()
 
+    if not hasattr(PhysxSchema, 'PhysxDeformableBodyAPI'):
+        from .deformable import define_volume_deformable_properties
+        return define_volume_deformable_properties(prim_path, cfg, stage)
+
     # get USD prim
     prim = stage.GetPrimAtPath(prim_path)
     # check if prim path is valid
@@ -898,6 +902,10 @@ def modify_deformable_body_properties(
     # get stage handle
     if stage is None:
         stage = get_current_stage()
+
+    if not hasattr(PhysxSchema, 'PhysxDeformableBodyAPI'):
+        from .deformable import modify_volume_deformable_properties
+        return modify_volume_deformable_properties(prim_path, cfg, stage)
 
     # get deformable-body USD prim
     deformable_body_prim = stage.GetPrimAtPath(prim_path)

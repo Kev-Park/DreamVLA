@@ -104,9 +104,12 @@ def main():
         sim.set_subspace_roots('/')
         view = sim.create_soft_body_view(path) if legacy else sim.create_volume_deformable_body_view(path)
         assert view.count == 1
-        get_positions = view.get_sim_nodal_positions if legacy else view.get_simulation_nodal_positions
-        set_positions = view.set_sim_nodal_positions if legacy else view.set_simulation_nodal_positions
-        set_targets = view.set_sim_kinematic_targets if legacy else view.set_simulation_nodal_kinematic_targets
+        if not legacy:
+            from isaaclab.assets.deformable_object.volume_deformable_view import VolumeDeformableView
+            view = VolumeDeformableView(view, path, stage)
+        get_positions = view.get_sim_nodal_positions
+        set_positions = view.set_sim_nodal_positions
+        set_targets = view.set_sim_kinematic_targets
         rest = get_positions().clone()
         assert rest.shape == (1, 4, 3) and rest.device.type == 'cuda', rest.shape
         angle = math.radians(31)
@@ -125,14 +128,15 @@ def main():
         torch.testing.assert_close(actual, target, atol=1e-5, rtol=0)
         arrays = dict(rest=rest.cpu().numpy(), target=target.cpu().numpy(), actual=actual.cpu().numpy(),
                       affine=affine.cpu().numpy(), rotation=rotation.cpu().numpy(), stretch=stretch.cpu().numpy())
-        if legacy:
-            for name, method in [('simulation_gradient', 'get_sim_element_deformation_gradients'),
-                                 ('collision_gradient', 'get_element_deformation_gradients'),
-                                 ('simulation_rotation', 'get_sim_element_rotations'),
-                                 ('simulation_stress', 'get_sim_element_stresses')]:
-                value = getattr(view, method)().clone()
-                assert torch.isfinite(value).all(), name
-                arrays[name] = value.cpu().numpy()
+        for name, method in [('simulation_gradient', 'get_sim_element_deformation_gradients'),
+                             ('collision_gradient', 'get_element_deformation_gradients'),
+                             ('simulation_rotation', 'get_sim_element_rotations'),
+                             ('collision_rotation', 'get_element_rotations'),
+                             ('simulation_stress', 'get_sim_element_stresses'),
+                             ('collision_stress', 'get_element_stresses')]:
+            value = getattr(view, method)().clone()
+            assert torch.isfinite(value).all(), name
+            arrays[name] = value.cpu().numpy()
         np.savez(output/'tensors.npz', **arrays)
         receipt.update(completed=True, frames=4, array_shapes={k:list(v.shape) for k,v in arrays.items()},
                        requested_nodal_error=float((actual-target).abs().max()), finished=time.time())

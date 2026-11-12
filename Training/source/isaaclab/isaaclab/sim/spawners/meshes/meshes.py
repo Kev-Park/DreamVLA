@@ -11,7 +11,7 @@ import trimesh.transformations
 from typing import TYPE_CHECKING
 
 import isaacsim.core.utils.prims as prim_utils
-from pxr import Usd, UsdPhysics
+from pxr import PhysxSchema, Usd, UsdPhysics, UsdShade
 
 from isaaclab.sim import schemas
 from isaaclab.sim.utils import bind_physics_material, bind_visual_material, clone
@@ -321,14 +321,14 @@ def _spawn_mesh_geom_from_mesh(
         },
     )
 
-    # note: in case of deformable objects, we need to apply the deformable properties to the mesh prim.
-    #   this is different from rigid objects where we apply the properties to the parent prim.
+    new_deformable = cfg.deformable_props is not None and not hasattr(PhysxSchema, 'PhysxDeformableBodyAPI')
+    physics_binding_path = prim_path if new_deformable else mesh_prim_path
     if cfg.deformable_props is not None:
-        # apply mass properties
-        if cfg.mass_props is not None:
+        if not new_deformable and cfg.mass_props is not None:
             schemas.define_mass_properties(mesh_prim_path, cfg.mass_props)
-        # apply deformable body properties
-        schemas.define_deformable_body_properties(mesh_prim_path, cfg.deformable_props)
+        schemas.define_deformable_body_properties(physics_binding_path, cfg.deformable_props)
+        if new_deformable and cfg.mass_props is not None and cfg.mass_props.mass is not None:
+            prim_utils.get_prim_at_path(prim_path).GetAttribute('omniphysics:mass').Set(cfg.mass_props.mass)
     elif cfg.collision_props is not None:
         # decide on type of collision approximation based on the mesh
         if cfg.__class__.__name__ == "MeshSphereCfg":
@@ -362,10 +362,23 @@ def _spawn_mesh_geom_from_mesh(
             material_path = f"{geom_prim_path}/{cfg.physics_material_path}"
         else:
             material_path = cfg.physics_material_path
+        material_cfg = cfg.physics_material
+        if new_deformable and cfg.mass_props is not None and cfg.mass_props.density is not None:
+            # Body density moved to its material. Keep this override local to
+            # the object rather than mutating a material shared by other assets.
+            material_path = f'{geom_prim_path}/densityMaterial'
+            material_cfg = material_cfg.replace(density=cfg.mass_props.density)
         # create material
-        cfg.physics_material.func(material_path, cfg.physics_material)
+        material_cfg.func(material_path, material_cfg)
         # apply material
-        bind_physics_material(mesh_prim_path, material_path)
+        bind_physics_material(physics_binding_path, material_path)
+    elif new_deformable and cfg.mass_props is not None and cfg.mass_props.density is not None:
+        material_path = f'{geom_prim_path}/densityMaterial'
+        material = UsdShade.Material.Define(mesh_prim.GetStage(), material_path).GetPrim()
+        material.ApplyAPI('OmniPhysicsBaseMaterialAPI')
+        material.ApplyAPI('OmniPhysicsDeformableMaterialAPI')
+        material.GetAttribute('omniphysics:density').Set(cfg.mass_props.density)
+        bind_physics_material(physics_binding_path, material_path)
 
     # note: we apply the rigid properties to the parent prim in case of rigid objects.
     if cfg.rigid_props is not None:
