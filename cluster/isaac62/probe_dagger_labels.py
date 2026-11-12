@@ -65,6 +65,8 @@ def main():
             time.sleep(.5)
         import h5py
         import numpy as np
+        motion_ids = output/'motion_ids.txt'
+        motion_ids.write_text('0\n')
         receipt['phases'] = []
         for name, beta in (('student', '0'), ('expert', '1')):
             phase_output = output/name
@@ -75,7 +77,7 @@ def main():
                        '--checkpoint-path', str(args.expert_checkpoint), '--sonic-pt', str(args.sonic_pt),
                        '--ref-motions-path', str(args.ref_motions_path), '--residual-transform', 'additive_free',
                        '--dagger-vla-checkpoint', str(args.checkpoint), '--gr00t-service', str(model_output/'ready.json'),
-                       '--dagger-demo-root', str(args.demo_root), '--dagger-motion-ids', '0',
+                       '--dagger-demo-root', str(args.demo_root), '--dagger-motion-ids', str(motion_ids),
                        '--dagger-beta', beta, '--dagger-chunk', '8', '--dagger-rollouts', '1',
                        '--num-samples', '1', '--rollout-length', '64', '--dagger-min-steps', '50',
                        '--output-directory', str(phase_output)]

@@ -45,6 +45,7 @@ import faulthandler
 import os
 import time
 import traceback
+import contextlib
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -1308,7 +1309,7 @@ def _run_rollout_adapter(env, policy, *, simulation_app, max_steps, state_on, re
     return camera_frames, raw_state, metadata, teleop_payload
 
 
-def main() -> None:
+def _collect_with_cleanup(cleanup) -> None:
     parser = argparse.ArgumentParser(description="Collect SONIC-adapter pick rollouts (ego camera → HDF5).")
     parser.add_argument("--disable_fabric", action="store_true", default=False)
     parser.add_argument("--num_envs", type=int, default=1, help="Only 1 supported (one file per rollout).")
@@ -1521,6 +1522,15 @@ def main() -> None:
 
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
+    def close_app(exc_type, exc, tb):
+        code = 0 if exc_type is None else 1
+        if isinstance(exc, SystemExit) and isinstance(exc.code, int):
+            code = exc.code
+        if code:
+            traceback.print_exception(exc_type, exc, tb)
+        simulation_app.close(wait_for_replicator=not bool(code), exit_code=code)
+        return False
+    cleanup.push(close_app)
 
     import gymnasium as gym
     from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
@@ -1597,6 +1607,7 @@ def main() -> None:
     # render_mode="rgb_array" (matching play_sonic_adapter.py) so the RTX render
     # product is active and the camera annotators receive flushed frames.
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
+    cleanup.callback(env.close)
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
@@ -1702,7 +1713,6 @@ def main() -> None:
         replay_token_test(env, simulation_app, args_cli.replay_token_test, int(args_cli.replay_token_n),
                           int(args_cli.seed), os.path.join(args_cli.output_directory, "replay_token_test.json"))
         env.close()
-        simulation_app.close(exit_code=0)
         raise SystemExit(0)
 
     if args_cli.dagger_selftest_determinism is not None:
@@ -1710,14 +1720,12 @@ def main() -> None:
         ok = selftest_determinism(env, policy, int(args_cli.dagger_selftest_determinism),
                                   motion_id=int(lo), seed=int(args_cli.seed))
         env.close()
-        simulation_app.close(exit_code=0 if ok else 1)
         raise SystemExit(0 if ok else 1)
 
     if args_cli.dagger_selftest_restore is not None:
         n_pre, n_post = args_cli.dagger_selftest_restore
         ok = selftest_restore(env, policy, int(n_pre), int(n_post))
         env.close()
-        simulation_app.close(exit_code=0 if ok else 1)
         raise SystemExit(0 if ok else 1)
 
     written = 0
@@ -1944,7 +1952,12 @@ def main() -> None:
                   f"domain-randomized collection mode for augmentation, to exceed this.")
     finally:
         env.close()
-        simulation_app.close()
+
+
+def main() -> None:
+    # Includes failures during checkpoint/client setup, before the rollout loop.
+    with contextlib.ExitStack() as cleanup:
+        _collect_with_cleanup(cleanup)
 
 
 def _main_with_error_report() -> None:
