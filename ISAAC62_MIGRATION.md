@@ -513,3 +513,48 @@ at most 6 MiB; simulation, rendering and CUDA remain on GPU 0, with the normal
 20% aggregate account CPU limit. This exception is recorded in EMBER/AGENTS.md.
 It does not authorize a second computation GPU. Probes release their reservations
 on terminal success or failure; other researchers' contexts remain untouched.
+
+
+## November 12 collector validation
+
+Actual saved expert collection at `fe2460f` completed one attempted episode
+(605 steps), reported one rejection and zero script errors, and released its
+reservation. It retained no episode, so this case does not prove successful
+expert-demo writing or estimate the expert's success rate.
+
+The real GR00T DAgger label-writing probe at `b7d6bce` then retained two isolated
+64-frame HDF5 episodes: one entirely student-driven and one entirely expert-driven.
+Both contained finite 64-dimensional FSQ-grid expert token labels, 65-dimensional
+actions, seven finger targets and matching driver masks. Neither segment contained
+a close command. This gate proves the stated schema/driver checks, not closed-grasp
+coverage, failure-conditioned rescue, or scientific policy performance. The eight
+small finger/action template files were extracted without modification from archived
+base demonstrations; they are explicitly marked incomplete fixtures, not training
+examples. Source hashes and column hashes accompany them.
+
+Strict snapshot and repeated-reset diagnostics remain failed. At 16 steps, two
+seeded resets diverged by 0.01037 radians in joint position. Snapshot restoration
+initially diverged by 0.2521 radians / 5.104 rad/s. Preserving PD position, velocity
+and effort targets reduced those errors; preserving the omitted decoder
+`_prev_body_29` state reduced joint-position error further to 0.002984 radians,
+but joint-velocity error remained 1.732 rad/s. The 1e-6 strict gate is still failed;
+no tolerance was relaxed. Historical Isaac 5.1 logs also show failures, but use
+different checkpoints/settings and are not a matched baseline.
+
+Importantly, production failure-conditioned rescue reruns the student prefix;
+it does not call these snapshot functions. The snapshot changes affect the diagnostic
+path. They do not establish that full rescue collection passes migration validation.
+
+A malformed smoke-test motion-ID argument exposed a separate collector teardown
+gap before the rollout loop. Environment and SDK shutdown now use an exit stack
+covering setup failures too; explicit motion-ID manifests replace the malformed
+argument. The corrected two-phase collector exits normally and releases resources.
+Local evidence: `out/isaac62_migration/isaac62_collection_{fe2460f,c6c401d,f7c056d}`
+and `isaac62_dagger_labels_b7d6bce`. New-recording conversion is a separate gate:
+the simulator profile lacks the exporter's `datasets` dependency, and the existing
+GR00T model environment lacks `h5py`. Both attempts failed before conversion.
+A separate CPU-only exporter profile is prepared in `requirements.conversion.txt`
+and `setup_conversion.sh`, pending the user's environment approval. It honors
+the pinned LeRobot commit's Torch <2.7 / Gymnasium 0.29.1 requirements, using
+Torch 2.6 CPU without modifying existing environments. The original LeRobot
+metadata is at https://github.com/huggingface/lerobot/blob/a445d9c9da6bea99a8972daa4fe1fdd053d711d2/pyproject.toml.
