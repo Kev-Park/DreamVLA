@@ -971,3 +971,51 @@ input hashes and absence of cached global normalization. It retains every phase
 log/output on failure. Only syntax checks have run; this gate is not passed.
 Official GR00T loader/video decoding and regeneration/comparison of whole-dataset
 and relative-action normalization remain required after successful conversion.
+
+### Approved conversion, remaining task families and original retarget (2026-11-12)
+
+The user's subsequent approval resolved the conversion-profile, reward-mask and
+existing hsretargeting-profile reviews above. The earlier pending statements are
+historical; these three items have now been executed.
+
+The approved27-to29 mapping retains each original named joint weight and assigns
+zero to added waist roll/pitch joints. Five actual-function CPU tests cover this
+mapping, unchanged legacy/current layouts, invalid masks, optional success counters
+and optional button contact history. Runtime testing exposed missing bookkeeping
+attributes; guards preserve existing counter/buffer updates when present and allow
+ordinary task resets when absent. Drawer at3a188dd and button atc350d1c each pass
+reset,32zero-action steps, rendering, and final reset under6.2. Each original
+1280x720 video contains32frames at50fps. These are mechanical gates, not learned
+policy success measurements. Both workers release their reservations and contexts.
+
+The isolated CPU conversion environment is installed; simulator/model environments
+are unchanged. Actual complete expert and DAgger recordings contain577 and605frames.
+Serial conversion equals two separately converted shards after the production
+merger. Source hashes and recorded64-dimensional action tokens are unchanged.
+GR00T regenerates whole-dataset stats.json and relative_stats.json independently
+for both datasets; every value, including percentile statistics, matches exactly.
+The official saved92967 modality configuration and TorchCodec loader decode both
+episodes in both datasets. All state/action columns match parquet exactly; sampled
+images have valid dimensions and nonconstant content. No statistics are pooled
+from shard percentiles. Evidence is local under
+`out/isaac62_migration/isaac62_recording_conversion_3a188dd/` and
+`isaac62_recording_roundtrip_42009ca/`.
+
+The unmodified original holosoma retargeter fromde6ea01 runs CPU-only in the approved
+existing hsretargeting environment, from an isolated Git export. Its default
+one-clip SQP/foot-sticking recipe produces195frames and43qpos columns, with finite
+values, unit root quaternions and unchanged input hash. The newly generated raw
+clip then passes AdapterB in both legacy/target profiles: joints, root positions,
+object and grasp arrays are identical; rotation-matrix maximum error is5.96e-8.
+Shared holosoma source and installed packages remain untouched. Evidence:
+`isaac62_holosoma_original_3a188dd/` and
+`isaac62_raw_walking_new_retarget_3a188dd/` under the same local output root.
+
+All these probes are terminal. Final full-account audit finds no account-owned
+GPU contexts and negligible CPU use. Artifacts are pulled locally and the dashboard
+includes the new drawer/button clips without recompression. Remaining gaps include
+full GR00T Adam/save/resume on a sufficiently large free GPU, original diffusion
+sampling and user visual review. The previously documented strict stitch-IK,
+snapshot/reset, implicit-material stress and damping limitations remain unresolved;
+these new passes do not waive those gates. The original walking research chain
+remains stopped and was not resumed by this migration validation.
