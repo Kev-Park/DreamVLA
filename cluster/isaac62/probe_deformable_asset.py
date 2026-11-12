@@ -16,6 +16,8 @@ import traceback
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--heterogeneous', action='store_true',
+                        help='Exercise differently cooked bodies sharing one padded tensor view')
     args = parser.parse_args()
     assert os.name == 'posix' and os.environ.get('CUDA_VISIBLE_DEVICES') == '0'
     version = importlib.metadata.version('isaacsim')
@@ -46,17 +48,26 @@ def main():
         from pxr import UsdPhysics, UsdShade
         torch.set_num_threads(1)
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
-        asset = DeformableObject(DeformableObjectCfg(
-            prim_path='/World/SoftCube',
-            spawn=sim_utils.MeshCuboidCfg(size=(.2, .2, .2),
+        spawn = sim_utils.MeshCuboidCfg(size=(.2, .2, .2),
                 deformable_props=sim_utils.DeformableBodyPropertiesCfg(simulation_hexahedral_resolution=3,
                                                                       solver_position_iteration_count=4),
                 physics_material=sim_utils.DeformableBodyMaterialCfg(youngs_modulus=50000., poissons_ratio=.3),
-                mass_props=sim_utils.MassPropertiesCfg(mass=.8, density=1300.)),
-            init_state=DeformableObjectCfg.InitialStateCfg(pos=(0, 0, 1))))
+                mass_props=sim_utils.MassPropertiesCfg(mass=.8, density=1300.))
+        if args.heterogeneous:
+            import copy
+            spawn.func('/World/SoftCube0', spawn, translation=(0, 0, 1))
+            other = copy.deepcopy(spawn)
+            other.size = (.3, .2, .2)
+            other.deformable_props.simulation_hexahedral_resolution = 4
+            other.func('/World/SoftCube1', other, translation=(1, 0, 1))
+            asset = DeformableObject(DeformableObjectCfg(prim_path='/World/SoftCube.*', spawn=None))
+        else:
+            asset = DeformableObject(DeformableObjectCfg(prim_path='/World/SoftCube', spawn=spawn,
+                init_state=DeformableObjectCfg.InitialStateCfg(pos=(0, 0, 1))))
         sim.reset()
         assert asset.is_initialized
-        root = sim.stage.GetPrimAtPath('/World/SoftCube/geometry/mesh' if legacy else '/World/SoftCube')
+        root_path = '/World/SoftCube0' if args.heterogeneous else '/World/SoftCube'
+        root = sim.stage.GetPrimAtPath(root_path+'/geometry/mesh' if legacy else root_path)
         if legacy:
             mass_api = UsdPhysics.MassAPI(root)
             mass = mass_api.GetMassAttr().Get()
@@ -69,7 +80,7 @@ def main():
         assert math.isclose(mass, .8, abs_tol=1e-7, rel_tol=0)
         assert density == 1300.
         original = asset.data.nodal_state_w.clone()
-        assert original.shape[0] == 1 and original.shape[-1] == 6 and original.shape[1] >= 4
+        assert original.shape[0] == (2 if args.heterogeneous else 1) and original.shape[-1] == 6 and original.shape[1] >= 4
         for _ in range(16):
             asset.write_data_to_sim()
             sim.step(render=False)
@@ -100,7 +111,7 @@ def main():
         if not legacy:
             assert max(quaternion_error.values()) <= 1e-5, quaternion_error
         sim.stage.GetRootLayer().Export(str(output/'scene.usda'))
-        receipt.update(completed=True, frames=20, mass=.8, bound_density=density,
+        receipt.update(completed=True, frames=20, heterogeneous=args.heterogeneous, mass=.8, bound_density=density,
                        simulation_nodes=asset.max_sim_vertices_per_body,
                        collision_nodes=asset.max_collision_vertices_per_body,
                        simulation_elements=asset.max_sim_elements_per_body,
