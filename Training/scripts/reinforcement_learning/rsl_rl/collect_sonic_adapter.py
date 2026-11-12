@@ -42,6 +42,7 @@ from vla_sonic.fsq import fsq_lattice_snap
 from vla_sonic.rescue_sampling import takeover_bounds
 import builtins
 import faulthandler
+import inspect
 import os
 import time
 import traceback
@@ -1528,7 +1529,12 @@ def _collect_with_cleanup(cleanup) -> None:
             code = exc.code
         if code:
             traceback.print_exception(exc_type, exc, tb)
-        simulation_app.close(wait_for_replicator=not bool(code), exit_code=code)
+        # Isaac 5.1 has no exit_code argument. Keep the original exception
+        # propagating after cleanup; the supervisor also checks self-test markers.
+        kwargs = dict(wait_for_replicator=not bool(code))
+        if "exit_code" in inspect.signature(simulation_app.close).parameters:
+            kwargs["exit_code"] = code
+        simulation_app.close(**kwargs)
         return False
     cleanup.push(close_app)
 

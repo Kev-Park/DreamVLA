@@ -27,6 +27,8 @@ def main():
     parser.add_argument('--ref-motions-path', type=Path, required=True)
     parser.add_argument('--asset-cwd', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--runtime-python', type=Path,
+                        help='Existing legacy interpreter for a matched SDK baseline')
     parser.add_argument('--checks', nargs='+', choices=['determinism', 'restore', 'expert'],
                         default=['determinism', 'restore', 'expert'])
     args = parser.parse_args()
@@ -45,7 +47,11 @@ def main():
         if result.stdout.strip() != '0':
             raise RuntimeError('Reviewed GPU reservation unavailable')
         reserved = True
-        command = [sys.executable, str(root/'Training/scripts/reinforcement_learning/rsl_rl/collect_sonic_adapter.py'),
+        runtime = args.runtime_python.expanduser().absolute() if args.runtime_python else Path(sys.executable)
+        if not runtime.is_file():
+            raise RuntimeError('Existing runtime interpreter not found')
+        receipt['runtime_python'] = str(runtime)
+        command = [str(runtime), str(root/'Training/scripts/reinforcement_learning/rsl_rl/collect_sonic_adapter.py'),
                    '--headless', '--device', 'cuda:0', '--num_envs', '1',
                    '--checkpoint-path', str(args.checkpoint.expanduser().resolve(strict=True)),
                    '--sonic-pt', str(args.sonic_pt.expanduser().resolve(strict=True)),
