@@ -8,6 +8,7 @@ matrix buffers are column-major, even though their consumers reshape to 3x3.
 """
 import torch
 import warp as wp
+import numpy as np
 from pxr import UsdGeom
 from isaacsim.core.experimental.prims import DeformablePrim
 
@@ -81,7 +82,7 @@ class VolumeDeformableView:
                 points = pose.Get() if pose and pose.Get() is not None else UsdGeom.PointBased(prim).GetPointsAttr().Get()
                 if points is None:
                     raise RuntimeError(f'Collision rest/bind points missing on {path}')
-                row = torch.as_tensor(points, device=current.device, dtype=current.dtype)
+                row = torch.as_tensor(np.asarray(points), device=current.device, dtype=current.dtype)
                 if row.shape != current.shape[1:]:
                     raise RuntimeError('Collision rest topology does not match the live nodal tensor')
                 rows.append(row)

@@ -100,7 +100,8 @@ def main():
         for _ in range(8):
             app.update()
         SimulationManager.initialize_physics()
-        sim = tensors.create_simulation_view('torch')
+        sim = (tensors.create_simulation_view('torch') if legacy else
+               tensors.create_simulation_view('torch', stage_id=context.get_stage_id(), backend='physx'))
         sim.set_subspace_roots('/')
         view = sim.create_soft_body_view(path) if legacy else sim.create_volume_deformable_body_view(path)
         assert view.count == 1
