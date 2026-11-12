@@ -106,8 +106,21 @@ def main():
             assert torch.isfinite(value).all(), key
             arrays[key] = value.cpu().numpy()
         np.savez(output/'asset.npz', **arrays)
-        quaternion_error = {key:float(np.max(np.abs(np.linalg.norm(arrays[key], axis=-1)-1)))
-                            for key in ('sim_element_quat_w', 'collision_element_quat_w')}
+        quaternion_error = {}
+        if not legacy:
+            counts = {'sim':asset.root_physx_view.simulation_element_counts.cpu().numpy(),
+                      'collision':asset.root_physx_view.collision_element_counts.cpu().numpy()}
+            receipt['element_counts'] = {k:v.tolist() for k,v in counts.items()}
+            if args.heterogeneous:
+                assert len(set(counts['sim'].tolist())) == 2, counts
+        for key in ('sim_element_quat_w', 'collision_element_quat_w'):
+            norms = np.linalg.norm(arrays[key], axis=-1)
+            if not legacy:
+                kind = 'sim' if key.startswith('sim_') else 'collision'
+                valid = np.arange(norms.shape[1])[None, :] < counts[kind][:, None]
+                assert np.all(arrays[key][~valid] == 0), key
+                norms = norms[valid]
+            quaternion_error[key] = float(np.max(np.abs(norms-1)))
         if not legacy:
             assert max(quaternion_error.values()) <= 1e-5, quaternion_error
         sim.stage.GetRootLayer().Export(str(output/'scene.usda'))

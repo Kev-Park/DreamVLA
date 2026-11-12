@@ -19,6 +19,7 @@ class VolumeDeformableView:
         self._diagnostics = DeformablePrim(pattern, deformable_type='volume')
         self._stage = stage
         self._collision_rest = None
+        self._element_count_cache = {}
 
     def __getattr__(self, name):
         return getattr(self._view, name)
@@ -61,43 +62,85 @@ class VolumeDeformableView:
     def _legacy_matrix_buffer(value):
         return wp.to_torch(value).transpose(-2, -1).contiguous().flatten(-2)
 
+    def _element_counts(self, kind):
+        if kind not in self._element_count_cache:
+            paths = getattr(self._view, kind + "_mesh_prim_paths")
+            counts = []
+            for path in paths:
+                prim = self._stage.GetPrimAtPath(path)
+                indices = UsdGeom.TetMesh(prim).GetTetVertexIndicesAttr().Get()
+                if indices is None:
+                    raise RuntimeError(f"Missing cooked tetrahedron connectivity on {path}")
+                counts.append(np.asarray(indices).reshape(-1, 4).shape[0])
+            device = self._view.get_collision_nodal_positions().device
+            self._element_count_cache[kind] = torch.tensor(counts, device=device, dtype=torch.long)
+        return self._element_count_cache[kind]
+
+    @property
+    def simulation_element_counts(self):
+        return self._element_counts("simulation")
+
+    @property
+    def collision_element_counts(self):
+        return self._element_counts("collision")
+
+    def _element_mask(self, kind, size):
+        counts = self._element_counts(kind)
+        if len(counts) != self.count or torch.any(counts > size):
+            raise RuntimeError("Cooked element counts disagree with the live tensor view")
+        return torch.arange(size, device=counts.device)[None, :] < counts[:, None]
+
+    def _mask_elements(self, value, kind):
+        # Padding is not a physical element. Preserve finite zero padding while
+        # retaining the SDK result (including invalid values) for real elements.
+        mask = self._element_mask(kind, value.shape[1])
+        mask = mask.reshape(*mask.shape, *((1,) * (value.ndim - 2)))
+        return torch.where(mask, value, torch.zeros_like(value))
+
     def get_sim_element_rotations(self):
-        return wp.to_torch(self._diagnostics.get_nodal_rotations())
+        return self._mask_elements(wp.to_torch(self._diagnostics.get_nodal_rotations()), "simulation")
 
     def get_sim_element_deformation_gradients(self):
-        return self._legacy_matrix_buffer(self._diagnostics.get_nodal_gradients())
+        return self._mask_elements(self._legacy_matrix_buffer(self._diagnostics.get_nodal_gradients()), "simulation")
 
     def get_sim_element_stresses(self):
         self._material_parameters()  # Never turn absent material properties into zero stresses.
-        return self._legacy_matrix_buffer(self._diagnostics.get_nodal_stresses())
+        return self._mask_elements(self._legacy_matrix_buffer(self._diagnostics.get_nodal_stresses()), "simulation")
 
     def _collision_gradient(self):
         current = self._view.get_collision_nodal_positions()
         indices = self._view.get_collision_element_indices().long()
         if self._collision_rest is None:
-            rows = []
-            for path in self._view.collision_mesh_prim_paths:
+            rest = torch.zeros_like(current)
+            for body, path in enumerate(self._view.collision_mesh_prim_paths):
                 prim = self._stage.GetPrimAtPath(path)
                 pose = prim.GetAttribute('deformablePose:default:omniphysics:points')
                 points = pose.Get() if pose and pose.Get() is not None else UsdGeom.PointBased(prim).GetPointsAttr().Get()
                 if points is None:
                     raise RuntimeError(f'Collision rest/bind points missing on {path}')
                 row = torch.as_tensor(np.array(points, copy=True), device=current.device, dtype=current.dtype)
-                if row.shape != current.shape[1:]:
-                    raise RuntimeError('Collision rest topology does not match the live nodal tensor')
-                rows.append(row)
-            self._collision_rest = torch.stack(rows)
+                if row.ndim != 2 or row.shape[1] != 3 or row.shape[0] > current.shape[1]:
+                    raise RuntimeError('Collision rest topology exceeds the live nodal tensor')
+                rest[body, :row.shape[0]] = row
+            self._collision_rest = rest
+        valid = self._element_mask("collision", indices.shape[1])
+        indices = torch.where(valid[..., None], indices, torch.zeros_like(indices))
+        if torch.any(indices < 0) or torch.any(indices >= current.shape[1]):
+            raise RuntimeError("Collision element connectivity exceeds the live nodal tensor")
         batch = torch.arange(self.count, device=current.device)[:, None, None]
         actual = current[batch, indices]
         rest = self._collision_rest[batch, indices]
         edges = (actual[..., 1:, :] - actual[..., :1, :]).transpose(-2, -1)
         rest_edges = (rest[..., 1:, :] - rest[..., :1, :]).transpose(-2, -1)
+        identity = torch.eye(3, device=current.device, dtype=current.dtype)
+        rest_edges = torch.where(valid[..., None, None], rest_edges, identity)
+        edges = torch.where(valid[..., None, None], edges, identity)
         if torch.any(torch.linalg.det(rest_edges).abs() < 1e-12):
             raise RuntimeError('Cannot recover collision element diagnostics from a degenerate rest tetrahedron')
         return edges @ torch.linalg.inv(rest_edges)
 
     def get_element_deformation_gradients(self):
-        return self._collision_gradient().transpose(-2, -1).contiguous().flatten(-2)
+        return self._mask_elements(self._collision_gradient().transpose(-2, -1).contiguous().flatten(-2), "collision")
 
     @staticmethod
     def _polar_rotation(gradient):
@@ -109,7 +152,7 @@ class VolumeDeformableView:
     def get_element_rotations(self):
         from isaaclab.utils.math import quat_from_matrix, convert_quat
         rotation = self._polar_rotation(self._collision_gradient())
-        return convert_quat(quat_from_matrix(rotation), to='xyzw')
+        return self._mask_elements(convert_quat(quat_from_matrix(rotation), to='xyzw'), 'collision')
 
     def _material_parameters(self):
         material = self._diagnostics.get_applied_physics_materials()
@@ -133,4 +176,4 @@ class VolumeDeformableView:
         # column-major matrix layout consumed by DeformableObjectData.
         first_piola = 2*mu*(rotation @ strain)+identity*lam*trace
         stress = (first_piola @ strain_gradient.transpose(-2, -1))/torch.linalg.det(strain_gradient)[..., None, None]
-        return stress.transpose(-2, -1).contiguous().flatten(-2)
+        return self._mask_elements(stress.transpose(-2, -1).contiguous().flatten(-2), "collision")
