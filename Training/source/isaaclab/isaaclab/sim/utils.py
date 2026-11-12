@@ -421,7 +421,10 @@ def bind_physics_material(
     # check if prim has collision applied on it
     has_physics_scene_api = prim.HasAPI(PhysxSchema.PhysxSceneAPI)
     has_collider = prim.HasAPI(UsdPhysics.CollisionAPI)
-    has_deformable_body = prim.HasAPI(PhysxSchema.PhysxDeformableBodyAPI)
+    # The legacy Python schema class was removed in Sim 6.x. Query the
+    # registered USD identifiers so both current and legacy bodies are recognized.
+    has_deformable_body = (prim.HasAPI("OmniPhysicsDeformableBodyAPI") or
+                           prim.HasAPI("PhysxDeformableBodyAPI"))
     has_particle_system = prim.IsA(PhysxSchema.PhysxParticleSystem)
     if not (has_physics_scene_api or has_collider or has_deformable_body or has_particle_system):
         omni.log.verbose(

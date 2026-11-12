@@ -65,6 +65,32 @@ def main():
         import isaaclab_tasks  # noqa: F401 -- register the actual merged tasks
         from isaaclab_tasks.utils import parse_env_cfg
         from isaaclab.utils.io import dump_yaml
+        from isaaclab.sim.utils import bind_physics_material
+        from pxr import PhysxSchema, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        # Exercise real USD material relationships without adding objects to the
+        # simulated task. A removed deformable class used to break even scenes
+        # and rigid colliders before the environment could be constructed.
+        material_stage = Usd.Stage.CreateInMemory()
+        material = UsdShade.Material.Define(material_stage, '/Material')
+        UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+        scene_prim = UsdPhysics.Scene.Define(material_stage, '/Scene').GetPrim()
+        PhysxSchema.PhysxSceneAPI.Apply(scene_prim)
+        collider_prim = UsdGeom.Cube.Define(material_stage, '/Collider').GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_prim)
+        deformable_prim = UsdGeom.Xform.Define(material_stage, '/Deformable').GetPrim()
+        assert deformable_prim.ApplyAPI('OmniPhysicsDeformableBodyAPI')
+        plain_prim = UsdGeom.Xform.Define(material_stage, '/Plain').GetPrim()
+        checked = []
+        for prim in (scene_prim, collider_prim, deformable_prim, plain_prim):
+            bind_physics_material(str(prim.GetPath()), '/Material', stage=material_stage)
+            bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial(materialPurpose='physics')
+            if prim == plain_prim:
+                assert not bound
+            else:
+                assert bound.GetPath() == material.GetPath(), prim.GetPath()
+            checked.append(str(prim.GetPath()))
+        receipt['material_binding_checks'] = checked
 
         cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs,
                             enable_cameras=True)

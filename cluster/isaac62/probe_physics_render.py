@@ -150,7 +150,10 @@ def main():
         assert str(SimulationManager.get_device()) == f'cuda:{args.gpu}'
         scenes = SimulationManager.get_physics_scenes()
         assert len(scenes) == 1 and scenes[0].get_enabled_gpu_dynamics()
-        timeline.pause()
+        # Keep the timeline playing, as Core SimulationContext.render() does.
+        # Disable automatic physics only during app.update below; entering USD
+        # authoring/pause mode can present authored transforms instead of live
+        # GPU simulation transforms.
         import omni.physxfabric
         fabric = omni.physxfabric.get_physx_fabric_interface()
         flush_fabric = fabric.force_update if hasattr(fabric, 'force_update') else fabric.update
@@ -191,8 +194,14 @@ def main():
             # and current simulation time, rather than its legacy zero-time call.
             flush_fabric(.005, SimulationManager.get_simulation_time())
             before_render = SimulationManager.get_num_physics_steps()
-            app.update()
-            assert SimulationManager.get_num_physics_steps() == before_render, 'Render advanced physics while paused'
+            settings = carb.settings.get_settings()
+            previous_play_simulations = settings.get('/app/player/playSimulations')
+            settings.set_bool('/app/player/playSimulations', False)
+            try:
+                app.update()
+            finally:
+                settings.set_bool('/app/player/playSimulations', previous_play_simulations)
+            assert SimulationManager.get_num_physics_steps() == before_render, 'Render advanced physics'
             transforms = body.get_transforms().detach().cpu().numpy().copy()
             assert transforms.shape == (1, 7) and np.isfinite(transforms).all(), transforms
             positions.append(transforms[0, :3])
