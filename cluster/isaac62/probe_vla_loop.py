@@ -9,6 +9,7 @@ import importlib.metadata
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -96,6 +97,43 @@ def main():
             if not len(predicted) or not np.isfinite(predicted).all():
                 raise RuntimeError('Missing/invalid predicted finger commands')
             receipt['predicted_hand_frames'] = len(predicted)
+
+        # Exercise the production video entry point as well as the statistical
+        # evaluator. Keep its trace separate from the evaluator's evidence.
+        render_command = command.copy()
+        render_command[1] = str(root/'Training/scripts/reinforcement_learning/rsl_rl/play_vla_sonic.py')
+        index = render_command.index('--grasp-dump')
+        del render_command[index:index+2]
+        render_command[render_command.index('--traj-dump')+1] = str(output/'render_trace')
+        render_command += ['--record-video', str(output/'policy')]
+        receipt['render_command'] = render_command
+        with (output/'render.log').open('w') as stream:
+            r = subprocess.run(render_command, cwd=args.asset_cwd, stdout=stream,
+                               stderr=subprocess.STDOUT, timeout=300)
+        if r.returncode:
+            raise RuntimeError('Actual VLA video entry point failed; inspect render.log')
+        ffprobe, ffmpeg = shutil.which('ffprobe'), shutil.which('ffmpeg')
+        if not ffprobe or not ffmpeg:
+            raise RuntimeError('ffprobe/ffmpeg required for real video validation')
+        videos = []
+        for view in ('third_person', 'ego'):
+            path = output/f'policy_ep0_m0_{view}.mp4'
+            r = subprocess.run([ffprobe, '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+                                '-show_entries', 'stream=width,height,nb_read_frames,avg_frame_rate',
+                                '-of', 'json', str(path)], capture_output=True, text=True, check=True, timeout=30)
+            video = json.loads(r.stdout)['streams'][0]
+            if int(video['nb_read_frames']) != 32 or min(int(video['width']), int(video['height'])) < 16:
+                raise RuntimeError('Invalid real VLA video dimensions/frame count')
+            frame = output/f'policy_{view}.png'
+            subprocess.run([ffmpeg, '-nostdin', '-loglevel', 'error', '-i', str(path),
+                            '-vf', 'select=eq(n\\,15)', '-frames:v', '1', str(frame)], check=True, timeout=30)
+            from PIL import Image
+            pixels = np.asarray(Image.open(frame).convert('RGB'))
+            if pixels.max() == 0 or pixels.std() == 0:
+                raise RuntimeError('Black/constant real VLA camera frame')
+            videos.append(dict(file=path.name, ffprobe=video, frame=frame.name,
+                               frame_mean=float(pixels.mean()), frame_std=float(pixels.std())))
+        receipt['videos'] = videos
         receipt.update(completed=True, finished=time.time())
     except BaseException:
         receipt.update(error=traceback.format_exc(), finished=time.time())
