@@ -859,3 +859,33 @@ exactly before stepping. These match the earlier target results; correcting
 the observation ring did not establish exact physical replay. Production DAgger
 rescue retains its tested independent-reroll path. Failed receipts and logs are
 preserved in `out/isaac62_migration/isaac62_static_reset_target_b7f5d4c/`.
+
+
+### Direct expert recording and terminal-frame fix (2026-11-12)
+
+The existing approved evaluation ablation (af60v7 actor output, usual FSQ snap,
+no base-token addition) now uses the same DirectExpertEvalWrapper in the video
+entry point. Actor observations, decoder and finger scalar remain unchanged.
+The runtime probe accepts this path without starting a GR00T model service.
+
+Actual run `0aeff68` exposed a video/trajectory mismatch: termination at step5
+left four nonterminal trajectory frames but five video frames. The recorder
+wrote after the environment had automatically reset, before checking dones.
+`a5aa9cc` places video writes under the existing nonterminal guard. Its rerun
+passes actual evaluator and recorder gates: four finite trace frames, four
+third-person frames (2560x1920), four ego frames (1280x960), all at50fps with
+nonblack frame samples. The actual scalar finger commands match saved actions.
+The prior pred_meanq field is a placeholder in this mode and is explicitly
+labelled as such, rather than counted as a predicted finger-angle check.
+
+The ordinary saved GR00T92967 service/evaluator/recorder path is also rerun at
+`a5aa9cc` and passes32frame traces and both camera videos. Both runs exit zero,
+release reservations and leave no account-owned GPU contexts. These bounded
+runs validate wiring, termination accounting and media, not task performance.
+The capability-union audit at this commit has no findings against334g1 and
+315locomotion project files; this remains a surface audit, not behavioral proof.
+
+Local clips, traces, receipts and logs: `out/isaac62_migration/isaac62_direct_expert_a5aa9cc/`
+and `out/isaac62_migration/isaac62_vla_loop_a5aa9cc/`. The failed first run is
+preserved in `isaac62_direct_expert_0aeff68/`. The shared dashboard links original
+videos without recompression. User appearance review remains pending.
