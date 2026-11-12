@@ -889,3 +889,26 @@ Local clips, traces, receipts and logs: `out/isaac62_migration/isaac62_direct_ex
 and `out/isaac62_migration/isaac62_vla_loop_a5aa9cc/`. The failed first run is
 preserved in `isaac62_direct_expert_0aeff68/`. The shared dashboard links original
 videos without recompression. User appearance review remains pending.
+
+
+### Runtime application label and preserved asset URLs (2026-11-12)
+
+The shared legacy Kit experiences label the application5.1.0 even when the
+installed runtime is6.2. `17fa94e` supplies the installed pip runtime's three-part
+application version for default experiences on6.x. Legacy runtimes, custom
+experiences and explicit Kit overrides retain their prior behavior. This fixes
+the misleading settings/log namespace without changing the authored asset URLs.
+Four focused launcher-argument contracts pass.
+
+The actual pick task at this commit reports application_version6.2.0 and the
+unchanged Isaac5.1 asset root. It completes32zero-action steps, final reset,
+material-binding checks and three-camera image checks. Its video has32frames at
+1280x720,50fps. Physicsdt0.005 anddecimation4 are unchanged. The wrapper exits
+zero and releases its reservation; independent XML checks find no account GPU
+contexts. Local evidence: `out/isaac62_migration/isaac62_pick_task_17fa94e_runtime_label/`
+and `runtime_label_cpu_contracts.json`. This is a technical task/rendering gate,
+not policy or task-success validation.
+
+The latest Bluesclues capacity check still has all ten GPUs occupied by other
+accounts, with at most20.5GiB free on any device. No optimizer test is launched
+into that insufficient headroom. The Adroit access hold remains unchanged.
