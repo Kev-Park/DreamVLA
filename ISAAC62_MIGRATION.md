@@ -112,6 +112,24 @@ arrays match exactly, inputs remain unchanged, and joint limits were checked.
 This exercises the actual `solve_upper` implementation, not a substitute solver;
 full retargeting, stitched sequence generation and simulator replay remain open.
 
+A full 252-frame stitch/export/reload case ran in both environments at `a4f8523`,
+using the saved walking prefix from `StitchMAX200v3/pick_14030.pkl` and its matching
+static reference, the unchanged calibrated hand shift and 1,200 IK iterations.
+Both standalone checks passed frame/grab arithmetic, unit quaternions, finite
+geometry, preserved walking legs/root, held post-footfall lower body, serialization
+and unchanged input hashes. This reuses an existing walking prefix; it does not
+regenerate the original raw walking retarget.
+
+The cross-runtime strict array-parity gate FAILED for joint angles at
+rtol=1e-4/atol=1e-5. Maximum difference is 7.54e-5 radians (0.00432 degrees), in
+upper-body joint index 24 at frame 99. Only waist/right-arm IK joints differ;
+legs, left arm, root, object and ankle geometry are exact. Maximum hand-position
+Euclidean difference is 1.87e-7 meters. Do not replace this failed gate with a
+post-hoc relaxed tolerance or claim visual equivalence. Both outputs, full logs,
+source hashes, arrays, comparison and joint diagnostics are in workspace
+`out/isaac62_migration/isaac62_stitch_a4f8523/`; simulator replay/user review remains
+required. Neither environment modified the input references.
+
 The actual GR00T Trainer gate is prepared in
 `cluster/isaac62/probe_gr00t_train_resume.py`: batch one, a two-update schedule,
 one full model/optimizer checkpoint after update one, and a fresh-process resume.
