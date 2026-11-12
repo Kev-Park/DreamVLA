@@ -102,6 +102,10 @@ def spawn_deformable_body_material(prim_path: str, cfg: physics_materials_cfg.De
 
     .. _PxFEMSoftBodyMaterial: https://nvidia-omniverse.github.io/PhysX/physx/5.4.1/_api_build/structPxFEMSoftBodyMaterialModel.html
     """
+    # Validate removed properties before authoring even an empty USD material.
+    if not hasattr(PhysxSchema, 'PhysxDeformableBodyMaterialAPI') and cfg.damping_scale != 1.0:
+        raise NotImplementedError('Isaac Sim 6.2 removed non-neutral deformable damping_scale; it cannot be ignored')
+
     # get stage handle
     stage = get_current_stage()
 
@@ -116,8 +120,6 @@ def spawn_deformable_body_material(prim_path: str, cfg: physics_materials_cfg.De
         raise ValueError(f"A prim already exists at path: '{prim_path}' but is not a material.")
     # retrieve the deformable-body api
     if not hasattr(PhysxSchema, 'PhysxDeformableBodyMaterialAPI'):
-        if cfg.damping_scale != 1.0:
-            raise NotImplementedError('Isaac Sim 6.2 removed non-neutral deformable damping_scale; it cannot be ignored')
         prim.ApplyAPI('OmniPhysicsBaseMaterialAPI')
         prim.ApplyAPI('OmniPhysicsDeformableMaterialAPI')
         prim.ApplyAPI('PhysxDeformableMaterialAPI')
