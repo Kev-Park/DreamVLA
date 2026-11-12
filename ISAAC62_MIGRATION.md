@@ -933,10 +933,41 @@ source data are changed. Local receipts, actual commands/logs and both NPZs:
 `out/isaac62_migration/isaac62_human_motion_export_f5affef_retry/`.
 This adds actual input-export coverage before the already tested raw-walking
 Adapter B. It does not establish full OmniControl diffusion sampling or holosoma
-optimization; the expected holosoma executable is absent at Biped's shared path.
+optimization. A later path audit finds the executable in holosoma's nested package;
+its separate existing environment is required (see the review note below).
 
 Implicit-material deformable stress remains unsupported: the installed SDK's
 own diagnostic implementation substitutes zero modulus/Poisson values when no
 material is bound, which does not establish the solver's actual default material.
 The bridge therefore keeps its explicit error rather than inventing a constitutive
 response. Explicit-material diagnostic paths remain independently validated.
+
+
+### Remaining upstream profile boundary (2026-11-12)
+
+A corrected path audit finds Biped's retargeter at
+`~/kevin/holosoma/src/holosoma_retargeting/holosoma_retargeting/examples/robot_retarget.py`.
+The earlier top-level examples-path check was insufficient; the executable is
+present. The installed6.2 profile lacks cvxpy, and the retargeting package pins
+NumPy2.3.5 versus the simulator profile's2.3.1. Do not install conflicting pins
+into the simulator. Both original hsretargeting interpreters exist; the generation
+script prefers the one under~/kevin. Using it needs environment review under the
+workspace agreement. No alternative environment was executed during this audit.
+
+The shared holosoma checkout is atde6ea0135fed1c10d55c406688fb7a3ac2b5111e,
+with a modifiedscripts/source_common.sh and an untracked retargeter backup.
+Those are untouched. The prepared one-clip review plan uses a new Git export,
+oneCPU,noGPU/no viewer and the unchanged default retarget recipe; it leaves
+shared source/data and all existing packages intact. Plan:
+`out/isaac62_migration/holosoma_existing_profile_review.json`.
+
+
+The next real-recording conversion gate is prepared in
+`cluster/isaac62/probe_recording_conversion.py`. It requires two distinct complete
+HDF5s and the committed converter export in the approved CPU profile. It writes
+fresh serial and two-shard conversions, invokes the production merger and exact
+comparison, checks recorded token equality and episode/frame totals, and verifies
+input hashes and absence of cached global normalization. It retains every phase
+log/output on failure. Only syntax checks have run; this gate is not passed.
+Official GR00T loader/video decoding and regeneration/comparison of whole-dataset
+and relative-action normalization remain required after successful conversion.
