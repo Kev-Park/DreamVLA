@@ -55,6 +55,8 @@ parser.add_argument("--seed", type=int, default=0,
 parser.add_argument("--task", type=str, default="Isaac-Motion-Tracking-Pick-BinaryFingers-v0", help="Name of the task.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--name", type=str, default="sonic_adapter_play.mp4", help="Output video file name.")
+parser.add_argument("--traj-dump", type=str, default=None,
+                    help="Optional uncompressed NPZ of rendered robot/reference poses and motion time.")
 parser.add_argument("--force-motion-id", type=int, default=-1,
                     help="Force this motion_id for every reset (>=0) to render one specific clip.")
 parser.add_argument("--path", type=str, default=None, help="Explicit checkpoint path (overrides auto-discovery).")
@@ -699,8 +701,11 @@ def main():
     # motion_lib/motion_ids exist).
     ref_joint_map = (
         _build_reference_joint_map(env, device)
-        if (args_cli.reference_playback or args_cli.reference_pd) else None
+        if (args_cli.reference_playback or args_cli.reference_pd or args_cli.traj_dump) else None
     )
+    trajectory = {name: [] for name in ("root_pos", "root_quat", "joint_pos", "ref_order_joint_pos",
+                                       "ref_root_pos", "ref_root_quat", "ref_joint_pos",
+                                       "motion_time", "motion_duration")}
     if args_cli.reference_playback:
         _write_reference_pose(env, ref_joint_map, device)  # frame 0 = reference at reset
         flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
@@ -743,6 +748,23 @@ def main():
 
         # 2. flush RTX render pipeline so the camera annotator delivers THIS step's frame
         flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
+
+        if args_cli.traj_dump:
+            with torch.inference_mode():
+                unw = env.unwrapped
+                robot = unw.scene["robot"]
+                motion_time = unw.episode_length_buf * unw.step_dt + unw.start_motion_times.to(
+                    device=device, dtype=torch.float32)
+                reference = unw.motion_lib.get_motion_state(unw.motion_ids, motion_time)
+                values = {"root_pos": robot.data.root_pos_w[0]-unw.scene.env_origins[0],
+                          "root_quat": robot.data.root_quat_w[0], "joint_pos": robot.data.joint_pos[0],
+                          "ref_order_joint_pos": robot.data.joint_pos[0, ref_joint_map],
+                          "ref_root_pos": reference["root_pos"][0],
+                          "ref_root_quat": reference["root_rot"][0],
+                          "ref_joint_pos": reference["dof_pos"][0], "motion_time": motion_time[0],
+                          "motion_duration": unw.motion_lib.get_motion_length(unw.motion_ids)[0]}
+                for name, value in values.items():
+                    trajectory[name].append(value.detach().cpu().numpy().copy())
 
         # frame diagnostic: resolve robot/object/table world frames + confirm object placement.
         if timestep in (0, 40, 80):
@@ -804,6 +826,13 @@ def main():
             time.sleep(sleep_time)
 
     writer.close()
+    if args_cli.traj_dump and trajectory["motion_time"]:
+        trace_path = Path(args_cli.traj_dump)
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(trace_path, **{name: np.stack(rows) for name, rows in trajectory.items()},
+                 joint_names=np.asarray(env.unwrapped.scene["robot"].data.joint_names),
+                 reference_joint_names=np.asarray(env.unwrapped.motion_lib.joint_names))
+        print(f"[traj-dump] {trace_path}: {len(trajectory['motion_time'])} frames")
     env.close()
 
 
