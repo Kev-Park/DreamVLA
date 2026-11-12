@@ -52,6 +52,8 @@ def main():
     assert not encoder.training and not decoder.training
     assert all(not parameter.requires_grad for module in (encoder, decoder)
                for parameter in module.parameters())
+    assert all(parameter.device == device for module in (encoder, decoder)
+               for parameter in module.parameters())
 
     def inputs(width):
         index = np.arange(4*width, dtype=np.float64).reshape(4, width)
@@ -60,6 +62,7 @@ def main():
     encoder_input, decoder_input = inputs(ENCODER_IN_DIMS[args.encoder]), inputs(994)
     with torch.inference_mode():
         tokens, actions = encoder(encoder_input), decoder(decoder_input)
+    assert tokens.device == device and actions.device == device
     if not torch.isfinite(tokens).all() or not torch.isfinite(actions).all():
         raise ValueError('Native SONIC produced nonfinite outputs')
     args.output.mkdir(parents=True, exist_ok=False)

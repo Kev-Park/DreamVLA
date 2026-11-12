@@ -78,10 +78,12 @@ def main():
     ).to(device)
     model.load_state_dict(state, strict=True)
     model.eval()
+    assert all(parameter.device == device for parameter in model.parameters())
     with torch.inference_mode():
         actions = model.act_inference(observations)
         values = model.evaluate(observations)
     for tensor in (actions, values):
+        assert tensor.device == device
         if not torch.isfinite(tensor).all():
             raise ValueError('Nonfinite checkpoint predictions')
 
