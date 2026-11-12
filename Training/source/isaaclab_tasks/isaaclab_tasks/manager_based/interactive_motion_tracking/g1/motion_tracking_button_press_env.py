@@ -121,7 +121,8 @@ def reset_button(
         motion_ids = env.motion_ids.clone().detach().to(device=env.device, dtype=torch.long)[env_ids]
         motion_res = env.motion_lib.get_motion_state(motion_ids, motion_times)
         velocities = torch.zeros((env.scene.num_envs, 6), device=env.device)[env_ids]
-        env.last_contacts[env_ids, :] = 0.
+        if hasattr(env, "last_contacts"):
+            env.last_contacts[env_ids, :] = 0.
         offset = motion_res["offsets"]
         goal_pos = motion_res["grab_pos"]
         if "buttons" in env.scene.keys():

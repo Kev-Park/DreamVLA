@@ -18,6 +18,28 @@ def load(filename, name):
 
 
 class OptionalSuccessCounter(unittest.TestCase):
+    def test_button_reset_with_optional_contact_history(self):
+        reset = load('motion_tracking_button_press_env.py', 'reset_button')
+        for history in (False, True):
+            poses, velocities = [], []
+            class Scene(dict):
+                num_envs = 3
+                env_origins = torch.tensor([[1., 0., 0.], [2., 0., 0.], [3., 0., 0.]])
+            scene = Scene(buttons=NS(write_root_pose_to_sim=lambda p, **kw: poses.append(p),
+                                     write_root_velocity_to_sim=lambda p, **kw: velocities.append(p)))
+            env = NS(start_motion_times=torch.zeros(3), motion_ids=torch.zeros(3),
+                     device='cpu', scene=scene,
+                     motion_lib=NS(get_motion_state=lambda *a: {'offsets': torch.ones(2, 3),
+                                                                'grab_pos': torch.zeros(2, 3)}))
+            if history:
+                env.last_contacts = torch.ones(3, 2)
+            reset(env, torch.tensor([0, 2]))
+            torch.testing.assert_close(poses[0], torch.tensor([[2.03, 1., .932, 1., 0., 0., 0.],
+                                                              [4.03, 1., .932, 1., 0., 0., 0.]]))
+            torch.testing.assert_close(velocities[0], torch.zeros(2, 6))
+            if history:
+                torch.testing.assert_close(env.last_contacts, torch.tensor([[0., 0.], [1., 1.], [0., 0.]]))
+
     def test_counter_presence_preserves_reward_and_existing_tally(self):
         positions = torch.tensor([0., .049, .05, .051, .2])
         closed = torch.tensor([True, True, True, True, False])
