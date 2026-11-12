@@ -22,7 +22,8 @@ def simulation_config(gpu):
                 fast_shutdown=True,
                 # GPU PhysX writes transforms to Fabric, not USD. Hydra must
                 # consume that scene delegate, as the project rendering kits do.
-                extra_args=['--/app/useFabricSceneDelegate=true'],
+                extra_args=['--/app/useFabricSceneDelegate=true',
+                            '--/rtx/hydra/readTransformsFromFabricInRenderDelegate=true'],
                 width=128, height=128, renderer='RayTracedLighting')
 
 
@@ -66,6 +67,9 @@ def main():
         import carb.settings
         receipt['fabric_scene_delegate_enabled'] = carb.settings.get_settings().get('/app/useFabricSceneDelegate')
         assert receipt['fabric_scene_delegate_enabled'] is True
+        receipt['fabric_render_transform_read_enabled'] = carb.settings.get_settings().get(
+            '/rtx/hydra/readTransformsFromFabricInRenderDelegate')
+        assert receipt['fabric_render_transform_read_enabled'] is True
         import numpy as np
         import torch
         import omni.physics.tensors as tensors
@@ -126,6 +130,9 @@ def main():
         device = torch.device(f'cuda:{args.gpu}')
         torch.cuda.set_device(device)
         SimulationManager.setup_simulation(dt=.005, device=str(device))
+        receipt['fabric_settings'] = {name:carb.settings.get_settings().get('/physics/'+name)
+                                      for name in ('fabricUpdateTransformations', 'fabricUseGPUInterop',
+                                                   'updateToUsd', 'updateToFabric')}
         timeline = omni.timeline.get_timeline_interface()
         timeline.play()
         for _ in range(8):
