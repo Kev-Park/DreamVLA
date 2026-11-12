@@ -717,3 +717,28 @@ its cleanup-owned entrypoint at `8cc8354`; all68 current CPU contracts pass.
 The ring fix is not included in the matched `0c3726a` simulation results and is
 not claimed to resolve the remaining physical replay divergence. Collector SDK
 shutdown now feature-detects exit_code, which Isaac5.1 does not accept.
+
+
+### Differently cooked bodies in one view (2026-11-12)
+
+The first actual mixed-mesh probe at `70f1023` exposed an adapter bug: it required
+every body's rest-node array to fill the batch's maximum node count. The failure
+was preserved and its process/GPU resources released. `d3796af` now retains each
+cooked TetMesh's element count, pads rest-node storage, masks only nonexistent
+elements, and still rejects degenerate real tetrahedra. Simulation diagnostic
+padding is masked too. The per-body cooked counts are available on the adapter.
+Zero padding is not reported as a physical rotation or material response.
+
+The repaired two-body probe passes 20 real physics steps, state restoration,
+kinematic writes, six finite diagnostic arrays and unit rotations for valid
+elements. The different bodies have [384,216] simulation and [480,284] collision
+elements. A stronger probe at `e43c2ff` applies a known10% x-stretch to the second
+body, with a distinct75000-Pa/0.27 material, while the first remains unstretched.
+Collision gradient error against the analytical affine response is9.64e-6
+(preset1e-4 gate); stress error is0.562Pa (preset10Pa gate). Those checks distinguish
+actual per-body values from finite padding or copied batch-member data.
+The earlier single-tetrahedron legacy collision-parity failures remain failed;
+this separate analytical gate does not change their tolerances or conclusion.
+Local arrays/scenes/receipts: `out/isaac62_migration/isaac62_deformable_batch_e43c2ff/`.
+Generic deformable coverage still does not establish implicit-material stress,
+preexisting legacy USD migration or non-neutral damping support.
