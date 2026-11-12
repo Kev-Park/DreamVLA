@@ -27,6 +27,8 @@ def main():
     parser.add_argument('--ref-motions-path', type=Path, required=True)
     parser.add_argument('--asset-cwd', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--checks', nargs='+', choices=['determinism', 'restore', 'expert'],
+                        default=['determinism', 'restore', 'expert'])
     args = parser.parse_args()
     output = args.output.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -56,6 +58,8 @@ def main():
                 ('determinism', ['--dagger-selftest-determinism', '16'], '[selftest-determinism] PASS'),
                 ('restore', ['--dagger-selftest-restore', '8', '16'], '[selftest-restore] PASS'),
                 ('expert', [], '[INFO] Collection finished.')):
+            if name not in args.checks:
+                continue
             phase = dict(name=name, completed=False)
             receipt['phases'].append(phase)
             cmd = [*command, '--output-directory', str(output/name), *extra]

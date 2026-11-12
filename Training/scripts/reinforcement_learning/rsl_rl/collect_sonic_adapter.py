@@ -651,6 +651,14 @@ def rollout_snapshot(env) -> dict:
     """Everything needed to resume this rollout exactly at the current frame."""
     u = env.unwrapped
     snap = {"scene": u.scene.get_state(is_relative=False)}
+    # Scene state contains measured positions/velocities, not drive targets.
+    # reset_to() replaces both PD targets with those measured values. Retain
+    # the actual targets so restoring motion does not change its control state.
+    snap["_articulation_targets"] = {
+        name: {key: getattr(asset.data, key).clone()
+               for key in ("joint_pos_target", "joint_vel_target", "joint_effort_target")}
+        for name, asset in u.scene.articulations.items()
+    }
     missing = []
     for name in _SNAP_ENV_TENSORS:
         t = getattr(u, name, None)
@@ -698,6 +706,12 @@ def rollout_restore(env, snap: dict) -> None:
     # the events and the intermediate pose entirely.
     env_ids = torch.arange(u.num_envs, dtype=torch.int64, device=u.device)
     u.scene.reset_to(snap["scene"], env_ids, is_relative=False)
+    for name, targets in snap.get("_articulation_targets", {}).items():
+        asset = u.scene.articulations[name]
+        asset.set_joint_position_target(targets["joint_pos_target"], env_ids=env_ids)
+        asset.set_joint_velocity_target(targets["joint_vel_target"], env_ids=env_ids)
+        asset.set_joint_effort_target(targets["joint_effort_target"], env_ids=env_ids)
+    u.scene.write_data_to_sim()
     u.sim.forward()
     for name in _SNAP_ENV_TENSORS:
         cur, saved = getattr(u, name, None), snap.get(name)
