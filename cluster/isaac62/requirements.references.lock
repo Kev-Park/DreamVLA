@@ -1,0 +1,12 @@
+docstring-parser==0.18.0
+jax==0.4.38
+jax-dataclasses==1.6.3
+jaxlib==0.4.38
+jaxlie==1.5.0
+ml-dtypes==0.6.0
+numpy==2.3.1
+opt-einsum==3.4.0
+scipy==1.17.0
+typeguard==4.6.0
+typing-extensions==4.16.0
+tyro==1.0.17
