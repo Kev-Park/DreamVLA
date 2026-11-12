@@ -49,9 +49,9 @@ def main():
     config.model.model_name = 'nvidia/Cosmos-Reason2-2B'
     config.model.use_relative_action = True
     config.model.reproject_vision = False
-    config.data.shard_size = 8
+    # Keep the production shard size/split rate: shards smaller than an episode
+    # subsequence can create empty greedy-assignment shards in the real loader.
     config.data.num_shards_per_epoch = 1
-    config.data.episode_sampling_rate = 1.
     cfg = args.output/'experiment_cfg';cfg.mkdir(exist_ok=True)
     config.save(cfg/'config.yaml')
     pipeline = MODEL_REGISTRY.get(type(config.model))(config, cfg)
