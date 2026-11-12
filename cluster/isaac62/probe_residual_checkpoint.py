@@ -1,8 +1,8 @@
-"""CPU-only trained residual checkpoint gate; not a task-performance evaluation.
+"""Trained residual checkpoint gate; not a task-performance evaluation.
 
 Run the same checkpoint under both runtimes, then compare the saved arrays.
 Activation is explicit because a state_dict does not encode activation functions.
-Never installs dependencies, modifies a checkpoint, or allocates a GPU.
+CUDA requires a separately reviewed, single visible GPU allocation.
 """
 from __future__ import annotations
 
@@ -21,8 +21,9 @@ def main():
     parser.add_argument('--checkpoint', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--activation', choices=['elu', 'relu', 'selu', 'tanh'], required=True)
+    parser.add_argument('--device', choices=['cpu', 'cuda:0'], default='cpu')
     args = parser.parse_args()
-    if os.environ.get('CUDA_VISIBLE_DEVICES') != '':
+    if args.device == 'cpu' and os.environ.get('CUDA_VISIBLE_DEVICES') != '':
         parser.error('Launch with CUDA_VISIBLE_DEVICES empty for this CPU-only gate')
     if args.output.exists():
         parser.error('Output already exists; inspect the existing receipt first')
@@ -33,6 +34,11 @@ def main():
 
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
+    device = torch.device(args.device)
+    if device.type == 'cuda':
+        if not os.environ.get('CUDA_VISIBLE_DEVICES') or torch.cuda.device_count() != 1:
+            parser.error('CUDA gate requires exactly one explicitly visible reviewed GPU')
+        torch.cuda.set_device(device)
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root/'Training/scripts/reinforcement_learning/rsl_rl'))
     from vla_sonic.adapter_actor_critic import AdapterActorCritic
@@ -57,7 +63,7 @@ def main():
     # Formula-defined inputs avoid differences in random-number generators.
     def inputs(width):
         index = np.arange(8*width, dtype=np.float64).reshape(8, width)
-        return torch.from_numpy((np.sin(index*.013)*.5).astype(np.float32))
+        return torch.from_numpy((np.sin(index*.013)*.5).astype(np.float32)).to(device)
 
     observations = TensorDict({'policy': inputs(actor[0].shape[1]),
                                'critic': inputs(critic[0].shape[1])}, batch_size=[8])
@@ -69,7 +75,7 @@ def main():
         actor_obs_normalization=any(key.startswith('actor_obs_normalizer.') for key in state),
         critic_obs_normalization=any(key.startswith('critic_obs_normalizer.') for key in state),
         noise_std_type='log' if 'log_std' in state else 'scalar',
-    )
+    ).to(device)
     model.load_state_dict(state, strict=True)
     model.eval()
     with torch.inference_mode():
@@ -80,13 +86,14 @@ def main():
             raise ValueError('Nonfinite checkpoint predictions')
 
     args.output.mkdir(parents=True, exist_ok=False)
-    np.savez(args.output/'predictions.npz', policy=observations['policy'].numpy(),
-             critic=observations['critic'].numpy(), actions=actions.numpy(), values=values.numpy())
+    np.savez(args.output/'predictions.npz', policy=observations['policy'].cpu().numpy(),
+             critic=observations['critic'].cpu().numpy(), actions=actions.cpu().numpy(), values=values.cpu().numpy())
     report = dict(checkpoint=str(checkpoint), checkpoint_sha256=digest.hexdigest(),
                   iteration=saved.get('iter'), activation=args.activation,
                   python=sys.version, packages={name: importlib.metadata.version(name)
                                                for name in ['torch', 'numpy', 'rsl-rl-lib', 'tensordict']},
-                  strict_load=True, gpu_used=False, task_evaluated=False,
+                  strict_load=True, gpu_used=device.type == 'cuda', device=str(device), task_evaluated=False,
+                  cuda_runtime=torch.version.cuda,
                   input_scope='Eight fixed synthetic observations; no claim about task behavior',
                   actor_input_width=actor[0].shape[1], actions=list(actions.shape),
                   critic_input_width=critic[0].shape[1], values=list(values.shape))
