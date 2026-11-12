@@ -136,7 +136,7 @@ def convert_copy(source, destination):
     from omni.physxassetvalidator.scripts.deformableSchemaChecker import DeformableSchemaChecker
     source = Path(source).expanduser().resolve(strict=True)
     destination = Path(destination).expanduser().absolute()
-    if destination.exists() or source.resolve()==destination.resolve():
+    if destination.exists() or destination.is_symlink() or source.resolve()==destination.resolve():
         raise ValueError('Conversion requires a new output file')
     digest=hashlib.sha256(source.read_bytes()).hexdigest()
     original=Usd.Stage.Open(str(source))

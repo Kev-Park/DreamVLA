@@ -830,3 +830,22 @@ legacy surface/cloth/attachment types, and animated legacy solver arrays rather
 than dropping them. Generic command-line conversion packaging and rejection-case
 tests remain separate work; ordinary asset loading does not silently rewrite
 legacy files. Implicit-material stress support also remains unverified.
+
+
+### Reusable saved-volume converter and rejection checks
+
+Commit `b7f5d4c` exposes the same tested conversion implementation through
+`cluster/isaac62/convert_legacy_volume_usd.py SOURCE DESTINATION`. Run it in the
+approved cluster Isaac 6.2 environment, with the usual account resource review
+and GPU reservation. The destination must be a new file. Conversion is explicit;
+ordinary asset loading never rewrites a legacy source automatically.
+
+The integration probe at this commit exercises six loss-prevention cases on
+anonymous stages: non-neutral dampingScale, density without explicit mass,
+animated solver arrays, surface deformables, particle cloth and attachments.
+All six reject without modifying the anonymous stage. The same shared converter
+then passes the saved-cube 20-step physics and affine-diagnostic checks, with the
+source SHA unchanged and clean exit. This validates the shared conversion path;
+the standalone CLI lifecycle has not yet been separately exercised.
+Local converted USD, diagnostic arrays, receipt and terminal record:
+`out/isaac62_migration/isaac62_legacy_deformable_usd_b7f5d4c/`.
