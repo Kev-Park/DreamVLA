@@ -25,6 +25,16 @@ def convert_copy(source, destination):
     # The SDK rewrites editable layer stacks. Flatten into an anonymous layer
     # so referenced assets and the source file cannot receive those edits.
     stage=Usd.Stage.Open(original.Flatten())
+    # Keep authored versus registered API discovery visible: removed USD schemas
+    # may remain in file metadata while GetAppliedSchemas omits them.
+    for label, current in (("original", original), ("flattened", stage)):
+        rows=[]
+        for prim in current.Traverse():
+            authored=prim.GetMetadata("apiSchemas")
+            if "Deformable" in str(authored):
+                rows.append(dict(path=str(prim.GetPath()), authored=str(authored),
+                                 registered=list(prim.GetAppliedSchemas())))
+        print(json.dumps({"schema_discovery":label,"rows":rows}),flush=True)
     old=[]
     for prim in stage.Traverse():
         schemas=prim.GetAppliedSchemas()
