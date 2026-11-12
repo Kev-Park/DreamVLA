@@ -845,7 +845,17 @@ anonymous stages: non-neutral dampingScale, density without explicit mass,
 animated solver arrays, surface deformables, particle cloth and attachments.
 All six reject without modifying the anonymous stage. The same shared converter
 then passes the saved-cube 20-step physics and affine-diagnostic checks, with the
-source SHA unchanged and clean exit. This validates the shared conversion path;
-the standalone CLI lifecycle has not yet been separately exercised.
+source SHA unchanged and clean exit. The standalone CLI at `c911bbc` also completes against the same saved source,
+with a new converted file, unchanged source hash and exit zero. Its GPU reservation
+is released, and an independent XML inspection finds no account GPU contexts.
 Local converted USD, diagnostic arrays, receipt and terminal record:
 `out/isaac62_migration/isaac62_legacy_deformable_usd_b7f5d4c/`.
+
+
+The post-history-fix snapshot/reset retest at `b7f5d4c` retains both strict
+failures: reset joint-position divergence is0.02171rad and snapshot replay
+joint-velocity divergence is0.09221rad/s. Measured snapshot state restores
+exactly before stepping. These match the earlier target results; correcting
+the observation ring did not establish exact physical replay. Production DAgger
+rescue retains its tested independent-reroll path. Failed receipts and logs are
+preserved in `out/isaac62_migration/isaac62_static_reset_target_b7f5d4c/`.
