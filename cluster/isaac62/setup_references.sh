@@ -4,6 +4,8 @@ set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 prefix="$HOME/kevin/envs/dreamcontrol_62"
 [[ -f "$prefix/dreamvla_project_install_receipt.json" ]]
+export PATH="$HOME/.local/bin:$PATH"
+command -v uv >/dev/null
 export UV_CACHE_DIR="$HOME/kevin/cache/uv_isaac62"
 export UV_CONCURRENT_DOWNLOADS=2 UV_CONCURRENT_BUILDS=1 UV_CONCURRENT_INSTALLS=1
 export CUDA_VISIBLE_DEVICES='' JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
