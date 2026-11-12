@@ -2,6 +2,7 @@
 import argparse
 import importlib.metadata
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -51,7 +52,7 @@ def main():
         assert asset.is_initialized
         root = sim.stage.GetPrimAtPath('/World/SoftCube')
         assert root.HasAPI('OmniPhysicsDeformableBodyAPI')
-        assert root.GetAttribute('omniphysics:mass').Get() == .8
+        assert math.isclose(root.GetAttribute('omniphysics:mass').Get(), .8, abs_tol=1e-7, rel_tol=0)
         material_path = UsdShade.MaterialBindingAPI(root).GetDirectBindingRel('physics').GetTargets()[0]
         density = sim.stage.GetPrimAtPath(material_path).GetAttribute('omniphysics:density').Get()
         assert density == 1300.

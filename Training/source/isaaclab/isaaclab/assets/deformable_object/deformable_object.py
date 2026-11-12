@@ -277,9 +277,10 @@ class DeformableObject(AssetBase):
             if legacy else prim.HasAPI('OmniPhysicsDeformableBodyAPI')
         )
         if len(root_prims) == 0:
+            schema_name = 'PhysxSchema.PhysxDeformableBodyAPI' if legacy else 'OmniPhysicsDeformableBodyAPI'
             raise RuntimeError(
                 f"Failed to find a deformable body when resolving '{self.cfg.prim_path}'."
-                " Please ensure that the prim has 'PhysxSchema.PhysxDeformableBodyAPI' applied."
+                f" Please ensure that the prim has '{schema_name}' applied."
             )
         if len(root_prims) > 1:
             raise RuntimeError(
