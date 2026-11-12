@@ -30,7 +30,7 @@ def main():
                   scope='All registered project motion-task config constructors; no environment allocation')
     app = None
     try:
-        app = AppLauncher(args, multi_gpu=False, fast_shutdown=not args.baseline_51).app
+        app = AppLauncher(args, multi_gpu=False, fast_shutdown=True).app
         import gymnasium as gym
         import isaaclab_tasks  # noqa: F401: populates the actual registry
         report['task_package'] = str(Path(isaaclab_tasks.__file__).resolve())
@@ -62,6 +62,11 @@ def main():
         (args.output/'receipt.json').write_text(json.dumps(report, indent=2)+'\n')
         if app is not None:
             if args.baseline_51:
+                # SDK 5.1 has no exit_code argument and its fast shutdown may
+                # return zero even on failure. The persisted receipt is the
+                # authoritative baseline result, never the process exit alone.
+                report['legacy_shutdown_exit_is_not_a_result'] = True
+                (args.output/'receipt.json').write_text(json.dumps(report, indent=2)+'\n')
                 app.close()
             else:
                 app.close(exit_code=0 if report['completed'] else 1)
