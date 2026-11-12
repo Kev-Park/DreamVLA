@@ -772,3 +772,26 @@ No packages were changed. Local outputs/recipes/source provenance/comparison:
 `out/isaac62_migration/isaac62_raw_walking_45ebd17/` and `raw_walking_fixture/`.
 This covers raw-to-reference walking conversion, not upstream holosoma motion
 inference or arm refinement (the accepted walking-prefix recipe disables it).
+
+
+### Saved legacy deformable USD conversion investigation (2026-11-12)
+
+The SDK ships `omni.physxassetvalidator.scripts.deformableSchemaChecker`, including
+a volume conversion path. Probes `060189b` and `3e26b4c` attempt to use it on an
+anonymous flattened copy of the actual5.1 cooked cube fixture. Neither converts
+a body: the saved `PhysxDeformableBodyAPI` and `PhysxDeformableBodyMaterialAPI`
+tokens remain in authored metadata, but6.2's GetAppliedSchemas omits them, both
+before and after flattening. The supplied SDK checker uses GetAppliedSchemas
+for discovery too. Thus the public conversion path is not currently validated;
+no converted asset or successful6.2 file-load claim follows from these runs.
+The source file was not edited; no SDK/environment source was patched. Both
+failed processes terminated and released their GPU resources.
+
+The probe also rejects two known silent-loss cases before conversion:
+non-neutral legacy dampingScale, and body-only density without explicit mass
+(the SDK converter deliberately drops that density). Existing procedural6.2
+assets remain independently tested, including heterogeneous meshes and analytical
+material response. A separate metadata-driven application conversion path would
+need implementation and a real file-load/physics check to close this gap.
+Local evidence: `out/isaac62_migration/isaac62_legacy_deformable_usd_3e26b4c/`,
+including `schema_discovery.json`, the original failure receipt and sibling log.
