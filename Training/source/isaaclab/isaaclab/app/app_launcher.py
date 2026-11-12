@@ -14,6 +14,7 @@ fault occurs. The launched :class:`isaacsim.simulation_app.SimulationApp` instan
 
 import argparse
 import contextlib
+import importlib.metadata
 import os
 import re
 import signal
@@ -696,6 +697,7 @@ class AppLauncher:
         # Check if input keywords contain an 'experience' file setting
         # Note: since experience is taken as a separate argument by Simulation App, we store it separately
         self._sim_experience_file = launcher_args.pop("experience", "")
+        self._using_default_experience = self._sim_experience_file == ""
 
         # If nothing is provided resolve the experience file based on the headless flag
         kit_app_exp_path = os.environ["EXP_PATH"]
@@ -768,9 +770,19 @@ class AppLauncher:
         """Resolve additional arguments passed to Kit."""
         # Resolve additional arguments passed to Kit
         self._kit_args = []
+        # The shared experiences retain legacy asset URLs for reproducibility,
+        # but their fixed 5.1 app label must not select a 5.1 settings/log namespace
+        # in a 6.x runtime. Leave custom experiences and explicit Kit overrides alone.
+        if self._using_default_experience:
+            try:
+                runtime_version = importlib.metadata.version("isaacsim").split(".")
+            except importlib.metadata.PackageNotFoundError:
+                runtime_version = []
+            if runtime_version and runtime_version[0].isdigit() and int(runtime_version[0]) >= 6:
+                self._kit_args.append("--/app/version=" + ".".join(runtime_version[:3]))
         if "kit_args" in launcher_args:
-            self._kit_args = [arg for arg in launcher_args["kit_args"].split()]
-            sys.argv += self._kit_args
+            self._kit_args.extend(launcher_args["kit_args"].split())
+        sys.argv += self._kit_args
 
     def _create_app(self):
         """Launch and create the SimulationApp based on the parsed simulation config."""

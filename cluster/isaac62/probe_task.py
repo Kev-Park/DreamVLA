@@ -57,6 +57,12 @@ def main():
     video = None
     try:
         app = AppLauncher(args, multi_gpu=False, fast_shutdown=True).app
+        import carb.settings
+        settings = carb.settings.get_settings()
+        receipt['application_version'] = settings.get('/app/version')
+        receipt['asset_root'] = settings.get('/persistent/isaac/asset_root/default')
+        if receipt['application_version'] != '.'.join(version.split('.')[:3]):
+            raise RuntimeError('Kit application label does not match installed runtime')
         import gymnasium as gym
         import numpy as np
         from PIL import Image
