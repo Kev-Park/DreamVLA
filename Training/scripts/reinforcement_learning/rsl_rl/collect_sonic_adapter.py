@@ -1687,20 +1687,23 @@ def main() -> None:
     if args_cli.replay_token_test is not None:
         replay_token_test(env, simulation_app, args_cli.replay_token_test, int(args_cli.replay_token_n),
                           int(args_cli.seed), os.path.join(args_cli.output_directory, "replay_token_test.json"))
-        simulation_app.close()
+        env.close()
+        simulation_app.close(exit_code=0)
         raise SystemExit(0)
 
     if args_cli.dagger_selftest_determinism is not None:
         lo = args_cli.motion_range[0] if args_cli.motion_range else 0
         ok = selftest_determinism(env, policy, int(args_cli.dagger_selftest_determinism),
                                   motion_id=int(lo), seed=int(args_cli.seed))
-        simulation_app.close()
+        env.close()
+        simulation_app.close(exit_code=0 if ok else 1)
         raise SystemExit(0 if ok else 1)
 
     if args_cli.dagger_selftest_restore is not None:
         n_pre, n_post = args_cli.dagger_selftest_restore
         ok = selftest_restore(env, policy, int(n_pre), int(n_post))
-        simulation_app.close()
+        env.close()
+        simulation_app.close(exit_code=0 if ok else 1)
         raise SystemExit(0 if ok else 1)
 
     written = 0
