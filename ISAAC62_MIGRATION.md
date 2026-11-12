@@ -112,6 +112,27 @@ arrays match exactly, inputs remain unchanged, and joint limits were checked.
 This exercises the actual `solve_upper` implementation, not a substitute solver;
 full retargeting, stitched sequence generation and simulator replay remain open.
 
+The actual GR00T Trainer gate is prepared in
+`cluster/isaac62/probe_gr00t_train_resume.py`: batch one, a two-update schedule,
+one full model/optimizer checkpoint after update one, and a fresh-process resume.
+It retains the real model, dataset loader, collator and AdamW implementation in
+the existing GR00T environment. Its warmup-free two-step schedule is a validation
+fixture, not a new research run. The production shard defaults must be retained;
+an initial tiny-shard fixture produced empty shards before training.
+
+The corrected `2d8c410` run loaded the original walking checkpoint and real saved
+LeRobot data, reached forward/backward, then failed while allocating Adam state on
+Biped's 32 GB GPU. The model has 1,620,515,968 trainable parameters and 12,576,064,000
+bytes of parameter storage. FP32 model weights, trainable gradients and Adam
+moments alone need about 32.02 GB, before activations/allocator/driver overhead.
+No optimizer update/checkpoint/resume passed; do not count this gate as complete.
+The process exited, its reservation was released and account GPU contexts returned
+to zero. Logs and the failed receipt are in workspace
+`out/isaac62_migration/isaac62_gr00t_training_2d8c410_online/`.
+The probe now rejects inadequate free memory before Trainer startup. Keep the
+recipe unchanged and use a larger reviewed allocation when available; no packages
+or existing GR00T source files were modified.
+
 The real foundation attempts started Isaac 6.2 but failed before valid rendered
 artifacts. The raw-stage tensor view needed an explicit USD stage ID. SDK fast
 shutdown could also bypass final receipts and return zero on failure; the probe

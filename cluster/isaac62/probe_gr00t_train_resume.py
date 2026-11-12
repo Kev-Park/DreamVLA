@@ -76,6 +76,15 @@ def main():
         assert resume or shutil.disk_usage(args.output).free > required, (required, shutil.disk_usage(args.output).free)
         report.update(trainable_parameters=trainable, model_bytes=model_bytes,
                       planned_checkpoint_bytes_upper_bound=required)
+        # FP32 trainable gradients + both Adam moments, before activation and
+        # allocator overhead. Do not repeatedly OOM a known undersized card.
+        free_gpu, total_gpu = torch.cuda.mem_get_info()
+        minimum_gpu_bytes = model_bytes+12*trainable
+        report.update(gpu_free_before_trainer=free_gpu, gpu_total_bytes=total_gpu,
+                      minimum_weights_gradients_adam_bytes=minimum_gpu_bytes)
+        assert free_gpu > minimum_gpu_bytes+2*1024**3, (
+            'Insufficient GPU memory for unchanged FP32 weights/gradients/Adam plus headroom',
+            free_gpu, minimum_gpu_bytes)
         processor = pipeline.return_processor()
         processor_dir = args.output/'processor';processor.save_pretrained(processor_dir)
         train_dataset, eval_dataset = pipeline.return_dataset()
@@ -132,6 +141,9 @@ def main():
         report['error'] = repr(exc)
         raise
     finally:
+        if torch.cuda.is_initialized():
+            report['cuda_peak_allocated_bytes'] = torch.cuda.max_memory_allocated()
+            report['cuda_peak_reserved_bytes'] = torch.cuda.max_memory_reserved()
         report['finished'] = time.time()
         (args.output/(args.phase+'.json')).write_text(json.dumps(report, indent=2)+'\n')
         print(json.dumps({k:v for k,v in report.items() if k != 'parameter_samples'}), flush=True)
