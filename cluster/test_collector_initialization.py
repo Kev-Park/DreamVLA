@@ -15,7 +15,7 @@ import numpy as np
 SOURCE = (Path(__file__).resolve().parents[1] /
           'Training/scripts/reinforcement_learning/rsl_rl/collect_sonic_adapter.py')
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
-main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main')
+main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_collect_with_cleanup')
 
 
 def assigns(node, name):
