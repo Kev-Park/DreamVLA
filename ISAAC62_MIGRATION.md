@@ -558,3 +558,18 @@ and `setup_conversion.sh`, pending the user's environment approval. It honors
 the pinned LeRobot commit's Torch <2.7 / Gymnasium 0.29.1 requirements, using
 Torch 2.6 CPU without modifying existing environments. The original LeRobot
 metadata is at https://github.com/huggingface/lerobot/blob/a445d9c9da6bea99a8972daa4fe1fdd053d711d2/pyproject.toml.
+
+
+The actual reference-PD playback and three overlay paths exposed a silent video
+failure at `b918c78`: OpenCV reported 32 writes without creating an MP4. The
+entrypoint now shares the FFmpeg RGB writer with GR00T playback and rejects empty
+output. At `8d06529`, the same reference-PD gate passes with a real 32-frame,
+50-fps, 2560x1920 video and a nonblack extracted frame. Both playback classes
+retain their original public constructor/write/close methods; the static union
+audit at `1431995` again has zero findings against both recorded parents.
+GR00T video regression at `1431995` also passed: actual 32-step evaluation
+and playback, with 32-frame third-person and ego videos verified at 50 fps. All
+reservations were released and no account GPU contexts remained. Evidence is
+local in `isaac62_reference_pd_8d06529` and `isaac62_vla_loop_1431995`. These
+technical checks do not replace user review or the remaining matched-baseline
+and full-reference replay checks.
