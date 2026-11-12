@@ -67,7 +67,9 @@ def main():
             log = (output/(name+'.log')).read_text()
             phase['marker_present'] = marker in log
             if result.returncode or marker not in log:
-                raise RuntimeError('Actual collector '+name+' gate failed; inspect retained log')
+                phase['error'] = 'Actual collector gate failed; inspect '+name+'.log'
+                # Independent checks must still run; preserve each failed gate.
+                continue
             if name == 'expert':
                 summary = re.search(r'Successes written: (\d+)/1 .*motions tried=(\d+)/1, '
                                     r'rejected_fall=(\d+), rejected_nograsp=(\d+), '
@@ -95,8 +97,11 @@ def main():
             if not datasets:
                 raise RuntimeError('Empty collected HDF5')
             demos.append(dict(file=str(path.relative_to(output)), datasets=datasets))
-        receipt.update(completed=True, demos=demos, retained_episode_count=len(demos),
+        receipt.update(completed=all(p['completed'] for p in receipt['phases']),
+                       demos=demos, retained_episode_count=len(demos),
                        successful_data_write_validated=bool(demos), finished=time.time())
+        if not receipt['completed']:
+            raise RuntimeError('One or more independent collector gates failed; inspect phase results')
     except BaseException:
         receipt.update(error=traceback.format_exc(), finished=time.time())
         raise
