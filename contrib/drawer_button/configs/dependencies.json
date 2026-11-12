@@ -1,0 +1,30 @@
+{
+  "dreamvla_branch_base": {
+    "repository": "https://github.com/Kev-Park/DreamVLA",
+    "branch": "g1",
+    "commit": "deca80ffbf6ce46414ac000b67da2c2f15dbc564"
+  },
+  "dreamcontrol_task_extraction_base": {
+    "repository": "https://github.com/GenRobo/DreamControl",
+    "commit": "ec28b508313d6837de52c68247fbc8cf81fe4935",
+    "note": "Task-specific local modifications are captured in this contribution; common backend integration still needs a GPU smoke test."
+  },
+  "sonic": {
+    "repository": "https://github.com/NVlabs/GR00T-WholeBodyControl",
+    "commit": "aa263a8a4a71ab30e93c3289988479fc114b0c97",
+    "local_patch_dependency": false,
+    "note": "The converter uses its own synchronous video adapter; weights and robot assets are separate licensed inputs."
+  },
+  "groot": {
+    "repository": "https://github.com/NVIDIA/Isaac-GR00T",
+    "commit": "b9955401d50c92a29258732e3ad6ccd579f1bdc0",
+    "api": "GR00T N1.7 native trainer; UNITREE_G1_SONIC"
+  },
+  "isaac_runtime": {
+    "isaac_sim": "4.5.0",
+    "rsl_rl": "2.3",
+    "source_environment_python": "3.10",
+    "source_environment_torch": "2.7.0+cu128",
+    "note": "Use backend-provided environments; this is a source/version inventory, not a universal pip lockfile."
+  }
+}
