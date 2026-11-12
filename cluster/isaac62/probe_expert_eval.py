@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--sonic-pt', type=Path, required=True)
     parser.add_argument('--asset-cwd', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--runtime-python', type=Path,
+                        help='Optional existing legacy interpreter for a matched SDK baseline')
     parser.add_argument('--residual-transform', default='additive_free',
                         choices=['additive', 'additive_free', 'multiplicative',
                                  'multiplicative_free', 'unclamped', 'direct'])
@@ -67,6 +69,13 @@ def main():
                    '--ref-motions-path', str(args.ref_motions_path),
                    '--residual-transform', args.residual_transform]
         command += ['--path', str(args.checkpoint)] if args.checkpoint else ['--zero-residual']
+        if args.runtime_python is not None:
+            runtime = args.runtime_python.expanduser().absolute()
+            if not runtime.is_file():
+                raise RuntimeError('Existing baseline interpreter not found')
+            command = [str(runtime), str(root/'cluster/isaac62/run_expert_entrypoint.py'),
+                       '--entrypoint', command[1], '--receipt', str(output/'entrypoint.json'),
+                       '--', *command[2:]]
         receipt.update(command=command, inherited_hs_settings={
             key: value for key, value in env.items() if key.startswith('HS_')})
         log = output/'eval.log'
@@ -76,6 +85,11 @@ def main():
         receipt['returncode'] = r.returncode
         if r.returncode:
             raise RuntimeError('Actual evaluator failed; inspect eval.log')
+        if args.runtime_python is not None:
+            entrypoint = json.loads((output/'entrypoint.json').read_text())
+            if not entrypoint['completed']:
+                raise RuntimeError('Evaluator failed before SDK shutdown')
+            receipt['runtime'] = entrypoint
         lines = [line[len('[MPJPE] '):] for line in log.read_text().splitlines()
                  if line.startswith('[MPJPE] ')]
         if len(lines) != 1:

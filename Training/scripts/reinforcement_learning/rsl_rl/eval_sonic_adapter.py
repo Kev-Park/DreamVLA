@@ -37,6 +37,7 @@ from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults
 import builtins
 import os
 from functools import partial
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
@@ -248,6 +249,11 @@ def _evaluate(cleanup):
             else:
                 resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
+    if os.environ.get("HS_EVAL_DUMP_EPS"):
+        from isaaclab.utils.io import dump_yaml
+        config_path = Path(os.environ["HS_EVAL_DUMP_EPS"]).expanduser().with_suffix(".env.yaml")
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        dump_yaml(str(config_path), env_cfg)
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=("rgb_array" if _EVAL_CAMERAS else None))
     cleanup.callback(env.close)
     if _EVAL_CAMERAS:
