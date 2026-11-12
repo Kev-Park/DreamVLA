@@ -35,9 +35,10 @@ def convert_copy(source, destination):
                 rows.append(dict(path=str(prim.GetPath()), authored=str(authored),
                                  registered=list(prim.GetAppliedSchemas())))
         print(json.dumps({"schema_discovery":label,"rows":rows}),flush=True)
+    from legacy_volume_usd import authored_apis, convert_cooked_volumes
     old=[]
     for prim in stage.Traverse():
-        schemas=prim.GetAppliedSchemas()
+        schemas=authored_apis(prim)
         if 'PhysxDeformableBodyMaterialAPI' in schemas:
             attr=prim.GetAttribute('physxDeformableBodyMaterial:dampingScale')
             if attr and attr.HasAuthoredValueOpinion() and attr.Get()!=1.:
@@ -57,16 +58,16 @@ def convert_copy(source, destination):
             raise ValueError('Legacy asset must contain cooked simulation and collision meshes')
         old.append(row)
     if not old:raise ValueError('No legacy volume deformable found')
-    DeformableSchemaChecker.convert_stage(stage,stage.GetPseudoRoot())
+    conversion=convert_cooked_volumes(stage,DeformableSchemaChecker)
     for row in old:
         prim=stage.GetPrimAtPath(row['path'])
-        if not prim.HasAPI('OmniPhysicsDeformableBodyAPI') or 'PhysxDeformableBodyAPI' in prim.GetAppliedSchemas():
+        if not prim.HasAPI('OmniPhysicsDeformableBodyAPI') or 'PhysxDeformableBodyAPI' in authored_apis(prim):
             raise RuntimeError('SDK failed to convert legacy body '+row['path'])
     if not stage.GetRootLayer().Export(str(destination)):
         raise RuntimeError('Could not export converted copy')
     if hashlib.sha256(source.read_bytes()).hexdigest()!=digest:
         raise RuntimeError('Source USD changed during isolated conversion')
-    return dict(source_sha256=digest,legacy_bodies=old,converter='installed NVIDIA DeformableSchemaChecker.convert_stage')
+    return dict(source_sha256=digest,legacy_bodies=old,converter='metadata-driven volume conversion with installed SDK geometry helpers', conversion=conversion)
 
 
 def main():
