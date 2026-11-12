@@ -86,6 +86,20 @@ Reports and arrays are in workspace
 `--device cuda:0` only with one explicitly visible, separately reviewed GPU.
 This is frozen inference compatibility, not closed-loop/task/training validation.
 
+The optional `cluster/isaac62/setup_references.sh` profile adds CPU JAX/JAXLie
+without changing any installed simulator/project package versions. At `a5ade21`,
+three saved references (static pick, stitched training and held-out walking;
+694 frames total) loaded in both the legacy and target environments. Joint,
+root, object, hand and ankle geometry matched exactly. Independent XML/URDF
+forward kinematics agreed with pytorch_kinematics within 1.81e-7; own-motion
+alignment, translated-prefix footfall invariants and JAXLie serialization checks
+also passed. Reports, source hashes and numerical arrays are in workspace
+`out/isaac62_migration/isaac62_reference_a5ade21/`. This does not validate new
+IK optimization, full retargeting or simulator replay. The legacy CPU run logged
+its existing CUDA-plugin initialization warning with CUDA hidden; it nevertheless
+selected the CPU backend and completed all checks. The new CPU-only JAX profile
+did not emit that warning.
+
 The real foundation attempts started Isaac 6.2 but failed before valid rendered
 artifacts. The raw-stage tensor view needed an explicit USD stage ID. SDK fast
 shutdown could also bypass final receipts and return zero on failure; the probe
