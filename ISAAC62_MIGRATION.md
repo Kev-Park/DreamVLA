@@ -100,6 +100,19 @@ its existing CUDA-plugin initialization warning with CUDA hidden; it nevertheles
 selected the CPU backend and completed all checks. The new CPU-only JAX profile
 did not emit that warning.
 
+The real stitch optimizer also passed a bounded CPU check at `db3f6d7` in both
+environments: 1,200 Adam/scheduler updates on three saved grasp-neighborhood
+targets, initialized with a 0.03-radian upper-body perturbation. Recomputed final
+hand-position error was at most 0.718 mm and orientation error at most 0.097
+degrees. Against the legacy runtime, solved joint angles differed by at most
+2.15e-6 radians and hand positions by 5.96e-8 meters. The small angle-error
+difference (0.00694 degrees) comes from near-identity rotation-angle arithmetic;
+the full arrays and both logs remain available for inspection in workspace
+`out/isaac62_migration/isaac62_reference_ik_db3f6d7/`. Input hashes and initial
+arrays match exactly, inputs remain unchanged, and joint limits were checked.
+This exercises the actual `solve_upper` implementation, not a substitute solver;
+full retargeting, stitched sequence generation and simulator replay remain open.
+
 The real foundation attempts started Isaac 6.2 but failed before valid rendered
 artifacts. The raw-stage tensor view needed an explicit USD stage ID. SDK fast
 shutdown could also bypass final receipts and return zero on failure; the probe
