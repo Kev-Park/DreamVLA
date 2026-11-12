@@ -693,3 +693,27 @@ video, and a final reset pass. The process and GPU contexts were released.
 This probe applies zero actions and explicitly does not validate a learned policy
 or assess task success. Local results:
 `out/isaac62_migration/isaac62_pick_task_5ddbe29_deformable_regression/`.
+
+
+### Matched reset/snapshot investigation (2026-11-12)
+
+At `0c3726a`, the same current collector, af60v7 model, static reference, seed17
+and HS settings ran the strict reset and restore tests under both SDKs. Both
+fail: the maximum repeated-reset joint deviation is 0.02175 rad in Isaac5.1 and
+0.02171 rad in Isaac6.2. Snapshot replay joint-velocity maxima are 0.1461 and
+0.09221 rad/s respectively, starting at replay frame0. These short cases do not
+establish statistical equivalence, but contradict an Isaac6.2-only explanation.
+No tolerance was relaxed; exact stitching remains unvalidated. The production
+failure-conditioned rescue path uses independent rerolls, not these snapshots.
+Logs and comparison: `out/isaac62_migration/matched_reset_snapshot_comparison_0c3726a.json`.
+
+The investigation found a separate real restoration bug: CircularBuffer.buffer
+returns a chronological copy, so writing into that property did not restore
+observation history. `319c59a` saves/restores backing storage, cursor and
+per-environment fill counts. Tests use the real circular buffer and verify
+continued appends after an uninitialized, partial and wrapped history, including
+one reset batch member. They pass. The collector setup contract was updated to
+its cleanup-owned entrypoint at `8cc8354`; all68 current CPU contracts pass.
+The ring fix is not included in the matched `0c3726a` simulation results and is
+not claimed to resolve the remaining physical replay divergence. Collector SDK
+shutdown now feature-detects exit_code, which Isaac5.1 does not accept.
