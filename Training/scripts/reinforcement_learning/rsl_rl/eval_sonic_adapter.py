@@ -30,6 +30,8 @@ Deterministic actor mean via ``get_inference_policy``; fixed seed for reproducib
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import contextlib
+import traceback
 
 from vla_sonic.repo_paths import gear_sonic_deploy  # sibling-repo ONNX defaults (worktree-safe)
 import builtins
@@ -158,7 +160,7 @@ rsl_rl.modules.AdapterActorCritic = AdapterActorCritic
 _rsl_rl_opr.AdapterActorCritic = AdapterActorCritic
 
 
-def main():
+def _evaluate(cleanup):
     # Deterministic motion draw (reproducible across runs).
     torch.manual_seed(args_cli.seed)
     if torch.cuda.is_available():
@@ -247,6 +249,7 @@ def main():
                 resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=("rgb_array" if _EVAL_CAMERAS else None))
+    cleanup.callback(env.close)
     if _EVAL_CAMERAS:
         print("[eval_sonic_adapter] HS_EVAL_CAMERAS=1: cameras enabled + render_mode=rgb_array (collector parity)")
     print(f"[env] action_space (pre-wrapper) = {env.action_space}")
@@ -1044,17 +1047,24 @@ def main():
                  "max_lift", "d_at_maxlift", "min_d_lifted", "min_upcos_lifted", "first_topple", "grab_step", "ep_len", "env", "obj_mass",
                  "first_touch", "first_inhand", "last_inhand", "end_inhand", "first_table", "table_steps", "table_steps_pregrab"]))
         print(f"[eval] wrote per-episode records: {DUMP_EPS} ({len(ep_records)} episodes)")
-    env.close()
+
+
+def main():
+    # Close the environment even when checkpoint loading or evaluation fails.
+    # Kit stage teardown otherwise retains live simulation resources.
+    with contextlib.ExitStack() as cleanup:
+        _evaluate(cleanup)
 
 
 if __name__ == "__main__":
     try:
         main()
     except BaseException:
+        traceback.print_exc()
         # Kit's automatic shutdown can exit zero after a Python failure and
         # retain CUDA resources while teardown stalls. Close explicitly with
         # the failing status so controllers receive the real terminal result.
-        simulation_app.close(exit_code=1)
+        simulation_app.close(wait_for_replicator=False, exit_code=1)
         raise
     else:
         simulation_app.close(exit_code=0)
