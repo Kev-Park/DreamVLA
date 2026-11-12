@@ -24,8 +24,13 @@ def main():
     for key in ('checkpoint', 'model-python', 'sonic-pt', 'ref-motions-path', 'asset-cwd', 'output'):
         parser.add_argument('--'+key, type=Path, required=True)
     args = parser.parse_args()
-    for key in ('checkpoint', 'model_python', 'sonic_pt', 'ref_motions_path', 'asset_cwd'):
+    for key in ('checkpoint', 'sonic_pt', 'ref_motions_path', 'asset_cwd'):
         setattr(args, key, getattr(args, key).expanduser().resolve(strict=True))
+    # A venv launcher is commonly a symlink to its base Python. Resolving that
+    # symlink discards pyvenv.cfg discovery and launches the wrong environment.
+    args.model_python = args.model_python.expanduser().absolute()
+    if not args.model_python.is_file():
+        parser.error('Model interpreter does not exist')
     output = args.output.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=False)
     model_output = output/'service'
@@ -38,7 +43,8 @@ def main():
     reserved = False
     receipt = dict(started=time.time(), completed=False, checkpoint=str(args.checkpoint),
                    model_python=str(args.model_python), simulator_python=sys.executable,
-                   scientific_evaluation=False, maximum_steps=32)
+                   scientific_evaluation=False, maximum_steps=32,
+                   inherited_hs_settings={k: v for k, v in os.environ.items() if k.startswith('HS_')})
     try:
         r = subprocess.run([*slots, 'reserve', '--owner', owner, '--count', '1',
                             '--mb', '24000', '--gpu', '0'], capture_output=True,
@@ -60,7 +66,7 @@ def main():
         command = [sys.executable, str(root/'Training/scripts/reinforcement_learning/rsl_rl/eval_vla_sonic.py'),
                    '--headless', '--device', 'cuda:0', '--num-envs', '1', '--num-episodes', '1',
                    '--max-steps-per-episode', '32', '--seed', '17', '--waist-dof', '29',
-                   '--skip-start-frames', '0', '--task', 'Isaac-Motion-Tracking-Pick-Cam-BinaryFingers-v0',
+                   '--skip-start-frames', '0', '--task', 'Isaac-Motion-Tracking-Pick-Cam-HOI-v0',
                    '--sonic-pt', str(args.sonic_pt), '--ref-motions-path', str(args.ref_motions_path),
                    '--vla-checkpoint', str(args.checkpoint), '--gr00t-service', str(model_output/'ready.json'),
                    '--language', 'Walk to the object and pick it up.',
