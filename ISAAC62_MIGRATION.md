@@ -573,3 +573,32 @@ reservations were released and no account GPU contexts remained. Evidence is
 local in `isaac62_reference_pd_8d06529` and `isaac62_vla_loop_1431995`. These
 technical checks do not replace user review or the remaining matched-baseline
 and full-reference replay checks.
+
+The recorded-action replay gate at `4b57c55` now passes for an actual 64-frame
+expert-written HDF5. Every requested 65-dimensional command matches the recording
+exactly and all saved trace values are finite. This deliberately does not claim
+physical replay equality: the accepted previous VLA decoder and the expert's
+residual token path have different FSQ transforms. No decoder change was made.
+
+At `c037633`, both full 252-frame stitch outputs were replayed kinematically in
+Isaac 6.2 through the production reference playback entrypoint. Each clip contains
+640 frames at 50 fps and 2560x1920, covering the accepted post-warmup start through
+the reference endpoint (clock 0.54 to 13.32 seconds; duration 12.6). Applied poses
+match their corresponding reference within 1e-6. Between the paired generated
+references, root pose and clocks are exact; joint differences remain at most
+7.54e-5 radians. This does not overturn the failed strict cross-runtime IK gate.
+Both original clips and traces are local in
+`out/isaac62_migration/isaac62_stitch_replay_{legacy,target}_c037633/` and indexed
+in `out/reports/dashboard.html`, without recompression. User appearance review
+remains required; these are reference clips, not learned-policy rollouts.
+
+A matched static af60v7 evaluation harness at `759101c` ran the same public
+evaluator, checkpoint hash, reference, seed and identical effective environment
+configuration in Isaac 5.1 and 6.2. Each completed two episodes and released its
+reservation. World/root-relative MPJPE was 4.3820/2.7107 cm in 5.1 (350 frames)
+and 4.1842/2.7344 cm in 6.2 (428 frames). These bounded cases verify real evaluator
+execution and configuration consistency, not scientific success-rate equivalence.
+Legacy task/wrapper sources match the recorded g1 parent for this static case;
+the older g1 environment does not provide a matched newer walking-task baseline.
+Receipts, effective configurations, episode arrays and logs are local under
+`isaac62_static_baseline_{legacy,target}_759101c`.

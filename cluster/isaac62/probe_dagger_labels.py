@@ -21,6 +21,8 @@ def main():
     if os.environ.get('CUDA_VISIBLE_DEVICES') != '0':
         raise SystemExit('Expose only the reviewed physical GPU 0')
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--case', choices=['labels', 'rescue-broad', 'rescue-late'], default='labels',
+                        help='Bounded schema gate or actual two-pass failure-conditioned rescue')
     for key in ('checkpoint', 'model-python', 'sonic-pt', 'ref-motions-path', 'asset-cwd', 'output', 'expert-checkpoint', 'demo-root'):
         parser.add_argument('--'+key, type=Path, required=True)
     args = parser.parse_args()
@@ -41,9 +43,10 @@ def main():
     owner = str(os.getpid())
     worker = client = None
     reserved = False
+    maximum_steps = 64 if args.case == 'labels' else 200
     receipt = dict(started=time.time(), completed=False, checkpoint=str(args.checkpoint),
                    model_python=str(args.model_python), simulator_python=sys.executable,
-                   scientific_evaluation=False, maximum_steps=64,
+                   scientific_evaluation=False, maximum_steps=maximum_steps, case=args.case,
                    inherited_hs_settings={k: v for k, v in os.environ.items() if k.startswith('HS_')})
     try:
         r = subprocess.run([*slots, 'reserve', '--owner', owner, '--count', '1',
@@ -68,7 +71,8 @@ def main():
         motion_ids = output/'motion_ids.txt'
         motion_ids.write_text('0\n')
         receipt['phases'] = []
-        for name, beta in (('student', '0'), ('expert', '1')):
+        phases = [('student', '0'), ('expert', '1')] if args.case == 'labels' else [(args.case, '0')]
+        for name, beta in phases:
             phase_output = output/name
             command = [sys.executable, str(root/'Training/scripts/reinforcement_learning/rsl_rl/collect_sonic_adapter.py'),
                        '--headless', '--device', 'cuda:0', '--num_envs', '1',
@@ -79,13 +83,17 @@ def main():
                        '--dagger-vla-checkpoint', str(args.checkpoint), '--gr00t-service', str(model_output/'ready.json'),
                        '--dagger-demo-root', str(args.demo_root), '--dagger-motion-ids', str(motion_ids),
                        '--dagger-beta', beta, '--dagger-chunk', '8', '--dagger-rollouts', '1',
-                       '--num-samples', '1', '--rollout-length', '64', '--dagger-min-steps', '50',
+                       '--num-samples', '1', '--rollout-length', str(maximum_steps), '--dagger-min-steps', '50',
                        '--output-directory', str(phase_output)]
+            if args.case != 'labels':
+                command += ['--dagger-rescue']
+                if args.case == 'rescue-late':
+                    command += ['--dagger-rescue-window-s', '1']
             phase = dict(name=name, command=command, completed=False)
             receipt['phases'].append(phase)
             with (output/(name+'.log')).open('w') as stream:
                 result = subprocess.run(command, cwd=args.asset_cwd, stdout=stream,
-                                        stderr=subprocess.STDOUT, timeout=180)
+                                        stderr=subprocess.STDOUT, timeout=450)
             phase['returncode'] = result.returncode
             if result.returncode:
                 raise RuntimeError('Actual DAgger '+name+' collector failed')
@@ -98,12 +106,35 @@ def main():
                 action = demo['actions'][()]
                 fingers = demo['obs/robot0_right_finger_joint_pos'][()]
                 mask = demo['obs/dagger_expert_mask'][()]
-                if token.shape != (64, 64) or action.shape != (64, 65) or fingers.shape != (64, 7):
+                frames = len(token)
+                if not 1 <= frames <= maximum_steps:
+                    raise RuntimeError('Unexpected recording length')
+                if token.shape != (frames, 64) or action.shape != (frames, 65) or fingers.shape != (frames, 7):
                     raise RuntimeError('Unexpected recorded label shapes')
                 if not all(np.isfinite(v).all() for v in (token, action, fingers)):
                     raise RuntimeError('Nonfinite expert labels')
-                if not np.all(mask == int(beta)):
-                    raise RuntimeError('Expert-driver mask contradicts requested driver')
+                if args.case == 'labels':
+                    if frames != maximum_steps or not np.all(mask == int(beta)):
+                        raise RuntimeError('Expert-driver mask contradicts requested driver')
+                else:
+                    metadata = json.loads(h.attrs['metadata_json'])
+                    rescue = metadata['rescue']
+                    if rescue['pass'] != 'B' or rescue['passA_success'] is not False:
+                        raise RuntimeError('Case did not exercise failure-conditioned expert rescue')
+                    takeover = rescue['takeover_at']
+                    lower, upper = rescue['takeover_bounds']
+                    if not 0 <= lower <= takeover < upper <= rescue['grab_idx']:
+                        raise RuntimeError('Takeover falls outside the saved uniform sampling bounds')
+                    if args.case == 'rescue-broad' and (lower != 0 or upper != rescue['grab_idx']):
+                        raise RuntimeError('Broad takeover bounds differ from the original rule')
+                    if args.case == 'rescue-late' and rescue['window_s'] != 1:
+                        raise RuntimeError('Late takeover window was not applied')
+                    expected_mask = (np.arange(frames) >= takeover).astype(mask.dtype)
+                    if mask.shape != expected_mask.shape or not np.array_equal(mask, expected_mask):
+                        raise RuntimeError('Recorded driver mask differs from the actual takeover schedule')
+                    if not mask.any():
+                        raise RuntimeError('No expert-driven frames recorded after takeover')
+                    phase['rescue'] = rescue
                 if not np.allclose(token*16, np.round(token*16), atol=1e-7, rtol=0):
                     raise RuntimeError('Expert token labels do not lie on the FSQ grid')
                 if not np.isin(action[:, 64], [-1, 1]).all():
