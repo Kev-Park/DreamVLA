@@ -742,3 +742,33 @@ this separate analytical gate does not change their tolerances or conclusion.
 Local arrays/scenes/receipts: `out/isaac62_migration/isaac62_deformable_batch_e43c2ff/`.
 Generic deformable coverage still does not establish implicit-material stress,
 preexisting legacy USD migration or non-neutral damping support.
+
+
+### Ordinary expert write and raw walking conversion (2026-11-12)
+
+The ordinary collector gate at `8119201` uses the unchanged T20_max_v3 model4500,
+accepted HS recipe, skip-start0 and1200-step horizon. Three preset references
+(pick0,11,11000) were selected before outcomes. It stops after the first accepted
+episode: preset motion0 passes the existing physical-hold filter and produces
+one validated577-frame HDF5 with65-D actions and recorded observation/teleop
+columns. It tries1/3 references, with zero rejected/error counts. This verifies
+normal passing-filter/write mechanics, not a success-rate estimate. No filter
+was weakened. The process, reservation and GPU contexts are released. Local
+receipt/log: `out/isaac62_migration/isaac62_expert_write_8119201/`; its~630MB HDF5
+remains on Biped at the receipt's relative path. A follow-up harness-only change
+`9a99376` scales timeout by the preset attempt bound; it did not alter that run.
+
+Raw walking conversion now has actual coverage at `45ebd17`, rather than reusing
+an already converted walking prefix. The original pick0 qpos NPZ (195frames,
+43columns, SHA2566b7d4be1a488c68ae5ea2dec2a59454d9acccebc25b7eaa62cb57190128c63b5)
+was copied from Bluesclues with its original source manifest and verified
+against that manifest. AdapterB runs the accepted reconstruction environment in
+both existing5.1 and target6.2 Python profiles, CPU-only on one core. Both output
+195frames,29joints and grasp frame52. Joints, root positions, object poses and
+grasp position are exactly equal; global pose matrices differ by at most5.97e-8
+under the preset1e-6 gate. The old JAX CUDA plugin logs CUDA_NO_DEVICE with GPUs
+hidden, but CPU conversion completes; that diagnostic is preserved, not hidden.
+No packages were changed. Local outputs/recipes/source provenance/comparison:
+`out/isaac62_migration/isaac62_raw_walking_45ebd17/` and `raw_walking_fixture/`.
+This covers raw-to-reference walking conversion, not upstream holosoma motion
+inference or arm refinement (the accepted walking-prefix recipe disables it).
