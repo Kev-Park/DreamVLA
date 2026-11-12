@@ -1,8 +1,10 @@
 # Standalone CPU exporter profile. The pinned upstream LeRobot exporter requires
 # torch<2.7 and gymnasium==0.29.1, incompatible with the simulator profile.
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.6.0+cpu
-torchvision==0.21.0+cpu
+# This profile targets the isolated CPython3.12/Linux-x86_64 exporter only.
+# Pin the two official CPU wheels directly: a global PyTorch extra index also
+# shadows unrelated packages (for example cmake) under uv's safe index policy.
+torch @ https://download.pytorch.org/whl/cpu/torch-2.6.0%2Bcpu-cp312-cp312-linux_x86_64.whl
+torchvision @ https://download.pytorch.org/whl/cpu/torchvision-0.21.0%2Bcpu-cp312-cp312-linux_x86_64.whl
 torchcodec==0.2.1
 datasets==3.6.0
 lerobot @ git+https://github.com/huggingface/lerobot.git@a445d9c9da6bea99a8972daa4fe1fdd053d711d2
