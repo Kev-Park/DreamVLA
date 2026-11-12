@@ -30,7 +30,7 @@ def main():
                   scope='All registered project motion-task config constructors; no environment allocation')
     app = None
     try:
-        app = AppLauncher(args, multi_gpu=False, fast_shutdown=True).app
+        app = AppLauncher(args, multi_gpu=False, fast_shutdown=not args.baseline_51).app
         import gymnasium as gym
         import isaaclab_tasks  # noqa: F401: populates the actual registry
         report['task_package'] = str(Path(isaaclab_tasks.__file__).resolve())
@@ -61,7 +61,10 @@ def main():
         report['finished'] = time.time()
         (args.output/'receipt.json').write_text(json.dumps(report, indent=2)+'\n')
         if app is not None:
-            app.close(exit_code=0 if report['completed'] else 1)
+            if args.baseline_51:
+                app.close()
+            else:
+                app.close(exit_code=0 if report['completed'] else 1)
     if not report['completed']:
         raise SystemExit('Project task configuration audit failed')
 
