@@ -13,7 +13,8 @@ set -eo pipefail
 CHECKPOINT=${1:?checkpoint required}
 DATASET=${2:?dataset required}
 OUTPUT=${3:?new output required}
-HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+PROBE=${4:?absolute path to the exported validation probe required}
+test -f "$PROBE"
 PYTHON=$HOME/kevin/Isaac-GR00T/.venv/bin/python
 module load cudatoolkit/12.8
 export CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -41,6 +42,6 @@ while True:
 test ! -e "$OUTPUT"
 cd "$HOME/kevin/Isaac-GR00T"
 for phase in initial resume; do
-  "$PYTHON" "$HERE/probe_gr00t_train_resume.py" \
+  "$PYTHON" "$PROBE" \
     --checkpoint "$CHECKPOINT" --dataset "$DATASET" --output "$OUTPUT" --phase "$phase"
 done
