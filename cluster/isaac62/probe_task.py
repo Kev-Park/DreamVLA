@@ -151,6 +151,10 @@ def main():
         (output/'nvidia_after_startup.xml').write_text(inventory.stdout)
         # Warm up render products without advancing physics.
         before = SimulationManager.get_num_physics_steps()
+        # rgb_array attaches its render product lazily. Attach before warming
+        # the renderer; warming only existing scene sensors leaves this product
+        # empty on its first capture.
+        env.render()
         for _ in range(8):
             base.sim.render()
         if SimulationManager.get_num_physics_steps() != before:

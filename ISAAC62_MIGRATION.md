@@ -67,7 +67,8 @@ class member and CLI-option union against both recorded parents. It deliberately
 behavioral equivalence. Runtime, visual and optimization evidence is still required.
 
 Initial merge audit artifacts and test receipts are under the EMBER workspace's
-`out/isaac62_migration/`. The 6.2 runtime is not yet validated. Do not resume the
+`out/isaac62_migration/`. Foundation physics/rendering now pass the bounded gate
+below; project task and training validation remain incomplete. Do not resume the
 existing full DAgger study or mark this migration complete from static checks.
 
 The isolated foundation is now installed on Bluesclues and Biped; Biped also has
@@ -438,5 +439,44 @@ the native modules, and resetting restores the first action. Evidence is in
 workspace `out/isaac62_migration/isaac62_export_8e21349.json`; failing controls are
 retained at `policy_export_b4bfd35.json` and `policy_export_legacy_b4bfd35.json`.
 These use small fixtures, not trained-policy or simulator behavior. ONNX export
-remains unvalidated; its target project dependency set already includes
-`onnxscript`, which is absent from the separate CPU contract environment.
+subsequently passed four real export/checker/ONNX Runtime cases in the full target
+environment, alongside the four TorchScript cases, within the 82 CPU contracts
+at `f54c1a0`.
+
+
+## November 12 simulator progress
+
+The bounded PhysX/RTX foundation probe passed at `e42b3db` in the isolated
+Python 3.12 / Torch 2.11 / Isaac 6.2 environment on Biped. It advanced exactly
+256 physics steps, captured 64 nonblack/nonconstant frames, checked GPU dynamics,
+free-fall velocity and authored/reset XYZW quaternion interpretation. Independent
+projection of the physics position matched the rendered cube centroid within the
+predefined four-pixel endpoint tolerance: 3.753 pixels initially and 0.525 pixels
+finally. This proves the stated endpoint gate, not perfect per-frame alignment.
+Evidence is in workspace `out/isaac62_migration/isaac62_foundation_e42b3db/`.
+
+A prior `d53d3a7` pixel-change check was insufficient: rotation changed the image
+while translation remained stale. Stronger projection checks correctly failed
+subsequent probes. The successful scheduling follows SDK Core rendering: keep the
+timeline playing and disable automatic physics with `/app/player/playSimulations`
+only during application updates. Pausing the timeline displayed authored poses
+instead. Fabric scene delegation is enabled; an attempted extra GPU transform-read
+setting did not fix this problem and was removed from the raw probe. All failed
+artifacts remain available; none establish project-policy behavior.
+
+Actual kitchen/G1 pick-task probes exposed and fixed two additional migration
+issues: absent headless viewports, and a removed deformable Python schema class
+in generic physics-material binding. Real USD material-relationship checks pass
+for scenes, rigid colliders and the new deformable schema. This does not port the
+remaining deformable tensor/stress APIs. The task now constructs the robot and
+managers, resets, and advances physics, but the `e42b3db` task probe fails capture
+because camera-only experiences lack Kit's default viewport camera. Commit
+`2714737` creates and positions configured viewer cameras directly through the
+6.x rendering manager, including custom camera paths; the next task gate tests it.
+No task-success or learned-policy equivalence claim is made from zero actions.
+
+The user approved only the bounded migration probes' GPU-1 graphics context of
+at most 6 MiB; simulation, rendering and CUDA remain on GPU 0, with the normal
+20% aggregate account CPU limit. This exception is recorded in EMBER/AGENTS.md.
+It does not authorize a second computation GPU. Probes release their reservations
+on terminal success or failure; other researchers' contexts remain untouched.
