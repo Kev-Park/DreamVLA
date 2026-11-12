@@ -48,6 +48,27 @@ def main():
         from pxr import UsdPhysics, UsdShade
         torch.set_num_threads(1)
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
+        if not legacy:
+            # Reject removed properties before authoring even an empty material.
+            # Check both new paths and existing materials through the real spawner.
+            rejected = []
+            for scale in (0., .5, 2.):
+                for existing in (False, True):
+                    path = '/World/RejectedMaterial'+str(len(rejected))
+                    if existing:
+                        UsdShade.Material.Define(sim.stage, path)
+                    before = sim.stage.GetRootLayer().ExportToString()
+                    cfg = sim_utils.DeformableBodyMaterialCfg(damping_scale=scale)
+                    try:
+                        cfg.func(path, cfg)
+                    except NotImplementedError as error:
+                        assert 'damping_scale' in str(error), str(error)
+                    else:
+                        raise AssertionError('Removed damping_scale was silently accepted')
+                    assert sim.stage.GetRootLayer().ExportToString() == before, (
+                        'Unsupported material configuration partially changed the USD stage', scale, existing)
+                    rejected.append(dict(scale=scale, existing_material=existing, stage_unchanged=True))
+            receipt['material_rejections'] = rejected
         spawn = sim_utils.MeshCuboidCfg(size=(.2, .2, .2),
                 deformable_props=sim_utils.DeformableBodyPropertiesCfg(simulation_hexahedral_resolution=3,
                                                                       solver_position_iteration_count=4),
