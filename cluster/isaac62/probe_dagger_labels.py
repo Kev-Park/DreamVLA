@@ -5,6 +5,7 @@ interpreter for the actual collector. No study performance claim is made.
 """
 import argparse
 import contextlib
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -23,9 +24,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', choices=['labels', 'rescue-broad', 'rescue-late'], default='labels',
                         help='Bounded schema gate or actual two-pass failure-conditioned rescue')
+    parser.add_argument('--rescue-box', type=Path,
+                        help='Existing expert-specific calibration; required for a rescue case')
     for key in ('checkpoint', 'model-python', 'sonic-pt', 'ref-motions-path', 'asset-cwd', 'output', 'expert-checkpoint', 'demo-root'):
         parser.add_argument('--'+key, type=Path, required=True)
     args = parser.parse_args()
+    if args.case != 'labels' and args.rescue_box is None:
+        parser.error('Rescue cases require an existing --rescue-box calibration')
+    if args.rescue_box is not None:
+        args.rescue_box = args.rescue_box.expanduser().resolve(strict=True)
     for key in ('checkpoint', 'sonic_pt', 'ref_motions_path', 'asset_cwd', 'expert_checkpoint', 'demo_root'):
         setattr(args, key, getattr(args, key).expanduser().resolve(strict=True))
     # A venv launcher is commonly a symlink to its base Python. Resolving that
@@ -48,6 +55,9 @@ def main():
                    model_python=str(args.model_python), simulator_python=sys.executable,
                    scientific_evaluation=False, maximum_steps=maximum_steps, case=args.case,
                    inherited_hs_settings={k: v for k, v in os.environ.items() if k.startswith('HS_')})
+    if args.rescue_box is not None:
+        receipt['rescue_box'] = dict(path=str(args.rescue_box),
+                                   sha256=hashlib.sha256(args.rescue_box.read_bytes()).hexdigest())
     try:
         r = subprocess.run([*slots, 'reserve', '--owner', owner, '--count', '1',
                             '--mb', '24000', '--gpu', '0'], capture_output=True,
@@ -86,7 +96,7 @@ def main():
                        '--num-samples', '1', '--rollout-length', str(maximum_steps), '--dagger-min-steps', '50',
                        '--output-directory', str(phase_output)]
             if args.case != 'labels':
-                command += ['--dagger-rescue']
+                command += ['--dagger-rescue', '--dagger-rescue-box', 'file:'+str(args.rescue_box)]
                 if args.case == 'rescue-late':
                     command += ['--dagger-rescue-window-s', '1']
             phase = dict(name=name, command=command, completed=False)
