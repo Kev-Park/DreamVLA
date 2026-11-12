@@ -20,6 +20,9 @@ def simulation_config(gpu):
         raise ValueError('GPU must be a nonnegative physical-device index')
     return dict(headless=True, active_gpu=gpu, physics_gpu=gpu, multi_gpu=False,
                 fast_shutdown=True,
+                # GPU PhysX writes transforms to Fabric, not USD. Hydra must
+                # consume that scene delegate, as the project rendering kits do.
+                extra_args=['--/app/useFabricSceneDelegate=true'],
                 width=128, height=128, renderer='RayTracedLighting')
 
 
@@ -60,6 +63,9 @@ def main():
         receipt['reservation_owner'] = os.getpid()
         from isaacsim import SimulationApp
         app = SimulationApp(receipt['config'])
+        import carb.settings
+        receipt['fabric_scene_delegate_enabled'] = carb.settings.get_settings().get('/app/useFabricSceneDelegate')
+        assert receipt['fabric_scene_delegate_enabled'] is True
         import numpy as np
         import torch
         import omni.physics.tensors as tensors
@@ -195,6 +201,16 @@ def main():
         assert actual_steps == args.frames * 4, actual_steps
         timeline.stop()
         trajectory = np.stack(positions)
+        # Persist observed data before validity gates, so a failed render can
+        # still be inspected instead of losing the evidence at native shutdown.
+        np.savez(output/'trajectory.npz', position=trajectory,
+                 quaternion_xyzw=np.stack(quaternions), velocity=np.stack(velocities))
+        for i in sorted({0, len(images)//2, len(images)-1}) if images else []:
+            frame, image = images[i]
+            Image.fromarray(image).save(output/f'frame_{frame:04d}.png')
+        receipt.update(physics_steps=actual_steps, capture_frames=len(trajectory),
+                       image_frames=len(images), camera_stats=camera_stats,
+                       z_min=float(trajectory[:, 2].min()), z_max=float(trajectory[:, 2].max()))
         assert np.isfinite(trajectory).all()
         assert float(trajectory[:, 2].min()) < .99, 'Dynamic body did not fall'
         assert len(images) >= 16, 'Camera delivered too few images'
@@ -205,12 +221,8 @@ def main():
         reference_image = images[0][1].astype(np.int16)
         image_change = max(float(np.abs(image.astype(np.int16)-reference_image).mean())
                            for _, image in images[1:])
+        receipt['maximum_image_mean_absolute_change'] = image_change
         assert image_change > .1, 'Rendered scene did not change as the body fell'
-        for i in sorted({0, len(images)//2, len(images)-1}):
-            frame, image = images[i]
-            Image.fromarray(image).save(output/f'frame_{frame:04d}.png')
-        np.savez(output/'trajectory.npz', position=trajectory,
-                 quaternion_xyzw=np.stack(quaternions), velocity=np.stack(velocities))
         (output/'nvidia_after.xml').write_text(subprocess.check_output(['nvidia-smi', '-q', '-x'], text=True))
         receipt.update(completed=True, finished=time.time(), physics_backend='PhysX',
                        tensor_frontend='torch',
