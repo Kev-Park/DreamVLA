@@ -111,8 +111,14 @@ def main():
         light = UsdLux.DomeLight.Define(stage, '/World/Light')
         light.CreateIntensityAttr(1000.)
         camera = UsdGeom.Camera.Define(stage, '/World/Camera')
-        camera.AddTransformOp().Set(Gf.Matrix4d().SetLookAt(
-            Gf.Vec3d(2., 2., 1.6), Gf.Vec3d(0., 0., .4), Gf.Vec3d(0., 0., 1.)).GetInverse())
+        # Square intrinsics keep projection independent of aperture-conform
+        # policy, with the entire fall inside the field of view.
+        camera.CreateFocalLengthAttr(20.)
+        camera.CreateHorizontalApertureAttr(20.)
+        camera.CreateVerticalApertureAttr(20.)
+        camera_matrix = Gf.Matrix4d().SetLookAt(
+            Gf.Vec3d(2., 2., 1.6), Gf.Vec3d(0., 0., .4), Gf.Vec3d(0., 0., 1.)).GetInverse()
+        camera.AddTransformOp().Set(camera_matrix)
         product = rep.create.render_product('/World/Camera', (128, 128))
         rgb = rep.AnnotatorRegistry.get_annotator('rgb', device='cpu')
         rgb.attach([product])
@@ -140,6 +146,10 @@ def main():
         scenes = SimulationManager.get_physics_scenes()
         assert len(scenes) == 1 and scenes[0].get_enabled_gpu_dynamics()
         timeline.pause()
+        import omni.physxfabric
+        fabric = omni.physxfabric.get_physx_fabric_interface()
+        flush_fabric = fabric.force_update if hasattr(fabric, 'force_update') else fabric.update
+        receipt['render_fabric_flush'] = 'force_update' if hasattr(fabric, 'force_update') else 'update'
         # Reset through the same public tensor API used by policy environments.
         initial = body.get_transforms().clone()
         receipt['initial_tensor_transform'] = initial.detach().cpu().tolist()
@@ -170,6 +180,9 @@ def main():
             # paused app.update() renders, but does not synchronize the latest
             # physics transforms into Fabric on our behalf.
             SimulationManager.step(steps=4, update_fabric=True)
+            # Match the real project's SimulationContext.forward(): paused
+            # rendering/reset writes require a forced Fabric flush.
+            flush_fabric(0., 0.)
             before_render = SimulationManager.get_num_physics_steps()
             app.update()
             assert SimulationManager.get_num_physics_steps() == before_render, 'Render advanced physics while paused'
@@ -223,6 +236,34 @@ def main():
                            for _, image in images[1:])
         receipt['maximum_image_mean_absolute_change'] = image_change
         assert image_change > .1, 'Rendered scene did not change as the body fell'
+        # Rotation alone can satisfy an image-change check while translation
+        # remains stale. Compare color-mask centroids with independently
+        # projected physics positions at the beginning and settled end.
+        world_to_camera = np.linalg.inv(np.asarray(camera_matrix))
+        camera_positions = np.c_[trajectory, np.ones(len(trajectory))] @ world_to_camera
+        assert np.all(camera_positions[:, 2] < 0)
+        projected = np.c_[64+128*camera_positions[:, 0]/-camera_positions[:, 2],
+                          64-128*camera_positions[:, 1]/-camera_positions[:, 2]]
+        centroids = []; image_indices = []
+        for frame, image in images:
+            red = ((image[..., 0].astype(float) > 1.3*image[..., 1]) &
+                   (image[..., 0].astype(float) > 1.3*image[..., 2]) & (image[..., 0] > 80))
+            yy, xx = np.nonzero(red)
+            centroids.append([float(xx.mean()), float(yy.mean())] if len(xx) else [float('nan')]*2)
+            image_indices.append(frame)
+        centroids = np.asarray(centroids)
+        np.savez(output/'render_projection.npz', physics_projected_uv=projected,
+                 red_centroid_uv=centroids, image_frame=np.asarray(image_indices),
+                 camera_world_matrix=np.asarray(camera_matrix))
+        assert np.isfinite(centroids[[0, -1]]).all(), 'Probe cube missing from endpoint images'
+        expected = projected[np.asarray(image_indices)[[0, -1]]]
+        observed = centroids[[0, -1]]
+        error = np.linalg.norm(observed-expected, axis=1)
+        receipt.update(projected_endpoint_uv=expected.tolist(), observed_endpoint_uv=observed.tolist(),
+                       endpoint_projection_error_pixels=error.tolist())
+        assert np.max(error) < 4., ('Rendered translation differs from physics projection', error)
+        assert observed[1, 1]-observed[0, 1] > .7*(expected[1, 1]-expected[0, 1]), (
+            'Rendered cube did not move through the expected fall', observed, expected)
         (output/'nvidia_after.xml').write_text(subprocess.check_output(['nvidia-smi', '-q', '-x'], text=True))
         receipt.update(completed=True, finished=time.time(), physics_backend='PhysX',
                        tensor_frontend='torch',
