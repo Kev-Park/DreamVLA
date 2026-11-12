@@ -1,5 +1,6 @@
 """Exercise actual DeformableObject spawning, cooked meshes, state and diagnostics."""
 import argparse
+import faulthandler
 import importlib.metadata
 import inspect
 import json
@@ -25,7 +26,9 @@ def main():
     receipt = dict(started=time.time(), completed=False, reservation_released=False, isaacsim=version,
                    scope='Actual procedural volume asset; no robot or study recipe')
     app = None
+    sim = None
     reserved = False
+    faulthandler.dump_traceback_later(60, repeat=True)
     slots = [sys.executable, str(Path(__file__).resolve().parents[2]/'cluster/gpu_slots.py')]
     try:
         result = subprocess.run([*slots, 'reserve', '--owner', str(os.getpid()), '--count', '1',
@@ -92,6 +95,10 @@ def main():
             assert torch.isfinite(value).all(), key
             arrays[key] = value.cpu().numpy()
         np.savez(output/'asset.npz', **arrays)
+        quaternion_error = {key:float(np.max(np.abs(np.linalg.norm(arrays[key], axis=-1)-1)))
+                            for key in ('sim_element_quat_w', 'collision_element_quat_w')}
+        if not legacy:
+            assert max(quaternion_error.values()) <= 1e-5, quaternion_error
         sim.stage.GetRootLayer().Export(str(output/'scene.usda'))
         receipt.update(completed=True, frames=20, mass=.8, bound_density=density,
                        simulation_nodes=asset.max_sim_vertices_per_body,
@@ -99,11 +106,20 @@ def main():
                        simulation_elements=asset.max_sim_elements_per_body,
                        collision_elements=asset.max_collision_elements_per_body,
                        mean_fall_m=float((original-moved)[..., 2].mean()),
+                       quaternion_unit_error=quaternion_error,
+                       full_quaternion_diagnostics_valid=max(quaternion_error.values()) <= 1e-5,
                        finite_diagnostics={k:list(v.shape) for k,v in arrays.items()}, finished=time.time())
     except BaseException:
         receipt.update(error=traceback.format_exc(), finished=time.time())
         raise
     finally:
+        if sim is not None:
+            # Same public lifecycle used by environment.close(). Unsubscribe
+            # the standalone timeline-stop handler before SDK shutdown; it
+            # otherwise keeps rendering while the timeline is stopped.
+            sim.clear_all_callbacks()
+            sim.clear_instance()
+            receipt['simulation_cleanup_completed'] = True
         if reserved:
             subprocess.run([*slots, 'release', '--owner', str(os.getpid()), '--gpu', '0'], check=True, timeout=20)
             receipt['reservation_released'] = True
@@ -113,6 +129,7 @@ def main():
             if 'exit_code' in inspect.signature(app.close).parameters:
                 kwargs['exit_code'] = 0 if receipt['completed'] else 1
             app.close(**kwargs)
+        faulthandler.cancel_dump_traceback_later()
 
 
 if __name__ == '__main__':
