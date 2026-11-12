@@ -1,0 +1,144 @@
+"""Bounded real student/expert DAgger label collection on Isaac Sim 6.2.
+
+Uses the existing model interpreter in a separate process and the new simulator
+interpreter for the actual collector. No study performance claim is made.
+"""
+import argparse
+import contextlib
+import importlib.metadata
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+import traceback
+
+
+def main():
+    if os.name != 'posix' or importlib.metadata.version('isaacsim') != '6.2.0.0':
+        raise SystemExit('Requires the isolated Linux Isaac Sim 6.2 environment')
+    if os.environ.get('CUDA_VISIBLE_DEVICES') != '0':
+        raise SystemExit('Expose only the reviewed physical GPU 0')
+    parser = argparse.ArgumentParser(description=__doc__)
+    for key in ('checkpoint', 'model-python', 'sonic-pt', 'ref-motions-path', 'asset-cwd', 'output', 'expert-checkpoint', 'demo-root'):
+        parser.add_argument('--'+key, type=Path, required=True)
+    args = parser.parse_args()
+    for key in ('checkpoint', 'sonic_pt', 'ref_motions_path', 'asset_cwd', 'expert_checkpoint', 'demo_root'):
+        setattr(args, key, getattr(args, key).expanduser().resolve(strict=True))
+    # A venv launcher is commonly a symlink to its base Python. Resolving that
+    # symlink discards pyvenv.cfg discovery and launches the wrong environment.
+    args.model_python = args.model_python.expanduser().absolute()
+    if not args.model_python.is_file():
+        parser.error('Model interpreter does not exist')
+    output = args.output.expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    model_output = output/'service'
+    model_output.mkdir()
+    root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(root/'Training/scripts/reinforcement_learning/rsl_rl'))
+    slots = [sys.executable, str(root/'cluster/gpu_slots.py')]
+    owner = str(os.getpid())
+    worker = client = None
+    reserved = False
+    receipt = dict(started=time.time(), completed=False, checkpoint=str(args.checkpoint),
+                   model_python=str(args.model_python), simulator_python=sys.executable,
+                   scientific_evaluation=False, maximum_steps=64,
+                   inherited_hs_settings={k: v for k, v in os.environ.items() if k.startswith('HS_')})
+    try:
+        r = subprocess.run([*slots, 'reserve', '--owner', owner, '--count', '1',
+                            '--mb', '24000', '--gpu', '0'], capture_output=True,
+                           text=True, check=True, timeout=20)
+        if r.stdout.strip() != '0':
+            raise RuntimeError('Reviewed GPU reservation unavailable')
+        reserved = True
+        with (output/'service.log').open('w') as stream:
+            worker = subprocess.Popen([str(args.model_python), str(root/'cluster/isaac62/probe_gr00t_service.py'),
+                                       '--checkpoint', str(args.checkpoint), '--output', str(model_output),
+                                       '--physical-gpu', '0', '--worker'], stdout=stream, stderr=subprocess.STDOUT)
+        deadline = time.monotonic()+300
+        while not (model_output/'ready.json').is_file():
+            if worker.poll() is not None:
+                raise RuntimeError('Model worker failed; inspect service.log')
+            if time.monotonic() > deadline:
+                raise TimeoutError('Model service readiness exceeded 300 seconds')
+            time.sleep(.5)
+        import h5py
+        import numpy as np
+        receipt['phases'] = []
+        for name, beta in (('student', '0'), ('expert', '1')):
+            phase_output = output/name
+            command = [sys.executable, str(root/'Training/scripts/reinforcement_learning/rsl_rl/collect_sonic_adapter.py'),
+                       '--headless', '--device', 'cuda:0', '--num_envs', '1',
+                       '--task', 'Isaac-Motion-Tracking-Pick-Cam-HOI-v0',
+                       '--waist-dof', '29', '--skip-start-frames', '0', '--seed', '17',
+                       '--checkpoint-path', str(args.expert_checkpoint), '--sonic-pt', str(args.sonic_pt),
+                       '--ref-motions-path', str(args.ref_motions_path), '--residual-transform', 'additive_free',
+                       '--dagger-vla-checkpoint', str(args.checkpoint), '--gr00t-service', str(model_output/'ready.json'),
+                       '--dagger-demo-root', str(args.demo_root), '--dagger-motion-ids', '0',
+                       '--dagger-beta', beta, '--dagger-chunk', '8', '--dagger-rollouts', '1',
+                       '--num-samples', '1', '--rollout-length', '64', '--dagger-min-steps', '50',
+                       '--output-directory', str(phase_output)]
+            phase = dict(name=name, command=command, completed=False)
+            receipt['phases'].append(phase)
+            with (output/(name+'.log')).open('w') as stream:
+                result = subprocess.run(command, cwd=args.asset_cwd, stdout=stream,
+                                        stderr=subprocess.STDOUT, timeout=180)
+            phase['returncode'] = result.returncode
+            if result.returncode:
+                raise RuntimeError('Actual DAgger '+name+' collector failed')
+            paths = list(phase_output.rglob('*.hdf5'))
+            if len(paths) != 1:
+                raise RuntimeError('Expected exactly one retained DAgger recording')
+            with h5py.File(paths[0]) as h:
+                demo = h['data/demo_0']
+                token = demo['obs/motion_token'][()]
+                action = demo['actions'][()]
+                fingers = demo['obs/robot0_right_finger_joint_pos'][()]
+                mask = demo['obs/dagger_expert_mask'][()]
+                if token.shape != (64, 64) or action.shape != (64, 65) or fingers.shape != (64, 7):
+                    raise RuntimeError('Unexpected recorded label shapes')
+                if not all(np.isfinite(v).all() for v in (token, action, fingers)):
+                    raise RuntimeError('Nonfinite expert labels')
+                if not np.all(mask == int(beta)):
+                    raise RuntimeError('Expert-driver mask contradicts requested driver')
+                if not np.allclose(token*16, np.round(token*16), atol=1e-7, rtol=0):
+                    raise RuntimeError('Expert token labels do not lie on the FSQ grid')
+                if not np.isin(action[:, 64], [-1, 1]).all():
+                    raise RuntimeError('Nonbinary expert finger commands')
+                phase.update(frames=len(token), expert_driver_frames=int(mask.sum()),
+                             closed_label_frames=int((action[:, 64]<0).sum()),
+                             hdf5=str(paths[0].relative_to(output)), completed=True)
+        receipt.update(completed=True, finished=time.time())
+    except BaseException:
+        receipt.update(error=traceback.format_exc(), finished=time.time())
+        raise
+    finally:
+        if worker is not None:
+            if worker.poll() is None and (model_output/'ready.json').is_file():
+                with contextlib.suppress(Exception):
+                    from vla_sonic.gr00t_service import PolicyServiceClient
+                    client = PolicyServiceClient(model_output/'ready.json', args.checkpoint,
+                                                 'cuda:0', 'unitree_g1_sonic', timeout_ms=10000)
+                    client.shutdown_server()
+            if client is not None:
+                client.close()
+            try:
+                worker.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                worker.terminate()
+                try:
+                    worker.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    worker.kill()
+                    worker.wait(timeout=10)
+        try:
+            if reserved:
+                subprocess.run([*slots, 'release', '--owner', owner, '--gpu', '0'], check=True, timeout=20)
+                receipt['reservation_released'] = True
+        finally:
+            (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
+
+
+if __name__ == '__main__':
+    main()
