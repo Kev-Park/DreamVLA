@@ -205,6 +205,15 @@ from vla_sonic.video_writer import RGBVideoWriter
 class VideoWriter(RGBVideoWriter):
     """Shared RGB/FFmpeg writer; keeps the playback API stable."""
 
+    def __init__(self, path: Path, fps: int):
+        super().__init__(path, fps)
+
+    def write(self, frame_rgb: np.ndarray) -> None:
+        super().write(frame_rgb)
+
+    def close(self) -> None:
+        super().close()
+
 
 def _read_camera_rgb(env, key: str, *, verbose: bool = False) -> np.ndarray | None:
     try:

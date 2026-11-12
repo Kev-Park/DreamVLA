@@ -383,6 +383,12 @@ from vla_sonic.video_writer import RGBVideoWriter
 class VideoWriter(RGBVideoWriter):
     """Use the same verified RGB/FFmpeg path as GR00T playback."""
 
+    def __init__(self, path: Path, fps: int):
+        super().__init__(path, fps)
+
+    def write(self, frame_rgb):
+        super().write(frame_rgb)
+
     def close(self):
         super().close()
         print(f"[video] {self.path.name}: {self.frame_count} frames written")
