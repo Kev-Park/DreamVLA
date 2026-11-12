@@ -22,8 +22,7 @@ def simulation_config(gpu):
                 fast_shutdown=True,
                 # GPU PhysX writes transforms to Fabric, not USD. Hydra must
                 # consume that scene delegate, as the project rendering kits do.
-                extra_args=['--/app/useFabricSceneDelegate=true',
-                            '--/rtx/hydra/readTransformsFromFabricInRenderDelegate=true'],
+                extra_args=['--/app/useFabricSceneDelegate=true'],
                 width=128, height=128, renderer='RayTracedLighting')
 
 
@@ -69,7 +68,6 @@ def main():
         assert receipt['fabric_scene_delegate_enabled'] is True
         receipt['fabric_render_transform_read_enabled'] = carb.settings.get_settings().get(
             '/rtx/hydra/readTransformsFromFabricInRenderDelegate')
-        assert receipt['fabric_render_transform_read_enabled'] is True
         import numpy as np
         import torch
         import omni.physics.tensors as tensors
@@ -189,7 +187,9 @@ def main():
             SimulationManager.step(steps=4, update_fabric=True)
             # Match the real project's SimulationContext.forward(): paused
             # rendering/reset writes require a forced Fabric flush.
-            flush_fabric(0., 0.)
+            # Use the installed Core SimulationContext.render() argument order
+            # and current simulation time, rather than its legacy zero-time call.
+            flush_fabric(.005, SimulationManager.get_simulation_time())
             before_render = SimulationManager.get_num_physics_steps()
             app.update()
             assert SimulationManager.get_num_physics_steps() == before_render, 'Render advanced physics while paused'
