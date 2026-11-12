@@ -133,7 +133,7 @@ def object_lifted_reward(env: ManagerBasedRLEnv, height_thres = 0.74, fall_thres
     reward = (has_grasped) + (1-has_grasped)*has_not_fallen*(root_pos[:,1]>0.16)
     motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
     motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
-    if env.num_envs < 1001 :
+    if env.num_envs < 1001 and hasattr(env, "n_successes"):
         env.n_successes += (reward > 0.) * motion_res["is_closed"]
     return reward*motion_res["is_closed"].float() #- 0.3*(1.-motion_res["is_closed"].float())*has_fallen
 

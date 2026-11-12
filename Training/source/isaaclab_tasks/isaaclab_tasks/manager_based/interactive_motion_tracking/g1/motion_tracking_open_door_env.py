@@ -144,7 +144,7 @@ def open_door_bonus(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.
     door_pos = env.scene[asset_cfg.name].data.joint_pos[:, asset_cfg.joint_ids[0]]
     motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times
     motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
-    if env.num_envs < 1001 :
+    if env.num_envs < 1001 and hasattr(env, "n_successes"):
         env.n_successes += (door_pos>0.05) * motion_res["is_closed"]
     
     reward = (door_pos>0.05) * motion_res["is_closed"].float()   # clamp the position to [0, 1]
