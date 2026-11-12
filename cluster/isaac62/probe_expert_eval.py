@@ -22,6 +22,7 @@ def main():
     if os.environ.get('CUDA_VISIBLE_DEVICES') != '0':
         raise SystemExit('This bounded gate requires the reviewed physical GPU 0 only')
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--task', default='Isaac-Motion-Tracking-Pick-BinaryFingers-v0')
     parser.add_argument('--checkpoint', type=Path)
     parser.add_argument('--ref-motions-path', type=Path, required=True)
     parser.add_argument('--sonic-pt', type=Path, required=True)
@@ -60,7 +61,7 @@ def main():
         command = [sys.executable, str(root/'Training/scripts/reinforcement_learning/rsl_rl/eval_sonic_adapter.py'),
                    '--headless', '--device', 'cuda:0', '--num_envs', '2',
                    '--num_episodes', '1', '--max_steps', '800', '--seed', '17',
-                   '--motion-id', '0', '--task', 'Isaac-Motion-Tracking-Pick-BinaryFingers-v0',
+                   '--motion-id', '0', '--task', args.task,
                    '--waist-dof', '29', '--skip-start-frames', '0',
                    '--sonic-pt', str(args.sonic_pt),
                    '--ref-motions-path', str(args.ref_motions_path),

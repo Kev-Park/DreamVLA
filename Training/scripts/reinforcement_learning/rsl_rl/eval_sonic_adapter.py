@@ -1048,5 +1048,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
-    simulation_app.close()
+    try:
+        main()
+    except BaseException:
+        # Kit's automatic shutdown can exit zero after a Python failure and
+        # retain CUDA resources while teardown stalls. Close explicitly with
+        # the failing status so controllers receive the real terminal result.
+        simulation_app.close(exit_code=1)
+        raise
+    else:
+        simulation_app.close(exit_code=0)
