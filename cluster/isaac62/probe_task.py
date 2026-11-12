@@ -143,7 +143,8 @@ def main():
             receipt['images'].append({'file': filename, 'shape': list(pixels.shape),
                                       'mean': float(pixels.mean()), 'std': float(pixels.std())})
 
-        obs, _ = env.reset(seed=17)
+        with torch.inference_mode():
+            obs, _ = env.reset(seed=17)
         finite(obs, 'reset_observations')
         receipt['pid'] = os.getpid()
         inventory = subprocess.run(['nvidia-smi', '-q', '-x'], capture_output=True,
@@ -222,12 +223,15 @@ def main():
             raise RuntimeError('Encoded video resolution differs from rendered RGB')
         receipt['video'] = {'file': 'third_person.mp4', 'frames_submitted': len(roots),
                             'fps': 1/(cfg.sim.dt*cfg.decimation), 'ffprobe': stream}
-        # Exercise an explicit reset after stepping, in addition to automatic resets.
-        obs, _ = env.reset(seed=17)
-        finite(obs, 'final_reset_observations')
         np.savez(output/'trajectory.npz', root_pos_w=np.asarray(roots),
                  root_quat_w=np.asarray(quats), joint_pos=np.asarray(joints),
                  joint_vel=np.asarray(velocities), physics_step=np.asarray(counters))
+        # Keep reset in the same inference context as stepping: cached simulator
+        # tensors allocated there cannot legally be mutated outside that context.
+        # Save the stepped trace first so a reset failure retains its evidence.
+        with torch.inference_mode():
+            obs, _ = env.reset(seed=17)
+        finite(obs, 'final_reset_observations')
         receipt.update(completed=True, steps_completed=len(roots),
                        terminated_count=terminated_count, truncated_count=truncated_count,
                        task_success_assessed=False, finished=time.time())
