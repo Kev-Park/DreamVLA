@@ -1,6 +1,7 @@
 """Exercise actual DeformableObject spawning, cooked meshes, state and diagnostics."""
 import argparse
 import importlib.metadata
+import inspect
 import json
 import math
 import os
@@ -16,10 +17,12 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     assert os.name == 'posix' and os.environ.get('CUDA_VISIBLE_DEVICES') == '0'
-    assert importlib.metadata.version('isaacsim') == '6.2.0.0'
+    version = importlib.metadata.version('isaacsim')
+    assert version in ('5.1.0.0', '6.2.0.0')
+    legacy = version == '5.1.0.0'
     output = args.output.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=False)
-    receipt = dict(started=time.time(), completed=False, reservation_released=False,
+    receipt = dict(started=time.time(), completed=False, reservation_released=False, isaacsim=version,
                    scope='Actual procedural volume asset; no robot or study recipe')
     app = None
     reserved = False
@@ -37,7 +40,7 @@ def main():
         import torch
         import isaaclab.sim as sim_utils
         from isaaclab.assets import DeformableObject, DeformableObjectCfg
-        from pxr import UsdShade
+        from pxr import UsdPhysics, UsdShade
         torch.set_num_threads(1)
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
         asset = DeformableObject(DeformableObjectCfg(
@@ -50,11 +53,17 @@ def main():
             init_state=DeformableObjectCfg.InitialStateCfg(pos=(0, 0, 1))))
         sim.reset()
         assert asset.is_initialized
-        root = sim.stage.GetPrimAtPath('/World/SoftCube')
-        assert root.HasAPI('OmniPhysicsDeformableBodyAPI')
-        assert math.isclose(root.GetAttribute('omniphysics:mass').Get(), .8, abs_tol=1e-7, rel_tol=0)
-        material_path = UsdShade.MaterialBindingAPI(root).GetDirectBindingRel('physics').GetTargets()[0]
-        density = sim.stage.GetPrimAtPath(material_path).GetAttribute('omniphysics:density').Get()
+        root = sim.stage.GetPrimAtPath('/World/SoftCube/geometry/mesh' if legacy else '/World/SoftCube')
+        if legacy:
+            mass_api = UsdPhysics.MassAPI(root)
+            mass = mass_api.GetMassAttr().Get()
+            density = mass_api.GetDensityAttr().Get()
+        else:
+            assert root.HasAPI('OmniPhysicsDeformableBodyAPI')
+            mass = root.GetAttribute('omniphysics:mass').Get()
+            material_path = UsdShade.MaterialBindingAPI(root).GetDirectBindingRel('physics').GetTargets()[0]
+            density = sim.stage.GetPrimAtPath(material_path).GetAttribute('omniphysics:density').Get()
+        assert math.isclose(mass, .8, abs_tol=1e-7, rel_tol=0)
         assert density == 1300.
         original = asset.data.nodal_state_w.clone()
         assert original.shape[0] == 1 and original.shape[-1] == 6 and original.shape[1] >= 4
@@ -100,7 +109,10 @@ def main():
             receipt['reservation_released'] = True
         (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
         if app is not None:
-            app.close(wait_for_replicator=False, exit_code=0 if receipt['completed'] else 1)
+            kwargs = dict(wait_for_replicator=False)
+            if 'exit_code' in inspect.signature(app.close).parameters:
+                kwargs['exit_code'] = 0 if receipt['completed'] else 1
+            app.close(**kwargs)
 
 
 if __name__ == '__main__':
