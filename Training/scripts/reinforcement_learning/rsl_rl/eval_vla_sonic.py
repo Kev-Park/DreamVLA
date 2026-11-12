@@ -559,7 +559,7 @@ def main() -> int:
         grab_step = -1; fired = []
         step = 0
         traj = {k: [] for k in ("obj_pos", "obj_quat", "root_pos", "root_quat", "wrist",
-                                  "body_pos", "ref_body_pos", "ref_root_pos", "motion_time")}
+                                  "body_pos", "ref_body_pos", "ref_root_pos", "motion_time", "requested_action")}
         if args.traj_dump:
             from isaaclab_tasks.manager_based.motion_tracking.g1.motion_tracking_env import (
                 HOI_BODY_NAMES, HOI_BODY_KEYPT_IDXS,
@@ -614,6 +614,7 @@ def main() -> int:
             _rh = np.asarray(vla_chunk["right_hand_joints"], dtype=np.float32)
             g_pred.append(float(np.abs(_rh[0, t_idx] if _rh.ndim == 3 else _rh.reshape(-1)).mean()))
             g_cmd_close.append(bool(latent[0, 64].item() < 0))
+            requested_action = latent[0].detach().cpu().numpy().copy() if args.traj_dump else None
             with torch.inference_mode():
                 obs, _rew, dones, _extras = env.step(latent)                   # FSQ snap + decoder inside
             g_meas.append(float(robot.data.joint_pos[0, _rf_jids].abs().mean().item()))
@@ -641,6 +642,7 @@ def main() -> int:
                     Tw[:3, :3] = Rr.T @ Rw
                     Tw[:3, 3] = Rr.T @ (wp - rp)
                     traj["obj_pos"].append(obj_p.cpu().numpy().copy())
+                    traj["requested_action"].append(requested_action)
                     traj["obj_quat"].append(oq.cpu().numpy().copy())
                     traj["root_pos"].append(rp.cpu().numpy().copy())
                     traj["root_quat"].append(rq.cpu().numpy().copy())
