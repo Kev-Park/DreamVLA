@@ -11,6 +11,43 @@ or a file-surface audit is not completion.
 - locomotion: `bb9d874aa8e528bc3f5d53c0421fca4a2d4ff9b1`
 - Current integration branch: `g1`. No new branch was created.
 
+## Current validation state (2026-11-12)
+
+The migration is **not complete**. The table below summarizes current evidence;
+subsequent dated entries retain the development history, including failed attempts.
+Local receipts and original videos are under EMBER's `out/isaac62_migration/`;
+`out/reports/dashboard.html` indexes the rendered artifacts.
+
+| Area | Current evidence and remaining work |
+| --- | --- |
+| Merged project surface | Latest audit has no missing files, declared symbols or CLI options against either recorded parent. This is not behavioral proof. |
+| Task configurations | All 56 constructors were checked in both original 5.1 parents and current 6.2: 44 pass and the same 12 fail. No new failures or recorded configuration-metadata differences. The 12 original broken registrations remain explicitly failed. |
+| Task runtime and rendering | Representative tracking, static pick, walking, motion-only, drawer and button reset/step/render gates pass. Policy, camera and reference-overlay paths have local artifacts. User appearance review remains pending. |
+| Models and optimization | Saved SONIC/residual CUDA parity, GR00T service integration and residual optimizer/save/resume checks pass. Full GR00T optimizer/save/resume is queued on Adroit as job 3463916 and has not passed. |
+| Collection and reusable data | Passing expert write, failed student rescue, broad/late takeover labels and finger commands are checked. Actual 577+605-frame HDF5 conversions match full versus sharded/merged data, whole-dataset normalization and official GR00T loading. |
+| Reference generation | Actual input export, original holosoma optimization, old/new Adapter-B arrays and full-reference playback pass their stated gates. Original diffusion sampling awaits approval for the existing OmniControl environment. Strict full-stitch joint parity remains failed; visual review remains open. |
+| Known limits | Exact snapshot/replay fails in both original and target SDKs; production rescue uses independent rerolls. Implicit-material stress, removed damping scaling and legacy collision-diagnostic parity remain explicitly unresolved/unsupported rather than silently approximated. |
+
+### Material rejection leaves the USD stage unchanged
+
+A live 6.2 regression test at `877a257` proved that rejecting a non-neutral
+`damping_scale` left an empty newly created material in the stage. `efdefca`
+validates the removed property before any material is authored. The same live
+probe now passes six rejection cases: scales 0, 0.5 and 2, each with a new path
+and an existing material. Every rejection leaves the entire stage layer unchanged.
+The two differently cooked bodies also pass 20 physics steps, state/kinematic
+writes, finite diagnostics, valid quaternion checks and independent affine
+stress/gradient checks. Supported material parameters and the legacy API path
+are unchanged. Both the original failing and corrected passing receipts are
+preserved in `isaac62_deformable_batch_877a257/` and
+`isaac62_deformable_batch_efdefca/`. Resources were released after both jobs.
+
+NVIDIA's [migration guide](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/deformables/deformable_migration.html)
+lists no replacement for damping scaling. Its
+[material schema description](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/110.0/dev_guide/deformables/omniphysics_deformable_schema.html)
+also explains that Young's modulus has no physical default. These sources do not
+justify guessing an unbound solver material or replacing removed damping behavior.
+
 ## Preservation gates
 
 | Capability | Required evidence |
