@@ -427,7 +427,7 @@ iteration counts, continued optimizer steps, finite model state and changed
 parameters, retaining both trainer logs and checkpoints. It requires explicit
 reference, SONIC checkpoint and asset-directory paths and a manually reviewed
 GPU allocation. Its checkpoint schema was checked against installed RSL-RL
-3.0.1 source; the actual simulator-connected gate has not yet run.
+3.0.1 source; the simulator-connected gate subsequently passed at `556890e` (see below).
 
 Serialized policy checks found a pre-existing recurrent export bug in both the
 legacy and target Torch runtimes: assigning an undecorated bound reset method
@@ -468,12 +468,45 @@ Actual kitchen/G1 pick-task probes exposed and fixed two additional migration
 issues: absent headless viewports, and a removed deformable Python schema class
 in generic physics-material binding. Real USD material-relationship checks pass
 for scenes, rigid colliders and the new deformable schema. This does not port the
-remaining deformable tensor/stress APIs. The task now constructs the robot and
-managers, resets, and advances physics, but the `e42b3db` task probe fails capture
-because camera-only experiences lack Kit's default viewport camera. Commit
-`2714737` creates and positions configured viewer cameras directly through the
-6.x rendering manager, including custom camera paths; the next task gate tests it.
-No task-success or learned-policy equivalence claim is made from zero actions.
+remaining deformable tensor/stress APIs. The real task probes subsequently passed at `556890e`: pick-camera with static
+references, pick-camera with stitched walking references, and motion-only. Each
+completed reset, 32 zero-action physics steps, finite-state checks, video capture,
+and final reset. Viewer, scene and ego camera paths produced nonblack/nonconstant
+images. These are technical smoke checks; robot behavior requires user review.
+
+The actual residual trainer also passed two PPO updates, checkpoint save and one
+resumed update. All 15 optimizer states advanced from step 2 to 3 and 15 model
+tensors changed with finite values. Actual nominal and saved residual evaluators
+completed episodes and produced finite world/root-relative body MPJPE. Recorded
+checkpoint recipes must be preserved: the saved static/walking experts expect
+1015 actor inputs, while the non-reworked task exposes 988. An intentional wrong-
+recipe test at `1b7cc5d` verifies nonzero exit and reservation release after this
+mismatch. The evaluator now closes its environment on exceptions before Kit
+teardown and prints the failure before SDK shutdown.
+
+The real GR00T checkpoint `walk200_v3_dagger57_20261013_r2/checkpoint-92967`
+completed a 32-step closed loop at `bed9ff4`: model inference remains in the
+unchanged Python 3.10 / Torch 2.7.1 environment, while the simulator client uses
+Python 3.12 / Torch 2.11 / Isaac 6.2. The real client package is installed normally
+from the user fork (`81c7a50`) with dependency resolution and a constraint lock;
+all 267 previously installed package versions were preserved. Body trajectories
+and predicted hand targets were finite. This is not a scientific success-rate
+evaluation. The real policy video entrypoint also passed at `1b7cc5d`: 32 frames each
+for third-person (2560 x 1920) and ego (1280 x 960), both at 50 fps.
+Basic image statistics pass; user appearance review remains pending.
+
+Evidence is local under `out/isaac62_migration/`: task folders
+`isaac62_{pick,walk,motiononly}_task_556890e_isolated`,
+`isaac62_residual_training_556890e`, `isaac62_expert_eval_8bd0631`, and
+`isaac62_vla_loop_bed9ff4` and `isaac62_vla_loop_1b7cc5d`.
+
+Drawer's first step exposed an inherited 27-element reward mask applied to the
+29-joint layout; button uses the same pattern. A name-based compatibility patch
+is prepared but awaits user review because it affects reward evaluation. The
+full GR00T Adam update/save/resume gate still needs more GPU memory than Biped's
+32 GB. Other remaining gates include real collection/intervention labels and
+conversion, paired reference replay and user appearance review, and removed
+generic deformable tensor/stress APIs. The migration is not complete.
 
 The user approved only the bounded migration probes' GPU-1 graphics context of
 at most 6 MiB; simulation, rendering and CUDA remain on GPU 0, with the normal
