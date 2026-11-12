@@ -795,3 +795,38 @@ material response. A separate metadata-driven application conversion path would
 need implementation and a real file-load/physics check to close this gap.
 Local evidence: `out/isaac62_migration/isaac62_legacy_deformable_usd_3e26b4c/`,
 including `schema_discovery.json`, the original failure receipt and sibling log.
+
+
+### Metadata-driven saved-volume conversion and read-only diagnostics
+
+`9315177` adds an application-level cooked-volume converter that discovers old
+APIs in authored metadata instead of the SDK's filtered registered-schema list.
+It operates only on an anonymous flattened copy, uses installed SDK geometry
+helpers, maps explicit physical properties and legacy defaults, and leaves the
+SDK/environment unchanged. The original SDK-discovery failures remain recorded.
+
+The first converted asset exposed another adapter bug: constructing the SDK's
+experimental DeformablePrim over a non-auto cooked Xform recreates its mesh
+hierarchy, deleting the already registered simMesh and invalidating the tensor
+view. `ebf49a5` avoids that constructor for these assets. Its diagnostics read the
+existing solver meshes, reconstruct gradients/polar rotations and preserve the
+same corotated-stress convention. Existing auto-generated assets keep their
+previously tested diagnostic route. The saved cube then loads and simulates
+successfully in6.2 without changing the source file.
+
+At `33ad1ea`, the converted saved cube retains64simulation nodes/135elements and
+138collision nodes/270elements from the file. It completes16freefall steps plus
+four kinematic steps with a prescribed10% x-stretch. Both diagnostic paths pass
+the preset1e-4 gradient and10Pa stress gates: simulation errors3.70e-6/0.239Pa,
+collision errors2.80e-5/0.658Pa. All six diagnostic arrays are finite. The wrapper
+exits zero and process/GPU release is independently confirmed. Source SHA256
+7517235aacd9827389d58a3bb50bcc05f82b47fb12162523f8ffdc35d5d7ef69 is unchanged.
+Local converted USD, arrays and receipts:
+`out/isaac62_migration/isaac62_legacy_deformable_usd_33ad1ea/`.
+
+This is bounded saved-volume coverage, not arbitrary USD equivalence. The
+converter rejects non-neutral dampingScale, density-only mass configuration,
+legacy surface/cloth/attachment types, and animated legacy solver arrays rather
+than dropping them. Generic command-line conversion packaging and rejection-case
+tests remain separate work; ordinary asset loading does not silently rewrite
+legacy files. Implicit-material stress support also remains unverified.
