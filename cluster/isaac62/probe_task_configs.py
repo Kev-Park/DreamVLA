@@ -13,22 +13,27 @@ import traceback
 
 
 def main():
-    assert os.name == 'posix' and importlib.metadata.version('isaacsim') == '6.2.0.0'
+    assert os.name == 'posix'
+    version = importlib.metadata.version('isaacsim')
     from isaaclab.app import AppLauncher
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--baseline-51', action='store_true',
+                        help='Run the same constructor audit against an original 5.1 source export')
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
+    assert version.startswith('5.1.') if args.baseline_51 else version == '6.2.0.0'
     assert os.environ.get('CUDA_VISIBLE_DEVICES') == '0'
     args.headless = True
     args.output.mkdir(parents=True, exist_ok=False)
-    report = dict(started=time.time(), completed=False, tasks=[],
+    report = dict(started=time.time(), completed=False, tasks=[], isaacsim=version,
                   scope='All registered project motion-task config constructors; no environment allocation')
     app = None
     try:
         app = AppLauncher(args, multi_gpu=False, fast_shutdown=True).app
         import gymnasium as gym
         import isaaclab_tasks  # noqa: F401: populates the actual registry
+        report['task_package'] = str(Path(isaaclab_tasks.__file__).resolve())
         from isaaclab_tasks.utils import load_cfg_from_registry
         for task, spec in sorted(gym.registry.items()):
             entry = spec.kwargs.get('env_cfg_entry_point', '')
