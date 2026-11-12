@@ -50,7 +50,10 @@ def main():
     owner = str(os.getpid())
     worker = client = None
     reserved = False
-    maximum_steps = 64 if args.case == 'labels' else 200
+    # The own-motion fixture is sampled at 20Hz but the simulator steps at 50Hz.
+    # Two hundred simulation steps stop before its reference grasp phase. Cover
+    # the 12.6-second reference endpoint instead of silently skipping rescue.
+    maximum_steps = 64 if args.case == 'labels' else 640
     receipt = dict(started=time.time(), completed=False, checkpoint=str(args.checkpoint),
                    model_python=str(args.model_python), simulator_python=sys.executable,
                    scientific_evaluation=False, maximum_steps=maximum_steps, case=args.case,
