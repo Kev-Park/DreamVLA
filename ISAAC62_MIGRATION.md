@@ -639,3 +639,57 @@ that problem while keeping normal dependency checks. The candidate lock and
 resolver receipt are local in `out/isaac62_migration/conversion_profile_candidate/`.
 Environment approval, installation/import checks and actual recording conversion
 remain pending. Dependency resolution alone is not a working-converter claim.
+
+
+### Volume-deformable port and actual runtime checks (2026-11-12)
+
+The earlier unported-deformable statements above describe the historical state.
+Commits `d5ade0f` through `5ddbe29` now implement the current volume-body schema,
+cooked simulation/collision hierarchy, material binding, mass/density ownership,
+nodal state writes and the removed diagnostic interface. Existing rigid-body
+and Isaac 5.1 paths remain selected by the installed schema API. Removed
+non-neutral material `damping_scale` is rejected explicitly rather than ignored.
+
+The actual procedural asset check at `5ddbe29` passes 20 physics steps under
+Isaac 6.2: a 0.8-kg body with material density 1300 falls 0.04061651 m, accepts
+state restoration and nodal kinematic targets, and reports six finite diagnostic
+arrays. Both simulation and collision quaternion norms pass (maximum error
+4.18e-7). It uses 125/243 simulation/collision nodes and 384/480 tetrahedra.
+The wrapper exits zero, simulation callbacks are cleared before SDK shutdown,
+and process and GPU-context release were independently checked. An earlier
+`91d24a9` attempt finished its numerical checks but hung during shutdown; that
+failure is preserved and was cleaned up only after verifying process ownership.
+
+The same procedural asset under the existing Isaac 5.1 environment also exits
+zero and falls 0.04061649 m. Its cooked topology is different (64/146 nodes,
+135/270 tetrahedra), so these are not elementwise-comparable meshes. It reports
+zero collision quaternions, with norm error 1, despite no PhysX cooking error.
+This confirms that the invalid legacy collision rotations seen in the earlier
+single-tetrahedron fixture are not solely a fixture-cooking artifact. The new
+adapter returns proper polar rotations; it does not fabricate zero rotations to
+match invalid legacy diagnostics. This is an explicit diagnostic difference,
+not a full parity claim.
+
+For the explicit single-tetrahedron comparison at `254bf72`, simulation and
+collision gradients pass the preselected 1e-5 tolerance, simulation quaternion
+error is 2.69e-7, and simulation stress differs by at most 0.360 Pa (1-Pa gate).
+Collision quaternion and stress comparisons remain failed; no tolerance was
+relaxed. The legacy fixture also emits a cooking warning, unlike the normally
+cooked asset above. The diagnostic matrix layout preserves the original
+column-major buffers and the SDK's corotated-stress convention.
+
+Local evidence is in `out/isaac62_migration/deformable_tensor_comparison.json`,
+`isaac62_deformable_asset_5ddbe29/`, and
+`isaac62_deformable_asset_legacy_retry_5ddbe29/`. Generic coverage remains
+incomplete: implicit-material stress, heterogeneous padded topology, migration
+of preexisting legacy USD assets, and non-neutral damping require further work.
+These deformable diagnostics are not used by the tested rigid robot tasks.
+
+
+A targeted rigid-robot regression at `5ddbe29` verifies the common spawner changes
+did not break the pick-camera environment: initial reset, 32 finite steps,
+third-person and camera PNGs, an independently counted 32-frame 1280x720/50fps
+video, and a final reset pass. The process and GPU contexts were released.
+This probe applies zero actions and explicitly does not validate a learned policy
+or assess task success. Local results:
+`out/isaac62_migration/isaac62_pick_task_5ddbe29_deformable_regression/`.
