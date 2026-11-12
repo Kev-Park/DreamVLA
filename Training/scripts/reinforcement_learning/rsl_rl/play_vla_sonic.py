@@ -199,20 +199,11 @@ def extract_motion_token(
 # Video writer wrapping imageio-ffmpeg.
 # =========================================================================
 
-class VideoWriter:
-    def __init__(self, path: Path, fps: int):
-        import imageio
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._writer = imageio.get_writer(str(path), fps=fps, codec="libx264", quality=7)
-        self.path = path
-        self.frames = 0
+from vla_sonic.video_writer import RGBVideoWriter
 
-    def write(self, frame_rgb: np.ndarray) -> None:
-        self._writer.append_data(frame_rgb)
-        self.frames += 1
 
-    def close(self) -> None:
-        self._writer.close()
+class VideoWriter(RGBVideoWriter):
+    """Shared RGB/FFmpeg writer; keeps the playback API stable."""
 
 
 def _read_camera_rgb(env, key: str, *, verbose: bool = False) -> np.ndarray | None:

@@ -377,31 +377,14 @@ def _update_obj_candidate_markers(env, markers, device, hand_fwd: float = 1.5):
     )
 
 
-class VideoWriter:
-    """cv2-backed mp4 writer (mp4v codec — self-contained, no ffmpeg dependency)."""
+from vla_sonic.video_writer import RGBVideoWriter
 
-    def __init__(self, path: Path, fps: int):
-        import cv2
-        self._cv2 = cv2
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.path = path
-        self._fps = max(1, int(fps))
-        self._fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        self._writer = None
-        self.frame_count = 0
 
-    def write(self, frame_rgb):
-        frame_bgr = self._cv2.cvtColor(frame_rgb, self._cv2.COLOR_RGB2BGR)
-        if self._writer is None:
-            h, w = frame_bgr.shape[:2]
-            self._writer = self._cv2.VideoWriter(str(self.path), self._fourcc, self._fps, (w, h))
-            print(f"[video] writer opened {w}x{h} @ {self._fps} fps → {self.path}")
-        self._writer.write(frame_bgr)
-        self.frame_count += 1
+class VideoWriter(RGBVideoWriter):
+    """Use the same verified RGB/FFmpeg path as GR00T playback."""
 
     def close(self):
-        if self._writer is not None:
-            self._writer.release()
+        super().close()
         print(f"[video] {self.path.name}: {self.frame_count} frames written")
 
 
