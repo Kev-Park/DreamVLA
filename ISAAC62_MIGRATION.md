@@ -1019,3 +1019,50 @@ sampling and user visual review. The previously documented strict stitch-IK,
 snapshot/reset, implicit-material stress and damping limitations remain unresolved;
 these new passes do not waive those gates. The original walking research chain
 remains stopped and was not resumed by this migration validation.
+
+### Full constructor audit, new reference render and Adroit training gate (2026-11-12)
+
+The registry-wide audit discovers56motion-task configurations. Actual isolated
+exports of both recorded parents in Isaac5.1 and the current merged source in6.2
+produce the same44passing constructors and12failing constructors. No constructor
+failure was added, and the recorded class, physicsdt, decimation, default environment
+count and agent-config entry metadata have no differences between the three runs.
+This is constructor coverage, not runtime/success coverage for all56tasks.
+
+The12failures are preexisting in both parents: missing modules for bimanual-pick-drop,
+hit-target, kick-real, dishwasher and stand-still; missing PlayCfg classes for pick,
+pick-real, pick-place, drawer and punch; and both sit variants reference the absent
+both_feet_in_air_penalty helper. They remain explicitly failed, with registrations
+retained. No task or reward replacement was invented. Source provenance and actual
+receipts/comparison are local in `task_config_failure_provenance.json` and
+`isaac62_task_config_baselines_5930fe3/` under the migration output root.
+
+The baseline harness first omitted the original application kit files; its missing
+experience failure is preserved. Subsequent construction completed, but SDK5.1
+rejects the6.2 close(exit_code=...) API and its slow shutdown also segfaulted.
+The final harness uses each SDK's supported fast-shutdown contract and persists
+failure receipts first. SDK5.1's zero fast-shutdown exit is explicitly not treated
+as a passing result. Final receipts retain all12failures in each source; the
+comparison establishes no new constructor failures, not that every constructor passes.
+
+The newly optimized original holosoma output is now also replayed in6.2 through the
+production reference-playback entrypoint. It renders512frames at50fps,2560x1920,
+covering0.54..10.76seconds of the9.75-second reference. Finite trace and exact
+kinematic-reference checks pass; video and frame are pulled locally to
+`isaac62_new_retarget_replay_2d02dfa/` and indexed in the dashboard. This is reference
+playback with overlays, not a learned-policy rollout or an appearance judgment.
+
+Adroit access was restored by the user. The standard login-node HTTP proxy was
+absent and has been restored in the own-account conn tmux session. Full GR00T
+optimizer/save/fresh-process resume validation is queued as Slurm3463916, from
+exported commitb6b38aa, on one A10080GB with4CPUs/96GBRAM and25minutes wall time.
+It uses the existing saved92967 checkpoint, matching existing walking LeRobot data
+and unchanged GR00T environment. No package installations or full research runs are
+involved. The job owns and cleans its compute-to-login proxy tunnel. Authoritative
+state is PENDING(Priority); the earlier test-only start forecast was November18,
+not a guaranteed ETA. No GR00T optimizer/resume pass is claimed until receipts prove it.
+
+The upstream OmniControl checkpoint was found under Biped's existing locomotion
+worktree. A bounded generation check is awaiting approval to use the existing
+omnicontrol environment under the workspace environment-switch rule. No model was
+replaced and that environment has not been executed during this follow-up.
