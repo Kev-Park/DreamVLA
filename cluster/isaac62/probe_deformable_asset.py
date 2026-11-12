@@ -59,6 +59,8 @@ def main():
             other = copy.deepcopy(spawn)
             other.size = (.3, .2, .2)
             other.deformable_props.simulation_hexahedral_resolution = 4
+            other.physics_material.youngs_modulus = 75000.
+            other.physics_material.poissons_ratio = .27
             other.func('/World/SoftCube1', other, translation=(1, 0, 1))
             asset = DeformableObject(DeformableObjectCfg(prim_path='/World/SoftCube.*', spawn=None))
         else:
@@ -94,11 +96,18 @@ def main():
         targets = asset.data.nodal_kinematic_target.clone()
         targets[..., :3] = original[..., :3]
         targets[..., 3] = 0
+        if args.heterogeneous:
+            sim_path = asset.root_physx_view.simulation_mesh_prim_paths[1]
+            node_count = len(sim.stage.GetPrimAtPath(sim_path).GetAttribute('points').Get())
+            targets[1, :node_count, 0] = 1 + 1.1 * (original[1, :node_count, 0] - 1)
+            expected_positions = targets[..., :3].clone()
+        else:
+            expected_positions = original[..., :3]
         asset.write_nodal_kinematic_target_to_sim(targets)
         for _ in range(4):
             sim.step(render=False)
             asset.update(sim.get_physics_dt())
-        torch.testing.assert_close(asset.data.nodal_pos_w, original[..., :3], atol=1e-5, rtol=0)
+        torch.testing.assert_close(asset.data.nodal_pos_w, expected_positions, atol=1e-5, rtol=0)
         arrays = dict(initial=original.cpu().numpy(), fallen=moved.cpu().numpy())
         for key in ('sim_element_quat_w', 'collision_element_quat_w', 'sim_element_deform_gradient_w',
                     'collision_element_deform_gradient_w', 'sim_element_stress_w', 'collision_element_stress_w'):
@@ -123,6 +132,23 @@ def main():
             quaternion_error[key] = float(np.max(np.abs(norms-1)))
         if not legacy:
             assert max(quaternion_error.values()) <= 1e-5, quaternion_error
+        if args.heterogeneous and not legacy:
+            # Preset affine/material checks distinguish actual per-body values
+            # from merely finite output or accidentally copied batch members.
+            expected_gradient = np.diag([1.1, 1., 1.])
+            gradient = arrays['collision_element_deform_gradient_w'][1, :counts['collision'][1]]
+            gradient_error = float(np.max(np.abs(gradient-expected_gradient)))
+            youngs, poisson = 75000., .27
+            mu = youngs/(2*(1+poisson))
+            lam = youngs*poisson/((1+poisson)*(1-2*poisson))
+            strain = expected_gradient-np.eye(3)
+            stress = ((2*mu*strain+np.eye(3)*lam*np.trace(strain)) @ expected_gradient.T)/1.1
+            measured_stress = arrays['collision_element_stress_w'][1, :counts['collision'][1]]
+            stress_error = float(np.max(np.abs(measured_stress-stress)))
+            receipt['affine_check'] = dict(gradient_max_error=gradient_error, gradient_atol=1e-4,
+                stress_max_error_pa=stress_error, stress_atol_pa=10., second_body_youngs_pa=youngs)
+            assert gradient_error <= 1e-4, receipt['affine_check']
+            assert stress_error <= 10., receipt['affine_check']
         sim.stage.GetRootLayer().Export(str(output/'scene.usda'))
         receipt.update(completed=True, frames=20, heterogeneous=args.heterogeneous, mass=.8, bound_density=density,
                        simulation_nodes=asset.max_sim_vertices_per_body,
