@@ -19,7 +19,7 @@ def simulation_config(gpu):
     if gpu < 0:
         raise ValueError('GPU must be a nonnegative physical-device index')
     return dict(headless=True, active_gpu=gpu, physics_gpu=gpu, multi_gpu=False,
-                fast_shutdown=False,
+                fast_shutdown=True,
                 width=128, height=128, renderer='RayTracedLighting')
 
 
@@ -126,7 +126,7 @@ def main():
         receipt['physics_steps_before_tensor_view'] = SimulationManager.get_num_physics_steps()
         # The SDK explicitly rejects NumPy views for GPU pipelines. Exercise the
         # same Torch frontend as the real task assets instead of a CPU-only view.
-        sim = tensors.create_simulation_view('torch', backend='physx')
+        sim = tensors.create_simulation_view('torch', stage_id=context.get_stage_id(), backend='physx')
         sim.set_subspace_roots('/')
         body = sim.create_rigid_body_view('/World/ProbeCube')
         assert SimulationManager.get_active_physics_engine() == 'physx'
@@ -232,20 +232,25 @@ def main():
         # the process directly; an exit code alone must never establish a pass.
         (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
         try:
-            if app is not None:
-                app.close()
-                receipt['application_closed'] = True
+            if reserved:
+                subprocess.run([*slots, 'release', '--owner', owner, '--gpu', str(args.gpu)],
+                               check=True, timeout=20)
+                receipt['startup_reservation_released'] = True
         except BaseException:
-            receipt.update(completed=False, cleanup_error=traceback.format_exc())
+            receipt.update(completed=False, reservation_cleanup_error=traceback.format_exc())
             raise
         finally:
+            # Kit fast shutdown does not return. Retire startup-only headroom
+            # and persist the result first; live GPU memory remains visible to
+            # the shared allocator until the process exits. The caller must
+            # inspect both this receipt and terminal/GPU state.
+            receipt['application_shutdown_requested'] = app is not None
+            (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
             try:
-                if reserved:
-                    subprocess.run([*slots, 'release', '--owner', owner, '--gpu', str(args.gpu)],
-                                   check=True, timeout=20)
-                    receipt['startup_reservation_released'] = True
+                if app is not None:
+                    app.close(exit_code=0 if receipt.get('completed') else 1)
             except BaseException:
-                receipt.update(completed=False, reservation_cleanup_error=traceback.format_exc())
+                receipt.update(completed=False, cleanup_error=traceback.format_exc())
                 raise
             finally:
                 (output/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')

@@ -56,7 +56,7 @@ def main():
     env = None
     video = None
     try:
-        app = AppLauncher(args, multi_gpu=False, fast_shutdown=False).app
+        app = AppLauncher(args, multi_gpu=False, fast_shutdown=True).app
         import gymnasium as gym
         import numpy as np
         from PIL import Image
@@ -226,7 +226,8 @@ def main():
         finally:
             try:
                 if app is not None:
-                    app.close()
+                    receipt_path.write_text(json.dumps(receipt, indent=2))
+                    app.close(exit_code=0 if receipt.get('completed') else 1)
             except BaseException:
                 receipt.update(completed=False, cleanup_error=traceback.format_exc())
                 raise
