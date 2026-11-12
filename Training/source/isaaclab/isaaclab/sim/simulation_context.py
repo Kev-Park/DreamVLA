@@ -29,7 +29,7 @@ from isaacsim.core.simulation_manager import SimulationManager
 from isaacsim.core.utils.carb import get_carb_setting, set_carb_setting
 from isaacsim.core.utils.viewports import set_camera_view
 from isaacsim.core.version import get_version
-from pxr import Gf, PhysxSchema, Sdf, Usd, UsdPhysics
+from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics
 
 from isaaclab.sim.utils import create_new_stage_in_memory, use_stage
 from isaaclab.utils.dict import flatten_dict
@@ -391,7 +391,22 @@ class SimulationContext(_SimulationContext):
         """
         # safe call only if we have a GUI or viewport rendering enabled
         if self._has_gui or self._offscreen_render or self._render_viewport:
-            set_camera_view(eye, target, camera_prim_path)
+            if self.get_version()[0] >= 6:
+                # Camera-only experiences have no viewport and do not author
+                # Kit's default perspective camera. The deprecated viewport
+                # utility silently returns in that case, leaving rgb_array
+                # rendering without a camera. The rendering manager operates
+                # directly on the camera prim, including in headless mode.
+                from isaacsim.core.rendering_manager import ViewportManager
+
+                camera_prim = self.stage.GetPrimAtPath(camera_prim_path)
+                if not camera_prim.IsValid():
+                    UsdGeom.Camera.Define(self.stage, camera_prim_path)
+                elif not camera_prim.IsA(UsdGeom.Camera):
+                    raise ValueError(f"Viewer path is not a Camera: {camera_prim_path}")
+                ViewportManager.set_camera_view(camera_prim_path, eye=eye, target=target)
+            else:
+                set_camera_view(eye, target, camera_prim_path)
 
     def set_render_mode(self, mode: RenderMode):
         """Change the current render mode of the simulation.
