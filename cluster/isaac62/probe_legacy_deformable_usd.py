@@ -110,13 +110,36 @@ def main():
         after=asset.data.nodal_state_w.clone()
         assert torch.isfinite(after).all()
         assert float(after[...,2].mean())<float(before[...,2].mean())
+        # A known affine strain verifies actual values from the read-only
+        # non-auto diagnostic path, rather than just finite array shapes.
+        asset.write_nodal_state_to_sim(before)
+        targets=asset.data.nodal_kinematic_target.clone()
+        targets[..., :3]=before[..., :3]
+        targets[..., 0]*=1.1
+        targets[..., 3]=0
+        asset.write_nodal_kinematic_target_to_sim(targets)
+        for _ in range(4):
+            sim.step(render=False);asset.update(sim.get_physics_dt())
+        torch.testing.assert_close(asset.data.nodal_pos_w,targets[..., :3],atol=1e-5,rtol=0)
         arrays=dict(initial=before.cpu().numpy(),fallen=after.cpu().numpy())
         for name in ('sim_element_quat_w','collision_element_quat_w','sim_element_deform_gradient_w',
                      'collision_element_deform_gradient_w','sim_element_stress_w','collision_element_stress_w'):
             value=getattr(asset.data,name);assert torch.isfinite(value).all(),name
             arrays[name]=value.cpu().numpy()
         np.savez(output/'state.npz',**arrays)
-        receipt.update(completed=True,frames=16,source_unchanged=True,
+        expected=np.diag([1.1,1.,1.])
+        mu=50000./(2*1.3);lam=50000.*.3/(1.3*.4)
+        strain=expected-np.eye(3)
+        stress=((2*mu*strain+np.eye(3)*lam*np.trace(strain))@expected.T)/1.1
+        errors={}
+        for kind in ('sim','collision'):
+            grad=arrays[kind+'_element_deform_gradient_w']
+            sig=arrays[kind+'_element_stress_w']
+            errors[kind]=dict(gradient=float(np.max(np.abs(grad-expected))),
+                              stress_pa=float(np.max(np.abs(sig-stress))))
+        receipt['affine_check']=dict(errors=errors,gradient_atol=1e-4,stress_atol_pa=10.)
+        assert all(e['gradient']<=1e-4 and e['stress_pa']<=10. for e in errors.values()),errors
+        receipt.update(completed=True,frames=20,source_unchanged=True,
                        mean_fall_m=float((before-after)[...,2].mean()),
                        finite_arrays={k:list(v.shape) for k,v in arrays.items()})
     except BaseException:

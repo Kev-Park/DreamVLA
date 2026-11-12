@@ -40,6 +40,17 @@ def convert_cooked_volumes(stage, sdk):
         raise ValueError('Migration requires an isolated anonymous flattened stage')
     materials = [p for p in stage.Traverse() if 'PhysxDeformableBodyMaterialAPI' in authored_apis(p)]
     bodies = [p for p in stage.Traverse() if 'PhysxDeformableBodyAPI' in authored_apis(p)]
+    for prim in stage.Traverse():
+        unsupported = authored_apis(prim) & {'PhysxDeformableSurfaceAPI', 'PhysxParticleClothAPI'}
+        if unsupported or prim.GetTypeName() == 'PhysxPhysicsAttachment':
+            raise NotImplementedError(f'Volume-only migration cannot preserve {prim.GetPath()}: {unsupported}')
+    for prim in bodies:
+        density = _value(prim, 'physics:density')
+        mass = _value(prim, 'physics:mass')
+        if density is not None and (mass is None or mass <= 0):
+            raise NotImplementedError('Body-only density without explicit mass cannot be dropped')
+        if any(a.GetNumTimeSamples() for a in prim.GetAttributes() if a.GetName().startswith('physxDeformable:')):
+            raise NotImplementedError('Animated legacy solver arrays require a separate conversion')
     for prim in materials:
         if _value(prim, 'physxDeformableBodyMaterial:dampingScale', 1.) != 1.:
             raise NotImplementedError('Non-neutral legacy dampingScale has no current equivalent')
