@@ -40,36 +40,39 @@ def main():
             try:
                 loader = LeRobotEpisodeLoader(dataset_path=dataset, modality_configs=config,
                                              video_backend='torchcodec')
-                meta = loader.episodes_metadata[0]
-                episode = int(meta['episode_index'])
-                raw_path = dataset/loader.data_path_pattern.format(
-                    episode_chunk=episode//loader.chunk_size, episode_index=episode)
-                raw = pd.read_parquet(raw_path)
-                decoded = loader[0]
-                assert len(raw) == len(decoded) == int(meta['length']), 'Episode/video/parquet length mismatch'
-                comparisons = {}
-                for modality in ['state', 'action']:
-                    for key in config[modality].modality_keys:
-                        group = loader.modality_meta[modality][key]
-                        column = group.get('original_key', 'observation.state' if modality == 'state' else 'action')
-                        expected = np.stack(raw[column].to_numpy())[:, group['start']:group['end']]
-                        actual = np.stack(decoded[f'{modality}.{key}'].to_numpy())
-                        assert np.isfinite(actual).all(), (modality, key)
-                        np.testing.assert_array_equal(actual, expected)
-                        comparisons[f'{modality}.{key}'] = list(actual.shape)
-                images = []
-                for key in config['video'].modality_keys:
-                    for index in sorted({0, len(decoded)//2, len(decoded)-1}):
-                        pixels = np.asarray(decoded[f'video.{key}'].iloc[index])
-                        assert pixels.ndim == 3 and pixels.shape[-1] == 3 and pixels.dtype == np.uint8
-                        assert pixels.max() > 0 and pixels.std() > 0, 'Black/constant decoded image'
-                        filename = f'{len(report["datasets"])-1}_{key}_{index:05d}.png'
-                        Image.fromarray(pixels).save(args.output/filename)
-                        images.append(dict(file=filename, shape=list(pixels.shape), mean=float(pixels.mean())))
-                row.update(completed=True, episode=episode, episode_frames=len(decoded),
-                           dataset_episodes=len(loader), exact_numeric_columns=comparisons,
-                           decoded_images=images, backend='torchcodec',
-                           task_success_assessed=False)
+                row['episodes'] = []
+                for episode_offset, meta in enumerate(loader.episodes_metadata):
+                    episode = int(meta['episode_index'])
+                    raw_path = dataset/loader.data_path_pattern.format(
+                        episode_chunk=episode//loader.chunk_size, episode_index=episode)
+                    raw = pd.read_parquet(raw_path)
+                    decoded = loader[episode_offset]
+                    assert len(raw) == len(decoded) == int(meta['length']), 'Episode/video/parquet length mismatch'
+                    comparisons = {}
+                    for modality in ['state', 'action']:
+                        for key in config[modality].modality_keys:
+                            group = loader.modality_meta[modality][key]
+                            column = group.get('original_key', 'observation.state' if modality == 'state' else 'action')
+                            expected = np.stack(raw[column].to_numpy())[:, group['start']:group['end']]
+                            actual = np.stack(decoded[f'{modality}.{key}'].to_numpy())
+                            assert np.isfinite(actual).all(), (modality, key)
+                            np.testing.assert_array_equal(actual, expected)
+                            comparisons[f'{modality}.{key}'] = list(actual.shape)
+                    images = []
+                    for key in config['video'].modality_keys:
+                        for index in sorted({0, len(decoded)//2, len(decoded)-1}):
+                            pixels = np.asarray(decoded[f'video.{key}'].iloc[index])
+                            assert pixels.ndim == 3 and pixels.shape[-1] == 3 and pixels.dtype == np.uint8
+                            assert pixels.max() > 0 and pixels.std() > 0, 'Black/constant decoded image'
+                            filename = f'{len(report["datasets"])-1}_ep{episode:06d}_{key}_{index:05d}.png'
+                            Image.fromarray(pixels).save(args.output/filename)
+                            images.append(dict(file=filename, shape=list(pixels.shape), mean=float(pixels.mean())))
+                    row['episodes'].append(dict(episode=episode, episode_frames=len(decoded),
+                               dataset_episodes=len(loader), exact_numeric_columns=comparisons,
+                               decoded_images=images, backend='torchcodec',
+                               task_success_assessed=False))
+                row.update(completed=True, dataset_episodes=len(loader),
+                           checked_frames=sum(ep['episode_frames'] for ep in row['episodes']))
                 del raw, decoded, loader
             except Exception:
                 row.update(error=traceback.format_exc())
