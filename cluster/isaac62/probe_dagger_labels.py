@@ -142,16 +142,30 @@ def main():
                         raise RuntimeError('Broad takeover bounds differ from the original rule')
                     if args.case == 'rescue-late' and rescue['window_s'] != 1:
                         raise RuntimeError('Late takeover window was not applied')
+                    env_args = json.loads(h['data'].attrs['env_args'])
+                    step_dt = float(env_args['step_dt'])
+                    if not np.isfinite(step_dt) or step_dt <= 0:
+                        raise RuntimeError('Recording lacks a valid simulation timestep')
+                    if args.case == 'rescue-late' and lower != max(0, upper-round(1/step_dt)):
+                        raise RuntimeError('Late sampling bounds do not match the actual one-second window')
                     expected_mask = (np.arange(frames) >= takeover).astype(mask.dtype)
                     if mask.shape != expected_mask.shape or not np.array_equal(mask, expected_mask):
                         raise RuntimeError('Recorded driver mask differs from the actual takeover schedule')
                     if not mask.any():
                         raise RuntimeError('No expert-driven frames recorded after takeover')
                     phase['rescue'] = rescue
+                    phase['step_dt'] = step_dt
                 if not np.allclose(token*16, np.round(token*16), atol=1e-7, rtol=0):
                     raise RuntimeError('Expert token labels do not lie on the FSQ grid')
                 if not np.isin(action[:, 64], [-1, 1]).all():
                     raise RuntimeError('Nonbinary expert finger commands')
+                closed = action[:, 64] < 0
+                if not np.all(fingers[~closed] == 0):
+                    raise RuntimeError('Open expert labels contain a nonzero finger target')
+                if closed.any():
+                    close_pose = fingers[closed][0]
+                    if not np.any(close_pose != 0) or not np.all(fingers[closed] == close_pose):
+                        raise RuntimeError('Closed expert labels differ from their fixed demonstration pose')
                 phase.update(frames=len(token), expert_driver_frames=int(mask.sum()),
                              closed_label_frames=int((action[:, 64]<0).sum()),
                              hdf5=str(paths[0].relative_to(output)), completed=True)

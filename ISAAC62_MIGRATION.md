@@ -602,3 +602,40 @@ Legacy task/wrapper sources match the recorded g1 parent for this static case;
 the older g1 environment does not provide a matched newer walking-task baseline.
 Receipts, effective configurations, episode arrays and logs are local under
 `isaac62_static_baseline_{legacy,target}_759101c`.
+
+The production two-pass failure-conditioned rescue path passes its bounded
+mechanics/label gate at `efd9222`: the initial student episode fails the numerical
+four-rule criterion, then an independent sibling hands over at step 191 sampled
+uniformly from [0,258). The retained recording has 605 frames, 414 expert-driven
+frames and 374 closed-hand expert labels. The saved driver mask matches the
+takeover exactly; open labels have zero finger targets, and closed labels use the
+fixed demonstration pose consistently. The rescue episode itself also fails the
+four-rule task criterion; retaining corrective failures is the specified DAgger
+behavior, so this is not a policy success or performance claim. Its reservation
+was released and all account GPU contexts were confirmed gone. Local receipts,
+logs and the independent saved-label audit are in
+`out/isaac62_migration/isaac62_dagger_rescue_broad_efd9222/`.
+
+The first rescue probe correctly failed before collection because no calibrated
+box was supplied. The next 200-step probe correctly failed coverage because the
+fixture's 20-Hz reference grasp occurs after 258 steps at the 50-Hz simulation
+rate. The corrected probe uses the existing expert calibration and a 640-step
+cap, preserving production collection semantics rather than fabricating a grasp
+or changing its timing. The separate one-second late-window case at `1f1a49c`
+also passes: takeover is 245 within [208,258), exactly the final 50 simulation
+steps before the same reference grasp. It retains 605 frames, 360 expert-driven
+frames and 451 closed-hand labels. Independent reads of both HDF5s verify the
+complete driver masks and open/closed finger targets; 95 late-case close labels
+occur on student-driven states, confirming that expert targets are recorded
+before takeover as well. No claim of improved task performance follows from
+these checks. Both probes are terminal and their GPU contexts are released.
+Local late-case evidence is in `isaac62_dagger_rescue_late_1f1a49c/`.
+
+The proposed separate CPU exporter profile now resolves successfully without
+creating an environment or installing packages. A global PyTorch extra index
+initially shadowed an unrelated cmake dependency under uv's safe index policy.
+Explicit official CPython3.12/Linux CPU-wheel URLs for Torch/Torchvision avoid
+that problem while keeping normal dependency checks. The candidate lock and
+resolver receipt are local in `out/isaac62_migration/conversion_profile_candidate/`.
+Environment approval, installation/import checks and actual recording conversion
+remain pending. Dependency resolution alone is not a working-converter claim.
