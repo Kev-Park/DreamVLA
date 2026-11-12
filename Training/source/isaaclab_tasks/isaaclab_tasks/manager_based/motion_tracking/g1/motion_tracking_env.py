@@ -321,6 +321,15 @@ def joint_deviation_ref_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = S
     motion_times = env.episode_length_buf * env.step_dt + env.start_motion_times.clone().detach().to(device=env.device, dtype=torch.float32)
     motion_res = env.motion_lib.get_motion_state(env.motion_ids, motion_times)
     ref_joint_pos = motion_res["dof_pos"]
+    # Legacy masks name the 27 body joints before waist roll/pitch were added.
+    # Preserve those exact weights; the two previously absent joints contribute zero.
+    if len(joint_mask) == 27 and ref_joint_pos.shape[-1] == 29:
+        legacy_names = [name for name in JointNamesOrder
+                        if name not in ("waist_roll_joint", "waist_pitch_joint")]
+        weights_by_name = dict(zip(legacy_names, joint_mask, strict=True))
+        joint_mask = [weights_by_name.get(name, 0) for name in JointNamesOrder]
+    if len(joint_mask) != ref_joint_pos.shape[-1]:
+        raise ValueError("Joint reward mask and reference layout differ")
     angle = (asset.data.joint_pos[:, asset_cfg.joint_ids] - ref_joint_pos)*torch.tensor(joint_mask, device=env.device).unsqueeze(0)
     return torch.sum(torch.abs(angle), dim=1)
 
