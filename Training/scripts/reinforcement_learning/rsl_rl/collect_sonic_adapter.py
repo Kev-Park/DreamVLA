@@ -690,9 +690,13 @@ def rollout_snapshot(env) -> dict:
     hist = {}
     for grp, terms in getattr(om, "_group_obs_term_history_buffer", {}).items():
         for tname, buf in terms.items():
-            b = getattr(buf, "buffer", None)
-            if b is not None:
-                hist[(grp, tname)] = b.clone()
+            # buffer is a chronological COPY, not the ring's mutable storage.
+            # Preserve its cursor and per-environment fill counts as well.
+            hist[(grp, tname)] = {
+                "storage": buf._buffer.clone() if buf._buffer is not None else None,
+                "pointer": buf._pointer,
+                "num_pushes": buf._num_pushes.clone(),
+            }
     snap["_obs_history"] = hist
     return snap
 
@@ -732,11 +736,10 @@ def rollout_restore(env, snap: dict) -> None:
         am._prev_action.copy_(snap["_am_prev_action"])
     om = getattr(u, "observation_manager", None)
     for (grp, tname), saved in (snap.get("_obs_history") or {}).items():
-        try:
-            buf = om._group_obs_term_history_buffer[grp][tname]
-            buf.buffer.copy_(saved)
-        except (AttributeError, KeyError):
-            pass
+        buf = om._group_obs_term_history_buffer[grp][tname]
+        buf._buffer = saved["storage"].clone() if saved["storage"] is not None else None
+        buf._pointer = saved["pointer"]
+        buf._num_pushes.copy_(saved["num_pushes"])
     # reset_to computed obs_buf with the clock still zeroed and last_action cleared, so it is stale
     # by construction. Recompute now that everything above is back in place; update_history=False so
     # the restored history buffers are not advanced by the recompute itself.
