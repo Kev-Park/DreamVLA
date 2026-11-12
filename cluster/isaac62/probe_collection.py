@@ -31,7 +31,11 @@ def main():
                         help='Existing legacy interpreter for a matched SDK baseline')
     parser.add_argument('--checks', nargs='+', choices=['determinism', 'restore', 'expert'],
                         default=['determinism', 'restore', 'expert'])
+    parser.add_argument('--max-expert-attempts', type=int, default=1,
+                        help='At most three preset references for passing-filter coverage')
     args = parser.parse_args()
+    if not 1 <= args.max_expert_attempts <= 3:
+        parser.error('--max-expert-attempts must be between one and three')
     output = args.output.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parents[2]
@@ -58,7 +62,7 @@ def main():
                    '--ref-motions-path', str(args.ref_motions_path.expanduser().resolve(strict=True)),
                    '--task', 'Isaac-Motion-Tracking-Pick-Cam-HOI-v0',
                    '--waist-dof', '29', '--skip-start-frames', '0',
-                   '--seed', '17', '--motion-range', '0', '1', '--num-samples', '1',
+                   '--seed', '17', '--motion-range', '0', str(args.max_expert_attempts), '--num-samples', '1',
                    '--rollout-length', '1200', '--residual-transform', 'additive_free']
         for name, extra, marker in (
                 ('determinism', ['--dagger-selftest-determinism', '16'], '[selftest-determinism] PASS'),
@@ -81,13 +85,14 @@ def main():
                 # Independent checks must still run; preserve each failed gate.
                 continue
             if name == 'expert':
-                summary = re.search(r'Successes written: (\d+)/1 .*motions tried=(\d+)/1, '
+                summary = re.search(r'Successes written: (\d+)/1 .*motions tried=(\d+)/(\d+), '
                                     r'rejected_fall=(\d+), rejected_nograsp=(\d+), '
                                     r'rejected_topple=(\d+), errored=(\d+)', log)
                 if summary is None:
                     raise RuntimeError('Missing exact collector episode accounting')
                 counts = list(map(int, summary.groups()))
-                if counts[1] != 1 or counts[-1] or counts[0]+sum(counts[2:5]) != 1:
+                if (counts[2] != args.max_expert_attempts or not 1 <= counts[1] <= counts[2]
+                        or counts[-1] or counts[0]+sum(counts[3:6]) != counts[1]):
                     raise RuntimeError('Invalid collector success/rejection/error accounting: '+str(counts))
                 phase['episode_accounting'] = counts
             phase['completed'] = True
