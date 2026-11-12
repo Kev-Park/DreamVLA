@@ -70,6 +70,33 @@ Initial merge audit artifacts and test receipts are under the EMBER workspace's
 `out/isaac62_migration/`. The 6.2 runtime is not yet validated. Do not resume the
 existing full DAgger study or mark this migration complete from static checks.
 
+The isolated foundation is now installed on Bluesclues and Biped; Biped also has
+the project dependencies and five editable packages installed. The actual Biped
+project environment passed 82 CPU compatibility contracts and ten cross-interpreter
+service fixtures at `f54c1a0`. These do not establish simulation behavior.
+
+The original T20_max_v3/model_4500, T20_max/model_4999 and af60v7/model_4999
+residual checkpoints, plus both native SONIC encoder heads and the shared decoder,
+also ran on Biped GPU 0 using Torch 2.11/cu128. Checkpoint hashes and synthetic
+inputs exactly matched their earlier target CPU baselines; the largest output
+difference was 5.72e-6, within the predefined rtol=1e-4/atol=1e-5 gate. During the
+probe, only GPU 0 had account-owned contexts; all were released afterward.
+Reports and arrays are in workspace
+`out/isaac62_migration/isaac62_cuda_checkpoints_c082dde/`. The probes now accept
+`--device cuda:0` only with one explicitly visible, separately reviewed GPU.
+This is frozen inference compatibility, not closed-loop/task/training validation.
+
+The real foundation attempts started Isaac 6.2 but failed before valid rendered
+artifacts. The raw-stage tensor view needed an explicit USD stage ID. SDK fast
+shutdown could also bypass final receipts and return zero on failure; the probe
+now persists its receipt first and supplies the intended shutdown exit code.
+The prepared fixes still need a passing GPU run. Isaac additionally created a
+6 MiB graphics-only context on Biped GPU 1 despite its single-GPU CUDA mask. The
+failed probe was terminated and both contexts released. Further Biped Isaac
+launches require the user's narrow graphics exception or verified device
+isolation under the workspace's strict one-GPU rule. Docker is installed but the
+account cannot access its daemon; no permission workaround was attempted.
+
 ## Isolated foundation gate
 
 `cluster/isaac62/setup_environment.sh` creates a new environment only at
