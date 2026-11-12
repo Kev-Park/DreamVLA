@@ -8,6 +8,7 @@ import argparse
 import importlib.metadata
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -54,7 +55,7 @@ def main():
         for name, extra, marker in (
                 ('determinism', ['--dagger-selftest-determinism', '16'], '[selftest-determinism] PASS'),
                 ('restore', ['--dagger-selftest-restore', '8', '16'], '[selftest-restore] PASS'),
-                ('expert', [], '[INFO]')):
+                ('expert', [], '[INFO] Collection finished.')):
             phase = dict(name=name, completed=False)
             receipt['phases'].append(phase)
             cmd = [*command, '--output-directory', str(output/name), *extra]
@@ -67,6 +68,16 @@ def main():
             phase['marker_present'] = marker in log
             if result.returncode or marker not in log:
                 raise RuntimeError('Actual collector '+name+' gate failed; inspect retained log')
+            if name == 'expert':
+                summary = re.search(r'Successes written: (\d+)/1 .*motions tried=(\d+)/1, '
+                                    r'rejected_fall=(\d+), rejected_nograsp=(\d+), '
+                                    r'rejected_topple=(\d+), errored=(\d+)', log)
+                if summary is None:
+                    raise RuntimeError('Missing exact collector episode accounting')
+                counts = list(map(int, summary.groups()))
+                if counts[1] != 1 or counts[-1] or counts[0]+sum(counts[2:5]) != 1:
+                    raise RuntimeError('Invalid collector success/rejection/error accounting: '+str(counts))
+                phase['episode_accounting'] = counts
             phase['completed'] = True
         import h5py
         import numpy as np
