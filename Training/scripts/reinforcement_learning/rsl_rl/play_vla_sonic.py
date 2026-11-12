@@ -537,11 +537,6 @@ def main() -> int:
             # both for the video and for the ego view the next chunk's obs_adapter() reads.
             flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
 
-            for k, w in writers.items():
-                frame = _read_camera_rgb(env, k, verbose=(step == 0))
-                if frame is not None:
-                    w.write(frame)
-
             # ---- metrics (env-local frame), read AFTER the step; identical to the eval ----
             org = unw.scene.env_origins[0]
             obj_p = unw.scene["object"].data.root_pos_w[0] - org
@@ -553,6 +548,10 @@ def main() -> int:
             d_palm = float(torch.norm(palm - obj_p).item())
             done_now = bool(torch.as_tensor(dones).reshape(-1)[0].item())
             if not done_now:                       # after a done the env has already reset -> skip
+                for k, writer in writers.items():
+                    frame = _read_camera_rgb(env, k, verbose=(step == 0))
+                    if frame is not None:
+                        writer.write(frame)
                 if args.traj_dump:
                     rp = robot.data.root_pos_w[0] - org
                     rq = robot.data.root_quat_w[0]

@@ -105,11 +105,29 @@ def main():
                     raise RuntimeError('Nonfinite real evaluator state: '+key)
             receipt['trace_frames'] = frames
             receipt['body_names'] = trace['body_names'].tolist()
+            requested = trace['requested_action'].copy()
+            body, reference = trace['body_pos'], trace['ref_body_pos']
+            receipt['trace_mpjpe_cm'] = {
+                'world': float(100 * np.linalg.norm(body-reference, axis=-1).mean()),
+                'root_relative': float(100 * np.linalg.norm(
+                    (body-trace['root_pos'][:, None]) -
+                    (reference-trace['ref_root_pos'][:, None]), axis=-1).mean()),
+                'frames': frames,
+            }
         with np.load(output/'grasp.npz', allow_pickle=False) as grasp:
             predicted = grasp['ep0_pred_meanq']
             if not len(predicted) or not np.isfinite(predicted).all():
                 raise RuntimeError('Missing/invalid predicted finger commands')
-            receipt['predicted_hand_frames'] = len(predicted)
+            if args.expert_checkpoint:
+                # pred_meanq is a placeholder in this existing evaluation mode;
+                # validate the actual scalar commands, not that placeholder.
+                close = grasp['ep0_cmd_close']
+                if len(close) < frames or not np.array_equal(close[:frames], requested[:, 64] < 0):
+                    raise RuntimeError('Direct actor finger command differs from saved action')
+                receipt['actor_finger_frames'] = frames
+                receipt['predicted_hand_placeholder'] = True
+            else:
+                receipt['predicted_hand_frames'] = len(predicted)
 
         # Exercise the production video entry point as well as the statistical
         # evaluator. Keep its trace separate from the evaluator's evidence.
