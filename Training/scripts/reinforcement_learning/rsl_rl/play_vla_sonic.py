@@ -87,6 +87,10 @@ def _parse_cli() -> argparse.Namespace:
     parser.add_argument("--vla-checkpoint", default=None,
                         help="Path to the unitree_g1_sonic fine-tuned GR00T checkpoint dir "
                              "(the VLA that emits motion_token + hand joints).")
+    parser.add_argument("--expert-checkpoint", default=None,
+                        help="Record the existing direct expert-token evaluation ablation.")
+    parser.add_argument("--expert-token-mode", choices=("raw", "snap"), default="snap",
+                        help="Match eval_vla_sonic: actor output with optional FSQ snapping.")
     parser.add_argument("--embodiment-tag", default=DEFAULT_EMBODIMENT_TAG)
     parser.add_argument("--language", default="pick up the mustard bottle")
     # Default paths assume DreamVLA/ and GR00T-WholeBodyControl/ are sibling repos,
@@ -344,6 +348,8 @@ def _quat_to_R_t(q):
 
 def main() -> int:
     args = _ARGS
+    if args.expert_checkpoint and (args.vla_checkpoint or args.replay_hdf5 or not args.sonic_pt):
+        raise SystemExit("--expert-checkpoint requires native --sonic-pt and excludes VLA/replay modes")
 
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
@@ -396,7 +402,9 @@ def main() -> int:
 
     # --- 2. Build VLA policy -----------------------------------------------------------
     replay = ReplaySource(args.replay_hdf5) if args.replay_hdf5 else None
-    if replay is not None:
+    if args.expert_checkpoint:
+        policy = None  # loaded with the same observation-preserving wrapper as evaluation
+    elif replay is not None:
         policy = None
         print(f"[replay] {replay.path.name}: {replay.num_steps} recorded steps, motion {replay.motion_id} -- "
               f"feeding the RECORDED token + finger scalar (VLA not loaded)")
@@ -420,7 +428,12 @@ def main() -> int:
         decoder = load_frozen_decoder(args.decoder_onnx, "cuda:0")
         print(f"[sonic] ONNX decoder {args.decoder_onnx} (v1.0 latent space -- only valid if the "
               f"training tokens were recorded with the ONNX model)")
-    env = TokenActionDecoderVecEnvWrapper(env, decoder, "cuda:0", clip_actions=None)
+    if args.expert_checkpoint:
+        from vla_sonic.direct_expert_eval import load_direct_expert
+        env, policy = load_direct_expert(env, _enc_unused, decoder, args.expert_checkpoint,
+                                        args.task, args.seed, args.expert_token_mode)
+    else:
+        env = TokenActionDecoderVecEnvWrapper(env, decoder, "cuda:0", clip_actions=None)
     unw = env.unwrapped
     total_motions = int(unw.total_motions)
 
@@ -485,7 +498,13 @@ def main() -> int:
         step = 0
         traj = {k: [] for k in ("obj_pos", "obj_quat", "root_pos", "root_quat", "wrist")}
         for step in range(args.max_steps_per_episode):
-            if replay is not None:
+            if args.expert_checkpoint:
+                with torch.inference_mode():
+                    expert_action = policy(obs)
+                token = expert_action[0, :64].detach().cpu().numpy()
+                _fs = expert_action[0, 64]
+                t_idx = 0
+            elif replay is not None:
                 token, _fs = replay.latent(step)
                 vla_chunk = {"right_hand_joints": np.zeros((1, 1, 7), np.float32)}  # keeps the grasp log shape
                 t_idx = 0
@@ -509,7 +528,7 @@ def main() -> int:
                           "the robot is NOT VLA-controlled. Check action.motion_token in the dataset.\n")
             latent = torch.zeros((1, 65), device="cuda:0", dtype=torch.float32)
             latent[0, :64] = torch.as_tensor(token, device="cuda:0")
-            latent[0, 64] = _fs if replay is not None else _finger_scalar(vla_chunk, t_idx)
+            latent[0, 64] = _fs if replay is not None or args.expert_checkpoint else _finger_scalar(vla_chunk, t_idx)
             if step < 3:
                 print(f"[step {step}] motion_token[:8] = {token[:8].round(3).tolist()}  finger={latent[0, 64].item():+.0f}")
             with torch.inference_mode():
