@@ -626,7 +626,7 @@ class DaggerDriver:
 # the reset EVENTS and zeroes episode_length_buf. The physics state is then overwritten, but the
 # reference clock (episode_length_buf / start_motion_times / motion_ids) and the SONIC decoder's
 # autoregressive history are not -- so they are saved and restored explicitly.
-_SNAP_WRAPPER_TENSORS = ("_h_jp", "_h_jv", "_h_la", "_h_av", "_h_gv", "_base_token")
+_SNAP_WRAPPER_TENSORS = ("_h_jp", "_h_jv", "_h_la", "_h_av", "_h_gv", "_prev_body_29", "_base_token")
 _SNAP_ENV_TENSORS = ("episode_length_buf", "start_motion_times", "motion_ids")
 
 
