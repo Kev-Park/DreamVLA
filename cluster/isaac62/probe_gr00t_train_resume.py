@@ -20,7 +20,8 @@ def main():
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--phase', choices=('initial', 'resume'), required=True)
     args = p.parse_args()
-    assert os.environ.get('CUDA_VISIBLE_DEVICES') in ('0', '1'), 'Expose one reviewed physical GPU'
+    visible_gpu = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+    assert visible_gpu.isdecimal(), 'Expose exactly one reviewed physical GPU index'
     import torch
     from transformers import TrainerCallback, TrainingArguments, set_seed
     from gr00t.configs.base_config import get_default_config
