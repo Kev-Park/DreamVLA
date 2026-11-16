@@ -132,7 +132,7 @@ def main():
                 if hasattr(view, rest_method):
                     topology[name+'_'+kind+'_native_rest_poses'] = getattr(view, rest_method)().cpu().numpy().copy()
                 prefix = 'get_sim_element_' if kind == 'simulation' else 'get_element_'
-                for diagnostic in ('deformation_gradients', 'stresses'):
+                for diagnostic in ('deformation_gradients', 'stresses', 'rotations'):
                     topology[name+'_'+kind+'_'+diagnostic] = getattr(view, prefix+diagnostic)().cpu().numpy().copy()
                 if version == '5.1.0.0':
                     rest_attr = root.GetAttribute('physxDeformable:'+kind+'RestPoints')
@@ -149,6 +149,34 @@ def main():
             if material:
                 configs[name]['bound_material_values'] = {a.GetName(): str(a.Get())
                     for a in material.GetPrim().GetAttributes() if 'density' in a.GetName().lower()}
+            if args.rotated:
+                assert len(cubes) == 1, 'Controlled rotated diagnostics require an isolated case'
+                angle = np.pi/6
+                modes = dict(stretch=np.diag([1.1, 1., 1.]),
+                    shear=np.array([[1., .12, 0.], [0., 1., .07], [0., 0., 1.]]),
+                    rigid=np.array([[1., 0., 0.], [0., np.cos(angle), -np.sin(angle)],
+                                    [0., np.sin(angle), np.cos(angle)]]))
+                for mode, matrix in modes.items():
+                    state = original[name].clone()
+                    center = state[..., :3].mean(1, keepdim=True)
+                    targets = cube.data.nodal_kinematic_target.clone()
+                    targets[..., :3] = center+(state[..., :3]-center) @ torch.as_tensor(
+                        matrix.T, device=state.device, dtype=state.dtype)
+                    targets[..., 3] = 0
+                    cube.write_nodal_kinematic_target_to_sim(targets)
+                    for _ in range(4):
+                        cube.write_data_to_sim();sim.step(render=False);cube.update(sim.get_physics_dt())
+                    torch.testing.assert_close(cube.data.nodal_pos_w, targets[..., :3], atol=1e-5, rtol=0)
+                    for kind in ('simulation', 'collision'):
+                        prefix = 'get_sim_element_' if kind == 'simulation' else 'get_element_'
+                        tag = name+'_'+kind+'_'+mode+'_'
+                        points = view.get_sim_nodal_positions() if kind == 'simulation' else view.get_nodal_positions()
+                        topology[tag+'points'] = points.cpu().numpy().copy()
+                        for diagnostic in ('deformation_gradients', 'stresses', 'rotations'):
+                            topology[tag+diagnostic] = getattr(view, prefix+diagnostic)().cpu().numpy().copy()
+                    topology[name+'_'+mode+'_matrix'] = matrix
+                targets[..., 3] = 1
+                cube.write_nodal_kinematic_target_to_sim(targets)
             state = original[name].clone()
             center = state[..., :3].mean(1, keepdim=True)
             state[..., 0] = center[..., 0]+1.1*(state[..., 0]-center[..., 0])
