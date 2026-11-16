@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--dt', type=float, default=.005)
+    parser.add_argument('--case', help='Run one case at the origin in an isolated process')
     args = parser.parse_args()
     assert os.name == 'posix' and os.environ.get('CUDA_VISIBLE_DEVICES') == '0'
     version = importlib.metadata.version('isaacsim')
@@ -61,6 +62,11 @@ def main():
                     ('nomat_cooked_mass1000', measured_volume*1000., None, None),
                     ('nomat_cooked_mass1300', measured_volume*1300., None, None),
                     ('nomat_repeat', None, None, None)]
+        if args.case:
+            settings = [setting for setting in settings if setting[0] == args.case]
+            if not settings:
+                raise ValueError(f'Unknown diagnostic case: {args.case}')
+        report['isolated_case'] = args.case
         cubes, configs = {}, {}
         for index, (name, mass, density, material_density) in enumerate(settings):
             material = None if material_density is None else sim_utils.DeformableBodyMaterialCfg(
@@ -141,13 +147,17 @@ def main():
                  ('nomat_default', 'nomat_repeat')]
         comparisons = {}
         for left, right in pairs:
+            if left not in arrays or right not in arrays:
+                continue
             delta = arrays[left]-arrays[right]
             comparisons[left+'_vs_'+right] = dict(max_error_m=float(np.abs(delta).max()),
                                                  rms_error_m=float(np.sqrt(np.mean(delta**2))))
         report.update(cases=configs, comparisons=comparisons, steps=64, measurement_completed=True,
-            informative_control=comparisons['material_density_vs_material_low']['max_error_m'] > 1e-4)
+            informative_control=(None if args.case else
+                comparisons['material_density_vs_material_low']['max_error_m'] > 1e-4))
         np.savez(args.output/'traces.npz', **arrays)
-        assert report['informative_control'], 'Material density control did not separate'
+        if not args.case:
+            assert report['informative_control'], 'Material density control did not separate'
         report['completed'] = True
     except BaseException:
         report['error'] = traceback.format_exc()
