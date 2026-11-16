@@ -317,20 +317,32 @@ def _preserve_mimic_joints(usd_path, cfg, natural=None):
             prim, source = joints[name], joints[source_name]
             axis_element = element.find('axis')
             axis = [float(x) for x in (axis_element.get('xyz', '1 0 0') if axis_element is not None else '1 0 0').split()]
-            cardinal = [i for i in range(3) if abs(axis[i]) == 1 and all(axis[j] == 0 for j in range(3) if i != j)]
-            if len(cardinal) != 1:
-                raise NotImplementedError(f'Cannot preserve non-cardinal legacy mimic axis for {name}: {axis}')
+            if len(axis) != 3 or not all(math.isfinite(value) for value in axis) or sum(value*value for value in axis) == 0:
+                raise ValueError(f'Invalid URDF mimic axis for {name}: {axis}')
+            # Match getJointAxis's ordered float32 dot/epsilon checks, including
+            # nearly aligned axes; the original parser does not normalize them.
+            cardinal = [i for i, value in enumerate(axis) if abs(f32(value)) > f32(1.-f32(1e-5))][:1]
             # Legacy leaves referenceJointAxis at its schema default rotX,
             # even when the reference's authored axis differs. Preserve it.
-            api = PhysxSchema.PhysxMimicJointAPI.Apply(prim, 'rot'+'XYZ'[cardinal[0]])
+            # Original getJointAxis returns an empty string for oblique axes.
+            # configureMimicAPI still applies rotX in the reoriented joint frame.
+            api = PhysxSchema.PhysxMimicJointAPI.Apply(prim, 'rot'+'XYZ'[cardinal[0]] if cardinal else 'rotX')
             multiplier = f32(float(mimic.get('multiplier', '1')))
             offset = f32(float(mimic.get('offset', '0')))
             if not math.isfinite(multiplier) or not math.isfinite(offset):
                 raise ValueError(f'Non-finite mimic coefficients for {name}')
             api.CreateGearingAttr(-multiplier)
             api.CreateOffsetAttr(offset)
-            api.CreateNaturalFrequencyAttr(natural[name]['natural_frequency'] if natural is not None else 25.0)
-            api.CreateDampingRatioAttr(natural[name]['damping_ratio'] if natural is not None else .005)
+            frequency = natural[name]['natural_frequency'] if natural is not None else 25.0
+            ratio = natural[name]['damping_ratio'] if natural is not None else .005
+            if cardinal:
+                api.CreateNaturalFrequencyAttr(frequency)
+                api.CreateDampingRatioAttr(ratio)
+            else:
+                # Preserve the original empty-axis attribute prefix too. Those
+                # opinions do not override the rotX schema's own defaults.
+                prim.CreateAttribute('physxMimicJoint:rot:naturalFrequency', Sdf.ValueTypeNames.Float).Set(frequency)
+                prim.CreateAttribute('physxMimicJoint:rot:dampingRatio', Sdf.ValueTypeNames.Float).Set(ratio)
             api.CreateReferenceJointRel().SetTargets([source.GetPath()])
             instance = 'linear' if prim.IsA(UsdPhysics.PrismaticJoint) else 'angular'
             prim.RemoveAPI(UsdPhysics.DriveAPI, instance)
