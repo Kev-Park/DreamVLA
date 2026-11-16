@@ -18,8 +18,7 @@ def convert_asset(converter, cfg):
     from pxr import Usd, UsdGeom
     from .urdf_converter_cfg import UrdfConverterCfg
 
-    for name in ("root_link_name", "convert_mimic_joints_to_normal_joints",
-                 "replace_cylinders_with_capsules"):
+    for name in ("root_link_name", "convert_mimic_joints_to_normal_joints"):
         if getattr(cfg, name):
             raise NotImplementedError(f"Isaac Sim 6 URDF importer cannot preserve {name}")
     drive_type = target_type = stiffness = damping = None
@@ -74,6 +73,39 @@ def convert_asset(converter, cfg):
         source.GetRootLayer().Save()
     _preserve_empty_fixed_links(target, cfg)
     _preserve_joint_velocity_limits(target, cfg)
+    _preserve_collision_capsules(target, cfg)
+
+
+def _preserve_collision_capsules(usd_path, cfg):
+    """Match the legacy collision-only cylinder replacement in our USD layer.
+
+    The original importer retained the cylinder length as capsule height (it
+    did not subtract the caps) and parsed dimensions as float32. Keep visual
+    shapes, transforms, material bindings and collision APIs intact. Primitive
+    geometry emitted by the modern importer is not instanced; reject an
+    unexpected instance proxy rather than silently dropping this option.
+    """
+    if not cfg.replace_cylinders_with_capsules:
+        return
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.Open(str(usd_path))
+    assert stage and stage.GetDefaultPrim()
+    cylinders = [prim for prim in Usd.PrimRange(stage.GetPseudoRoot(), Usd.TraverseInstanceProxies())
+                 if prim.IsA(UsdGeom.Cylinder) and prim.HasAPI(UsdPhysics.CollisionAPI)]
+    if any(prim.IsInstanceProxy() for prim in cylinders):
+        raise NotImplementedError("Cannot replace an instanced collision cylinder without changing instanceability")
+    for prim in cylinders:
+        cylinder = UsdGeom.Cylinder(prim)
+        height = struct.unpack('f', struct.pack('f', cylinder.GetHeightAttr().Get()))[0]
+        radius = struct.unpack('f', struct.pack('f', cylinder.GetRadiusAttr().Get()))[0]
+        axis = cylinder.GetAxisAttr().Get()
+        capsule = UsdGeom.Capsule.Define(stage, prim.GetPath())
+        capsule.CreateHeightAttr(height)
+        capsule.CreateRadiusAttr(radius)
+        capsule.CreateAxisAttr(axis)
+        capsule.CreateExtentAttr(UsdGeom.Capsule.ComputeExtent(height, radius, axis))
+    stage.GetRootLayer().Save()
 
 
 def _preserve_empty_fixed_links(usd_path, cfg):
