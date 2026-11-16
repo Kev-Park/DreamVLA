@@ -256,6 +256,73 @@ files, not LFS pointers. MDL texture_return-to-color conversion errors also
 remain. These asset/material issues are not hidden by the RGB non-black check;
 no replacement textures or unreviewed appearance changes have been applied.
 
+### Matched kitchen renderer diagnostics (2026-11-16)
+
+The same static kitchen fixture now completes under both existing SDK5.1 and
+SDK6.2 profiles at `c1f871c`. It uses the identical source USD checksum,
+backdrop transform, camera and fixture lighting. Both capture three non-black
+640x480 RGBA frames and both log the same three missing EXRs and the same
+`door_paint_001/MDL_TypeCast1/{x,y,z}` texture_return-to-color errors. These
+specific warnings therefore predate the migration; they do not establish a
+new 6.2 regression. No production texture, material or camera was modified.
+The first 5.1 fixture captured images but failed annotator teardown because it
+passed a HydraTexture instead of a path; that failed receipt is retained and
+the corrected fixture completes in both SDKs. All workers/reservations and
+account-owned GPU contexts are released.
+
+Original images are linked side by side in
+`out/isaac62_migration/paired_kitchen_render_review.html`. Numeric/provenance
+comparison: `paired_kitchen_render_comparison.json`. User appearance review is
+pending; no visual equivalence or robot-success claim is made.
+
+### Remaining URDF options and velocity-limit repair (2026-11-16)
+
+The actual original g1 converter at `793cec0` completes six small primitive
+fixtures: default, capsule replacement, the mimic flag, explicit root name,
+and force/acceleration natural-frequency drives. Capsule output retains the
+source height 0.4, radius 0.05 and Z axis. The default drive coefficients in
+6.2 match the original values exactly. However, the modern optional probe
+stops at its explicit unsupported-capsule rejection, so the other optional
+features remain incomplete. No unsupported option is silently ignored.
+
+The original `convert_mimic_joints_to_normal_joints` flag is inverted relative
+to its name: true preserves a PhysX mimic constraint and suppresses that
+joint's drive, whereas false produces independent driven joints. The actual
+original outputs and source both establish this. Preserve that observed
+contract; do not silently correct the flag's meaning during the refactor.
+Original and modern receipts: `isaac51_urdf_options_793cec0/` and
+`isaac62_urdf_options_793cec0/` in local migration outputs.
+
+A further audit found modern imported joints lacked authored PhysX velocity
+limits, retaining only Newton metadata. The bridge now authors the original
+PhysX field from URDF limits in its owned wrapper. Angular conversion matches
+the original C++ float32 parsing and `180.0f / float(M_PI)` rounding exactly.
+The first repair's live values differed by up to 1.90735e-6 and that strict
+failure is retained. The fresh `5844642` G1 conversion matches every original
+USD velocity-limit float bit-for-bit across all 43 joints and retains all 54
+bodies. The live old/pre-fix/repaired comparison at `f695448`, with actuator
+overrides disabled, also matches all 43 repaired effective limits exactly.
+The preserved pre-fix asset still has finite, nearly identical effective limits:
+for example, a hip limit is 32.0 versus the old/repaired 31.99999809265 rad/s.
+Its maximum discrepancy is 1.90735e-6. Thus absent authored PhysX attributes did
+not mean disabled limits; the measured runtime difference was rounding.
+Both live pose gates and named model/finger interfaces still pass. Raw joint
+order remains different and that separate strict flag stays false. Receipt:
+`out/isaac62_migration/urdf_live_mass_f695448/receipt.json`. Reference implementation:
+[NVIDIA's original AddSingleJoint](https://github.com/isaac-sim/urdf-importer-extension/blob/9908f0341ee4c375a94d594c4eeb318dea3f4cf2/source/extensions/isaacsim.asset.importer.urdf/plugins/import/UrdfImporter.cpp).
+
+Modern URDF cache keys are versioned so cached pre-repair assets are regenerated.
+A failed modern conversion also removes its early-written cache marker, so a
+partially generated USD cannot be mistaken for a complete conversion on retry.
+Legacy SDK cache keys remain unchanged. The actual fault-injection test at
+`f695448` passes: a converter that writes a partial USD then raises leaves no
+cache marker; the next construction reconverts; a later construction reuses
+the valid cache; modern old keys differ while legacy keys match. The test uses
+the actual converter/base control flow with a process-local injected conversion
+function, not an installed dependency patch. Receipt:
+`out/isaac62_migration/urdf_cache_f695448/receipt.json`. All test processes,
+reservations and account-owned GPU contexts are confirmed released.
+
 ### Contributed live gates (2026-11-15)
 
 The actual contributed `sample-human` entrypoint completed one 196-frame
