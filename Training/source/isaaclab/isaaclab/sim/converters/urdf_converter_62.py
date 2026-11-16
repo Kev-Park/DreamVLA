@@ -9,6 +9,7 @@ the SDK owns the generated layered asset and its internal reference paths.
 import os
 from pathlib import Path
 import math
+import struct
 import xml.etree.ElementTree as ET
 
 
@@ -164,8 +165,12 @@ def _preserve_joint_velocity_limits(usd_path, cfg):
         velocity = float(limit.get("velocity", "0")) if limit is not None else 0.0
         if not math.isfinite(velocity):
             raise ValueError(f"Non-finite URDF velocity limit for {name}")
-        scale = 1.0 if element.get("type") == "prismatic" else 180.0/math.pi
-        expected[name] = velocity*scale if velocity > 0 else 3.4028234663852886e38
+        # The original C++ parser and AddSingleJoint use float, including
+        # 180.0f / static_cast<float>(M_PI). Preserve those rounding boundaries.
+        f32 = lambda value: struct.unpack("f", struct.pack("f", value))[0]
+        velocity = f32(velocity)
+        scale = 1.0 if element.get("type") == "prismatic" else f32(180.0/f32(math.pi))
+        expected[name] = f32(velocity*scale) if velocity > 0 else 3.4028234663852886e38
     stage = Usd.Stage.Open(str(usd_path))
     assert stage and stage.GetDefaultPrim()
     found = set()
