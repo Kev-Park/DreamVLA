@@ -17,6 +17,8 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--omit-material', action='store_true',
+                        help='Create an isolated unbound fixture from the recorded source')
     args=parser.parse_args()
     assert os.name=='posix' and os.environ.get('CUDA_VISIBLE_DEVICES')=='0'
     output=args.output.expanduser().resolve();output.mkdir(parents=True,exist_ok=False)
@@ -37,12 +39,33 @@ def main():
         torch.set_num_threads(1)
         from check_legacy_volume_rejections import run_checks
         receipt['rejection_checks'] = run_checks()
-        from legacy_volume_usd import convert_copy
+        from legacy_volume_usd import authored_apis, convert_copy
+        if args.omit_material:
+            from pxr import Usd, UsdShade
+            original_source = source
+            source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+            stage = Usd.Stage.Open(Usd.Stage.Open(str(source)).Flatten())
+            count = 0
+            for prim in stage.Traverse():
+                if 'PhysxDeformableBodyAPI' not in authored_apis(prim):continue
+                prim.RemoveProperty('material:binding:physics')
+                assert not UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial('physics')[0]
+                count += 1
+            assert count
+            source = output/'unbound_fixture.usda'
+            assert stage.GetRootLayer().Export(str(source))
+            assert hashlib.sha256(original_source.read_bytes()).hexdigest()==source_sha
+            receipt['unbound_fixture'] = dict(original=str(original_source), original_sha256=source_sha,
+                                            bodies=count, original_unchanged=True)
         receipt['conversion']=convert_copy(source,output/'converted.usda')
         assert open_stage(str(output/'converted.usda'))
         sim=sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005,device='cuda:0'))
         asset=DeformableObject(DeformableObjectCfg(prim_path='/World/SoftCube',spawn=None))
         sim.reset();assert asset.is_initialized
+        if args.omit_material:
+            assert asset.material_physx_view is None
+            receipt['public_material_view_none'] = True
+            assert receipt['conversion']['conversion']['private_legacy_defaults']
         old=receipt['conversion']['legacy_bodies'][0]
         assert asset.max_sim_vertices_per_body==old['simulation_nodes']
         assert asset.max_sim_elements_per_body==old['simulation_elements']
@@ -74,7 +97,8 @@ def main():
             arrays[name]=value.cpu().numpy()
         np.savez(output/'state.npz',**arrays)
         expected=np.diag([1.1,1.,1.])
-        mu=50000./(2*1.3);lam=50000.*.3/(1.3*.4)
+        youngs, poisson = (50000000., .45) if args.omit_material else (50000., .3)
+        mu=youngs/(2*(1+poisson));lam=youngs*poisson/((1+poisson)*(1-2*poisson))
         strain=expected-np.eye(3)
         stress=((2*mu*strain+np.eye(3)*lam*np.trace(strain))@expected.T)/1.1
         errors={}
@@ -83,8 +107,12 @@ def main():
             sig=arrays[kind+'_element_stress_w']
             errors[kind]=dict(gradient=float(np.max(np.abs(grad-expected))),
                               stress_pa=float(np.max(np.abs(sig-stress))))
-        receipt['affine_check']=dict(errors=errors,gradient_atol=1e-4,stress_atol_pa=10.)
-        assert all(e['gradient']<=1e-4 and e['stress_pa']<=10. for e in errors.values()),errors
+        # Retain the same error bound normalized by material stiffness: the
+        # original50kPa case is10Pa; the50MPa default case is10kPa.
+        stress_atol = youngs*2e-4
+        receipt['affine_check']=dict(errors=errors,gradient_atol=1e-4,stress_atol_pa=stress_atol,
+                                    youngs_pa=youngs, poissons_ratio=poisson)
+        assert all(e['gradient']<=1e-4 and e['stress_pa']<=stress_atol for e in errors.values()),errors
         receipt.update(completed=True,frames=20,source_unchanged=True,
                        mean_fall_m=float((before-after)[...,2].mean()),
                        finite_arrays={k:list(v.shape) for k,v in arrays.items()})

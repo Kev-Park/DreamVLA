@@ -10,7 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 
 def authored_apis(prim):
@@ -39,6 +39,23 @@ def _bind_pose(mesh, points):
     prim.CreateAttribute('deformablePose:default:omniphysics:purposes', Sdf.ValueTypeNames.TokenArray).Set(['bindPose'])
 
 
+def _bind_implicit_legacy_material(stage, body, density):
+    """Keep omitted-material elasticity local and its public material view absent."""
+    material = UsdShade.Material.Define(stage, body.GetPath().AppendChild('legacyDefaultMaterial'))
+    prim = material.GetPrim()
+    for schema in ('OmniPhysicsBaseMaterialAPI', 'OmniPhysicsDeformableMaterialAPI', 'PhysxDeformableMaterialAPI'):
+        prim.ApplyAPI(schema)
+    values = {'density': density, 'dynamicFriction': .25, 'staticFriction': .25,
+              'youngsModulus': 50000000.*UsdGeom.GetStageMetersPerUnit(stage)/UsdPhysics.GetStageKilogramsPerUnit(stage),
+              'poissonsRatio': .45}
+    for key, value in values.items():
+        _set(prim, 'omniphysics:'+key, value)
+    _set(prim, 'physxDeformableMaterial:elasticityDamping', .005)
+    prim.SetCustomDataByKey('isaaclab:implicitLegacyDeformableMaterial', True)
+    UsdShade.MaterialBindingAPI.Apply(body).Bind(material, UsdShade.Tokens.weakerThanDescendants, 'physics')
+    return str(prim.GetPath())
+
+
 def convert_cooked_volumes(stage, sdk):
     if not stage.GetRootLayer().anonymous or len(stage.GetUsedLayers()) > 2:
         raise ValueError('Migration requires an isolated anonymous flattened stage')
@@ -48,6 +65,7 @@ def convert_cooked_volumes(stage, sdk):
         unsupported = authored_apis(prim) & {'PhysxDeformableSurfaceAPI', 'PhysxParticleClothAPI'}
         if unsupported or prim.GetTypeName() == 'PhysxPhysicsAttachment':
             raise NotImplementedError(f'Volume-only migration cannot preserve {prim.GetPath()}: {unsupported}')
+    private_defaults = []
     for prim in bodies:
         density = _value(prim, 'physics:density')
         mass = _value(prim, 'physics:mass')
@@ -125,7 +143,10 @@ def convert_cooked_volumes(stage, sdk):
                     _set(mesh.GetPrim(),'physxCollision:'+key,data.get('physxCollision:'+key))
             meshes[kind] = mesh
         sdk.clean_old_deformable_apis_and_attrs(prim)
-    return dict(body_count=len(bodies),material_count=len(materials),discovery='authored API metadata')
+        if not UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial('physics')[0]:
+            private_defaults.append(_bind_implicit_legacy_material(stage, prim, data.get('physics:density')))
+    return dict(body_count=len(bodies),material_count=len(materials),
+                private_legacy_defaults=private_defaults, discovery='authored API metadata')
 
 
 def convert_copy(source, destination):
