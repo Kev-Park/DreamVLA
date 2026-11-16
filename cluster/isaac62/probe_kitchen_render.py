@@ -44,6 +44,7 @@ def main():
         kitchen = UsdGeom.Xform.Define(stage, '/World/KitchenVisual')
         kitchen.GetPrim().GetReferences().AddReference(str(args.usd))
         # Same backdrop transform as G1PickCamBinaryFingersEnvCfg.
+        kitchen.ClearXformOpOrder()  # Local fixture placement; referenced layers remain unchanged.
         kitchen.AddTranslateOp().Set(Gf.Vec3d(2.07, 1., 0.))
         kitchen.AddScaleOp().Set(Gf.Vec3f(1., 1., .89*.800/.824))
         disabled = dict(collision=0, rigid_body=0, joint=0)
@@ -98,8 +99,11 @@ def main():
         (args.output/'receipt.json').write_text(json.dumps(report, indent=2)+'\n')
         if app is not None:
             # Static fixture has no writers or simulation buffers to flush.
-            app.close(wait_for_replicator=False, skip_cleanup=True,
+            import inspect
+            supported = inspect.signature(app.close).parameters
+            options = dict(wait_for_replicator=False, skip_cleanup=True,
                 exit_code=0 if report['completed'] else 1)
+            app.close(**{key: value for key, value in options.items() if key in supported})
 
 
 if __name__ == '__main__':
