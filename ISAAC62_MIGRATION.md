@@ -10,6 +10,37 @@ or a file-surface audit is not completion.
 - g1: `0505979bf6058b772edb1e7436bb757461aba88f`
 - locomotion: `bb9d874aa8e528bc3f5d53c0421fca4a2d4ff9b1`
 - Current integration branch: `g1`. No new branch was created.
+- Additional preservation parent: Izat's `izat-drawer-button-code` commit
+  `14c979c` (2026-11-12), merged without source changes at `5a0e406`.
+  Its separate task/controller/data interfaces are part of the migration scope.
+
+## Drawer/button contribution integration (2026-11-15)
+
+Izat's 69-file contribution under `contrib/drawer_button` is now included in
+`g1`. Its contents match the contribution parent exactly. It adds standing and
+squatting drawer references, standing-button references, isolated SONIC PPO
+tasks/controllers, explicit action/history contracts, successful-episode
+recording, conversion, native GR00T fine-tuning/serving, evaluation banks and
+experimental DAgger bookkeeping. Preserve its task IDs and scientific contracts;
+do not replace its 78-dimensional actions with the walking collector's interface.
+
+The unchanged contributed CPU suite passes 77 tests, with two explicit skips
+(real exporter and native GR00T configuration integration), in the existing
+Bluesclues `dreamcontrol_51` profile. All 14 stage help commands pass. No packages
+were installed. Receipts are local in
+`out/isaac62_migration/check_izat_cpu_sim.json`. A preceding attempt in the GR00T
+profile could not run because that environment does not contain pytest; it is
+not a passing test result.
+
+The contribution's own dependency inventory records Isaac 4.5, and its README
+explicitly disclaims completed GPU integration. The existing native drawer/button
+6.2 checks do not cover these isolated task/controller snapshots. Still required:
+actual configuration/runtime/rendering checks for both contributed tasks,
+bounded PPO save/resume, recording/export, native training/serving, and both
+evaluation tracks with their original assets and contracts. Historical success
+rates are not evidence for these newly integrated entrypoints. Original
+OmniControl environment use was approved on 2026-11-15; generation remains to be
+executed and checked.
 
 ## Current validation state (2026-11-12)
 
