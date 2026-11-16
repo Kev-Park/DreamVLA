@@ -83,8 +83,9 @@ def main():
                 # Namespaces and suffixes changed between importers. Match by
                 # actual geometry location, then independently verify its data.
                 center = lambda x: x['points'].mean(0) if x['points'] is not None else x['matrix'][:3, 3]
-                b = min(remaining, key=lambda x: np.linalg.norm(center(a)-center(x)))
-                remaining.remove(b)
+                index = min(range(len(remaining)),
+                            key=lambda i: np.linalg.norm(center(a)-center(remaining[i])))
+                b = remaining.pop(index)
                 if a['points'] is not None:
                     assert b['points'] is not None
                     error = max(float(cKDTree(a['points']).query(b['points'])[0].max()),
