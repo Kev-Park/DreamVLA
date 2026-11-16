@@ -9,7 +9,7 @@ matrix buffers are column-major, even though their consumers reshape to 3x3.
 import torch
 import warp as wp
 import numpy as np
-from pxr import UsdGeom, UsdShade
+from pxr import Gf, UsdGeom, UsdShade
 from isaacsim.core.experimental.prims import DeformablePrim
 
 
@@ -179,16 +179,27 @@ class VolumeDeformableView:
 
     def _legacy_frames(self):
         if self._legacy_frame_cache is None:
-            linear = np.stack([np.asarray(UsdGeom.Xformable(
-                self._stage.GetPrimAtPath(path)).ComputeLocalToWorldTransform(0))[:3, :3].T
-                for path in self._view.prim_paths])
+            matrices = [UsdGeom.Xformable(self._stage.GetPrimAtPath(path)).ComputeLocalToWorldTransform(0)
+                        for path in self._view.prim_paths]
+            linear = np.stack([np.asarray(matrix)[:3, :3].T for matrix in matrices])
             scale = np.linalg.norm(linear, axis=-2)
             if np.any(scale <= 0):
                 raise RuntimeError('Legacy deformable diagnostics require a nonsingular initial root frame')
             rotation = linear / scale[:, None, :]
-            if (not np.allclose(rotation.transpose(0, 2, 1) @ rotation, np.eye(3), rtol=0, atol=1e-6)
-                    or np.any(np.linalg.det(rotation) <= 0)):
-                raise RuntimeError('Sheared or reflected root frames need a separately validated legacy diagnostic mapping')
+            if np.any(np.linalg.det(rotation) <= 0):
+                raise RuntimeError('Reflected root frames have invalid legacy simulation stress/rest diagnostics')
+            sheared = np.max(np.abs(rotation.transpose(0, 2, 1) @ rotation-np.eye(3)), axis=(1, 2)) > 1e-6
+            for index in np.flatnonzero(sheared):
+                # Native5.1 uses Gf's decomposed rotation/scale, discarding the
+                # scale-orientation component rather than using the full shear.
+                # Paired four-state native captures validate this reporting
+                # convention; simulator nodal states are never changed here.
+                transform = Gf.Transform(matrices[index])
+                scale[index] = transform.GetScale()
+                if np.any(scale[index] <= 0):
+                    raise RuntimeError('Legacy diagnostics require positive decomposed root scales')
+                rotation[index] = np.asarray(Gf.Matrix3d().SetRotate(transform.GetRotation())).T
+                linear[index] = rotation[index] @ np.diag(scale[index])
             reference = self._view.get_simulation_nodal_positions()
             convert = lambda value: torch.as_tensor(value, device=reference.device, dtype=reference.dtype)[:, None]
             self._legacy_frame_cache = (convert(linear), convert(rotation),
