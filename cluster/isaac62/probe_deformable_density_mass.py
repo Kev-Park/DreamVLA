@@ -22,7 +22,10 @@ def main():
     parser.add_argument('--rotated', action='store_true', help='Capture rest tensors under a rotated, scaled spawn')
     parser.add_argument('--rotation', type=float, nargs=4, default=(.9238795325, 0., 0., .3826834324),
                         help='Diagnostic root quaternion, wxyz; used with --rotated')
+    parser.add_argument('--root-frame', choices=('standard', 'shear', 'reflection'), default='standard',
+                        help='Probe legacy diagnostic behavior under a nonstandard root frame')
     args = parser.parse_args()
+    assert args.root_frame == 'standard' or args.rotated
     assert os.name == 'posix' and os.environ.get('CUDA_VISIBLE_DEVICES') == '0'
     version = importlib.metadata.version('isaacsim')
     assert version in ('5.1.0.0', '6.2.0.0')
@@ -47,6 +50,7 @@ def main():
         assert np.linalg.norm(rotation) > 0
         rotation = tuple(rotation/np.linalg.norm(rotation))
         report['spawn_rotation_wxyz'] = rotation if args.rotated else (1., 0., 0., 0.)
+        report['root_frame'] = args.root_frame
         torch.set_num_threads(1)
         assert 0 < args.dt <= .005
         report['dt'] = args.dt
@@ -87,11 +91,16 @@ def main():
                     rot=rotation if args.rotated else (1., 0., 0., 0.))))
             if args.rotated:
                 root_prim = sim.stage.GetPrimAtPath('/World/'+name)
+                scale_value = Gf.Vec3f(-1.2 if args.root_frame == 'reflection' else 1.2, .9, 1.1)
                 scale = root_prim.GetAttribute('xformOp:scale')
                 if scale:
-                    scale.Set(Gf.Vec3f(1.2, .9, 1.1))
+                    scale.Set(scale_value)
                 else:
-                    UsdGeom.Xformable(root_prim).AddScaleOp().Set(Gf.Vec3f(1.2, .9, 1.1))
+                    UsdGeom.Xformable(root_prim).AddScaleOp().Set(scale_value)
+                if args.root_frame == 'shear':
+                    matrix = Gf.Matrix4d(1.)
+                    matrix.SetRow(0, Gf.Vec4d(1., .2, 0., 0.))
+                    UsdGeom.Xformable(root_prim).AddTransformOp(opSuffix='diagnosticShear').Set(matrix)
             configs[name] = dict(body_mass=mass, body_density=density, material_density=material_density)
         sim.reset()
         original = {name: cube.data.nodal_state_w.clone() for name, cube in cubes.items()}
