@@ -24,6 +24,8 @@ def main():
     parser.add_argument('--mass-from-density', action='store_true')
     parser.add_argument('--bound-material', action='store_true',
                         help='Retain the saved explicit material for density/mass controls')
+    parser.add_argument('--root-scale', type=float, nargs=3,
+                        help='Exercise density inference under a nonuniform body scale')
     args = parser.parse_args()
     version = importlib.metadata.version('isaacsim')
     assert version == ('6.2.0.0' if args.candidate else '5.1.0.0')
@@ -45,7 +47,7 @@ def main():
         app = SimulationApp(launch)
         import numpy as np
         import torch
-        from pxr import Usd, UsdShade
+        from pxr import Usd, UsdGeom, UsdShade
         import isaaclab.sim as sim_utils
         from isaaclab.assets import DeformableObject, DeformableObjectCfg
         from isaacsim.core.utils.stage import open_stage
@@ -55,6 +57,9 @@ def main():
         bodies = [p for p in stage.Traverse() if 'PhysxDeformableBodyAPI' in authored_apis(p)]
         assert len(bodies) == 1
         body = bodies[0]
+        if args.root_scale:
+            assert all(value > 0 for value in args.root_scale)
+            UsdGeom.Xformable(body).AddScaleOp().Set(tuple(args.root_scale))
         if not args.bound_material:
             body.RemoveProperty('material:binding:physics')
         assert bool(UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial('physics')[0]) == args.bound_material
@@ -62,11 +67,13 @@ def main():
         connectivity = np.asarray(body.GetAttribute('physxDeformable:simulationIndices').Get()).reshape(-1, 4)
         tetrahedra = rest[connectivity]
         volume = float(np.abs(np.linalg.det(tetrahedra[:, 1:]-tetrahedra[:, :1])).sum()/6)
-        # This saved fixture uses metre/kg units and an unscaled body transform.
-        from pxr import UsdGeom, UsdPhysics
+        # Density/mass use the same authored rest volume including world scale.
+        from pxr import UsdPhysics
         assert UsdGeom.GetStageMetersPerUnit(stage) == UsdPhysics.GetStageKilogramsPerUnit(stage) == 1
-        assert np.isclose(abs(np.linalg.det(np.asarray(
-            UsdGeom.Xformable(body).ComputeLocalToWorldTransform(0))[:3, :3])), 1.)
+        determinant = abs(np.linalg.det(np.asarray(
+            UsdGeom.Xformable(body).ComputeLocalToWorldTransform(0))[:3, :3]))
+        volume *= determinant
+        report['body_world_volume_scale'] = float(determinant)
         explicit_mass = volume*args.density if args.mass_from_density else 0.
         body.GetAttribute('physics:mass').Set(explicit_mass)
         body.GetAttribute('physics:density').Set(args.density)
