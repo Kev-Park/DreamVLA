@@ -614,19 +614,31 @@ class Camera(SensorBase):
         if len(self._sensor_prims) == 0:
             raise RuntimeError("Camera prim is None. Please call 'sim.play()' first.")
 
-        # Physics updates Fabric directly when that interface is enabled. The
-        # core view defaults to USD, whose articulated parent transforms then
-        # remain at their authored poses even while the rendered camera moves.
+        # Physics updates Fabric directly when that interface is enabled. Read
+        # its hierarchy without initializing a legacy core Fabric view: that
+        # view calls SetWorldXformFromUsd for new cameras, authoring stale USD
+        # world poses over the live articulated mount's inherited transform.
         simulation = sim_utils.SimulationContext.instance()
         use_usd = simulation is None or not simulation.is_fabric_enabled()
         if use_usd:
             poses, quat = self._view.get_world_poses(env_ids, usd=True)
+        elif hasattr(self._view, "_get_fabric_hierarchy"):
+            import usdrt
+
+            hierarchy = self._view._get_fabric_hierarchy()
+            hierarchy.update_world_xforms()
+            indices = env_ids.tolist() if isinstance(env_ids, torch.Tensor) else list(env_ids)
+            positions, orientations = [], []
+            for index in indices:
+                matrix = hierarchy.get_world_xform(usdrt.Sdf.Path(self._view.prim_paths[index]))
+                rotation = matrix.RemoveScaleShear().ExtractRotationQuat()
+                positions.append(tuple(matrix.ExtractTranslation()))
+                orientations.append((rotation.GetReal(), *rotation.GetImaginary()))
+            poses = torch.tensor(positions, dtype=torch.float32, device=self.device)
+            quat = torch.tensor(orientations, dtype=torch.float32, device=self.device)
         else:
-            # The core Fabric view owns uint32 Warp indices; forwarding Torch's
-            # int64 env_ids tries an invalid dtype reinterpretation in SDK 6.2.
-            # Fetch its correctly indexed view, then select requested Torch rows.
-            poses, quat = self._view.get_world_poses(usd=False)
-            poses, quat = poses[env_ids], quat[env_ids]
+            # Preserve the legacy SDK path when IFabricHierarchy is unavailable.
+            poses, quat = self._view.get_world_poses(env_ids, usd=True)
         self._data.pos_w[env_ids] = poses
         self._data.quat_w_world[env_ids] = convert_camera_frame_orientation_convention(
             quat, origin="opengl", target="world"

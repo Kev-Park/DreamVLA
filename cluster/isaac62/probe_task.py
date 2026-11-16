@@ -255,7 +255,7 @@ def main():
                                fabric_force_update=hasattr(base.sim._fabric_iface, 'force_update'),
                                physics_steps=SimulationManager.get_num_physics_steps(),
                                cached_camera_positions=cached_camera_pos.cpu().tolist(),
-                               camera_fabric=values(camera_sensor._view.get_world_poses(usd=False)),
+                               camera_read_only_hierarchy_positions=camera.pos_w.cpu().tolist(),
                                camera_usd=values(camera_sensor._view.get_world_poses()),
                                update_latest_camera_pose=camera_sensor.cfg.update_latest_camera_pose)
             receipt.setdefault('camera_mount_checks', []).append(dict(
