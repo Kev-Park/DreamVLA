@@ -2,7 +2,7 @@
 
 
 def run_checks():
-    from pxr import Sdf, Usd, UsdGeom
+    from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
     from legacy_volume_usd import convert_cooked_volumes
 
     passed = []
@@ -38,9 +38,16 @@ def run_checks():
         attr = prim.CreateAttribute('physxDeformable:simulationPoints', Sdf.ValueTypeNames.Point3fArray)
         attr.Set([(0., 0., 0.)], Usd.TimeCode(1))
 
+    def rigid_binding(stage):
+        body = schema(stage, 'PhysxDeformableBodyAPI')
+        material = UsdShade.Material.Define(stage, '/RigidMaterial')
+        UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+        UsdShade.MaterialBindingAPI.Apply(body).Bind(material, materialPurpose='physics')
+
     reject('nonneutral_damping', damping, 'dampingScale')
     reject('density_without_mass', density, 'density')
     reject('animated_solver_arrays', animated, 'Animated')
+    reject('nondeformable_physics_binding', rigid_binding, 'Non-deformable')
     for api in ('PhysxDeformableSurfaceAPI', 'PhysxParticleClothAPI'):
         reject(api, lambda stage, api=api: schema(stage, api), 'Volume-only')
     reject('attachment', lambda stage: stage.DefinePrim('/Attachment', 'PhysxPhysicsAttachment'), 'Volume-only')
