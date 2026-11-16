@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import time
 import traceback
+import xml.etree.ElementTree as ET
 
 
 def main():
@@ -45,7 +46,11 @@ def main():
         assert stage and stage.GetDefaultPrim()
         bodies = [p for p in stage.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)]
         joints = [p for p in stage.Traverse() if p.IsA(UsdPhysics.RevoluteJoint)]
-        assert len(bodies) == 50 and len(joints) == 43
+        report.update(usd_path=str(path), bodies=len(bodies), movable_joints=len(joints))
+        # The original importer keeps even non-inertial fixed sensor links as
+        # rigid bodies; the matched G1 baseline has 54 bodies, not 50.
+        original = ET.parse(args.urdf).getroot()
+        assert len(bodies) == len(original.findall('link')) and len(joints) == 43
         sensor = next(p for p in stage.Traverse() if p.GetName() == 'mid360_link')
         report.update(completed=True, usd_path=str(path), bodies=len(bodies), movable_joints=len(joints),
                       mid360_local=[[float(v) for v in row] for row in UsdGeom.Xformable(sensor).GetLocalTransformation()])

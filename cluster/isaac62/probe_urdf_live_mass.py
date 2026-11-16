@@ -68,7 +68,11 @@ def main():
         report['finished'] = time.time()
         (args.output/'receipt.json').write_text(json.dumps(report, indent=2))
         if app is not None:
-            app.close(exit_code=0 if report['completed'] else 1)
+            # No Replicator writers or render products exist in this fixture.
+            # Use the SDK's immediate shutdown after persisting measurements;
+            # graceful stage teardown hung in the initial two-articulation test.
+            app.close(wait_for_replicator=False, skip_cleanup=True,
+                      exit_code=0 if report['completed'] else 1)
 
 
 if __name__ == '__main__':

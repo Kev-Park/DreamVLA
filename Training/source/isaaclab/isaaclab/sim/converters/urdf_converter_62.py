@@ -86,7 +86,7 @@ def _preserve_empty_fixed_links(usd_path, cfg):
     """
     if cfg.merge_fixed_joints:
         return
-    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
     robot = ET.parse(cfg.asset_path).getroot()
     empty = {link.get("name") for link in robot.findall("link")
