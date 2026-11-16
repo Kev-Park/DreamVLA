@@ -22,7 +22,7 @@ def main():
     a = p.parse_args()
     add_external_paths()
     dependencies = {
-        "isaac": ["isaaclab", "isaaclab_tasks", "rsl_rl", "onnxruntime"],
+        "isaac": ["isaaclab", "isaaclab_tasks", "rsl_rl", "onnxruntime", "onnx"],
         "reference": ["torch", "pytorch_kinematics", "pyroki", "jaxlie"],
         "data": ["gear_sonic", "cv2", "pyarrow"],
         "groot": ["gr00t", "transformers", "torch"],

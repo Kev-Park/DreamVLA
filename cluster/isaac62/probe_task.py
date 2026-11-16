@@ -194,6 +194,7 @@ def main():
             base.sim.render()
         if SimulationManager.get_num_physics_steps() != before:
             raise RuntimeError('Render warmup advanced physics')
+        frame(env.render(), 'third_person_reset', 0)
         roots, quats, joints, velocities, counters = [], [], [], [], []
         terminated_count = truncated_count = 0
         actions = torch.zeros((base.num_envs, base.action_manager.total_action_dim),

@@ -17,7 +17,8 @@ or a file-surface audit is not completion.
 ## Drawer/button contribution integration (2026-11-15)
 
 Izat's 69-file contribution under `contrib/drawer_button` is now included in
-`g1`. Its contents match the contribution parent exactly. It adds standing and
+`g1`. The initial merge matched the contribution parent exactly; subsequent
+compatibility fixes are recorded below. It adds standing and
 squatting drawer references, standing-button references, isolated SONIC PPO
 tasks/controllers, explicit action/history contracts, successful-episode
 recording, conversion, native GR00T fine-tuning/serving, evaluation banks and
@@ -120,6 +121,36 @@ instead of silently dropping them. Their preservation is not established.
 The SDK also emits a different robot hierarchy; camera attachment paths and
 full collision/inertia/limit/physics/rendering parity still need validation before
 accepting the contributed simulation pipeline.
+
+### Nested contacts and actual SONIC batching (2026-11-16)
+
+The contributed drawer's real two-environment startup found two shared contact
+assumptions that the new URDF hierarchy invalidates: sensor discovery only
+looked at direct children, and contact API activation stopped at the first rigid
+body. Both now traverse nested links. PhysX list-pattern views use pattern-major
+rows, so sensor buffers explicitly map actual prim paths into environment/body
+order while retaining the original flat-asset path. The activation routine also
+now applies the sleep setting to each current body, rather than the root prim.
+At `058f474`, both environments reset and all 50 contact-body positions exactly
+match independently indexed articulation positions. Stepping then fails before
+physics on the released encoder's fixed ONNX batch dimension; no rendering pass
+is claimed for that probe. Evidence: `isaac62_izat_drawer_runtime_058f474/`.
+
+The released encoder and decoder advertise batch one. The encoder additionally
+bakes that size into reshapes and its mode-selection mask. A reshape-only fix
+failed the independent numerical comparison: different environments overwrote
+the same mask row. At `87b8096`, the in-memory ONNX translation retains all
+original weights/constants and supplies a separate mask row/index per environment,
+alongside inferred reshape batch sizes. Original model files are never changed.
+Actual original ORT single-row calls versus translated batches 1, 2 and 7 pass,
+including mixed G1/teleop/SMPL modes and reversed row order. Encoder outputs are
+exact; decoder maximum absolute error is 2.98023224e-7 against fixed tolerances.
+The CPU receipt is local in `check_izat_onnx_parity_modes.json`. This establishes
+per-row numerical equivalence for the checked inputs, not a simulation or PPO
+pass. The next real runtime at this source reaches first-step reward computation
+and exposes the same optional `n_successes` logging-counter assumption already
+fixed in the native drawer task. The contributed copy now uses that existing
+guard too, with unchanged reward values; its real runtime regression is pending.
 
 ## Full GR00T save/resume gate (2026-11-15)
 
