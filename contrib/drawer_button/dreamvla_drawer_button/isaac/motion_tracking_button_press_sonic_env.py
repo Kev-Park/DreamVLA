@@ -58,7 +58,7 @@ def register_task():
     if TASK not in gym.registry:
         gym.register(
             TASK,
-            entry_point="isaaclab.envs:ManagerBasedRLEnv",
+            entry_point="dreamvla_drawer_button.isaac.environment:DrawerButtonRLEnv",
             disable_env_checker=True,
             kwargs={
                 "env_cfg_entry_point": f"{__name__}:G1ButtonPressSonicEnvCfg",

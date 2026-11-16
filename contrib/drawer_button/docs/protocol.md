@@ -50,6 +50,11 @@ so that terminal boundary is intentionally not mislabeled as a teacher action
 for the next episode. Video is 50 Hz, captured independently of the 2.5 Hz VLA
 inference schedule. Repeating sparse inference frames is not smooth video.
 
+The contributed task environment enforces this fixed ten-second cap even when
+a reference contains a longer tail. It does not inherit the native pick/walk
+environment's automatic extension to the longest reference. This applies to
+the contributed PPO, collection and evaluation paths, not other registered tasks.
+
 Conversion uses SONIC's official feature/modality exporter and creates LeRobot
 v2.1 metadata, Parquet tables, per-episode MP4 video and statistics. It checks
 scene equality, accepted flags, label dimensions, finite values, FSQ membership,

@@ -100,10 +100,11 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             # episode cap to the longest loaded motion (never lower it); shorter clips still end at
             # their own length via tracking_time_out where that termination is configured.
             _longest_s = float(self.motion_lib._motion_lengths.max())
-            if _longest_s > self.cfg.episode_length_s:
-                print(f"[INFO]: episode_length_s {self.cfg.episode_length_s:.2f} -> {_longest_s:.2f} "
+            _episode_s = self._resolve_reference_episode_length(_longest_s)
+            if _episode_s > self.cfg.episode_length_s:
+                print(f"[INFO]: episode_length_s {self.cfg.episode_length_s:.2f} -> {_episode_s:.2f} "
                       f"(longest reference motion)")
-                self.cfg.episode_length_s = _longest_s
+            self.cfg.episode_length_s = _episode_s
             self.total_motions = self.motion_lib.num_motions()
             self.motion_ids = torch.randint(0, self.total_motions, (self.scene.num_envs,), device=self.device)
             self.start_positions = torch.zeros((self.scene.num_envs, 3), device=self.device)
@@ -126,6 +127,10 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
     """
     Properties.
     """
+
+    def _resolve_reference_episode_length(self, longest_reference_s: float) -> float:
+        """Keep the configured cap or extend it to the longest reference."""
+        return max(self.cfg.episode_length_s, longest_reference_s)
 
     @property
     def max_episode_length_s(self) -> float:

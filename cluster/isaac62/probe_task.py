@@ -136,6 +136,11 @@ def main():
         dump_yaml(str(output/'env.yaml'), cfg)
         env = gym.make(args.task, cfg=cfg, render_mode='rgb_array')
         base = env.unwrapped
+        receipt['episode_length_s'] = base.max_episode_length_s
+        receipt['max_episode_length'] = base.max_episode_length
+        if args.task.startswith('DreamVLA-DrawerButton-'):
+            assert base.max_episode_length_s == 10.0 and base.max_episode_length == 500
+            assert abs(base.step_dt-.02) < 1e-9
         if SimulationManager.get_active_physics_engine() != 'physx':
             raise RuntimeError('Task migration must preserve the PhysX engine')
         robot = base.scene['robot']

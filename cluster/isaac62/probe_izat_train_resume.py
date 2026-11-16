@@ -70,6 +70,10 @@ def main():
         dump_yaml(str(output/'env.yaml'), cfg)
         dump_yaml(str(output/'agent.yaml'), agent)
         env = RslRlVecEnvWrapper(gym.make(task.TASK, cfg=cfg), clip_actions=None)
+        assert env.unwrapped.max_episode_length_s == 10.0
+        assert env.unwrapped.max_episode_length == 500
+        receipt['episode_length_s'] = env.unwrapped.max_episode_length_s
+        receipt['max_episode_length'] = env.unwrapped.max_episode_length
         assert env.num_actions == 66, env.num_actions
         runner = OnPolicyRunner(env, agent.to_dict(), log_dir=str(output/'initial'), device=args.device)
         runner.learn(num_learning_iterations=2, init_at_random_ep_len=True)
