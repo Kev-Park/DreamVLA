@@ -57,6 +57,7 @@ parser.add_argument("--real-time", action="store_true", default=False, help="Run
 parser.add_argument("--name", type=str, default="sonic_adapter_play.mp4", help="Output video file name.")
 parser.add_argument("--traj-dump", type=str, default=None,
                     help="Optional uncompressed NPZ of rendered robot/reference poses and motion time.")
+parser.add_argument("--no-overlay", action="store_true", help="Record clean camera pixels without text.")
 parser.add_argument("--force-motion-id", type=int, default=-1,
                     help="Force this motion_id for every reset (>=0) to render one specific clip.")
 parser.add_argument("--path", type=str, default=None, help="Explicit checkpoint path (overrides auto-discovery).")
@@ -826,7 +827,7 @@ def main():
                 _resc = _uwc.motion_lib.get_motion_state(_uwc.motion_ids, _mtc)
                 _icc = bool(_resc["is_closed"].reshape(-1)[0].item() > 0.5)
                 frame = _overlay_contact(frame, _icc)
-            writer.write(_overlay(frame, label))
+            writer.write(frame if args_cli.no_overlay else _overlay(frame, label))
 
         timestep += 1
 
