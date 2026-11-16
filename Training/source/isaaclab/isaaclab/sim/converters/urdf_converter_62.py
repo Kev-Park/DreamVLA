@@ -89,6 +89,55 @@ def convert_asset(converter, cfg):
     _preserve_mimic_joints(target, cfg, natural)
     _preserve_articulation_root(target, cfg)
     _preserve_diagonal_inertia_frames(target, cfg)
+    _preserve_rest_world_poses(target, cfg)
+
+
+def _preserve_rest_world_poses(usd_path, cfg):
+    """Keep original body rest transforms without changing the SDK hierarchy.
+
+    SDK 5 accumulated float32 poses and authored each body below the robot
+    root. SDK 6's nested transforms evaluate those rotations differently near
+    identity. Author a double matrix compensation in our wrapper, preserving
+    the generated layers, instances, joint targets and root inheritance.
+    The desired matrices deliberately use USD's evaluation of the original
+    non-normalized quaternions, rather than normalizing or recomputing in fp64.
+    """
+    from pxr import Gf, Tf, Usd, UsdGeom, UsdPhysics
+    from .urdf_legacy_inertia import compute_link_rest_poses
+
+    poses = {}
+    for name, pose in compute_link_rest_poses(cfg.asset_path).items():
+        key = Tf.MakeValidIdentifier(name)
+        if key in poses:
+            raise ValueError(f'URDF link names collide after USD sanitization: {key}')
+        poses[key] = pose
+    stage = Usd.Stage.Open(str(usd_path))
+    if not stage or not stage.GetDefaultPrim():
+        raise RuntimeError(f'URDF asset has no default prim: {usd_path}')
+    root = stage.GetDefaultPrim()
+    root_world = UsdGeom.XformCache().GetLocalToWorldTransform(root)
+    bodies = [prim for prim in stage.Traverse() if prim.HasAPI(UsdPhysics.RigidBodyAPI)]
+    if len({prim.GetName() for prim in bodies}) != len(bodies):
+        raise RuntimeError('Converted rigid-body names are not unique')
+    # Set parent bodies first, so each child's compensation uses its final
+    # parent world transform. No namespace edits or resetXformStack are needed.
+    for prim in sorted(bodies, key=lambda p: p.GetPath().pathElementCount):
+        if prim.GetName() not in poses:
+            raise RuntimeError(f'Converted rigid body has no URDF source: {prim.GetPath()}')
+        xf = UsdGeom.Xformable(prim)
+        if xf.GetResetXformStack():
+            raise RuntimeError(f'Unexpected reset transform stack on URDF body: {prim.GetPath()}')
+        position, rotation = poses[prim.GetName()]
+        scratch = Usd.Stage.CreateInMemory()
+        original = UsdGeom.Xform.Define(scratch, '/OriginalPose')
+        original.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*position))
+        original.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(
+            Gf.Quatd(rotation[3], Gf.Vec3d(*rotation[:3])))
+        desired = UsdGeom.XformCache().GetLocalToWorldTransform(original.GetPrim()) * root_world
+        parent = UsdGeom.XformCache().GetLocalToWorldTransform(prim.GetParent())
+        xf.ClearXformOpOrder()
+        xf.AddTransformOp(UsdGeom.XformOp.PrecisionDouble, 'legacyRestPose').Set(desired * parent.GetInverse())
+    stage.GetRootLayer().Save()
 
 
 def _preserve_diagonal_inertia_frames(usd_path, cfg):

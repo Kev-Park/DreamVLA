@@ -69,6 +69,22 @@ were not modified. This is evidence for a possible repair, not an implemented
 or physics-validated converter change. Prototype and receipt:
 `out/isaac62_migration/prototype_flat_rest_pose_c45d5b0.{py,json}`.
 
+A second anonymous prototype preserves the existing hierarchy instead of
+flattening body namespaces. It authors double local matrices compensating each
+body against its parent's final transform. Maximum rest-matrix error is
+5.551115123125783e-17; parent translation, joint/rigid properties, relationship
+targets and all 89 instanceable prims remain correct. See
+`out/isaac62_migration/prototype_matrix_rest_pose_c45d5b0.{py,json}`.
+The converter repair candidate uses this approach, retains the SDK's generated
+layers and namespaces, and advances the modern-only cache key to revision 14.
+Three CPU tests cover the original float32 pose accumulation and malformed
+graphs. Validation of the committed helper against a separately owned real
+asset wrapper, followed by fresh conversion/live physics/rendering, is still
+required. Do not treat the prototype or source change as a completed live gate.
+
+The GPU routing CPU tests also pass in both approved Biped environments; receipt:
+`out/isaac62_migration/gpu_routing_cpu_a14e178.json`.
+
 ## Stitch gradient compatibility follow-up (2026-11-16)
 
 The strict full-stitch failure at `a4f8523` is reproducible: joint angles differ

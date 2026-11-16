@@ -82,6 +82,42 @@ def _origin(element):
     return p, q
 
 
+def compute_link_rest_poses(asset_path):
+    """Original float32 link-to-robot transforms before fixed-link merging.
+
+    The original importer places link prims directly below the robot root. Its
+    accumulated, non-normalized float32 quaternions are part of the authored
+    USD contract, including their rounding near identity rotations.
+    """
+    robot = ET.parse(asset_path).getroot()
+    names = [link.get('name') for link in robot.findall('link')]
+    if not names or any(not name for name in names) or len(names) != len(set(names)):
+        raise ValueError('URDF link names must be nonempty and unique')
+    links = set(names)
+    children, parents = {}, {}
+    for joint in robot.findall('joint'):
+        parent = joint.find('parent').get('link')
+        child = joint.find('child').get('link')
+        if parent not in links or child not in links or child in parents:
+            raise ValueError('URDF joints must form a tree over the declared links')
+        parents[child] = parent
+        children.setdefault(parent, []).append((child, _origin(joint)))
+    roots = links - set(parents)
+    if len(roots) != 1:
+        raise ValueError('URDF must have exactly one root link')
+    poses = {}
+    pending = [(next(iter(roots)), ((0., 0., 0.), (0., 0., 0., 1.)))]
+    while pending:
+        name, pose = pending.pop()
+        if name in poses:
+            raise ValueError('URDF joint graph contains a cycle')
+        poses[name] = pose
+        pending.extend((child, _compose(pose, local)) for child, local in children.get(name, []))
+    if set(poses) != links:
+        raise ValueError('URDF contains disconnected links or a disconnected cycle')
+    return poses
+
+
 def compute_equivalent_inertias(asset_path):
     """Return original pre-merge equivalent inertia for every URDF joint."""
     root = ET.parse(asset_path).getroot()
