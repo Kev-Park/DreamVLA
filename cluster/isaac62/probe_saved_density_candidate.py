@@ -85,11 +85,18 @@ def main():
             assert hashlib.sha256(fixture.read_bytes()).hexdigest() == fixture_digest
             stage = Usd.Stage.Open(str(converted_file))
             converted = stage.GetPrimAtPath(path)
-            assert converted.GetAttribute('omniphysics:mass').Get() == explicit_mass
+            expected_mass = volume*args.density if args.bound_material else explicit_mass
+            assert np.isclose(converted.GetAttribute('omniphysics:mass').Get(), expected_mass, rtol=1e-6, atol=1e-9)
             material = UsdShade.MaterialBindingAPI(converted).ComputeBoundMaterial('physics')[0]
             if not args.bound_material:
                 assert material.GetPrim().GetAttribute('omniphysics:density').Get() == args.density
                 assert material.GetPrim().GetCustomDataByKey('isaaclab:implicitLegacyDeformableMaterial')
+            else:
+                assert str(material.GetPath()) == '/World/SoftCube/geometry/material'
+                assert not material.GetPrim().GetCustomDataByKey('isaaclab:implicitLegacyDeformableMaterial')
+                assert material.GetPrim().GetAttribute('omniphysics:youngsModulus').Get() == 50000.
+                # This saved material has no density override of its own.
+                assert material.GetPrim().GetAttribute('omniphysics:density').Get() != args.density
             fixture = converted_file
             report['public_converter_without_post_edits'] = True
             from check_legacy_volume_rejections import run_checks

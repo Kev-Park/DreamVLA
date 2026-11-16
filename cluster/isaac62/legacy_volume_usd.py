@@ -8,9 +8,10 @@ The installed SDK is never patched. Call only on an isolated flattened stage.
 """
 import hashlib
 import json
+import math
 from pathlib import Path
 
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 
 def authored_apis(prim):
@@ -37,6 +38,32 @@ def _bind_pose(mesh, points):
     prim.ApplyAPI('OmniPhysicsDeformablePoseAPI', 'default')
     prim.CreateAttribute('deformablePose:default:omniphysics:points', Sdf.ValueTypeNames.Point3fArray).Set(points)
     prim.CreateAttribute('deformablePose:default:omniphysics:purposes', Sdf.ValueTypeNames.TokenArray).Set(['bindPose'])
+
+
+def _density_mass(prim, density):
+    """Infer legacy body mass from the cooked rest volume, in stage units.
+
+    An explicit target mass preserves a body density override without changing
+    the material shared with other bodies. Account for the full world linear
+    transform, including scale; density is expressed in stage mass/length^3.
+    """
+    points = _value(prim, 'physxDeformable:simulationRestPoints')
+    indices = _value(prim, 'physxDeformable:simulationIndices')
+    if points is None or indices is None or not len(points) or not len(indices) or len(indices) % 4:
+        raise NotImplementedError('Body density requires a cooked simulation rest mesh')
+    volume = 0.
+    for offset in range(0, len(indices), 4):
+        ids = indices[offset:offset+4]
+        if any(i < 0 or i >= len(points) for i in ids):
+            raise ValueError('Invalid density rest-mesh connectivity')
+        a, b, c, d = (Gf.Vec3d(points[i]) for i in ids)
+        volume += abs(Gf.Dot(b-a, Gf.Cross(c-a, d-a)))/6.
+    world = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    volume *= abs(world.ExtractRotationMatrix().GetDeterminant())
+    mass = density*volume
+    if not math.isfinite(mass) or mass <= 0:
+        raise NotImplementedError('Body density requires a finite positive transformed rest volume')
+    return mass
 
 
 def _bind_implicit_legacy_material(stage, body, density):
@@ -71,6 +98,7 @@ def convert_cooked_volumes(stage, sdk):
         if unsupported or prim.GetTypeName() == 'PhysxPhysicsAttachment':
             raise NotImplementedError(f'Volume-only migration cannot preserve {prim.GetPath()}: {unsupported}')
     private_defaults = []
+    density_masses = {}
     for prim in bodies:
         material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial('physics')[0]
         if material:
@@ -85,12 +113,12 @@ def convert_cooked_volumes(stage, sdk):
         if density is not None and (mass is None or mass <= 0):
             # Unbound/visual-only bodies receive their own implicit material
             # below, so their body density can be carried without changing a
-            # shared material. Bound deformable material overrides need a
-            # separate implementation; never silently drop that override.
-            if material and known_deformable:
-                raise NotImplementedError('Body-only density override on a bound deformable material requires separate conversion')
-            if density <= 0:
+            # shared material. Explicit material overrides instead use the
+            # equivalent rest-volume mass, retaining their shared binding.
+            if not math.isfinite(density) or density <= 0:
                 raise NotImplementedError('Nonpositive body-only density requires separate conversion')
+            if material and known_deformable:
+                density_masses[str(prim.GetPath())] = _density_mass(prim, density)
         if any(a.GetNumTimeSamples() for a in prim.GetAttributes() if a.GetName().startswith('physxDeformable:')):
             raise NotImplementedError('Animated legacy solver arrays require a separate conversion')
     # Validate every material before mutating any of them. A later unsupported
@@ -138,7 +166,7 @@ def convert_cooked_volumes(stage, sdk):
                    'disableGravity':'physxDeformableBody:disableGravity'}
         for old, new in mapping.items():
             _set(prim, new, data.get('physxDeformable:'+old, .005 if old=='vertexVelocityDamping' else None))
-        _set(prim, 'omniphysics:mass', data.get('physics:mass'))
+        _set(prim, 'omniphysics:mass', density_masses.get(str(path), data.get('physics:mass')))
         owner = prim.GetRelationship('physxDeformable:simulationOwner')
         if owner and owner.GetTargets():prim.GetRelationship('omniphysics:simulationOwner').SetTargets(owner.GetTargets())
         meshes = {}
@@ -172,7 +200,8 @@ def convert_cooked_volumes(stage, sdk):
         if not material or not material.GetPrim().HasAPI('OmniPhysicsDeformableMaterialAPI'):
             private_defaults.append(_bind_implicit_legacy_material(stage, prim, data.get('physics:density')))
     return dict(body_count=len(bodies),material_count=len(materials),
-                private_legacy_defaults=private_defaults, discovery='authored API metadata')
+                private_legacy_defaults=private_defaults, density_inferred_masses=density_masses,
+                discovery='authored API metadata')
 
 
 def convert_copy(source, destination):
