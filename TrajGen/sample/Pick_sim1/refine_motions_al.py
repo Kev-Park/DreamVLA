@@ -1,3 +1,10 @@
+import sys as _reference_sys
+from pathlib import Path as _ReferencePath
+
+# Keep direct script invocation working without changing the installed environment.
+_reference_sys.path.insert(0, str(_ReferencePath(__file__).resolve().parents[2] / "holosoma_adapters"))
+from kinematics_autograd import autograd_forward_kinematics
+
 import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = ""
 import torch
@@ -27,6 +34,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Load URDF and create kinematic chain
 urdf_path = '../../../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf'
 chain = pk.build_chain_from_urdf(open(urdf_path).read()).to(dtype=torch.float32, device=DEVICE)
+_forward_kinematics = autograd_forward_kinematics(chain)
 pkl_paths = '*.pkl'
 pkl_paths = glob.glob(pkl_paths)
 SMOOTH_AMT = 20
@@ -158,7 +166,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     for id in inactive_joint_ids:
         name = joint_names[id]
         q_dict[name] = target_joint_angles[:, id]
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = _forward_kinematics(q_dict)
     # Collect all link positions
     cost2 = torch.zeros(joint_angles.shape[0], device=joint_angles.device)
     rot_matrix = quaternion_to_matrix(quats)
@@ -580,7 +588,7 @@ for pkl_path in pkl_paths:
     active_joint_names = [name for name in joint_names if name not in inactive_joint_names]
     inactive_joint_ids = [i for i, name in enumerate(joint_names) if name in inactive_joint_names]
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate( joint_names ) }
-    fk_results_ref = chain.forward_kinematics(q_dict)
+    fk_results_ref = _forward_kinematics(q_dict)
     # Initial guess for joint angles (can be zeros or random)
     joint_angles = torch.nn.Parameter(target_joint_angles[:, active_joint_ids].clone())  # Only optimize active joints
     trans = target_trans.clone()  # Translation offset (0.035 z added inside compute_cost)
@@ -588,7 +596,7 @@ for pkl_path in pkl_paths:
     optimizer = optim.Adam([joint_angles], lr=0.001)
     grab_idx = motion_data["grab_idx"]
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate( joint_names ) }
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = _forward_kinematics(q_dict)
     tf = fk_results["right_wrist_pitch_link"]
     pos = tf.get_matrix()[:,:3,3]
     rot_matrix = quaternion_to_matrix(quats)
@@ -727,7 +735,7 @@ for pkl_path in pkl_paths:
     first_viol_i = 0
     q_dict = {name: joints_new[:, i] for i, name in enumerate( joint_names ) }
     rot_matrix = quaternion_to_matrix(quats_new)
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = _forward_kinematics(q_dict)
     pos_right_ankle = fk_results["right_ankle_roll_link"].get_matrix()[:,:3,3]  # shape (N, 3)
     pos_right_ankle = torch.bmm(pos_right_ankle.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans_new
     pos_left_ankle = fk_results["left_ankle_roll_link"].get_matrix()[:,:3,3]  # shape (N, 3)

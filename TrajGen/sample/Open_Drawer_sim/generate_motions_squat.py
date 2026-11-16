@@ -1,3 +1,10 @@
+import sys as _reference_sys
+from pathlib import Path as _ReferencePath
+
+# Keep direct script invocation working without changing the installed environment.
+_reference_sys.path.insert(0, str(_ReferencePath(__file__).resolve().parents[2] / "holosoma_adapters"))
+from kinematics_autograd import autograd_forward_kinematics
+
 import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = ""
 import torch
@@ -49,6 +56,7 @@ SHIFT_Zs = SHIFT_Zs.flatten()
 # Load URDF and create kinematic chain
 urdf_path = '../../../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf'
 chain = pk.build_chain_from_urdf(open(urdf_path).read())
+_forward_kinematics = autograd_forward_kinematics(chain)
 pkl_path = 'squat.pkl'
 
 
@@ -99,7 +107,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=-0.55, offset_z=-0., debug
         name = joint_names[id]
         q_dict[name] = target_joint_angles[FIRST_FRAME:, id]
     
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = _forward_kinematics(q_dict)
     
     cost2 = torch.zeros(joint_angles.shape[0])
     rot_matrix = quaternion_to_matrix(quats)
@@ -177,7 +185,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
     active_joint_names = [name for name in joint_names if name not in inactive_joint_names]
     inactive_joint_ids = [i for i, name in enumerate(joint_names) if name in inactive_joint_names]
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate( joint_names ) }
-    fk_results_ref = chain.forward_kinematics(q_dict)
+    fk_results_ref = _forward_kinematics(q_dict)
     target_joint_angles[:FIRST_FRAME,-14:] = torch.tensor(init_joint_angles_new[-14:]).unsqueeze(0)
     target_joint_angles[FIRST_FRAME:] = target_joint_angles[FIRST_FRAME-1:FIRST_FRAME]  # Freeze all but the first frame
     if i == 0:
@@ -199,7 +207,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
 
 
     q_dict = {name: target_joint_angles[FIRST_FRAME:, i] for i, name in enumerate( joint_names ) }
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = _forward_kinematics(q_dict)
     tf = fk_results["right_wrist_yaw_link"]
     pos = tf.get_matrix()[:,:3,3]  # shape (N, 3)
 
@@ -248,7 +256,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
     trans_new_ = torch.tensor(target_trans)
     trans_new_[FIRST_FRAME:] = trans  
     q_dict = {name: joints_new_[:, i] for i, name in enumerate( joint_names ) }
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = _forward_kinematics(q_dict)
     pos_left = fk_results["left_ankle_roll_link"].get_matrix()[:,:3,3]  # shape (N, 3)
     pos_right = fk_results["right_ankle_roll_link"].get_matrix()[:,:3,3]  # shape (N, 3)
     rot_matrix = quaternion_to_matrix(quats)
@@ -270,7 +278,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
     first_viol_i = 0
     q_dict = {name: joints_new[:, i] for i, name in enumerate( joint_names ) }
     rot_matrix = quaternion_to_matrix(quats_new)
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = _forward_kinematics(q_dict)
     pos_right_ankle = fk_results["right_ankle_roll_link"].get_matrix()[:,:3,3]
     pos_right_ankle = torch.bmm(pos_right_ankle.unsqueeze(1), rot_matrix.transpose(2, 1))[:,0] + trans_new
     pos_left_ankle = fk_results["left_ankle_roll_link"].get_matrix()[:,:3,3]

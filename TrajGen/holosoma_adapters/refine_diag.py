@@ -10,6 +10,12 @@ Reproduces refine_right_arm_table on one holosoma .npz with full instrumentation
 
 Usage: python refine_diag.py <holosoma_out.npz>
 """
+if __package__:
+    from .kinematics_autograd import autograd_forward_kinematics
+else:
+    from kinematics_autograd import autograd_forward_kinematics
+
+
 import os, sys, numpy as np, torch
 
 DOF = 29
@@ -38,8 +44,9 @@ base_pos = q[:, 0:3].copy(); base_quat = q[:, 3:7].copy(); joints = q[:, 7:36].c
 grab_idx = int(max(0, np.argmax(np.linalg.norm(obj_pos - obj_pos[0][None], axis=1) > 1e-4) - 1))
 
 chain = pk.build_chain_from_urdf(open(URDF, "rb").read())
+_forward_kinematics = autograd_forward_kinematics(chain)
 # ground + freeze left arm (Adapter B parity)
-fk = chain.forward_kinematics(torch.tensor(joints, dtype=torch.float32))
+fk = _forward_kinematics(torch.tensor(joints, dtype=torch.float32))
 local = torch.stack([fk[l].get_matrix()[:, :3, 3] for l in fk], dim=1).numpy()
 mz = (np.einsum("fij,flj->fli", quat_wxyz_to_R(base_quat), local) + base_pos[:, None, :])[:, :, 2].min(axis=1)
 base_pos[:, 2] -= mz
@@ -51,7 +58,7 @@ print("--- 29-DOF joint mapping ---")
 print(f"_RARM idx {_RARM} -> {[JN[i] for i in _RARM]}")
 assert all('right' in JN[i] for i in _RARM), "RARM indices are NOT all right-arm!"
 print(f"left-arm frozen block LARM0={LARM0} -> {[JN[i] for i in range(LARM0, LARM0+7)]}")
-fk_names = list(chain.forward_kinematics(torch.tensor(joints[:1], dtype=torch.float32)).keys())
+fk_names = list(_forward_kinematics(torch.tensor(joints[:1], dtype=torch.float32)).keys())
 print(f"FK links: {len(fk_names)}  has right_rubber_hand={'right_rubber_hand' in fk_names}  has right_wrist_pitch_link={'right_wrist_pitch_link' in fk_names}")
 
 # ---- instrumented refine ----
@@ -60,7 +67,7 @@ bp = torch.tensor(base_pos, dtype=torch.float32)
 R = torch.tensor(quat_wxyz_to_R(base_quat), dtype=torch.float32)
 arm0 = jt[:, _RARM].clone()
 with torch.no_grad():
-    wl = chain.forward_kinematics(jt)["right_wrist_pitch_link"].get_matrix()[:, :3, 3]
+    wl = _forward_kinematics(jt)["right_wrist_pitch_link"].get_matrix()[:, :3, 3]
     wrist_w = torch.einsum("fij,fj->fi", R, wl) + bp
     x_edge = float(wrist_w[grab_idx, 0]) + WRIST_TO_COLLISION + OFFSET_X
 z_table = OFFSET_Z
@@ -70,7 +77,7 @@ print(f"--- table half-space: x > {x_edge:.3f} AND z < {z_table} ---")
 
 def tips_world(arm_vals):
     j = jt.clone(); j[:, _RARM] = arm_vals
-    hm = chain.forward_kinematics(j)["right_rubber_hand"].get_matrix()
+    hm = _forward_kinematics(j)["right_rubber_hand"].get_matrix()
     hp = hm[:, :3, 3]; hr = hm[:, :3, :3]
     tip_root = hp + torch.einsum("fij,j->fi", hr, tip_local)
     return (torch.einsum("fij,fj->fi", R, tip_root) + bp)
@@ -107,7 +114,7 @@ for step in range(REFINE_STEPS):
     opt.zero_grad()
     tip_w = tips_world(arm)
     j = jt.clone(); j[:, _RARM] = arm
-    hm = chain.forward_kinematics(j)["right_rubber_hand"].get_matrix()
+    hm = _forward_kinematics(j)["right_rubber_hand"].get_matrix()
     orig_w = torch.einsum("fij,fj->fi", R, hm[:, :3, 3]) + bp
     c_table = pen(tip_w, grab_idx) + pen(orig_w, grab_idx)
     c_reg = ((arm - arm0) ** 2).sum(dim=1).mean()

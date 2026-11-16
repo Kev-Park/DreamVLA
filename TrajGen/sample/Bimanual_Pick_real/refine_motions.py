@@ -1,3 +1,10 @@
+import sys as _reference_sys
+from pathlib import Path as _ReferencePath
+
+# Keep direct script invocation working without changing the installed environment.
+_reference_sys.path.insert(0, str(_ReferencePath(__file__).resolve().parents[2] / "holosoma_adapters"))
+from kinematics_autograd import autograd_forward_kinematics
+
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 import torch
@@ -30,7 +37,7 @@ def compute_cost(joint_angles, trans, quats):
     for id in inactive_joint_ids:
         name = joint_names[id]
         q_dict[name] = target_joint_angles[:, id]
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = _forward_kinematics(q_dict)
     cost2 = torch.zeros(joint_angles.shape[0], device=DEVICE)
     rot_matrix = quaternion_to_matrix(quats)
     i = 0
@@ -76,6 +83,7 @@ def compute_cost(joint_angles, trans, quats):
 # Load URDF and create kinematic chain
 urdf_path = '../../../Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf'
 chain = pk.build_chain_from_urdf(open(urdf_path).read())
+_forward_kinematics = autograd_forward_kinematics(chain)
 pkl_path = '0_n_500.pkl'
 SMOOTH_AMT = 20
 PAUSE_AMT = 10
