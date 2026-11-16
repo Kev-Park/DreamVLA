@@ -61,7 +61,11 @@ def main():
             ids[name] = indices
             report['robots'][name] = dict(joint_names=list(robot.joint_names),
                 body_names=list(robot.body_names),
-                velocity_limits=robot.root_physx_view.get_dof_max_velocities().cpu().tolist())
+                velocity_limits=robot.root_physx_view.get_dof_max_velocities().cpu().tolist(),
+                masses=robot.root_physx_view.get_masses().cpu().tolist(),
+                inertias=robot.root_physx_view.get_inertias().cpu().tolist(),
+                coms=robot.root_physx_view.get_coms().cpu().tolist(),
+                initial_link_transforms=robot.root_physx_view.get_link_transforms().cpu().tolist())
         for step in range(report['steps']):
             target = .35 if step < 120 else -.2
             for name, robot in robots.items():
