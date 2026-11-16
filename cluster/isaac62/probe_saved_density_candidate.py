@@ -81,6 +81,9 @@ def main():
             report['candidate_conversion'] = convert_cooked_volumes(stage, DeformableSchemaChecker)
             converted = stage.GetPrimAtPath(path)
             converted.GetAttribute('omniphysics:mass').Set(0.)
+            legacy_mass = converted.GetAttribute('physics:mass')
+            if legacy_mass:
+                legacy_mass.Set(0.)
             material = UsdShade.MaterialBindingAPI(converted).ComputeBoundMaterial('physics')[0]
             assert material.GetPrim().GetAttribute('omniphysics:density').Get() == args.density
             assert material.GetPrim().GetCustomDataByKey('isaaclab:implicitLegacyDeformableMaterial')
