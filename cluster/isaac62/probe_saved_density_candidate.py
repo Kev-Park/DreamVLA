@@ -5,6 +5,8 @@ the temporary mass before any physics is initialized. Its already-local implicit
 material retains the requested density. The source and exported native fixture
 never receive that temporary mass. This is a diagnostic candidate, not evidence
 that the public density-only converter is supported.
+With --mass-from-density, it instead uses the normal explicit-mass conversion
+as a control, with mass computed from the identical saved simulation rest mesh.
 """
 import argparse
 import hashlib
@@ -23,6 +25,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--density', type=float, required=True)
     parser.add_argument('--candidate', action='store_true')
+    parser.add_argument('--mass-from-density', action='store_true')
     args = parser.parse_args()
     version = importlib.metadata.version('isaacsim')
     assert version == ('6.2.0.0' if args.candidate else '5.1.0.0')
@@ -55,8 +58,19 @@ def main():
         body = bodies[0]
         body.RemoveProperty('material:binding:physics')
         assert not UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial('physics')[0]
-        body.GetAttribute('physics:mass').Set(0.)
+        rest = np.asarray(body.GetAttribute('physxDeformable:simulationRestPoints').Get(), dtype=np.float64)
+        connectivity = np.asarray(body.GetAttribute('physxDeformable:simulationIndices').Get()).reshape(-1, 4)
+        tetrahedra = rest[connectivity]
+        volume = float(np.abs(np.linalg.det(tetrahedra[:, 1:]-tetrahedra[:, :1])).sum()/6)
+        # This saved fixture uses metre/kg units and an unscaled body transform.
+        from pxr import UsdGeom, UsdPhysics
+        assert UsdGeom.GetStageMetersPerUnit(stage) == UsdPhysics.GetStageKilogramsPerUnit(stage) == 1
+        assert np.isclose(abs(np.linalg.det(np.asarray(
+            UsdGeom.Xformable(body).ComputeLocalToWorldTransform(0))[:3, :3])), 1.)
+        explicit_mass = volume*args.density if args.mass_from_density else 0.
+        body.GetAttribute('physics:mass').Set(explicit_mass)
         body.GetAttribute('physics:density').Set(args.density)
+        report.update(simulation_rest_volume_m3=volume, explicit_mass_kg=explicit_mass)
         source_counts = dict(nodes=len(body.GetAttribute('physxDeformable:simulationPoints').Get()),
                              elements=len(body.GetAttribute('physxDeformable:simulationIndices').Get())//4)
         fixture = args.output/'native_fixture.usda'
@@ -66,24 +80,25 @@ def main():
             from isaacsim.core.utils.extensions import enable_extension
             enable_extension('omni.physx.asset_validator')
             from omni.physxassetvalidator.scripts.deformableSchemaChecker import DeformableSchemaChecker
-            before = stage.GetRootLayer().ExportToString()
-            try:
-                convert_cooked_volumes(stage, DeformableSchemaChecker)
-            except NotImplementedError as error:
-                assert 'density' in str(error)
-            else:
-                raise AssertionError('Production density-only guard unexpectedly absent')
-            assert stage.GetRootLayer().ExportToString() == before
-            report['production_guard_preserved_atomically'] = True
-            # Geometry conversion only. No simulation is run with this mass.
-            body.GetAttribute('physics:mass').Set(.8)
+            if not args.mass_from_density:
+                before = stage.GetRootLayer().ExportToString()
+                try:
+                    convert_cooked_volumes(stage, DeformableSchemaChecker)
+                except NotImplementedError as error:
+                    assert 'density' in str(error)
+                else:
+                    raise AssertionError('Production density-only guard unexpectedly absent')
+                assert stage.GetRootLayer().ExportToString() == before
+                report['production_guard_preserved_atomically'] = True
+                # Geometry conversion only. No simulation is run with this mass.
+                body.GetAttribute('physics:mass').Set(.8)
             path = body.GetPath()
             report['candidate_conversion'] = convert_cooked_volumes(stage, DeformableSchemaChecker)
             converted = stage.GetPrimAtPath(path)
-            converted.GetAttribute('omniphysics:mass').Set(0.)
+            converted.GetAttribute('omniphysics:mass').Set(explicit_mass)
             legacy_mass = converted.GetAttribute('physics:mass')
             if legacy_mass:
-                legacy_mass.Set(0.)
+                legacy_mass.Set(explicit_mass)
             material = UsdShade.MaterialBindingAPI(converted).ComputeBoundMaterial('physics')[0]
             assert material.GetPrim().GetAttribute('omniphysics:density').Get() == args.density
             assert material.GetPrim().GetCustomDataByKey('isaaclab:implicitLegacyDeformableMaterial')
