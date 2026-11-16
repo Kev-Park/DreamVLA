@@ -29,6 +29,8 @@ def main():
     for name in ('observation.state', 'observation.eef_state', 'action.wbc',
                  'action.motion_token', 'teleop.left_hand_joints', 'teleop.right_hand_joints'):
         arrays[name] = np.arange(frames*FIELDS[name], dtype=np.float64).reshape(frames,-1)/10000
+    from dreamvla_drawer_button.actions import fsq
+    arrays['action.motion_token'] = fsq(arrays['action.motion_token'])
     for key in ('observation.root_orientation', 'observation.cpp_rotation_offset',
                 'observation.init_base_quat'):
         arrays[key][:,0] = 1

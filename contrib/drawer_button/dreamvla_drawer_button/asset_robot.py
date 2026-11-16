@@ -1,8 +1,10 @@
 """Convert the separately obtained G1 URDF using the original SONIC USD settings."""
 
 import argparse
+import inspect
 from pathlib import Path
 import sys
+import traceback
 
 from .paths import ASSET_ROOT, BACKEND_ROOT
 
@@ -31,6 +33,7 @@ def main():
         )
     a.headless = True
     app = AppLauncher(a).app
+    completed = False
     try:
         from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
 
@@ -50,9 +53,20 @@ def main():
         cfg.joint_drive.target_type = "position"
         cfg.joint_drive.gains.stiffness = 0.0
         cfg.joint_drive.gains.damping = 0.0
-        print(UrdfConverter(cfg).usd_path)
+        usd_path = Path(UrdfConverter(cfg).usd_path)
+        if not usd_path.is_file() or usd_path.stat().st_size == 0:
+            raise RuntimeError(f"URDF conversion produced no USD: {usd_path}")
+        print(usd_path, flush=True)
+        completed = True
+    except BaseException:
+        # Fast SDK shutdown can exit before Python displays the pending error.
+        traceback.print_exc()
+        raise
     finally:
-        app.close()
+        if "exit_code" in inspect.signature(app.close).parameters:
+            app.close(exit_code=0 if completed else 1)
+        else:
+            app.close()
 
 
 if __name__ == "__main__":
