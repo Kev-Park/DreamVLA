@@ -230,7 +230,13 @@ def main():
             offset = cfg.scene.camera_robot.offset
             assert offset.convention == 'opengl'
             oq = torch.tensor(offset.rot, device=base.device).reshape(1, 4)
-            offset_rotation = matrix_from_quat(oq)[0].cpu().numpy()
+            # Preserve the original USD camera-authoring semantics. Its accepted
+            # rounded quaternion is not unit length; silently normalizing it
+            # predicts a different orientation from Gf.Rotation in both SDKs.
+            from pxr import Gf
+            normalized_offset_rotation = matrix_from_quat(oq)[0].cpu().numpy()
+            offset_rotation = np.asarray(Gf.Matrix3d(Gf.Rotation(
+                Gf.Quatd(float(offset.rot[0]), Gf.Vec3d(*offset.rot[1:]))))).T
             local_pos = mount[:3, 3]+mount[:3, :3] @ np.asarray(offset.pos)
             local_rotation = mount[:3, :3] @ offset_rotation
             body_rotation = matrix_from_quat(robot.data.body_quat_w[:, ids[0]]).cpu().numpy()
@@ -245,6 +251,12 @@ def main():
             receipt.setdefault('camera_mount_checks', []).append(dict(
                 num_envs=base.num_envs, parent=names[0], prim_path=path,
                 physical_ancestor_to_mount=mount.tolist(), expected_positions=expected_pos.tolist(),
+                offset_quaternion_norm_squared=sum(float(value)**2 for value in offset.rot),
+                offset_semantics='Original Gf.Rotation authoring; no production quaternion changed',
+                normalized_offset_rotation_difference=float(np.max(np.abs(offset_rotation-normalized_offset_rotation))),
+                expected_rotations=expected_rotation.tolist(),
+                sensor_rotations=matrix_from_quat(actual.quat_w_opengl).cpu().tolist(),
+                renderer_rotations=render_world[:, :3, :3].transpose(0, 2, 1).tolist(),
                 maximum_position_error_m=sensor_pos_error,
                 maximum_rotation_matrix_error=sensor_rotation_error,
                 renderer_maximum_position_error_m=render_pos_error,
