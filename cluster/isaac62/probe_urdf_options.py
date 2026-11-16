@@ -158,8 +158,20 @@ def main():
                             relationships={rel.GetName(): [str(x) for x in rel.GetTargets()] for rel in prim.GetRelationships()}))
                 tree = ET.parse(source).getroot()
                 fixed_count = sum(joint.get('type') == 'fixed' for joint in tree.findall('joint'))
-                expected_bodies = len(tree.findall('link')) - (fixed_count if cfg.merge_fixed_joints else 0)
-                assert len(row['bodies']) == expected_bodies and len(row['joints']) == len(tree.findall('joint'))-fixed_count, row
+                source_links = {link.get('name') for link in tree.findall('link')}
+                source_mass = sum(float(link.find('inertial/mass').get('value')) for link in tree.findall('link'))
+                imported_mass = sum(properties['mass'] for properties in row['mass_properties'].values())
+                row['mass_conservation'] = dict(source=source_mass, imported=imported_mass,
+                    absolute_error=abs(source_mass-imported_mass))
+                row['merge_requested'] = cfg.merge_fixed_joints
+                # Do not assume that requesting a merge collapses a massive
+                # fixed child: SDK 5.1 retains it. Compare observed topologies
+                # between versions, while independently checking mass/counts.
+                assert set(row['bodies']) <= source_links and row['bodies'], row
+                if not cfg.merge_fixed_joints:
+                    assert set(row['bodies']) == source_links, row
+                assert len(row['joints']) == len(tree.findall('joint'))-fixed_count, row
+                assert row['mass_conservation']['absolute_error'] < 1e-6, row
                 report['cases'][name] = row
             except Exception:
                 report['cases'][name] = dict(completed=False, requested_options=options, error=traceback.format_exc())
