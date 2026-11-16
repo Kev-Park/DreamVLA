@@ -120,6 +120,11 @@ def main():
             cfg.scene.camera_robot = ego_camera_cfg(cfg.scene.robot.spawn.usd_path)
             # Pose telemetry is needed for the independent mount check below.
             cfg.scene.camera_robot.update_latest_camera_pose = True
+        if not (contributed_drawer or contributed_button):
+            if hasattr(cfg.scene, 'contact_forces'):
+                cfg.scene.contact_forces.track_pose = True
+            if getattr(cfg.scene, 'camera_robot', None) is not None:
+                cfg.scene.camera_robot.update_latest_camera_pose = True
         cfg.seed = 17
         if args.ref_motions_path is not None:
             if not hasattr(cfg, 'ref_motions_path'):
@@ -181,7 +186,7 @@ def main():
             receipt.setdefault('button_visual_samples', []).append(visual.update())
         finite(obs, 'reset_observations')
         def check_contact_order():
-            if not (contributed_drawer or contributed_button):
+            if 'contact_forces' not in base.scene.sensors:
                 return
             sensor = base.scene['contact_forces']
             ids, names = robot.find_bodies(sensor.body_names, preserve_order=True)
@@ -193,14 +198,62 @@ def main():
                 dict(num_envs=args.num_envs, bodies=len(names), maximum_position_error_m=error))
         check_contact_order()
         camera_params = []
-        if contributed_drawer or contributed_button:
+        if 'camera_robot' in base.scene.sensors:
             import omni.replicator.core as rep
             for product in base.scene['camera_robot']._render_product_paths:
                 annotator = rep.AnnotatorRegistry.get_annotator('camera_params')
                 annotator.attach(product)
                 camera_params.append(annotator)
+        def check_native_camera_mount():
+            if 'camera_robot' not in base.scene.sensors:
+                return
+            from isaaclab.utils.math import matrix_from_quat
+            sensor = base.scene['camera_robot']
+            sensor.update(0.0, force_recompute=True)
+            actual = sensor.data
+            path = cfg.scene.camera_robot.prim_path.replace('{ENV_REGEX_NS}', base.scene.env_prim_paths[0])
+            camera_prim = base.sim.stage.GetPrimAtPath(path)
+            assert camera_prim.IsValid(), path
+            parent_prim = camera_prim.GetParent()
+            body_prim = parent_prim
+            while body_prim and body_prim.GetName() not in robot.body_names:
+                body_prim = body_prim.GetParent()
+            assert body_prim, 'Camera has no physical robot ancestor'
+            ids, names = robot.find_bodies([body_prim.GetName()], preserve_order=True)
+            assert len(ids) == 1
+            # Static chain from physical ancestor through the camera mount.
+            # The camera's authored offset is tested against its config separately.
+            cache = UsdGeom.XformCache()
+            mount, reset = cache.ComputeRelativeTransform(parent_prim, body_prim)
+            assert not reset
+            mount = np.asarray(mount).T
+            offset = cfg.scene.camera_robot.offset
+            assert offset.convention == 'opengl'
+            oq = torch.tensor(offset.rot, device=base.device).reshape(1, 4)
+            offset_rotation = matrix_from_quat(oq)[0].cpu().numpy()
+            local_pos = mount[:3, 3]+mount[:3, :3] @ np.asarray(offset.pos)
+            local_rotation = mount[:3, :3] @ offset_rotation
+            body_rotation = matrix_from_quat(robot.data.body_quat_w[:, ids[0]]).cpu().numpy()
+            expected_pos = robot.data.body_pos_w[:, ids[0]].cpu().numpy()+body_rotation @ local_pos
+            expected_rotation = body_rotation @ local_rotation
+            sensor_pos_error = float(np.max(np.abs(actual.pos_w.cpu().numpy()-expected_pos)))
+            sensor_rotation_error = float(np.max(np.abs(matrix_from_quat(actual.quat_w_opengl).cpu().numpy()-expected_rotation)))
+            params = [a.get_data() for a in camera_params]
+            render_world = np.stack([np.linalg.inv(np.asarray(d['cameraViewTransform']).reshape(4, 4)) for d in params])
+            render_pos_error = float(np.max(np.abs(render_world[:, 3, :3]-expected_pos)))
+            render_rotation_error = float(np.max(np.abs(render_world[:, :3, :3].transpose(0, 2, 1)-expected_rotation)))
+            receipt.setdefault('camera_mount_checks', []).append(dict(
+                num_envs=base.num_envs, parent=names[0], prim_path=path,
+                physical_ancestor_to_mount=mount.tolist(), expected_positions=expected_pos.tolist(),
+                maximum_position_error_m=sensor_pos_error,
+                maximum_rotation_matrix_error=sensor_rotation_error,
+                renderer_maximum_position_error_m=render_pos_error,
+                renderer_maximum_rotation_matrix_error=render_rotation_error,
+                passed=max(sensor_pos_error, sensor_rotation_error, render_pos_error, render_rotation_error) < 1e-5))
+
         def check_camera_mount():
             if not (contributed_drawer or contributed_button):
+                check_native_camera_mount()
                 return
             import xml.etree.ElementTree as ET
             from dreamvla_drawer_button.paths import BACKEND_ROOT
