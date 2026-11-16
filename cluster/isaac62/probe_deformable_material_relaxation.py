@@ -1,7 +1,7 @@
 """Bounded native implicit/explicit material relaxation comparison.
 
 Three isolated cubes share geometry, mass and solver settings. Material is either
-unbound, the legacy 50 MPa/0.45 recipe, or a 0.5 MPa/0.45 control. Production
+unbound, the legacy 50 MPa/0.45 recipe, or a 50 Pa/0.45 control. Production
 spawning defaults are not changed. Comparisons are within each SDK, not a claim
 of identical meshes or trajectories across different SDKs.
 """
@@ -42,7 +42,7 @@ def main():
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
         cubes = {}
         for index, (name, youngs) in enumerate([('unbound', None), ('legacy_explicit', 50e6),
-                                               ('soft_control', .5e6)]):
+                                               ('soft_control', 50.)]):
             material = None if youngs is None else sim_utils.DeformableBodyMaterialCfg(
                 youngs_modulus=youngs, poissons_ratio=.45)
             spawn = sim_utils.MeshCuboidCfg(size=(.2, .2, .2),
@@ -70,9 +70,14 @@ def main():
             sim.step(render=False)
             for cube in cubes.values():
                 cube.update(sim.get_physics_dt())
+        report['held_strain_rms_m'] = {}
         for name, cube in cubes.items():
             # Zero nodal velocity before release in every arm.
             state = cube.data.nodal_state_w.clone()
+            pos = state[..., :3]
+            rest = original[name][..., :3]
+            delta = (pos-pos.mean(1, keepdim=True))-(rest-rest.mean(1, keepdim=True))
+            report['held_strain_rms_m'][name] = float(torch.sqrt(torch.mean(delta**2)))
             state[..., 3:] = 0
             cube.write_nodal_state_to_sim(state)
             target = targets[name].clone()
@@ -100,11 +105,14 @@ def main():
             comparisons[name] = dict(rest_geometry_max_error_m=rest_error,
                 maximum_centered_node_error_m=float(np.abs(delta).max()),
                 rms_centered_node_error_by_step_m=np.sqrt(np.mean(delta**2, axis=(1, 2))).tolist())
+        report['informative_control'] = all(x > .001 for x in report['held_strain_rms_m'].values()) and (
+            comparisons['soft_control']['maximum_centered_node_error_m'] > .0001)
         report.update(completed=True, steps=36, release_steps=32,
             implicit_versus_explicit=comparisons,
             relaxation_rms_from_rest_by_step_m={name: np.sqrt(np.mean(
                 (arrays[name]-arrays[name+'_rest'])**2, axis=(1, 2))).tolist() for name in cubes})
         np.savez(args.output/'traces.npz', **arrays)
+        assert report['informative_control'], 'Control cannot distinguish material response'
     except BaseException:
         report['error'] = traceback.format_exc()
         raise
