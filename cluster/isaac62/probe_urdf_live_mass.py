@@ -66,7 +66,7 @@ def main():
             i, j = left_ids[name], right_ids[name]
             inertia_errors[name] = float((torch.tensor(legacy['inertias'][i])-torch.tensor(modern['inertias'][j])).abs().max())
             com_errors[name] = float((torch.tensor(legacy['coms'][i][:3])-torch.tensor(modern['coms'][j][:3])).abs().max())
-        report.update(completed=True, common_body_mass_errors=errors,
+        report.update(measurement_completed=True, common_body_mass_errors=errors,
                       common_body_inertia_errors=inertia_errors, common_body_com_position_errors=com_errors,
                       missing_modern_bodies=sorted(left.keys()-right.keys()),
                       extra_modern_bodies=sorted(right.keys()-left.keys()),
@@ -110,7 +110,8 @@ def main():
                 row['hands'][side] = commands
             io[label] = row
         assert io['legacy'] == io['modern'], 'Named model/hand interfaces changed'
-        report.update(named_io_pass=True, named_io=io, raw_joint_order_equal=legacy['joint_names'] == modern['joint_names'])
+        report.update(completed=True, named_io_pass=True, named_io=io,
+                      raw_joint_order_equal=legacy['joint_names'] == modern['joint_names'])
     except BaseException:
         report['error'] = traceback.format_exc()
         raise

@@ -125,6 +125,66 @@ learned walking-policy performance evaluation. Both processes, all account-owned
 GPU contexts and their reservations are confirmed released. The final native
 walking-reference account CPU sample is 0.00017% of host capacity.
 
+### Robot collision and rest-frame audit (2026-11-16)
+
+The actual USD audit at `3a2e8dc` traverses instance proxies and compares every
+collision against the original URDF: 39 convex-hull mesh inputs, eight spheres,
+four cylinders and two boxes. All 53 pass a fixed 1e-6 geometric tolerance;
+maximum observed error is 3.43e-8. Mesh source SHA256 values are recorded and
+their transformed point sets match the STL inputs. Primitive centers, sizes and
+axes match, collisions remain enabled, and there are no missing or extra shapes.
+This checks the inputs to convex cooking, not SDK-specific cooked hull equality.
+All 43 movable joint axes and anchors also pass, with maximum error 2.25e-7.
+
+The strict ideal-URDF rest-transform gate remains failed: 53 of 54 link
+frames pass, while `mid360_link` rotation differs by 1.73377246e-6 from the
+ideal matrix (fixed tolerance 1e-6). The matched original converter produces
+that same rotation matrix. The original report is retained at
+`out/isaac62_migration/isaac62_urdf_geometry_3a2e8dc/receipt.json`.
+Its assumption that four empty sensor links should remain non-rigid was
+subsequently disproved by the matched SDK5.1 conversion described below.
+
+### Matched robot physics and named policy interfaces (2026-11-16)
+
+Running the original g1 converter on the identical URDF in the existing Isaac
+5.1 environment exposed a real migration regression: the legacy import has 54
+rigid bodies, while the initial modern import had only 50. PhysX assigns each of
+the four empty fixed sensor links a default effective mass of 1 kg. Omitting
+those links reduced the robot from 40.1682 kg to 36.1682 kg. This is not an
+approved physics change. The bridge now preserves those four fixed bodies with
+explicit measured legacy mass, center of mass and inertia. It does not modify
+the source URDF or the SDK-generated source layers.
+
+The repaired asset `isaac62_izat_robot_b859963` has 54 rigid bodies and 53 joints
+(43 movable, ten fixed). Paired live PhysX checks in the same SDK6.2 process
+show exact per-body masses and centers of mass, no missing or extra bodies,
+and maximum inertia-element difference 7.45e-9. The small total-mass difference
+is floating-point summation order. The matched original conversion initially
+tripped the fixture's incorrect 50-body expectation after successfully writing
+the asset; that failed receipt is retained, with independent USD/live checks
+providing the comparison evidence.
+
+Raw joint ordering differs between the legacy and modern imports, including
+hand index/thumb indices, so `preservation_pass` remains false for that strict
+raw-order gate. The actual named application interfaces were tested separately
+at `1bf401d`: all 43 canonical dataset/GR00T joint positions, the actual 29-joint
+PPO `joint_pos_rel` observation and both seven-joint binary finger outputs
+match exactly. This uses original exported dataset metadata and the real scene
+entity resolver and action terms, not a surrogate ordering implementation.
+`named_io_pass` is true; raw ordering is explicitly recorded as unequal. Receipt:
+`out/isaac62_migration/isaac62_urdf_live_mass_1bf401d/receipt.json`.
+
+The repaired 54-body button task also passes 32 steps, reset, strict sensor and
+renderer poses, contact-row ordering and file rendering at `8d1fa08`. Original
+frames/video are local in `isaac62_izat_button_runtime_8d1fa08`. Earlier drawer
+and PPO gates used the 50-body import; those affected gates are being rerun.
+These are technical integration checks, not task-performance results.
+
+The matched SDK5.1 conversion used complete original source/application files
+and supported process-local Kit settings to avoid shared user preferences, as
+used in NVIDIA's [startup tests](https://github.com/isaac-sim/IsaacSim/blob/develop/repo.toml).
+No packages, shared user configuration or extension trust settings were changed.
+
 ### Contributed live gates (2026-11-15)
 
 The actual contributed `sample-human` entrypoint completed one 196-frame
