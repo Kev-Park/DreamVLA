@@ -58,4 +58,14 @@ def convert_asset(converter, cfg):
         wrapper.SetDefaultPrim(wrapper.GetPrimAtPath(root.GetPath()))
         UsdGeom.SetStageUpAxis(wrapper, UsdGeom.GetStageUpAxis(source))
         UsdGeom.SetStageMetersPerUnit(wrapper, UsdGeom.GetStageMetersPerUnit(source))
+        physics = wrapper.GetDefaultPrim().GetVariantSet("Physics")
+        if "physx" not in physics.GetVariantNames():
+            raise RuntimeError("URDF importer produced no PhysX physics variant")
+        physics.SetVariantSelection("physx")
         wrapper.GetRootLayer().Save()
+    else:
+        physics = root.GetVariantSet("Physics")
+        if "physx" not in physics.GetVariantNames():
+            raise RuntimeError("URDF importer produced no PhysX physics variant")
+        physics.SetVariantSelection("physx")
+        source.GetRootLayer().Save()
