@@ -32,10 +32,17 @@ class VolumeDeformableView:
             )
 
         can_wrap = can_wrap and all(stable_explicit_material(p) for p in roots)
+        # Modern SDK diagnostics use the transformed rest shape. Legacy
+        # simulation diagnostics additionally included the initial root frame;
+        # the read-only compatibility path preserves that measured convention.
+        can_wrap = can_wrap and all(np.allclose(
+            np.asarray(UsdGeom.Xformable(p).ComputeLocalToWorldTransform(0))[:3, :3],
+            np.eye(3), rtol=0, atol=1e-7) for p in roots)
         self._diagnostics = DeformablePrim(pattern, deformable_type='volume') if can_wrap else None
         self._stage = stage
         self._collision_rest = None
         self._element_count_cache = {}
+        self._legacy_frame_cache = None
 
     def __getattr__(self, name):
         return getattr(self._view, name)
@@ -126,22 +133,51 @@ class VolumeDeformableView:
         if self._diagnostics is not None:
             return self._mask_elements(wp.to_torch(self._diagnostics.get_nodal_rotations()), "simulation")
         from isaaclab.utils.math import quat_from_matrix, convert_quat
-        rotation = self._polar_rotation(self._simulation_gradient())
+        _, rotation = self._legacy_simulation_state()
         return self._mask_elements(convert_quat(quat_from_matrix(rotation), to='xyzw'), 'simulation')
 
     def get_sim_element_deformation_gradients(self):
         if self._diagnostics is not None:
             return self._mask_elements(self._legacy_matrix_buffer(self._diagnostics.get_nodal_gradients()), "simulation")
-        gradient = self._simulation_gradient()
-        stretch = self._polar_rotation(gradient).transpose(-2, -1) @ gradient
+        gradient, rotation = self._legacy_simulation_state()
+        stretch = rotation.transpose(-2, -1) @ gradient
         return self._mask_elements(stretch.transpose(-2, -1).contiguous().flatten(-2), 'simulation')
 
     def get_sim_element_stresses(self):
         self._material_parameters()  # Never turn absent material properties into zero stresses.
         if self._diagnostics is not None:
             return self._mask_elements(self._legacy_matrix_buffer(self._diagnostics.get_nodal_stresses()), "simulation")
-        stress = self._stress(self._simulation_gradient())
+        gradient, rotation = self._legacy_simulation_state()
+        stress = self._stress(gradient, rotation=rotation)
         return self._mask_elements(stress.transpose(-2, -1).contiguous().flatten(-2), 'simulation')
+
+    def _legacy_frames(self):
+        if self._legacy_frame_cache is None:
+            linear = np.stack([np.asarray(UsdGeom.Xformable(
+                self._stage.GetPrimAtPath(path)).ComputeLocalToWorldTransform(0))[:3, :3].T
+                for path in self._view.prim_paths])
+            scale = np.linalg.norm(linear, axis=-2)
+            if np.any(scale <= 0):
+                raise RuntimeError('Legacy deformable diagnostics require a nonsingular initial root frame')
+            rotation = linear / scale[:, None, :]
+            if (not np.allclose(rotation.transpose(0, 2, 1) @ rotation, np.eye(3), rtol=0, atol=1e-6)
+                    or np.any(np.linalg.det(rotation) <= 0)):
+                raise RuntimeError('Sheared or reflected root frames need a separately validated legacy diagnostic mapping')
+            reference = self._view.get_simulation_nodal_positions()
+            convert = lambda value: torch.as_tensor(value, device=reference.device, dtype=reference.dtype)[:, None]
+            self._legacy_frame_cache = (convert(linear), convert(rotation),
+                convert(np.stack([np.diag(1 / row) for row in scale])))
+        return self._legacy_frame_cache
+
+    def _legacy_simulation_state(self):
+        # Original5.1 native controls (45-degree and general-axis roots) show
+        # Q_legacy = polar(F_world_rest) R_initial R_initial, not just polar(F).
+        # Its reported gradient is Q_legacy^T F_world_rest L_initial.
+        # Preserve this API convention without changing simulator nodal state.
+        incremental = self._simulation_gradient()
+        linear, initial_rotation, _ = self._legacy_frames()
+        rotation = self._polar_rotation(incremental) @ initial_rotation @ initial_rotation
+        return incremental @ linear, rotation
 
     def _simulation_gradient(self):
         current = self._view.get_simulation_nodal_positions()
@@ -192,7 +228,8 @@ class VolumeDeformableView:
         edges = torch.where(valid[..., None, None], edges, identity)
         if torch.any(torch.linalg.det(rest_edges).abs() < 1e-12):
             raise RuntimeError('Cannot recover collision element diagnostics from a degenerate rest tetrahedron')
-        return edges @ torch.linalg.inv(rest_edges)
+        _, rotation, inverse_scale = self._legacy_frames()
+        return edges @ torch.linalg.inv(rest_edges) @ inverse_scale @ rotation
 
     def get_element_deformation_gradients(self):
         return self._mask_elements(self._collision_gradient().transpose(-2, -1).contiguous().flatten(-2), "collision")
@@ -231,13 +268,14 @@ class VolumeDeformableView:
         poisson = [wp.to_torch(m.get_poissons_ratios()).reshape(()) for m in material]
         return torch.stack(youngs).view(-1, 1, 1, 1), torch.stack(poisson).view(-1, 1, 1, 1)
 
-    def _stress(self, gradient, *, corotated=True):
+    def _stress(self, gradient, *, corotated=True, rotation=None):
         # The legacy simulation diagnostic uses corotated stretch. Its
         # collision diagnostic instead applies linear strain to the full F;
         # these agree for diagonal stretch but differ under shear/rotation.
-        rotation = self._polar_rotation(gradient) if corotated else torch.eye(
-            3, device=gradient.device, dtype=gradient.dtype
-        )
+        if rotation is None:
+            rotation = self._polar_rotation(gradient) if corotated else torch.eye(
+                3, device=gradient.device, dtype=gradient.dtype
+            )
         strain_gradient = rotation.transpose(-2, -1) @ gradient
         youngs, poisson = (v.to(gradient.device) for v in self._material_parameters())
         mu = youngs / (2*(1+poisson))
