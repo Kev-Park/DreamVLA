@@ -74,6 +74,46 @@ def convert_asset(converter, cfg):
     _preserve_collision_capsules(target, cfg)
     _preserve_mimic_joints(target, cfg)
     _preserve_articulation_root(target, cfg)
+    _preserve_diagonal_inertia_frames(target, cfg)
+
+
+def _preserve_diagonal_inertia_frames(usd_path, cfg):
+    """Keep the original identity mass frame for unmerged diagonal inertias.
+
+    Original ImportHelpers.cpp::Diagonalize starts at identity and exits
+    immediately when the tensor is already diagonal. The modern importer
+    sorts eigenvalues and rotates the mass frame even in this case. Although
+    the body-space tensor is equivalent, that changes the PhysX solver's frame
+    and can alter free-root trajectories. Do not overwrite merged inertias or
+    assume this shortcut applies to non-diagonal/rotated inertial frames.
+    """
+    if cfg.merge_fixed_joints:
+        return
+    from pxr import Gf, Tf, Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(usd_path))
+    bodies = {prim.GetName(): prim for prim in stage.Traverse()
+              if prim.HasAPI(UsdPhysics.RigidBodyAPI)}
+    for link in ET.parse(cfg.asset_path).getroot().findall('link'):
+        inertial = link.find('inertial')
+        if inertial is None:
+            continue
+        tensor = inertial.find('inertia')
+        origin = inertial.find('origin')
+        if tensor is None or any(float(tensor.get(key, '0')) != 0 for key in ('ixy', 'ixz', 'iyz')):
+            continue
+        if origin is not None and any(float(x) != 0 for x in origin.get('rpy', '0 0 0').split()):
+            continue
+        diagonal = [float(tensor.get(key)) for key in ('ixx', 'iyy', 'izz')]
+        if not all(math.isfinite(x) and x > 0 for x in diagonal):
+            continue  # Retain the importer's handling of degenerate tensors.
+        name = Tf.MakeValidIdentifier(link.get('name'))
+        if name not in bodies:
+            raise RuntimeError(f'Cannot preserve diagonal mass frame of missing body {name}')
+        api = UsdPhysics.MassAPI.Apply(bodies[name])
+        api.CreateDiagonalInertiaAttr(Gf.Vec3f(*diagonal))
+        api.CreatePrincipalAxesAttr(Gf.Quatf(1.))
+    stage.GetRootLayer().Save()
 
 
 def _preserve_articulation_root(usd_path, cfg):
