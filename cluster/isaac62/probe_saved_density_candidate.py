@@ -59,7 +59,11 @@ def main():
         body = bodies[0]
         if args.root_scale:
             assert all(value > 0 for value in args.root_scale)
-            UsdGeom.Xformable(body).AddScaleOp().Set(tuple(args.root_scale))
+            scale = body.GetAttribute('xformOp:scale')
+            if scale:
+                scale.Set(tuple(args.root_scale))
+            else:
+                UsdGeom.Xformable(body).AddScaleOp().Set(tuple(args.root_scale))
         if not args.bound_material:
             body.RemoveProperty('material:binding:physics')
         assert bool(UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial('physics')[0]) == args.bound_material
