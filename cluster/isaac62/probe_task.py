@@ -213,7 +213,7 @@ def main():
             quat_error = float(torch.minimum((actual_q-expected_q).abs().amax(-1),
                                             (actual_q+expected_q).abs().amax(-1)).max())
             from isaacsim.core.prims import XFormPrim
-            parent_view = XFormPrim(cfg.scene.camera_robot.prim_path.rsplit('/', 2)[0],
+            parent_view = XFormPrim(base.scene['camera_robot'].cfg.prim_path.rsplit('/', 2)[0],
                                     reset_xform_properties=False)
             parent_view.initialize()
             def values(pose):
@@ -223,7 +223,10 @@ def main():
                                parent_fabric=values(parent_view.get_world_poses(usd=False)),
                                camera_local=values(base.scene['camera_robot']._view.get_local_poses()),
                                legacy_context_physics_view=base.sim.physics_sim_view is not None,
-                               manager_physics_view=SimulationManager.get_physics_sim_view() is not None)
+                               manager_physics_view=SimulationManager.get_physics_sim_view() is not None,
+                               fabric_enabled=base.sim.is_fabric_enabled(),
+                               fabric_force_update=hasattr(base.sim._fabric_iface, 'force_update'),
+                               physics_steps=SimulationManager.get_num_physics_steps())
             receipt.setdefault('camera_mount_checks', []).append(dict(
                 num_envs=base.num_envs, parent=parent, prim_path=cfg.scene.camera_robot.prim_path,
                 maximum_position_error_m=pos_error, maximum_quaternion_component_error=quat_error,
