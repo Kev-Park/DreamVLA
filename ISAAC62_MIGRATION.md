@@ -40,6 +40,29 @@ the walking chain caps them at 1200 controls (24 s); reference exhaustion and
 other termination conditions can end either earlier. Timing evidence is in
 `out/isaac62_migration/check_contributed_horizon_timing.json`.
 
+## Matched visual/collision surface and joint-anchor audit (2026-11-16)
+
+The fresh repaired actual G1 asset now also passes a separate matched-import
+geometry audit against the original Isaac 5.1 USD: 103 visual/collision surfaces
+and 53 joints, maximum surface error 2.682209010451686e-9 m and maximum joint-anchor
+matrix error 3.372107105619276e-7, within the existing 1e-6 numeric gate. Collision
+flags/approximations and primitive dimensions also agree within that gate.
+Twelve primitive rows are not decimal-exact: maximum dimension difference is
+7.450580569168253e-10 m, from original float32 values versus new double values.
+The receipt records both exact values and errors; no original result is hidden.
+This checks authored geometry inputs, not SDK-specific cooked hull equality,
+render material equality or learned-policy success.
+
+The initial probe incorrectly classified original collision meshes as visuals:
+5.1 authors CollisionAPI on their parent Xforms, whereas 6.2 authors it on the
+Mesh. Ancestor-aware traversal fixes the audit without changing either asset.
+A subsequent strict string comparison of numeric dimensions also failed; it is
+replaced by numeric comparison at the same 1e-6 gate, retaining exact-value flags.
+These failed diagnostic receipts remain available. The passing receipt is local
+at `out/isaac62_migration/isaac62_matched_surfaces_b2c98ee/receipt.json`; executable
+probe is `cluster/isaac62/probe_matched_urdf_surfaces.py`. This is CPU-only and
+leaves simulator assets and packages untouched.
+
 ## Recorded parents
 
 - g1: `0505979bf6058b772edb1e7436bb757461aba88f`
