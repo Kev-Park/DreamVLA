@@ -14,6 +14,61 @@ or a file-surface audit is not completion.
   `14c979c` (2026-11-12), merged without source changes at `5a0e406`.
   Its separate task/controller/data interfaces are part of the migration scope.
 
+## Fresh generated-reference runtime and remaining pose gap (2026-11-16)
+
+Fresh actual G1 conversion at `c45d5b0` passes the source-URDF physical-property
+audit for 50 authored inertial bodies and 43 joint limits. The converted asset
+has 54 rigid bodies, the original fixed-joint graph, identical zero-force drives
+and joint velocity limits. Strict authored rest-world-transform parity remains
+failed at maximum matrix-component error 0.000191593459; no tolerance was waived.
+Receipts are in `out/isaac62_migration/isaac62_izat_robot_c45d5b0/`.
+
+All three newly generated target references (standing drawer, squatting drawer,
+standing button) then pass two-environment, 32-step reset/render tests against
+that fresh asset. Each passes strict sensor/renderer camera-mount and contact
+ordering checks and produces seven images and a 32-frame, 1280x720, 50-fps video.
+All 45 result files were pulled and SHA-256 verified under
+`out/isaac62_migration/isaac62_generated_reference_runtime_c45d5b0/`.
+The existing `out/reports/dashboard.html` includes all three clips. These are
+zero-action integration fixtures, not learned-policy or task-success results;
+visual behavior remains for user review. All phases exited zero, their worker
+and coordinator processes are absent, and the reservation and GPU contexts
+are released.
+
+The live resource audit caught a 6-MiB graphics-only context on Biped GPU1 in
+addition to the substantive GPU0 context. This exceeded the current one-GPU
+rule; the old late-window exception does not cover migration tests. The suite
+was already terminal when root inspected it, so no process was terminated.
+Further launches that might reproduce this context are held pending routing
+validation or explicit approval. The logs mark only GPU0 active for rendering,
+which does not exempt the graphics-only GPU1 allocation from the account rule.
+
+Inspection of the installed Isaac 6.2 `SimulationApp` confirms that `active_gpu`
+uses physical graphics indices, while `active_cuda_gpus` honors CUDA ordering.
+The launcher now uses the latter and `max_gpu_count=1` when an explicitly
+single-GPU application requests a runtime supporting that public option.
+Older SDK and intentionally multi-GPU selection behavior is preserved.
+`cluster/test_app_gpu_routing.py` passes four CPU checks, including a masked
+CUDA-device case and distributed rank selection. This fixes a demonstrated
+index-space mismatch; it does not yet prove that the inactive 6-MiB context is
+gone. SDK source excerpts are saved in
+`out/isaac62_migration/installed_simulation_app_gpu_routing.json`.
+Public contract: <https://docs.isaacsim.omniverse.nvidia.com/6.2.0/installation/install_faq.html>.
+
+The rest-pose investigation separately reproduces every original authored body
+position, quaternion and evaluated world matrix exactly using the original
+float32 transform accumulation. At the shoulders, the accumulated original
+quaternion rounds to a scalar component of exactly one; the original flattened
+USD transform evaluates differently from the new nested representation. See
+`out/isaac62_migration/legacy_world_pose_prediction_c45d5b0.json`.
+An anonymous, CPU-only namespace prototype flattens the 54 body placements,
+authors the original poses, preserves all joint/rigid-body properties and all
+89 instanceable prims, and leaves no invalid joint relationship targets. Both
+rest-matrix error and error after a parent translation are zero. Source USDs
+were not modified. This is evidence for a possible repair, not an implemented
+or physics-validated converter change. Prototype and receipt:
+`out/isaac62_migration/prototype_flat_rest_pose_c45d5b0.{py,json}`.
+
 ## Stitch gradient compatibility follow-up (2026-11-16)
 
 The strict full-stitch failure at `a4f8523` is reproducible: joint angles differ

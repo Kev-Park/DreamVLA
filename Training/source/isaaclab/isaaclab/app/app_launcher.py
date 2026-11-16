@@ -395,8 +395,10 @@ class AppLauncher:
         "headless": [bool],
         "hide_ui": [bool, type(None)],
         "active_gpu": [int, type(None)],
+        "active_cuda_gpus": [list, type(None)],
         "physics_gpu": [int],
         "multi_gpu": [bool],
+        "max_gpu_count": [int, type(None)],
         "sync_loads": [bool],
         "width": [int],
         "height": [int],
@@ -685,10 +687,18 @@ class AppLauncher:
             # pass command line variable to kit
             sys.argv.append(f"--/plugins/carb.tasking.plugin/threadCount={num_threads_per_process}")
 
-        # set rendering device. We do not need to set physics_gpu because it will automatically pick the same one
-        # as the active_gpu device. Setting physics_gpu explicitly may result in a different device to be used.
+        # Physics uses CUDA ordinals. The modern renderer's active_gpu uses
+        # physical graphics ordinals instead, which need not match CUDA order
+        # (especially with CUDA_VISIBLE_DEVICES). Its public CUDA selector keeps
+        # an explicitly single-GPU app on the same selected device as physics.
+        # Preserve older SDKs and intentionally multi-GPU application behavior.
         launcher_args["physics_gpu"] = self.device_id
-        launcher_args["active_gpu"] = self.device_id
+        if launcher_args.get("multi_gpu") is False and "active_cuda_gpus" in SimulationApp.DEFAULT_LAUNCHER_CONFIG:
+            launcher_args["active_gpu"] = None
+            launcher_args["active_cuda_gpus"] = [self.device_id]
+            launcher_args["max_gpu_count"] = 1
+        else:
+            launcher_args["active_gpu"] = self.device_id
 
         print(f"[INFO][AppLauncher]: Using device: {device}")
 
