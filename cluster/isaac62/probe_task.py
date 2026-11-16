@@ -207,7 +207,12 @@ def main():
             local_pos = xyz.reshape(1, 3)+quat_apply(mount_q, offset_pos)
             expected_pos = parent_pos+quat_apply(parent_q, local_pos.expand(base.num_envs, -1))
             expected_q = quat_mul(parent_q, quat_mul(mount_q, offset_q).expand(base.num_envs, -1))
-            camera = base.scene['camera_robot'].data
+            camera_sensor = base.scene['camera_robot']
+            cached_camera_pos = camera_sensor.data.pos_w.clone()
+            # Match production collection's explicit capture boundary, including
+            # the first frame following a reset without a physics advance.
+            camera_sensor.update(0.0, force_recompute=True)
+            camera = camera_sensor.data
             pos_error = float((camera.pos_w-expected_pos).abs().max())
             actual_q = camera.quat_w_opengl
             quat_error = float(torch.minimum((actual_q-expected_q).abs().amax(-1),
@@ -226,7 +231,11 @@ def main():
                                manager_physics_view=SimulationManager.get_physics_sim_view() is not None,
                                fabric_enabled=base.sim.is_fabric_enabled(),
                                fabric_force_update=hasattr(base.sim._fabric_iface, 'force_update'),
-                               physics_steps=SimulationManager.get_num_physics_steps())
+                               physics_steps=SimulationManager.get_num_physics_steps(),
+                               cached_camera_positions=cached_camera_pos.cpu().tolist(),
+                               camera_fabric=values(camera_sensor._view.get_world_poses(usd=False)),
+                               camera_usd=values(camera_sensor._view.get_world_poses()),
+                               update_latest_camera_pose=camera_sensor.cfg.update_latest_camera_pose)
             receipt.setdefault('camera_mount_checks', []).append(dict(
                 num_envs=base.num_envs, parent=parent, prim_path=cfg.scene.camera_robot.prim_path,
                 maximum_position_error_m=pos_error, maximum_quaternion_component_error=quat_error,
