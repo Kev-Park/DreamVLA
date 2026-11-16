@@ -91,7 +91,10 @@ def checkpoint_identity(path):
         if file.is_file() and (file.suffix in {'.json', '.safetensors'} or
                                file.name in {'pytorch_model.bin', 'model.pt'}):
             with file.open('rb') as stream:
-                files[file.relative_to(path).as_posix()] = hashlib.file_digest(stream, 'sha256').hexdigest()
+                digest = hashlib.sha256()
+                for block in iter(lambda: stream.read(8 * 1024 * 1024), b''):
+                    digest.update(block)
+                files[file.relative_to(path).as_posix()] = digest.hexdigest()
     return {'path': str(path), 'config_sha256': hashlib.sha256(config.read_bytes()).hexdigest(),
             'files_sha256': files}
 
