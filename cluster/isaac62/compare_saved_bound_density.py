@@ -43,12 +43,18 @@ def main():
     assert all(r['source_counts'] == next(iter(receipts.values()))['source_counts'] for r in receipts.values())
     within = {sdk+str(density): float(np.abs(traces[sdk, 'density', density]-traces[sdk, 'mass', density]).max())
               for sdk in ('legacy', 'candidate') for density in densities}
-    cross = {treatment+str(density): float(np.abs(
-        traces['legacy', treatment, density]-traces['candidate', treatment, density]).max())
-        for treatment in ('density', 'mass') for density in densities}
+    cross = {}
+    for treatment in ('density', 'mass'):
+        for density in densities:
+            left, right = traces['legacy', treatment, density], traces['candidate', treatment, density]
+            cross[treatment+str(density)] = (float(np.abs(left-right).max())
+                                             if left.shape == right.shape else None)
+    topology = {'/'.join(map(str, key)): receipt.get('runtime_counts', receipt['source_counts'])
+                for key, receipt in receipts.items()}
     result = dict(passed=all(v <= 1e-5 for v in within.values()), position_atol_m=1e-5,
                   within_sdk_max_m=within, cross_sdk_max_m=cross,
-                  scaled=args.scaled, cross_sdk_trajectory_parity_claim=False)
+                  scaled=args.scaled, runtime_topology=topology,
+                  cross_sdk_trajectory_parity_claim=False)
     args.output.write_text(json.dumps(result, indent=2), encoding='utf-8')
     print(json.dumps(result, indent=2))
     assert result['passed'], 'Bound density mapping does not match explicit mass controls'

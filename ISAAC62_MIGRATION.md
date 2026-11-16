@@ -2563,3 +2563,51 @@ reserved a slot already reserved by the probe itself and exited at the reservati
 assertion before starting Isaac. Terminal state and empty resources were verified
 before retrying with the probe as the sole reservation owner. The retry completed
 and released all owned GPU contexts and reservations; no scientific run restarted.
+
+### Bound-material density and multi-material rejection follow-up
+
+The next native controls retain the saved explicit 50 kPa material. At densities
+1000 and 1300, native 5.1 density-only bodies agree with equivalent explicit
+rest-volume masses within 0.561 and 0.417 micrometers respectively. Changing the
+density changes the centered relaxation by 1.65 mm, providing a positive control.
+All sixteen native result files are SHA-verified locally in
+`isaac62_density_mass_e6db1ab_bound/`.
+
+Commit `4c31103` uses the cooked simulation rest volume to infer a target mass
+for body-density overrides on an explicitly bound material. This preserves the
+original binding and shared material rather than cloning it or changing its
+density. The public converter's density-only and explicit-mass controls give
+identical centered positions in 6.2 for both tested densities. Original files,
+64-node/135-element topology, explicit public material view, bound material path
+and checked material properties are preserved. Twenty result files are
+SHA-verified in `isaac62_density_mass_4c31103_bound/`; the reusable
+`compare_saved_bound_density.py` checks the receipts, inferred masses and traces.
+Cross-SDK position differences reach 6.54 mm in both density and mass controls;
+these results establish the mapping, not solver trajectory parity.
+
+Commit `67335b5` also fixes an atomicity bug: a later material with unsupported
+damping could previously fail after earlier materials were modified. Every
+material is now validated before any material conversion. The added
+`later_nonneutral_damping` case verifies that the entire anonymous stage is
+unchanged. All eight rejection cases pass during each target density/mass test.
+
+The nonuniform-scale extension is a separate investigation. Its initial harness
+attempted to add an already-existing scale operation; that failure is retained.
+After reusing the authored operation, the native 5.1 fixture recooks to a different
+simulation topology, invalidating the harness's assumption that saved and runtime
+node counts match. The diagnostic now reports actual topology and separates
+within-SDK density/mass comparisons from cross-SDK comparisons. A scaled mapping
+preservation claim is pending those results. Legacy fast shutdown can return zero
+even after an exception; continuation checks the completed receipt as well as the
+process exit code, and the retry launcher gates each phase on both.
+
+The topology-aware scaled controls subsequently pass. At scale `(1.2, 0.9, 1.1)`
+and density 1300, density versus equivalent explicit mass differs by at most
+0.392 micrometers in native 5.1 and is identical in 6.2. Native 5.1 rebuilds the
+fixture to 48 nodes/90 tetrahedra; target 6.2 retains the authored 64 nodes/135
+tetrahedra. No pointwise cross-SDK comparison is defined for those different
+meshes. Eighteen files are SHA-verified locally in
+`isaac62_density_mass_4b3e7fc_scaled/`, including `comparison.json` generated with
+`compare_saved_bound_density.py --scaled`. All four phases finish with successful
+receipts, and owned GPU contexts/reservations are empty afterward. This validates
+the tested nonuniform-scale mass inference, not arbitrary transform/solver parity.
