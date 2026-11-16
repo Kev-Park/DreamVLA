@@ -66,9 +66,10 @@ def main():
             assert (cube.material_physx_view is None) == name.startswith('nomat_')
             root = sim.stage.GetPrimAtPath('/World/'+name+('/geometry/mesh' if version == '5.1.0.0' else ''))
             material = UsdShade.MaterialBindingAPI(root).ComputeBoundMaterial('physics')[0]
-            values = {a.GetName(): str(a.Get()) for a in root.GetAttributes()
+            values = {a.GetName(): dict(value=str(a.Get()), authored=a.HasAuthoredValueOpinion())
+                      for a in root.GetAttributes()
                       if a.GetName() in ('physics:mass', 'physics:density', 'omniphysics:mass')}
-            configs[name]['authored_body_values'] = values
+            configs[name]['resolved_body_values'] = values
             if material:
                 configs[name]['bound_material_values'] = {a.GetName(): str(a.Get())
                     for a in material.GetPrim().GetAttributes() if 'density' in a.GetName().lower()}
