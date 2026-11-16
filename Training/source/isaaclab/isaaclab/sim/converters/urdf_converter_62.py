@@ -87,14 +87,22 @@ def _preserve_mimic_joints(usd_path, cfg):
     PD gain overrides do not change its default 25/.005 constraint parameters.
     Natural-frequency gain configuration is rejected before reaching here.
     """
-    if not cfg.convert_mimic_joints_to_normal_joints:
-        return
-    from pxr import PhysxSchema, Tf, Usd, UsdPhysics
+    from pxr import PhysxSchema, Sdf, Tf, Usd, UsdPhysics
 
     stage = Usd.Stage.Open(str(usd_path))
     assert stage and stage.GetDefaultPrim()
     joints = {prim.GetName(): prim for prim in stage.Traverse()
               if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)}
+    # Isaac 6.2 PhysX consumes Newton mimic metadata too. Leaving it enabled
+    # silently constrains even the legacy flag=False case, with radian offset
+    # semantics different from the original PhysX constraint. Disable that
+    # second constraint for both flag states; author only the legacy one below.
+    for prim in joints.values():
+        if 'NewtonMimicAPI' in prim.GetAppliedSchemas():
+            prim.CreateAttribute('newton:mimicEnabled', Sdf.ValueTypeNames.Bool).Set(False)
+    if not cfg.convert_mimic_joints_to_normal_joints:
+        stage.GetRootLayer().Save()
+        return
     elements = {Tf.MakeValidIdentifier(element.get('name')): element
                 for element in ET.parse(cfg.asset_path).getroot().findall('joint')}
     visiting, completed = set(), set()
@@ -136,10 +144,11 @@ def _preserve_mimic_joints(usd_path, cfg):
             for attr in prim.GetAttributes():
                 if attr.GetName().startswith('drive:'+instance+':'):
                     attr.Block()
-            # Original does not author a limit for mimic joints: PhysX's
-            # schema fallback is 1e6. Author that value explicitly so Newton
-            # velocity metadata cannot reintroduce the URDF limit.
-            PhysxSchema.PhysxJointAPI.Apply(prim).CreateMaxJointVelocityAttr(1e6)
+            # Original leaves mimic velocity unbounded. Remove our wrapper's
+            # ordinary-joint limit and suppress the SDK's Newton limit too.
+            prim.RemoveProperty('physxJoint:maxJointVelocity')
+            if prim.HasAttribute('newton:velocityLimit'):
+                prim.GetAttribute('newton:velocityLimit').Block()
             joint = UsdPhysics.PrismaticJoint(prim) if instance == 'linear' else UsdPhysics.RevoluteJoint(prim)
             reference = UsdPhysics.PrismaticJoint(source) if source.IsA(UsdPhysics.PrismaticJoint) else UsdPhysics.RevoluteJoint(source)
             lower, upper = reference.GetLowerLimitAttr().Get(), reference.GetUpperLimitAttr().Get()
