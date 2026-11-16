@@ -228,7 +228,8 @@ class VisualButton:
         self.translate = xf.GetTranslateOp()
         if not self.translate:
             self.translate = xf.AddTranslateOp()
-        self.translate.Set(Gf.Vec3d(*self.translate.Get()))
+        initial_translation = self.translate.Get()
+        self.translate.Set(Gf.Vec3d(0.0) if initial_translation is None else initial_translation)
         cap = stage.GetPrimAtPath(path + self.meta["cap_path"])
         self.cap = cap.GetAttribute("xformOp:translate")
         self.cap_initial = np.array(self.cap.Get())
