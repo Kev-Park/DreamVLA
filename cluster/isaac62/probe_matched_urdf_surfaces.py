@@ -74,6 +74,10 @@ def main():
     report = dict(completed=False, scope=__doc__, tolerance=1e-6, surfaces=[], joints=[])
     try:
         (left, lj), (right, rj) = extract(args.legacy_usd), extract(args.modern_usd)
+        report['surface_groups'] = {
+            label: [{'body': k[0], 'type': k[1], 'collision': k[2], 'count': len(v)}
+                    for k, v in sorted(groups.items())]
+            for label, groups in [('legacy', left), ('modern', right)]}
         assert left.keys() == right.keys(), 'Surface groups differ'
         assert lj.keys() == rj.keys(), 'Joint names differ'
         for key in sorted(left):
