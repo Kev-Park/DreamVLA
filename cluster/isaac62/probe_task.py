@@ -197,7 +197,7 @@ def main():
             import xml.etree.ElementTree as ET
             from dreamvla_drawer_button.paths import BACKEND_ROOT
             from dreamvla_drawer_button.contracts import scene as original_scene_contract
-            from isaaclab.utils.math import quat_apply, quat_from_euler_xyz, quat_mul
+            from isaaclab.utils.math import matrix_from_quat, quat_apply, quat_from_euler_xyz, quat_mul
             urdf = ET.parse(BACKEND_ROOT/'Sim2Real/resources/robots/g1_description/g1_29dof_with_hand.urdf')
             joint = urdf.find("./joint[@name='d435_joint']")
             assert joint is not None and joint.get('type') == 'fixed'
@@ -258,12 +258,24 @@ def main():
                                camera_read_only_hierarchy_positions=camera.pos_w.cpu().tolist(),
                                camera_usd=values(camera_sensor._view.get_world_poses()),
                                update_latest_camera_pose=camera_sensor.cfg.update_latest_camera_pose)
+            # The renderer reports a row-vector world-to-camera view matrix.
+            # Invert it independently; sensor telemetry alone must not certify
+            # an image rendered from an incorrectly anchored world transform.
+            render_world = np.stack([
+                np.linalg.inv(np.asarray(data['cameraViewTransform']).reshape(4, 4))
+                for data in diagnostics['renderer_camera_params']])
+            render_pos_error = float(np.max(np.abs(render_world[:, 3, :3]-expected_pos.cpu().numpy())))
+            render_rot_error = float(np.max(np.abs(
+                render_world[:, :3, :3].transpose(0, 2, 1)-matrix_from_quat(expected_q).cpu().numpy())))
             receipt.setdefault('camera_mount_checks', []).append(dict(
                 num_envs=base.num_envs, parent=parent, prim_path=cfg.scene.camera_robot.prim_path,
                 maximum_position_error_m=pos_error, maximum_quaternion_component_error=quat_error,
                 expected_positions=expected_pos.cpu().tolist(), actual_positions=camera.pos_w.cpu().tolist(),
                 expected_quaternions_opengl=expected_q.cpu().tolist(), actual_quaternions_opengl=actual_q.cpu().tolist(),
-                passed=pos_error < 1e-5 and quat_error < 1e-5, diagnostics=diagnostics))
+                renderer_maximum_position_error_m=render_pos_error,
+                renderer_maximum_rotation_matrix_error=render_rot_error,
+                passed=max(pos_error, quat_error, render_pos_error, render_rot_error) < 1e-5,
+                diagnostics=diagnostics))
             # Retain reset and stepped evidence even if the reset pose is stale.
             # Acceptance below still requires every sampled mount check to pass.
         receipt['pid'] = os.getpid()
