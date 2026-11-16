@@ -176,14 +176,37 @@ entity resolver and action terms, not a surrogate ordering implementation.
 
 The repaired 54-body button task also passes 32 steps, reset, strict sensor and
 renderer poses, contact-row ordering and file rendering at `8d1fa08`. Original
-frames/video are local in `isaac62_izat_button_runtime_8d1fa08`. Earlier drawer
-and PPO gates used the 50-body import; those affected gates are being rerun.
+frames/video are local in `isaac62_izat_button_runtime_8d1fa08`. The repaired drawer task at `1bf401d` also passes the same 32-step/reset,
+strict camera/renderer and 54-body contact gates. Its original video and frames
+are local in `isaac62_izat_drawer_runtime_1bf401d`. Drawer PPO at `8342540`
+passes two bounded updates, exact model/Adam restoration into a new runner and
+one resumed update with changed parameters. This is the same simulator process,
+not fresh-process or RNG parity. Button PPO at `51cef96` also passes those update/save/exact-restore/resumed-update
+gates. Both processes, GPU contexts and reservations are confirmed released.
 These are technical integration checks, not task-performance results.
 
 The matched SDK5.1 conversion used complete original source/application files
 and supported process-local Kit settings to avoid shared user preferences, as
 used in NVIDIA's [startup tests](https://github.com/isaac-sim/IsaacSim/blob/develop/repo.toml).
 No packages, shared user configuration or extension trust settings were changed.
+
+### Matched rest-transform follow-up (2026-11-16)
+
+The repaired geometry audit at `51cef96` checks all 54 rigid link transforms,
+43 movable joint axes/anchors and all 53 collision shapes. Collision and axis
+checks pass; the ideal-URDF `mid360_link` error remains 1.73377246e-6 at the
+unchanged 1e-6 tolerance. A separate matched-original transform comparison also
+fails, with maximum matrix-component difference 0.000191593459 concentrated on
+shoulder descendants. Do not infer that matched preservation passed from the
+single ideal-URDF failure list: `matched_baseline.preservation_pass` is false.
+
+A read-only diagnostic records the original shoulder's authored quaternion
+(w=1 with small nonzero xyz components), its evaluated identity rotation and
+the modern hierarchical transform retaining a small rotation. The same-named
+shoulder pitch frames agree to numerical precision; the discrepancy begins at
+shoulder roll. No transform replacement or tolerance waiver has been applied.
+Evidence: `isaac62_urdf_geometry_51cef96/receipt.json` and
+`diagnose_matched_shoulders.json` in local migration outputs.
 
 ### Contributed live gates (2026-11-15)
 
