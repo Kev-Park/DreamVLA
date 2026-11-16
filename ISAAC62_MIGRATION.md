@@ -14,6 +14,36 @@ or a file-surface audit is not completion.
   `14c979c` (2026-11-12), merged without source changes at `5a0e406`.
   Its separate task/controller/data interfaces are part of the migration scope.
 
+## Stitch gradient compatibility follow-up (2026-11-16)
+
+The strict full-stitch failure at `a4f8523` is reproducible: joint angles differ
+by up to 7.53998756e-5 radians, with 35 of 252 frames exceeding the unchanged
+1e-5-radian gate. Root, object, legs and left-arm outputs are identical.
+Observation-only tracing at `708f504` is bit-exact with the plain run in each
+environment. All seven IK inputs, first FK transforms and first loss are also
+identical across environments. The first backward gradient differs by
+8.94069672e-8; the Adam updates subsequently diverge. Full trace evidence is in
+`out/isaac62_migration/isaac62_stitch_trace_708f504/trace_comparison.json`.
+
+Inspection of the installed library sources identifies a changed default:
+pytorch-kinematics 0.9.1 uses ordinary autograd, while 0.10.0 defaults to an
+analytical FK backward. The repair at `4dc37e8` requests ordinary autograd via
+the public `forward_kinematics_tensor(..., analytical_grad=False)` API when
+available. Older libraries retain the original high-level call. Losses,
+targets, float32 arithmetic, 1,200 iterations, Adam, learning-rate schedule and
+joint limits are unchanged; no packages are installed or patched. All four
+paired plain/traced runs completed the full 1,200 iterations and 252-frame
+export/reload. Every exported array and all 112 recorded input/FK/loss/gradient/
+Adam trace arrays now match bit-for-bit across the environments. The legacy
+output also remains bit-exact with the original `a4f8523` legacy fixture.
+This closes the existing strict full-stitch numerical gate without relaxing it.
+Evidence is in `out/isaac62_migration/isaac62_stitch_trace_4dc37e8/comparison.json`;
+all 16 retrieved artifacts have matching remote/local SHA-256 hashes. The CPU-only
+test session and workers are terminal, and no account-owned GPU contexts remain.
+This is numerical reference-generation validation, not a new visual approval.
+Other gradient-based reference refiners also call this library and require a
+follow-up audit; a stitch-only repair does not prove their preservation.
+
 ## Drawer/button contribution integration (2026-11-15)
 
 Izat's 69-file contribution under `contrib/drawer_button` is now included in
