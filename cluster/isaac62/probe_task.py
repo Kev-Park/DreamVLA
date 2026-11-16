@@ -184,6 +184,13 @@ def main():
             receipt.setdefault('contact_order_checks', []).append(
                 dict(num_envs=args.num_envs, bodies=len(names), maximum_position_error_m=error))
         check_contact_order()
+        camera_params = []
+        if contributed_drawer or contributed_button:
+            import omni.replicator.core as rep
+            for product in base.scene['camera_robot']._render_product_paths:
+                annotator = rep.AnnotatorRegistry.get_annotator('camera_params')
+                annotator.attach(product)
+                camera_params.append(annotator)
         def check_camera_mount():
             if not (contributed_drawer or contributed_button):
                 return
@@ -229,7 +236,16 @@ def main():
             parent_view.initialize()
             def values(pose):
                 return [x.cpu().tolist() if isinstance(x, torch.Tensor) else np.asarray(x).tolist() for x in pose]
-            diagnostics = dict(parent_physx=[parent_pos.cpu().tolist(), parent_q.cpu().tolist()],
+            def serializable(value):
+                if isinstance(value, dict):
+                    return {key: serializable(item) for key, item in value.items()}
+                if isinstance(value, (list, tuple)):
+                    return [serializable(item) for item in value]
+                if hasattr(value, 'tolist'):
+                    return value.tolist()
+                return value
+            diagnostics = dict(renderer_camera_params=[serializable(a.get_data()) for a in camera_params],
+                               parent_physx=[parent_pos.cpu().tolist(), parent_q.cpu().tolist()],
                                parent_usd=values(parent_view.get_world_poses()),
                                parent_fabric=values(parent_view.get_world_poses(usd=False)),
                                camera_local=values(base.scene['camera_robot']._view.get_local_poses()),
