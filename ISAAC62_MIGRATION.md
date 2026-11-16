@@ -78,9 +78,15 @@ targets and all 89 instanceable prims remain correct. See
 The converter repair candidate uses this approach, retains the SDK's generated
 layers and namespaces, and advances the modern-only cache key to revision 14.
 Three CPU tests cover the original float32 pose accumulation and malformed
-graphs. Validation of the committed helper against a separately owned real
-asset wrapper, followed by fresh conversion/live physics/rendering, is still
-required. Do not treat the prototype or source change as a completed live gate.
+graphs. The committed helper at `1d3acb9` now passes against a separately owned
+wrapper of the real asset: all 54 rest matrices agree within
+5.551115123125783e-17, all non-transform properties/paths remain exact, repeated
+application changes nothing, and a parent rotation plus translation agrees
+within 4.440892098500626e-16. SHA-256 verifies that all nine source asset layers
+remain unchanged. Receipt:
+`out/isaac62_migration/validate_rest_pose_helper_1d3acb9.json`.
+Fresh conversion/live physics/rendering is still required. Do not treat the
+CPU helper validation as a completed live gate.
 
 The GPU routing CPU tests also pass in both approved Biped environments; receipt:
 `out/isaac62_migration/gpu_routing_cpu_a14e178.json`.
