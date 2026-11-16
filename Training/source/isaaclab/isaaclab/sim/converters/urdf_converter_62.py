@@ -38,7 +38,11 @@ def convert_asset(converter, cfg):
         raise ValueError(f"Unknown collision simplification: {cfg.collider_type}")
     config = URDFImporterConfig(
         urdf_path=os.path.normpath(cfg.asset_path), usd_path=os.path.normpath(converter.usd_dir),
-        merge_fixed_joints=cfg.merge_fixed_joints, merge_mesh=False,
+        # SDK 6's optional prepass combines even massive fixed children. The
+        # original parser retains those bodies. Leave that prepass disabled:
+        # the SDK's ordinary ghost-link pass still removes empty fixed links,
+        # and _preserve_empty_fixed_links restores them when merging is off.
+        merge_fixed_joints=False, merge_mesh=False,
         collision_from_visuals=cfg.collision_from_visuals,
         collision_type=collision[cfg.collider_type], allow_self_collision=cfg.self_collision,
         fix_base=cfg.fix_base, link_density=cfg.link_density if cfg.link_density > 0 else None,
@@ -88,17 +92,16 @@ def convert_asset(converter, cfg):
 
 
 def _preserve_diagonal_inertia_frames(usd_path, cfg):
-    """Keep the original identity mass frame for unmerged diagonal inertias.
+    """Keep the original identity mass frame for unrotated diagonal inertias.
 
     Original ImportHelpers.cpp::Diagonalize starts at identity and exits
     immediately when the tensor is already diagonal. The modern importer
     sorts eigenvalues and rotates the mass frame even in this case. Although
     the body-space tensor is equivalent, that changes the PhysX solver's frame
-    and can alter free-root trajectories. Do not overwrite merged inertias or
-    assume this shortcut applies to non-diagonal/rotated inertial frames.
+    and can alter free-root trajectories. The full fixed-body merge prepass is
+    disabled above, so a requested merge cannot aggregate massive inertias.
+    Do not assume this shortcut applies to non-diagonal/rotated inertial frames.
     """
-    if cfg.merge_fixed_joints:
-        return
     from pxr import Gf, Tf, Usd, UsdPhysics
 
     stage = Usd.Stage.Open(str(usd_path))
