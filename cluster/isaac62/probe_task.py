@@ -248,7 +248,8 @@ def main():
                 expected_positions=expected_pos.cpu().tolist(), actual_positions=camera.pos_w.cpu().tolist(),
                 expected_quaternions_opengl=expected_q.cpu().tolist(), actual_quaternions_opengl=actual_q.cpu().tolist(),
                 passed=pos_error < 1e-5 and quat_error < 1e-5, diagnostics=diagnostics))
-            assert pos_error < 1e-5 and quat_error < 1e-5, ('Physical camera mount mismatch', pos_error, quat_error)
+            # Retain reset and stepped evidence even if the reset pose is stale.
+            # Acceptance below still requires every sampled mount check to pass.
         receipt['pid'] = os.getpid()
         inventory = subprocess.run(['nvidia-smi', '-q', '-x'], capture_output=True,
                                    text=True, check=True, timeout=20)
@@ -340,6 +341,9 @@ def main():
         with torch.inference_mode():
             obs, _ = env.reset(seed=17)
         finite(obs, 'final_reset_observations')
+        receipt['steps_completed'] = len(roots)
+        assert all(check['passed'] for check in receipt.get('camera_mount_checks', [])), (
+            'Physical camera mount mismatch; see reset and stepped camera_mount_checks')
         receipt.update(completed=True, steps_completed=len(roots),
                        terminated_count=terminated_count, truncated_count=truncated_count,
                        task_success_assessed=False, finished=time.time())
