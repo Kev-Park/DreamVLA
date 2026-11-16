@@ -17,6 +17,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--density', type=float, help='Exercise omitted material with a body-density override')
+    parser.add_argument('--num-bodies', type=int, choices=[1, 2], default=1,
+                        help='Exercise the production regex spawner and a shared tensor view')
     args = parser.parse_args()
     assert os.name == 'posix' and os.environ.get('CUDA_VISIBLE_DEVICES') == '0'
     version = importlib.metadata.version('isaacsim')
@@ -35,7 +37,7 @@ def main():
         import torch
         import isaaclab.sim as sim_utils
         from isaaclab.assets import DeformableObject, DeformableObjectCfg
-        from pxr import UsdShade
+        from pxr import UsdGeom, UsdShade
         torch.set_num_threads(1)
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
         scene_default = sim.stage.GetPrimAtPath(sim.cfg.physics_prim_path+'/defaultMaterial')
@@ -45,20 +47,33 @@ def main():
             deformable_props=sim_utils.DeformableBodyPropertiesCfg(
                 simulation_hexahedral_resolution=3, solver_position_iteration_count=4),
             physics_material=None, mass_props=sim_utils.MassPropertiesCfg(mass=.8, density=args.density))
-        asset = DeformableObject(DeformableObjectCfg(prim_path='/World/SoftCube', spawn=spawn,
+        roots = ['/World/SoftCube']
+        pattern = roots[0]
+        if args.num_bodies == 2:
+            roots = [f'/World/Env_{i}/SoftCube' for i in range(2)]
+            for i in range(2):
+                UsdGeom.Xform.Define(sim.stage, f'/World/Env_{i}').AddTranslateOp().Set((float(i), 0., 0.))
+            pattern = '/World/Env_.*/SoftCube'
+        asset = DeformableObject(DeformableObjectCfg(prim_path=pattern, spawn=spawn,
             init_state=DeformableObjectCfg.InitialStateCfg(pos=(0, 0, 1))))
         sim.reset()
         assert asset.is_initialized and asset.material_physx_view is None
-        root = sim.stage.GetPrimAtPath('/World/SoftCube/geometry/mesh' if version == '5.1.0.0'
-                                      else '/World/SoftCube')
-        material = UsdShade.MaterialBindingAPI(root).ComputeBoundMaterial('physics')[0]
-        report.update(material_bound=bool(material), material_physx_view_is_none=True,
-            private_legacy_default=bool(material) and bool(material.GetPrim().GetCustomDataByKey(
-                'isaaclab:implicitLegacyDeformableMaterial')))
-        if args.density is not None and version == '6.2.0.0':
-            density = material.GetPrim().GetAttribute('omniphysics:density').Get()
-            assert density == args.density
-            report['density_override'] = density
+        assert asset.num_instances == args.num_bodies
+        bindings = []
+        for path in roots:
+            root = sim.stage.GetPrimAtPath(path+'/geometry/mesh' if version == '5.1.0.0' else path)
+            material = UsdShade.MaterialBindingAPI(root).ComputeBoundMaterial('physics')[0]
+            row = dict(root=path, material_bound=bool(material),
+                private_legacy_default=bool(material) and bool(material.GetPrim().GetCustomDataByKey(
+                    'isaaclab:implicitLegacyDeformableMaterial')))
+            if args.density is not None and version == '6.2.0.0':
+                density = material.GetPrim().GetAttribute('omniphysics:density').Get()
+                assert density == args.density
+                row['density_override'] = density
+            bindings.append(row)
+        report.update(bindings=bindings, num_bodies=args.num_bodies, material_physx_view_is_none=True)
+        if args.num_bodies == 1:
+            report.update(bindings[0])
         original = asset.data.nodal_state_w.clone()
         assert torch.isfinite(original).all()
         center = original[..., :3].mean(1, keepdim=True)
