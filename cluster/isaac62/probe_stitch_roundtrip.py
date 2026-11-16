@@ -5,6 +5,8 @@ walking retarget or replace simulator replay and visual review.
 """
 import argparse
 import hashlib
+import importlib.metadata
+import inspect
 import json
 import os
 from pathlib import Path
@@ -17,6 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('urdf', 'walking', 'static', 'output'):
         parser.add_argument('--'+name, type=Path, required=True)
+    parser.add_argument('--trace-ik', action='store_true', help='Observe original IK inputs/updates without modifying the solver')
     args = parser.parse_args()
     assert os.environ.get('CUDA_VISIBLE_DEVICES') == ''
     import numpy as np
@@ -36,12 +39,52 @@ def main():
     report = dict(started=time.time(), completed=False, torch=torch.__version__, numpy=np.__version__,
                   source_hashes=hashes, walking=str(args.walking), static=str(args.static),
                   walking_source_kind='prefix retained from an existing stitched reference')
+    report['packages'] = {name: importlib.metadata.version(name)
+                          for name in ('torch', 'numpy', 'pytorch-kinematics', 'jax', 'jaxlie')}
+    traces = {}
+    previous_trace = sys.gettrace()
+    if args.trace_ik:
+        assert previous_trace is None, 'Do not replace an active debugger/profiler'
+        lines, first = inspect.getsourcelines(st.solve_upper)
+        before = first + next(i for i, line in enumerate(lines) if 'opt.zero_grad();' in line)
+        after = before + 1
+        selected = {0, 1, 2, 9, 99, 599, st.IK_ITERS-1}
+
+        def array(value):
+            return value.detach().cpu().numpy().copy() if torch.is_tensor(value) else np.asarray(value).copy()
+
+        def local_trace(frame, event, arg):
+            if event == 'line' and frame.f_lineno in (before, after):
+                values = frame.f_locals
+                step = values['_']
+                if step in selected:
+                    prefix = f'{step:04d}_' + ('before_' if frame.f_lineno == before else 'after_')
+                    keys = ('q', 'M', 'p', 'R', 'RT', 'e_p', 'e_r', 'e_t', 'smooth', 'loss') if frame.f_lineno == before else ('q',)
+                    for key in keys:
+                        traces[prefix+key] = array(values[key])
+                    if frame.f_lineno == after:
+                        traces[prefix+'gradient'] = array(values['q'].grad)
+                        for key, value in values['opt'].state[values['q']].items():
+                            traces[prefix+'adam_'+key] = array(value)
+                    if step == 0 and frame.f_lineno == before:
+                        for key in ('Jfix', 'q0', 'root_P', 'root_R', 'tgt_p', 'tgt_R', 'torso_R'):
+                            traces['input_'+key] = array(values[key])
+            return local_trace
+
+        def trace(frame, event, arg):
+            return local_trace if frame.f_code is st.solve_upper.__code__ else None
     try:
         w, s = st.load(str(args.walking), chain), st.load(str(args.static), chain)
         shift = build.alignment_shift(w, s)
         w = build.shifted_walk(w, [0, 0, 0], shift)
         st.HAND_SHIFT = np.asarray(shared.SHIFT)
-        result, info = st.stitch(w, s, chain, limits)
+        if args.trace_ik:
+            sys.settrace(trace)
+        try:
+            result, info = st.stitch(w, s, chain, limits)
+        finally:
+            if args.trace_ik:
+                sys.settrace(previous_trace)
         assert result is not None, info
         path = args.output/'reference.pkl'
         with path.open('wb') as f:
@@ -67,6 +110,9 @@ def main():
         report['error']=repr(exc)
         raise
     finally:
+        if args.trace_ik:
+            np.savez(args.output/'ik_trace.npz', **traces)
+            report['trace_arrays'] = len(traces)
         report['finished']=time.time()
         (args.output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
         print(json.dumps(report),flush=True)
