@@ -23,12 +23,14 @@ def main():
     parser.add_argument('--legacy', type=Path, required=True)
     parser.add_argument('--target', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--case', default='nomat_default')
+    parser.add_argument('--youngs', type=float, default=50e6)
     args = parser.parse_args()
     old, new = np.load(args.legacy), np.load(args.target)
     rows = {}
     for kind in ('simulation', 'collision'):
         for mode in ('', 'stretch_', 'shear_', 'rigid_'):
-            tag = 'nomat_default_'+kind+'_'+mode
+            tag = args.case+'_'+kind+'_'+mode
             row = {}
             for diagnostic in ('deformation_gradients', 'stresses'):
                 left = old[tag+diagnostic].astype(np.float64).reshape(-1, 3, 3).mean(0)
@@ -45,7 +47,7 @@ def main():
                     rotation_matrices(left).mean(0)-rotation_matrices(right).mean(0)).max())
             rows[kind+'_'+(mode or 'initial')] = row
     # Retain existing gradient and stiffness-normalized stress bounds.
-    tolerances = dict(gradient=1e-5, rotation=1e-5, stress_pa=50e6*2e-4)
+    tolerances = dict(gradient=1e-5, rotation=1e-5, stress_pa=args.youngs*2e-4)
     passed = all(row['deformation_gradients_mean_max_error'] <= tolerances['gradient']
                  and row['stresses_mean_max_error'] <= tolerances['stress_pa']
                  and row.get('rotation_matrix_mean_max_error', 0) <= tolerances['rotation']
