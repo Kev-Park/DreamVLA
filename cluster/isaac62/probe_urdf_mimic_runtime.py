@@ -60,10 +60,14 @@ def main():
             asset_sources_unchanged=True)
         sim.reset()
         for name, robot in robots.items():
-            indices, names = robot.find_joints(['hinge', 'finger_hinge'], preserve_order=True)
-            assert names == ['hinge', 'finger_hinge'], names
+            requested = ['hinge', 'finger_hinge']
+            if 'tip_hinge' in robot.joint_names:
+                requested.append('tip_hinge')
+            indices, names = robot.find_joints(requested, preserve_order=True)
+            assert names == requested, names
             ids[name] = indices
             report['robots'][name] = dict(joint_names=list(robot.joint_names),
+                compared_joint_names=names, compared_body_names=sorted(robot.body_names),
                 body_names=list(robot.body_names),
                 velocity_limits=robot.root_physx_view.get_dof_max_velocities().cpu().tolist(),
                 stiffness=robot.root_physx_view.get_dof_stiffnesses().cpu().tolist(),
@@ -85,7 +89,7 @@ def main():
                 traces[name].append(q[0].cpu().tolist())
                 poses = robot.root_physx_view.get_link_transforms()[0].clone()
                 poses[:, :3] -= torch.tensor(offsets[name], device=args.device)
-                body_ids = [robot.body_names.index(body) for body in ('base', 'arm', 'finger')]
+                body_ids = [robot.body_names.index(body) for body in sorted(robot.body_names)]
                 pose_traces[name].append(poses[body_ids].cpu().tolist())
         comparisons = {}
         for case in args.cases:
@@ -97,9 +101,14 @@ def main():
             lq = lq/lq.norm(dim=-1, keepdim=True)
             rq = rq/rq.norm(dim=-1, keepdim=True)
             quaternion_error = float(torch.minimum((lq-rq).abs().amax(-1), (lq+rq).abs().amax(-1)).max())
-            comparisons[case] = dict(maximum_absolute_error_rad=error,
+            linear = case.startswith('prismatic_')
+            tolerance = 2e-5 if linear else report['tolerance_rad']
+            comparisons[case] = dict(maximum_absolute_joint_position_error=error,
+                joint_position_unit='m' if linear else 'rad', joint_position_tolerance=tolerance,
                 maximum_body_position_error_m=position_error, maximum_quaternion_component_error=quaternion_error,
-                preservation_pass=error <= report['tolerance_rad'] and position_error <= 2e-4 and quaternion_error <= 1e-4)
+                preservation_pass=error <= tolerance and position_error <= 2e-4 and quaternion_error <= 1e-4)
+            if not linear:
+                comparisons[case]['maximum_absolute_error_rad'] = error
         # Prove the fixture actually exercises the enabled/disabled constraints.
         response_gap = None
         if 'default' in args.cases and 'mimic_normal' in args.cases:
@@ -109,7 +118,9 @@ def main():
                        for name, trace in traces.items()}
         report.update(measurement_completed=True, cases=args.cases, traces=traces, body_pose_traces=pose_traces,
             comparisons=comparisons, body_position_tolerance_m=2e-4, quaternion_component_tolerance=1e-4,
-            enabled_disabled_finger_response_gap_rad=response_gap, hinge_range_rad=hinge_range)
+            enabled_disabled_finger_response_gap_rad=response_gap, hinge_excursion=hinge_range)
+        if not any(case.startswith('prismatic_') for case in args.cases):
+            report['hinge_range_rad'] = hinge_range
         assert response_gap is None or response_gap > .01, 'Fixture did not distinguish the two mimic flag states'
         assert all(value > .1 for value in hinge_range.values()), 'Hinge stimulus did not move a fixture'
         assert all(row['preservation_pass'] for row in comparisons.values()), comparisons
