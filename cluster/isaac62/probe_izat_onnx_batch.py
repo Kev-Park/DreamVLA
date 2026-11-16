@@ -43,9 +43,9 @@ def main():
             data = rng.normal(0, 0.05, (count, width)).astype(np.float32)
             if width == 1762:
                 data[:, :4] = 0
-                # Include G1 mode (four zero flags) and independent other modes.
-                for row in range(1, count):
-                    data[row, (row - 1) % 4] = 1
+                # Column zero is the integer mode selector (G1/teleop/SMPL).
+                # Mixed modes must remain independent across environments.
+                data[:, 0] = np.arange(count) % 3
             expected = np.concatenate([original.run(None, {name: row[None]})[0] for row in data])
             got = batched.run(None, {name: data})[0]
             assert np.isfinite(got).all()

@@ -40,6 +40,52 @@ def session_source(path: Path, num_envs: int):
                     constants[node.output[0]] = numpy_helper.to_array(attribute.t)
     names = {x for node in graph.node for x in (*node.input, *node.output)}
     names.update(x.name for x in graph.initializer)
+    if shapes[0][1].dim_value == 1762:
+        # The export also constructs a one-row mode mask with ScatterND. Merely
+        # unfreezing reshapes makes different environments overwrite that same
+        # row, selecting one environment's mode for the whole batch. Give each
+        # environment its own zero-mask row and its own scatter row index.
+        scatter = [node for node in graph.node if node.op_type == "ScatterND"]
+        if len(scatter) != 1:
+            raise ValueError("Expected the released SONIC mode-mask scatter")
+        scatter = scatter[0]
+        mask = constants.get(scatter.input[0])
+        producers = {output: node for node in graph.node for output in node.output}
+        indices = producers[scatter.input[1]]
+        if (mask is None or mask.shape != (1, 3) or np.any(mask)
+                or indices.op_type != "Concat" or len(indices.input) != 2):
+            raise ValueError("Unexpected SONIC mode-mask construction")
+        prefix = "dreamvla_mode_batch_"
+        if any(name.startswith(prefix) for name in names):
+            raise ValueError("Batch mode graph name collision")
+        def tensor(name, data):
+            result = prefix+name
+            graph.initializer.append(numpy_helper.from_array(np.asarray(data, dtype=np.int64), result))
+            return result
+        zero = tensor("zero", 0)
+        one = tensor("one", 1)
+        axes0 = tensor("axes0", [0])
+        axes1 = tensor("axes1", [1])
+        three = tensor("width", [3])
+        def node(op, inputs, output, **attributes):
+            return onnx.helper.make_node(op, inputs, [prefix+output], name=prefix+output, **attributes)
+        extra = [
+            node("Shape", [graph.input[0].name], "input_shape"),
+            node("Gather", [prefix+"input_shape", zero], "count", axis=0),
+            node("Unsqueeze", [prefix+"count", axes0], "count_vector"),
+            node("Concat", [prefix+"count_vector", three], "mask_shape", axis=0),
+            node("ConstantOfShape", [prefix+"mask_shape"], "mask",
+                 value=numpy_helper.from_array(np.zeros(1, dtype=mask.dtype))),
+            node("Range", [zero, prefix+"count", one], "row_indices"),
+            node("Unsqueeze", [prefix+"row_indices", axes1], "row_column"),
+        ]
+        indices.input[0] = prefix+"row_column"
+        scatter.input[0] = prefix+"mask"
+        # All inserted inputs originate from graph inputs/initializers, so they
+        # can precede the unchanged original computation in topological order.
+        original_nodes = list(graph.node)
+        del graph.node[:]
+        graph.node.extend(extra+original_nodes)
     for index, node in enumerate(graph.node):
         if node.op_type != "Reshape":
             continue
