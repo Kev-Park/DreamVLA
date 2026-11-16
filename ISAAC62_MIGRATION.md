@@ -7,6 +7,42 @@ or a file-surface audit is not completion.
 
 ## Fresh rest-pose repair live validation (2026-11-16)
 
+### Deformable mass/density precedence investigation
+
+The paired native `ee219d3` and `a850b45` fixtures complete in both original
+5.1 and target 6.2, with finite free-relaxation traces and an informative
+material-density control. Their six files per fixture are copied locally and
+SHA-256 verified. No production mass/density mapping was changed. Explicit
+material cases support the expected precedence of body mass, body density,
+then material density; the stiff implicit-material cases need tighter controls
+before using their trajectories to validate saved-USD conversion.
+
+The cooked simulation meshes are different: original 5.1 has 135 tetrahedra
+and about 0.0080248933 cubic metres; 6.2 has 384 tetrahedra and about
+0.0080480896 cubic metres. Neither is exactly the nominal 0.008 cubic metres.
+Consequently the nominal 10.4-kg control is not an exact equivalent of density
+1300. `8e344d9` adds explicit masses derived from the independently measured
+cooked volumes and an implicit-material repeat to quantify numerical variation.
+This is a diagnostic, not a change to requested physical parameters, and its
+results must be inspected before claiming density-only conversion preservation.
+
+`8e344d9` completed in both SDKs. Using the measured simulation volume did
+not resolve the stiff implicit-material comparison: density1300 versus its
+derived explicit mass differs by 0.0439 mm in 5.1 and 0.6838 mm in 6.2,
+against implicit-material repeat differences of 0.00191 and 0.0200 mm.
+This does not prove an equivalent effective mass or identify which internal
+volume PhysX uses. The density-only saved-USD guard remains in place.
+
+`d2ed03f` restores the exact legacy tensor entry points
+`get_sim_element_indices`, `get_element_indices` and `get_nodal_positions`
+as direct native calls. Both SDKs complete the 64-step fixture at dt0.0005,
+with explicit assertions of int32 tetrahedral connectivity and 3-coordinate
+collision nodes. All 16 cases remain finite and material-density controls
+separate. The smaller timestep still does not establish an implicit-material
+density/mass equivalence. All six result files are SHA-verified locally; no
+owned GPU contexts or reservations remain after completion. These are scoped
+API/diagnostic checks, not a declaration of full migration completion.
+
 With the user's narrow GPU1 graphics exception, fresh conversion at `134c4f0`
 passes the 50-inertial-body/43-joint physical-property audit. All 54 authored
 rest-world matrices match the original within 5.551115123125783e-17; fixed-joint
