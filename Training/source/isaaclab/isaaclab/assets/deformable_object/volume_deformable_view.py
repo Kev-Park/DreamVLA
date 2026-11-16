@@ -222,8 +222,13 @@ class VolumeDeformableView:
         poisson = [wp.to_torch(m.get_poissons_ratios()).reshape(()) for m in material]
         return torch.stack(youngs).view(-1, 1, 1, 1), torch.stack(poisson).view(-1, 1, 1, 1)
 
-    def _stress(self, gradient):
-        rotation = self._polar_rotation(gradient)
+    def _stress(self, gradient, *, corotated=True):
+        # The legacy simulation diagnostic uses corotated stretch. Its
+        # collision diagnostic instead applies linear strain to the full F;
+        # these agree for diagonal stretch but differ under shear/rotation.
+        rotation = self._polar_rotation(gradient) if corotated else torch.eye(
+            3, device=gradient.device, dtype=gradient.dtype
+        )
         strain_gradient = rotation.transpose(-2, -1) @ gradient
         youngs, poisson = (v.to(gradient.device) for v in self._material_parameters())
         mu = youngs / (2*(1+poisson))
@@ -238,5 +243,5 @@ class VolumeDeformableView:
         return stress
 
     def get_element_stresses(self):
-        stress = self._stress(self._collision_gradient())
+        stress = self._stress(self._collision_gradient(), corotated=False)
         return self._mask_elements(stress.transpose(-2, -1).contiguous().flatten(-2), "collision")
