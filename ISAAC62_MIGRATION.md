@@ -150,7 +150,40 @@ per-row numerical equivalence for the checked inputs, not a simulation or PPO
 pass. The next real runtime at this source reaches first-step reward computation
 and exposes the same optional `n_successes` logging-counter assumption already
 fixed in the native drawer task. The contributed copy now uses that existing
-guard too, with unchanged reward values; its real runtime regression is pending.
+guard too, with unchanged reward values. The real `79efc07` regression passes
+reset, 32 action steps and final reset across two environments. All 43 joint
+positions/velocities are finite; three independent comparisons of all 50 contact
+body poses have zero maximum error. There are no terminations or truncations in
+this bounded fixture, and task success is not assessed. Four RGB frames and the
+32-frame, 1280x720, 50-fps MP4 are local in
+`out/isaac62_migration/isaac62_izat_drawer_runtime_79efc07/` and indexed in the
+existing dashboard without recompression. Owned processes, GPU contexts and the
+reservation are released.
+
+The new importer nests the physical `d435_link` below the torso instead of
+directly below `Robot`. Contributed recording/rollout camera construction now
+resolves that unique mount from the actual robot USD, keeping the original
+intrinsics, resolution and local pose. It does not create a disconnected camera
+at the old flat path. The next real fixture additionally checks camera world
+position/orientation against independently read URDF torso-to-mount transforms
+and the original camera offset. This gate remains unproven until runtime receipts
+pass. An initial standing-button reset at `a26cfa0` first exposed an optional
+`last_contacts` diagnostics-buffer assumption. The contributed reset now has the
+same presence guard as the already migrated native button task. The replacement
+two-environment standing-button reset then reaches a camera-pose failure. The
+camera position differs from the independent articulation/URDF expectation by
+0.0379229 m. The torso's PhysX and Fabric poses agree, while its authored USD
+pose remains at startup. Reading the camera through Fabric, explicitly updating
+it at capture, and attaching directly to the physical torso have not resolved
+the discrepancy (`af91ee1`). No camera correctness pass is claimed. The bounded
+`128fa64` probe retains reset and stepped diagnostics and video before applying
+the same strict final acceptance check; this distinguishes reset-only staleness
+from a persistent mismatch. Contributed PPO, actual recording, native GR00T
+training/serving and both evaluation tracks still require their own runtime gates.
+
+A fresh remote fetch on 2026-11-16 confirms Izat's contribution tip remains
+`14c979c`, and ancestry verification confirms it is included in the current
+integration branch. No later contribution commit was found.
 
 ## Full GR00T save/resume gate (2026-11-15)
 
