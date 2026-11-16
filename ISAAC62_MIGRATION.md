@@ -63,6 +63,42 @@ at `out/isaac62_migration/isaac62_matched_surfaces_b2c98ee/receipt.json`; execut
 probe is `cluster/isaac62/probe_matched_urdf_surfaces.py`. This is CPU-only and
 leaves simulator assets and packages untouched.
 
+## Unbound-material native crash and bounded repair (2026-11-16)
+
+A new native three-strain cube probe exposes a real 6.2 compatibility bug that
+explicit-material tests missed. The original 5.1 asset has no bound material and
+returns finite, nonzero simulation/collision stresses. Its installed legacy schema
+specifies Young's modulus 50,000,000 Pa and Poisson ratio 0.45; the actual stretch
+case reports roughly 18.97 MPa axial stress. This rules out substituting zeros for
+missing material diagnostics. These results do not establish the 6.2 solver's
+implicit defaults or authorize changing a scientific material recipe.
+
+The initial 6.2 attempt exits139 in the native physics tensor plugin. Its log
+shows the simulation mesh deleted after a tensor view was created. Installed SDK
+source confirms that DeformablePrim explicitly recooks existing auto bodies in
+its constructor. The adapter previously instantiated that diagnostics wrapper
+after creating its native view. The repaired adapter (`d2515ce`) skips that wrapper
+for unbound bodies and uses its existing read-only cooked-topology diagnostics.
+No material is created or assigned, and no packages or SDK source are changed.
+
+The repaired unbound case completes all12steps and all three controlled strains;
+its simulation/collision deformation-gradient queries are finite. Stress queries
+retain their explicit unsupported error. Separately, the explicit two-body,
+heterogeneous-topology regression completes20steps, six atomic unsupported-material
+rejections and the affine check: maximum gradient error9.64e-6 (gate1e-4), stress
+error0.5614Pa (gate10Pa). No task success is assessed. Final checks show no owned
+GPU contexts or reservations. All11result files are pulled and SHA-256 verified,
+including the failed native attempt, under the three local output directories
+`isaac62_implicit_stress_d063608`, `isaac62_implicit_stress_d2515ce` and
+`isaac62_explicit_stress_regression_d2515ce` in `out/isaac62_migration/`.
+
+Unbound stress/default-material equivalence remains incomplete. The installed new
+USD schema's zero-modulus fallback is not proof of its unbound solver material;
+NVIDIA's current documentation also distinguishes schema fallback from scene
+consumer defaults. Do not infer the installed solver defaults from either alone.
+A next bounded check can compare strain relaxation for unbound and explicit legacy
+material values within each SDK, without changing production spawning semantics.
+
 ## Recorded parents
 
 - g1: `0505979bf6058b772edb1e7436bb757461aba88f`
