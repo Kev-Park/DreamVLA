@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--dt', type=float, default=.005)
     parser.add_argument('--case', help='Run one case at the origin in an isolated process')
+    parser.add_argument('--rotated', action='store_true', help='Capture rest tensors under a rotated, scaled spawn')
     args = parser.parse_args()
     assert os.name == 'posix' and os.environ.get('CUDA_VISIBLE_DEVICES') == '0'
     version = importlib.metadata.version('isaacsim')
@@ -72,15 +73,18 @@ def main():
             material = None if material_density is None else sim_utils.DeformableBodyMaterialCfg(
                 youngs_modulus=50000., poissons_ratio=.3, density=material_density)
             spawn = sim_utils.MeshCuboidCfg(size=(.2, .2, .2),
+                scale=(1.2, .9, 1.1) if args.rotated else (1., 1., 1.),
                 deformable_props=sim_utils.DeformableBodyPropertiesCfg(
                     simulation_hexahedral_resolution=3, solver_position_iteration_count=4),
                 physics_material=material, mass_props=sim_utils.MassPropertiesCfg(mass=mass, density=density))
             cubes[name] = DeformableObject(DeformableObjectCfg(prim_path='/World/'+name, spawn=spawn,
-                init_state=DeformableObjectCfg.InitialStateCfg(pos=(index, 0, 1))))
+                init_state=DeformableObjectCfg.InitialStateCfg(pos=(index, 0, 1),
+                    rot=(.9238795325, 0., 0., .3826834324) if args.rotated else (1., 0., 0., 0.))))
             configs[name] = dict(body_mass=mass, body_density=density, material_density=material_density)
         sim.reset()
         original = {name: cube.data.nodal_state_w.clone() for name, cube in cubes.items()}
         traces = {name: [] for name in cubes}
+        topology = {}
         for name, cube in cubes.items():
             assert cube.is_initialized and torch.all(cube.data.nodal_kinematic_target[..., 3] == 1)
             assert (cube.material_physx_view is None) == name.startswith('nomat_')
@@ -114,6 +118,11 @@ def main():
                     nodes=len(points), elements=len(connectivity),
                     degenerate_elements=int((volumes == 0).sum()),
                     index_dtype=str(indices.dtype))
+                topology[name+'_'+kind+'_points'] = points.cpu().numpy()
+                topology[name+'_'+kind+'_indices'] = connectivity.cpu().numpy()
+                rest_method = 'get_sim_element_rest_poses' if kind == 'simulation' else 'get_element_rest_poses'
+                if hasattr(view, rest_method):
+                    topology[name+'_'+kind+'_native_rest_poses'] = getattr(view, rest_method)().cpu().numpy().copy()
             configs[name]['cooked_geometry'] = cooked
             if material:
                 configs[name]['bound_material_values'] = {a.GetName(): str(a.Get())
@@ -156,6 +165,7 @@ def main():
             informative_control=(None if args.case else
                 comparisons['material_density_vs_material_low']['max_error_m'] > 1e-4))
         np.savez(args.output/'traces.npz', **arrays)
+        np.savez(args.output/'topology.npz', **topology)
         if not args.case:
             assert report['informative_control'], 'Material density control did not separate'
         report['completed'] = True
