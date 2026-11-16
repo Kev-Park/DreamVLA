@@ -32,12 +32,13 @@ def main():
         import isaaclab
         import isaaclab.sim as sim_utils
         from isaaclab.assets import DeformableObject, DeformableObjectCfg
+        from pxr import UsdShade
         report['isaaclab_source'] = isaaclab.__file__
         torch.set_num_threads(1)
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
         settings = [('base', .02, 1.), ('repeat', .02, 1.), ('scale0', .02, 0.),
-                    ('scale05', .02, .5), ('scale2', .02, 2.), ('damping0', 0., 1.),
-                    ('damping02', .2, 1.), ('candidate05', .01, 1.), ('candidate2', .04, 1.)]
+                    ('scale05', .02, .5), ('damping0', 0., 1.),
+                    ('damping02', .2, 1.), ('candidate05', .01, 1.)]
         cubes = {}
         for index, (name, damping, scale) in enumerate(settings):
             material = sim_utils.DeformableBodyMaterialCfg(youngs_modulus=50000., poissons_ratio=.3,
@@ -50,6 +51,15 @@ def main():
                 init_state=DeformableObjectCfg.InitialStateCfg(pos=(index, 0, 1))))
             report['cases'][name] = dict(elasticity_damping=damping, damping_scale=scale)
         sim.reset()
+        for name, damping, scale in settings:
+            assert 0. <= scale <= 1., 'Original runtime rejects dampingScale outside [0,1]'
+            root = sim.stage.GetPrimAtPath('/World/'+name+'/geometry/mesh')
+            material = UsdShade.MaterialBindingAPI(root).ComputeBoundMaterial('physics')[0].GetPrim()
+            values = {key: material.GetAttribute('physxDeformableBodyMaterial:'+key).Get()
+                      for key in ('dampingScale', 'elasticityDamping', 'youngsModulus', 'poissonsRatio')}
+            assert values['dampingScale'] == scale
+            assert abs(values['elasticityDamping']-damping) < 1e-6
+            report['cases'][name]['authored_values'] = values
         original = {name: cube.data.nodal_state_w.clone() for name, cube in cubes.items()}
         transforms = [np.array([[1.05, .1, 0.], [0., .97, .06], [0., 0., 1.02]]),
                       np.diag([1.1, .95, .95])]
@@ -79,7 +89,7 @@ def main():
             for name, values in traces.items():
                 arrays[f'mode{mode}_{name}'] = values
             pairs = [(name, 'base') for name, _, _ in settings if name != 'base']
-            pairs += [('scale05', 'candidate05'), ('scale2', 'candidate2'), ('scale0', 'damping0')]
+            pairs += [('scale05', 'candidate05'), ('scale0', 'damping0')]
             comparisons = {}
             for left, right in pairs:
                 delta = traces[left]-traces[right]
