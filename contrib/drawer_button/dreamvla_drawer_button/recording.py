@@ -1,11 +1,13 @@
 """Array/video serialization shared by the native successful-episode recorder."""
 
+from fractions import Fraction
+import json
 import subprocess
 
 import cv2
 import numpy as np
 
-from .paths import ffmpeg_path
+from .paths import ffmpeg_path, ffprobe_path
 
 
 def write_episode_media(folder, data, frames):
@@ -56,9 +58,14 @@ def write_episode_media(folder, data, frames):
         proc.stdin.close()
     if proc.wait(timeout=60):
         raise RuntimeError("Video encoder failed")
-    cap = cv2.VideoCapture(str(folder / "ego_view.mp4"))
-    count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    cap.release()
-    if count != 499 or fps != 50:
+    probe = subprocess.run(
+        [ffprobe_path(), "-v", "error", "-select_streams", "v:0", "-count_frames",
+         "-show_entries", "stream=nb_read_frames,avg_frame_rate,width,height",
+         "-of", "json", str(folder / "ego_view.mp4")],
+        check=True, capture_output=True, text=True, timeout=60,
+    )
+    stream = json.loads(probe.stdout)["streams"][0]
+    if (int(stream["nb_read_frames"]) != 499
+            or Fraction(stream["avg_frame_rate"]) != 50
+            or (int(stream["width"]), int(stream["height"])) != (640, 480)):
         raise ValueError("Encoded video mismatch")

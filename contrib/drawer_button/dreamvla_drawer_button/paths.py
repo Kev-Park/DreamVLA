@@ -69,3 +69,10 @@ def ffmpeg_path():
             "Install ffmpeg or set DREAMVLA_FFMPEG to its executable."
         )
     return str(Path(candidate).resolve())
+
+
+def ffprobe_path():
+    candidate = shutil.which("ffprobe")
+    if not candidate:
+        raise FileNotFoundError("Install ffprobe from FFmpeg to verify recordings.")
+    return str(Path(candidate).resolve())

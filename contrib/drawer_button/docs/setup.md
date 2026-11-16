@@ -36,6 +36,7 @@ export DREAMVLA_GROOT_REPO=/path/to/Isaac-GR00T
 export DREAMVLA_ASSET_ROOT=/path/to/private/runtime/assets
 # Optional: absolute ffmpeg executable instead of PATH lookup
 export DREAMVLA_FFMPEG=/path/to/ffmpeg
+# Recording verification also requires ffprobe (from FFmpeg) on PATH.
 ```
 
 Run `doctor --stage isaac`, `--stage reference`, `--stage data` and

@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import time
 
 
@@ -16,12 +17,12 @@ def main():
     args = parser.parse_args()
     assert os.environ.get('CUDA_VISIBLE_DEVICES') == ''
     args.output.mkdir(parents=True, exist_ok=False)
-    import cv2
     import numpy as np
     from dreamvla_drawer_button.contracts import scene, validate_episode
     from dreamvla_drawer_button.convert import FIELDS
     from dreamvla_drawer_button.io import write_json
     from dreamvla_drawer_button.recording import write_episode_media
+    from dreamvla_drawer_button.paths import ffmpeg_path
 
     class Frames:
         def __len__(self):
@@ -54,18 +55,28 @@ def main():
         assert set(saved.files) == set(arrays)
         for name in arrays:
             np.testing.assert_array_equal(saved[name], arrays[name])
-    cap = cv2.VideoCapture(str(episode/'ego_view.mp4'))
+    decoder = subprocess.Popen(
+        [ffmpeg_path(), '-v', 'error', '-threads', '1', '-i', str(episode/'ego_view.mp4'),
+         '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
     means = []
     try:
-        assert cap.get(cv2.CAP_PROP_FPS) == 50
         while True:
-            ok, rgb = cap.read()
-            if not ok:
+            raw = decoder.stdout.read(480*640*3)
+            if not raw:
                 break
+            assert len(raw) == 480*640*3
+            rgb = np.frombuffer(raw, np.uint8).reshape(480, 640, 3)
             assert rgb.shape == (480, 640, 3)
             means.append(float(rgb.mean()))
+        assert decoder.wait(timeout=30) == 0, decoder.stderr.read().decode()
     finally:
-        cap.release()
+        if decoder.poll() is None:
+            decoder.terminate()
+            decoder.wait(timeout=10)
+        decoder.stdout.close()
+        decoder.stderr.close()
     assert len(means) == 499 and means[0] < 1 and means[-1] > 254
     write_json(args.output/'receipt.json', dict(
         completed=True, scientific_demonstration=False, synthetic_fixture=True,
