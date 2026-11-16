@@ -3,14 +3,13 @@
 import torch
 
 from isaaclab.assets import Articulation
-from isaaclab.sim import PinholeCameraCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import CameraCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from .robot import G1_SONIC_CFG
+from .camera import ego_camera_cfg
 from isaaclab_tasks.utils.motion_lib.motion_lib_base import JointNamesOrder
 
 from .motion_tracking_open_drawer_env import (
@@ -186,23 +185,7 @@ class G1OpenDrawerSonicRecordEnvCfg(G1OpenDrawerSonicEnvCfg):
         # preserves every recorded frame while avoiding three redundant RTX
         # renders per action.
         self.sim.render_interval = self.decimation
-        self.scene.camera_robot = CameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/d435_link/Camera",
-            spawn=PinholeCameraCfg(
-                focal_length=9.1,
-                focus_distance=400.0,
-                horizontal_aperture=20.955,
-                clipping_range=(0.1, 100.0),
-            ),
-            data_types=["rgb"],
-            height=480,
-            width=640,
-            offset=CameraCfg.OffsetCfg(
-                pos=(0.05, 0.0, 0.0),
-                rot=(0.5, 0.5, -0.5, -0.5),
-                convention="opengl",
-            ),
-        )
+        self.scene.camera_robot = ego_camera_cfg(self.scene.robot.spawn.usd_path)
 
 
 @configclass

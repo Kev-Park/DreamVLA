@@ -116,6 +116,10 @@ def main():
         if contributed_drawer or contributed_button:
             # Measurement only: verify contact rows against the articulation.
             cfg.scene.contact_forces.track_pose = True
+            from dreamvla_drawer_button.isaac.camera import ego_camera_cfg
+            cfg.scene.camera_robot = ego_camera_cfg(cfg.scene.robot.spawn.usd_path)
+            # Pose telemetry is needed for the independent mount check below.
+            cfg.scene.camera_robot.update_latest_camera_pose = True
         cfg.seed = 17
         if args.ref_motions_path is not None:
             if not hasattr(cfg, 'ref_motions_path'):
@@ -180,6 +184,38 @@ def main():
             receipt.setdefault('contact_order_checks', []).append(
                 dict(num_envs=args.num_envs, bodies=len(names), maximum_position_error_m=error))
         check_contact_order()
+        def check_camera_mount():
+            if not (contributed_drawer or contributed_button):
+                return
+            import xml.etree.ElementTree as ET
+            from dreamvla_drawer_button.paths import BACKEND_ROOT
+            from isaaclab.utils.math import quat_apply, quat_from_euler_xyz, quat_mul
+            urdf = ET.parse(BACKEND_ROOT/'Sim2Real/resources/robots/g1_description/g1_29dof_with_hand.urdf')
+            joint = urdf.find("./joint[@name='d435_joint']")
+            assert joint is not None and joint.get('type') == 'fixed'
+            parent = joint.find('parent').get('link')
+            origin = joint.find('origin')
+            xyz = torch.tensor([float(x) for x in origin.get('xyz').split()], device=base.device)
+            rpy = torch.tensor([float(x) for x in origin.get('rpy').split()], device=base.device)
+            mount_q = quat_from_euler_xyz(rpy[0:1], rpy[1:2], rpy[2:3])
+            ids, _ = robot.find_bodies([parent], preserve_order=True)
+            parent_pos = robot.data.body_pos_w[:, ids[0]]
+            parent_q = robot.data.body_quat_w[:, ids[0]]
+            offset = cfg.scene.camera_robot.offset
+            offset_pos = torch.tensor(offset.pos, device=base.device).reshape(1, 3)
+            offset_q = torch.tensor(offset.rot, device=base.device).reshape(1, 4)
+            local_pos = xyz.reshape(1, 3)+quat_apply(mount_q, offset_pos)
+            expected_pos = parent_pos+quat_apply(parent_q, local_pos.expand(base.num_envs, -1))
+            expected_q = quat_mul(parent_q, quat_mul(mount_q, offset_q).expand(base.num_envs, -1))
+            camera = base.scene['camera_robot'].data
+            pos_error = float((camera.pos_w-expected_pos).abs().max())
+            actual_q = camera.quat_w_opengl
+            quat_error = float(torch.minimum((actual_q-expected_q).abs().amax(-1),
+                                            (actual_q+expected_q).abs().amax(-1)).max())
+            assert pos_error < 1e-5 and quat_error < 1e-5, ('Physical camera mount mismatch', pos_error, quat_error)
+            receipt.setdefault('camera_mount_checks', []).append(dict(
+                num_envs=base.num_envs, parent=parent, prim_path=cfg.scene.camera_robot.prim_path,
+                maximum_position_error_m=pos_error, maximum_quaternion_component_error=quat_error))
         receipt['pid'] = os.getpid()
         inventory = subprocess.run(['nvidia-smi', '-q', '-x'], capture_output=True,
                                    text=True, check=True, timeout=20)
@@ -195,6 +231,7 @@ def main():
         if SimulationManager.get_num_physics_steps() != before:
             raise RuntimeError('Render warmup advanced physics')
         frame(env.render(), 'third_person_reset', 0)
+        check_camera_mount()
         roots, quats, joints, velocities, counters = [], [], [], [], []
         terminated_count = truncated_count = 0
         actions = torch.zeros((base.num_envs, base.action_manager.total_action_dim),
@@ -206,6 +243,7 @@ def main():
                 finite(reward, 'reward')
                 if step in {0, args.steps-1}:
                     check_contact_order()
+                    check_camera_mount()
                 for name, value in (('root_pos_w', robot.data.root_pos_w),
                                     ('root_quat_w', robot.data.root_quat_w),
                                     ('joint_pos', robot.data.joint_pos),

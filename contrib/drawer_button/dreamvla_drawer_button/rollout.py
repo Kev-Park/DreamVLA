@@ -144,8 +144,7 @@ def main():
     from isaaclab.utils.io import dump_yaml
     from isaaclab.utils.math import subtract_frame_transforms
     from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
-    from isaaclab.sensors import CameraCfg
-    from isaaclab.sim import PinholeCameraCfg
+    from .isaac.camera import ego_camera_cfg
     from rsl_rl.runners import OnPolicyRunner
     from .isaac.motion_tracking_button_press_standing_sonic_env import (
         TASK,
@@ -190,21 +189,7 @@ def main():
         term = getattr(cfg.observations.policy, name, None)
         if term is not None:
             term.params["visualize_markers"] = False
-    cfg.scene.camera_robot = CameraCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/d435_link/Camera",
-        spawn=PinholeCameraCfg(
-            focal_length=9.1,
-            focus_distance=400.0,
-            horizontal_aperture=20.955,
-            clipping_range=(0.1, 100.0),
-        ),
-        data_types=["rgb"],
-        height=480,
-        width=640,
-        offset=CameraCfg.OffsetCfg(
-            pos=(0.05, 0.0, 0.0), rot=(0.5, 0.5, -0.5, -0.5), convention="opengl"
-        ),
-    )
+    cfg.scene.camera_robot = ego_camera_cfg(cfg.scene.robot.spawn.usd_path)
     cfg.sim.render_interval = cfg.decimation
     cfg.sim.render.antialiasing_mode = "TAA"
     if task == "standing_button" and (
