@@ -84,7 +84,25 @@ def restore_rng(state, device):
 def checkpoint_identity(path):
     path = Path(path).expanduser().resolve(strict=True)
     config = path/'config.json'
-    return {'path': str(path), 'config_sha256': hashlib.sha256(config.read_bytes()).hexdigest()}
+    files = {}
+    for file in sorted(path.rglob('*')):
+        if file.is_file() and (file.suffix in {'.json', '.safetensors'} or
+                               file.name in {'pytorch_model.bin', 'model.pt'}):
+            with file.open('rb') as stream:
+                files[file.relative_to(path).as_posix()] = hashlib.file_digest(stream, 'sha256').hexdigest()
+    return {'path': str(path), 'config_sha256': hashlib.sha256(config.read_bytes()).hexdigest(),
+            'files_sha256': files}
+
+
+def same_checkpoint(left, right):
+    """Permit relocation only when all inference files, including weights, match."""
+    if left == right:
+        return True
+    files = left.get('files_sha256', {})
+    has_weights = any(name.endswith('.safetensors') or name in {'pytorch_model.bin', 'model.pt'}
+                      for name in files)
+    return bool(has_weights and files == right.get('files_sha256') and
+                left['config_sha256'] == right['config_sha256'])
 
 
 class PolicyService:
@@ -192,12 +210,12 @@ class PolicyServiceClient:
         self.descriptor = dict(descriptor)
         if descriptor['protocol'] != PROTOCOL_VERSION:
             raise ValueError('Unsupported inference-service protocol')
-        if descriptor['checkpoint'] != checkpoint_identity(checkpoint):
+        if not same_checkpoint(descriptor['checkpoint'], checkpoint_identity(checkpoint)):
             raise ValueError('Inference service checkpoint differs from requested checkpoint')
         if descriptor['embodiment_tag'] != embodiment_tag:
             raise ValueError('Inference service embodiment differs from requested embodiment')
         if not descriptor['endpoint'].startswith('tcp://127.0.0.1:'):
-            raise ValueError('Use a local inference service on the same host')
+            raise ValueError('Use a loopback inference endpoint, optionally through a verified SSH tunnel')
         if torch.device(device).type != torch.device(descriptor['device']).type:
             raise ValueError('Client and server must both use CUDA or both use CPU')
         self.device = str(device)
