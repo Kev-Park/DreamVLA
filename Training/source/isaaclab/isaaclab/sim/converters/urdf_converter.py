@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import math
 import re
-import importlib.metadata
 
 import isaacsim
 import omni.kit.app
@@ -50,7 +49,9 @@ class UrdfConverter(AssetConverterBase):
         manager = omni.kit.app.get_app().get_extension_manager()
         if not manager.is_extension_enabled("isaacsim.asset.importer.urdf"):
             enable_extension("isaacsim.asset.importer.urdf")
-        self._modern_urdf_importer = importlib.metadata.version("isaacsim").startswith("6.")
+        from isaacsim.asset.importer import urdf as importer
+
+        self._modern_urdf_importer = hasattr(importer, "URDFImporter")
         if not self._modern_urdf_importer:
             from isaacsim.asset.importer.urdf._urdf import acquire_urdf_interface
 
