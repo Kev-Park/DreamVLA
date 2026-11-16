@@ -14,7 +14,7 @@ URDF = """<robot name="option_fixture">
 <link name="base"><inertial><mass value="2"/><inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1"/></inertial></link>
 <link name="arm"><inertial><origin xyz="0 0 .2"/><mass value="1"/><inertia ixx=".1" ixy="0" ixz="0" iyy=".1" iyz="0" izz=".01"/></inertial><visual><geometry><cylinder radius=".05" length=".4"/></geometry></visual><collision><geometry><cylinder radius=".05" length=".4"/></geometry></collision></link>
 <link name="finger"><inertial><origin xyz="0 0 .1"/><mass value=".2"/><inertia ixx=".01" ixy="0" ixz="0" iyy=".01" iyz="0" izz=".001"/></inertial><collision><geometry><box size=".02 .02 .2"/></geometry></collision></link>
-<joint name="hinge" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 .1" rpy="0 .1 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="10" velocity="2"/><dynamics damping=".27" stiffness=".31"/></joint>
+<joint name="hinge" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 .1" rpy="0 .1 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="10" velocity="2"/><dynamics damping=".27" spring_stiffness=".31"/></joint>
 <joint name="finger_hinge" type="revolute"><parent link="arm"/><child link="finger"/><origin xyz="0 0 .4"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="5" velocity="2"/><mimic joint="hinge" multiplier="-1" offset=".1"/></joint>
 </robot>"""
 

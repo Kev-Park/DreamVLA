@@ -222,15 +222,20 @@ def _natural_drive_values(cfg):
         scale = 1. if element.get('type') == 'prismatic' else math.pi/180.
         # compute_natural_stiffness is C++ float; damping and the angular
         # conversion are Python double until each original drive setter.
-        strength = f32(scale*f32(f32(mass*frequency)*frequency)) if name in assigned else 0.
-        damping = f32(scale*(2*mass*frequency*ratio)) if name in assigned and target == 'position' else 0.
+        # Parsing initializes an acceleration/position drive at 25 rad/s before
+        # regex overrides run. Unmatched joints retain its unscaled strength
+        # and raw URDF damping; only explicitly matched frequencies recompute.
+        dynamics = element.find('dynamics')
+        raw_damping = f32(float(dynamics.get('damping', '0'))) if dynamics is not None else 0.
+        strength = f32(scale*f32(f32(mass*frequency)*frequency)) if name in assigned else 625.
+        damping = (f32(scale*(2*mass*frequency*ratio))
+                   if name in assigned and target == 'position' else raw_damping)
         stiffness = strength
         if target == 'velocity':
             stiffness, damping = 0., strength
         elif target == 'none':
-            dynamics = element.find('dynamics')
-            stiffness = f32(float(dynamics.get('stiffness', '0'))) if dynamics is not None else 0.
-            damping = f32(float(dynamics.get('damping', '0'))) if dynamics is not None else 0.
+            stiffness = f32(float(dynamics.get('spring_stiffness', '0'))) if dynamics is not None else 0.
+            damping = raw_damping
         result[name] = dict(drive_type=dtype, target_type=target, stiffness=stiffness, damping=damping,
             natural_frequency=frequency, damping_ratio=ratio, equivalent_inertia=inertias[name],
             movable=element.get('type') in ('revolute', 'continuous', 'prismatic'))

@@ -70,7 +70,7 @@ class UrdfConverter(AssetConverterBase):
             return original
         # Invalidate assets from before the empty-fixed-body and PhysX velocity
         # repairs. No user flag is needed and legacy SDK cache keys stay intact.
-        return hashlib.md5((original + "isaac62-urdf-physx-compat-10").encode()).hexdigest()
+        return hashlib.md5((original + "isaac62-urdf-physx-compat-11").encode()).hexdigest()
 
     def _convert_asset(self, cfg: UrdfConverterCfg):
         """Calls underlying Omniverse command to convert URDF to USD.
