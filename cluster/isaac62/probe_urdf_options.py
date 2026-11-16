@@ -32,6 +32,17 @@ def fixture_urdf(case):
 <link name="tip"><inertial><mass value=".1"/><inertia ixx=".001" ixy="0" ixz="0" iyy=".001" iyz="0" izz=".001"/></inertial></link>
 <joint name="tip_hinge" type="revolute"><parent link="finger"/><child link="tip"/><origin xyz="0 0 .2"/><axis xyz="0 1 0"/><limit lower="-.5" upper=".5" effort="3" velocity="1"/><mimic joint="finger_hinge" multiplier=".5" offset="-.03"/></joint>
 </robot>''')
+    if case.startswith('inertia_'):
+        if 'rotated' in case:
+            text = text.replace('<origin xyz="0 0 .2"/>', '<origin xyz="0 0 .2" rpy=".2 -.3 .4"/>')
+        if 'nondiagonal' in case:
+            text = text.replace('ixx=".1" ixy="0" ixz="0" iyy=".1" iyz="0" izz=".01"',
+                                'ixx=".1" ixy=".015" ixz=".006" iyy=".08" iyz="-.003" izz=".04"')
+        if 'merged' in case:
+            text = text.replace('</robot>', '''
+<link name="payload"><inertial><origin xyz=".02 .03 .01" rpy=".1 .2 .3"/><mass value=".3"/><inertia ixx=".02" ixy="0" ixz="0" iyy=".03" iyz="0" izz=".04"/></inertial></link>
+<joint name="payload_fixed" type="fixed"><parent link="arm"/><child link="payload"/><origin xyz=".1 -.06 .15" rpy=".1 .2 -.1"/></joint>
+</robot>''')
     return text
 
 
@@ -59,7 +70,14 @@ def main():
             prismatic_pd=dict(convert_mimic_joints_to_normal_joints=True),
             prismatic_natural=dict(convert_mimic_joints_to_normal_joints=True),
             chained_mimic=dict(convert_mimic_joints_to_normal_joints=True),
-            noncardinal_mimic=dict(convert_mimic_joints_to_normal_joints=True))
+            noncardinal_mimic=dict(convert_mimic_joints_to_normal_joints=True),
+            inertia_rotated={}, inertia_nondiagonal={},
+            inertia_rotated_floating=dict(fix_base=False),
+            inertia_nondiagonal_floating=dict(fix_base=False),
+            inertia_merged=dict(merge_fixed_joints=True),
+            inertia_merged_natural=dict(merge_fixed_joints=True),
+            inertia_merged_floating=dict(merge_fixed_joints=True, fix_base=False),
+            inertia_merged_rotated_floating=dict(merge_fixed_joints=True, fix_base=False))
         if args.cases:
             unknown = set(args.cases) - cases.keys()
             if unknown:
@@ -71,10 +89,10 @@ def main():
                 source.parent.mkdir(parents=True)
                 source.write_text(fixture_urdf(name))
                 cfg = UrdfConverterCfg(asset_path=str(source), usd_dir=str(args.output/name),
-                    force_usd_conversion=True, merge_fixed_joints=False,
-                    **{'make_instanceable': False, 'fix_base': True, **options})
+                    force_usd_conversion=True,
+                    **{'merge_fixed_joints': False, 'make_instanceable': False, 'fix_base': True, **options})
                 cfg.joint_drive.gains = UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=1., damping=.2)
-                if name.startswith('natural_') or name == 'prismatic_natural':
+                if name.startswith('natural_') or name.endswith('_natural'):
                     cfg.joint_drive.gains = UrdfConverterCfg.JointDriveCfg.NaturalFrequencyGainsCfg(
                         natural_frequency=8., damping_ratio=.7)
                     cfg.joint_drive.drive_type = 'force' if name == 'natural_force' else 'acceleration'
@@ -92,7 +110,7 @@ def main():
                 path = Path(UrdfConverter(cfg).usd_path)
                 stage = Usd.Stage.Open(str(path))
                 assert stage and stage.GetDefaultPrim()
-                row = dict(completed=True, requested_options=options, urdf_source=str(source), usd_path=str(path), bodies=[], geometry=[], joints=[], articulation_roots=[], root_settings={}, fixed_joints=[])
+                row = dict(completed=True, requested_options=options, urdf_source=str(source), usd_path=str(path), bodies=[], mass_properties={}, geometry=[], joints=[], articulation_roots=[], root_settings={}, fixed_joints=[])
                 row['drive_request'] = dict(drive_type=cfg.joint_drive.drive_type, target_type=cfg.joint_drive.target_type,
                     natural_frequency=getattr(cfg.joint_drive.gains, 'natural_frequency', None),
                     damping_ratio=getattr(cfg.joint_drive.gains, 'damping_ratio', None))
@@ -112,6 +130,11 @@ def main():
                             rot0=str(joint.GetLocalRot0Attr().Get()), rot1=str(joint.GetLocalRot1Attr().Get())))
                     if prim.HasAPI(UsdPhysics.RigidBodyAPI):
                         row['bodies'].append(prim.GetName())
+                        mass = UsdPhysics.MassAPI(prim)
+                        row['mass_properties'][prim.GetName()] = dict(mass=mass.GetMassAttr().Get(),
+                            center_of_mass=list(mass.GetCenterOfMassAttr().Get()),
+                            diagonal_inertia=list(mass.GetDiagonalInertiaAttr().Get()),
+                            principal_axes=str(mass.GetPrincipalAxesAttr().Get()))
                     if prim.GetTypeName() in ('Cylinder', 'Capsule'):
                         shape = UsdGeom.Cylinder(prim) if prim.IsA(UsdGeom.Cylinder) else UsdGeom.Capsule(prim)
                         row['geometry'].append(dict(type=prim.GetTypeName(), path=str(prim.GetPath()),
@@ -134,7 +157,9 @@ def main():
                                 if 'mimic' in attr.GetName().lower()},
                             relationships={rel.GetName(): [str(x) for x in rel.GetTargets()] for rel in prim.GetRelationships()}))
                 tree = ET.parse(source).getroot()
-                assert len(row['bodies']) == len(tree.findall('link')) and len(row['joints']) == len(tree.findall('joint')), row
+                fixed_count = sum(joint.get('type') == 'fixed' for joint in tree.findall('joint'))
+                expected_bodies = len(tree.findall('link')) - (fixed_count if cfg.merge_fixed_joints else 0)
+                assert len(row['bodies']) == expected_bodies and len(row['joints']) == len(tree.findall('joint'))-fixed_count, row
                 report['cases'][name] = row
             except Exception:
                 report['cases'][name] = dict(completed=False, requested_options=options, error=traceback.format_exc())
