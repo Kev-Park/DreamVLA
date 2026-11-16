@@ -476,8 +476,13 @@ def main():
         base.seed(seed)
         with torch.inference_mode():
             obs, _ = env.reset()
-        if obs.shape != (1, 679 if task == "drawer" else 670):
-            raise ValueError("Wrong teacher observations")
+        # RSL-RL may return the policy tensor directly or a TensorDict of
+        # observation groups. Keep the original container for policy inference;
+        # validate the configured group without a stale hard-coded feature count.
+        policy_obs = obs if isinstance(obs, torch.Tensor) else obs["policy"]
+        expected_shape = (1, *base.observation_manager.group_obs_dim["policy"])
+        if policy_obs.shape != expected_shape or not torch.isfinite(policy_obs).all():
+            raise ValueError(f"Invalid teacher observations; expected {expected_shape}")
         if client:
             client.reset(seed)
         mid = int(base.motion_ids[0])
