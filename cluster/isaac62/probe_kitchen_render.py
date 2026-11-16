@@ -79,7 +79,7 @@ def main():
             -.11727178463934727, Gf.Vec3d(-.09523866571812599,.6232015643149337,.7673309164338117)))
         product = rep.create.render_product('/World/Camera', (640, 480))
         rgb = rep.AnnotatorRegistry.get_annotator('rgb', device='cpu')
-        rgb.attach([product])
+        rgb.attach([product.path])
         for index in range(3):
             rep.orchestrator.step(rt_subframes=8, pause_timeline=True)
             pixels = np.asarray(rgb.get_data())
@@ -89,7 +89,7 @@ def main():
             Image.fromarray(pixels[..., :3]).save(path)
             report['images'].append(dict(file=path.name, shape=list(pixels.shape),
                 mean=float(pixels[..., :3].mean()), std=float(pixels[..., :3].std())))
-        rgb.detach([product])
+        rgb.detach([product.path])
         report.update(completed=True, source_layer_changed=False, task_success_assessed=False)
     except BaseException:
         report['error'] = traceback.format_exc()
