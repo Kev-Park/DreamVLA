@@ -17,6 +17,7 @@ import traceback
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--dt', type=float, default=.005)
     args = parser.parse_args()
     assert os.name == 'posix' and os.environ.get('CUDA_VISIBLE_DEVICES') == '0'
     version = importlib.metadata.version('isaacsim')
@@ -39,7 +40,9 @@ def main():
         from pxr import UsdShade
         report['isaaclab_source'] = isaaclab.__file__
         torch.set_num_threads(1)
-        sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
+        assert 0 < args.dt <= .005
+        report['dt'] = args.dt
+        sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=args.dt, device='cuda:0'))
         # The cube volume is .008 m^3: density1300 ->10.4kg,1100 ->8.8kg,100 ->.8kg.
         # Independently measured in the a850b45 native fixture. The cookers
         # produce different topologies/volumes; nominal volume is not enough
@@ -85,12 +88,12 @@ def main():
             # cooker retained the nominal cuboid volume. Use public native
             # tensor calls; the legacy wrapper need not expose new aliases.
             view = cube.root_physx_view
-            simulation_indices = (view.get_sim_element_indices() if version == '5.1.0.0'
-                                  else view.get_simulation_element_indices())
-            collision_indices = (view.get_element_indices() if version == '5.1.0.0'
-                                 else view.get_collision_element_indices())
-            collision_positions = (view.get_nodal_positions() if version == '5.1.0.0'
-                                   else view.get_collision_nodal_positions())
+            simulation_indices = view.get_sim_element_indices()
+            collision_indices = view.get_element_indices()
+            collision_positions = view.get_nodal_positions()
+            assert simulation_indices.dtype == collision_indices.dtype == torch.int32
+            assert simulation_indices.shape[-1] == collision_indices.shape[-1] == 4
+            assert collision_positions.shape[-1] == 3
             cooked = {}
             for kind, positions, indices in (
                     ('simulation', original[name][..., :3], simulation_indices),

@@ -59,6 +59,15 @@ class VolumeDeformableView:
     def get_sim_nodal_positions(self):
         return self._view.get_simulation_nodal_positions()
 
+    def get_sim_element_indices(self):
+        return self._view.get_simulation_element_indices()
+
+    def get_element_indices(self):
+        return self._view.get_collision_element_indices()
+
+    def get_nodal_positions(self):
+        return self._view.get_collision_nodal_positions()
+
     def get_sim_nodal_velocities(self):
         return self._view.get_simulation_nodal_velocities()
 
