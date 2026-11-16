@@ -100,6 +100,8 @@ def main():
                       for a in root.GetAttributes()
                       if a.GetName() in ('physics:mass', 'physics:density', 'omniphysics:mass')}
             configs[name]['resolved_body_values'] = values
+            topology[name+'_root_local_to_world'] = np.asarray(
+                UsdGeom.Xformable(root).ComputeLocalToWorldTransform(0))
             # Measure actual cooked volume rather than assuming that the mesh
             # cooker retained the nominal cuboid volume. Use public native
             # tensor calls; the legacy wrapper need not expose new aliases.
@@ -129,6 +131,17 @@ def main():
                 rest_method = 'get_sim_element_rest_poses' if kind == 'simulation' else 'get_element_rest_poses'
                 if hasattr(view, rest_method):
                     topology[name+'_'+kind+'_native_rest_poses'] = getattr(view, rest_method)().cpu().numpy().copy()
+                if version == '5.1.0.0':
+                    rest_attr = root.GetAttribute('physxDeformable:'+kind+'RestPoints')
+                    if rest_attr and rest_attr.Get() is not None:
+                        topology[name+'_'+kind+'_authored_rest_points'] = np.asarray(rest_attr.Get())
+                elif kind == 'simulation':
+                    topology[name+'_'+kind+'_native_rest_points'] = view.get_rest_nodal_positions().cpu().numpy().copy()
+                else:
+                    mesh = sim.stage.GetPrimAtPath(view.collision_mesh_prim_paths[0])
+                    rest_attr = mesh.GetAttribute('deformablePose:default:omniphysics:points')
+                    if rest_attr and rest_attr.Get() is not None:
+                        topology[name+'_'+kind+'_authored_rest_points'] = np.asarray(rest_attr.Get())
             configs[name]['cooked_geometry'] = cooked
             if material:
                 configs[name]['bound_material_values'] = {a.GetName(): str(a.Get())
