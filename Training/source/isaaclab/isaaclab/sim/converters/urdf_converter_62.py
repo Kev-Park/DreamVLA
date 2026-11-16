@@ -18,7 +18,7 @@ def convert_asset(converter, cfg):
     from pxr import Usd, UsdGeom
     from .urdf_converter_cfg import UrdfConverterCfg
 
-    for name in ("root_link_name", "convert_mimic_joints_to_normal_joints"):
+    for name in ("root_link_name",):
         if getattr(cfg, name):
             raise NotImplementedError(f"Isaac Sim 6 URDF importer cannot preserve {name}")
     drive_type = target_type = stiffness = damping = None
@@ -74,6 +74,82 @@ def convert_asset(converter, cfg):
     _preserve_empty_fixed_links(target, cfg)
     _preserve_joint_velocity_limits(target, cfg)
     _preserve_collision_capsules(target, cfg)
+    _preserve_mimic_joints(target, cfg)
+
+
+def _preserve_mimic_joints(usd_path, cfg):
+    """Preserve the original importer's observed (inverted) mimic flag.
+
+    Original configureMimicAPI: NVIDIA urdf-importer-extension, Apache-2.0,
+    commit 9908f0341ee4c375a94d594c4eeb318dea3f4cf2, UrdfImporter.cpp.
+    True parses mimic constraints; false leaves independent driven joints.
+    PD gain overrides do not change its default 25/.005 constraint parameters.
+    Natural-frequency gain configuration is rejected before reaching here.
+    """
+    if not cfg.convert_mimic_joints_to_normal_joints:
+        return
+    from pxr import PhysxSchema, Tf, Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(usd_path))
+    assert stage and stage.GetDefaultPrim()
+    joints = {prim.GetName(): prim for prim in stage.Traverse()
+              if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)}
+    elements = {Tf.MakeValidIdentifier(element.get('name')): element
+                for element in ET.parse(cfg.asset_path).getroot().findall('joint')}
+    visiting, completed = set(), set()
+    f32 = lambda value: struct.unpack('f', struct.pack('f', value))[0]
+
+    def preserve(name):
+        if name in completed:
+            return
+        if name in visiting:
+            raise ValueError(f'Cyclic URDF mimic dependency: {name}')
+        visiting.add(name)
+        element = elements[name]
+        mimic = element.find('mimic')
+        if mimic is not None:
+            source_name = Tf.MakeValidIdentifier(mimic.get('joint'))
+            if source_name not in joints or name not in joints:
+                raise ValueError(f'Cannot resolve URDF mimic {name} -> {source_name}')
+            preserve(source_name)
+            prim, source = joints[name], joints[source_name]
+            axis_element = element.find('axis')
+            axis = [float(x) for x in (axis_element.get('xyz', '1 0 0') if axis_element is not None else '1 0 0').split()]
+            cardinal = [i for i in range(3) if abs(axis[i]) == 1 and all(axis[j] == 0 for j in range(3) if i != j)]
+            if len(cardinal) != 1:
+                raise NotImplementedError(f'Cannot preserve non-cardinal legacy mimic axis for {name}: {axis}')
+            # Legacy leaves referenceJointAxis at its schema default rotX,
+            # even when the reference's authored axis differs. Preserve it.
+            api = PhysxSchema.PhysxMimicJointAPI.Apply(prim, 'rot'+'XYZ'[cardinal[0]])
+            multiplier = f32(float(mimic.get('multiplier', '1')))
+            offset = f32(float(mimic.get('offset', '0')))
+            if not math.isfinite(multiplier) or not math.isfinite(offset):
+                raise ValueError(f'Non-finite mimic coefficients for {name}')
+            api.CreateGearingAttr(-multiplier)
+            api.CreateOffsetAttr(offset)
+            api.CreateNaturalFrequencyAttr(25.0)
+            api.CreateDampingRatioAttr(.005)
+            api.CreateReferenceJointRel().SetTargets([source.GetPath()])
+            instance = 'linear' if prim.IsA(UsdPhysics.PrismaticJoint) else 'angular'
+            prim.RemoveAPI(UsdPhysics.DriveAPI, instance)
+            for attr in prim.GetAttributes():
+                if attr.GetName().startswith('drive:'+instance+':'):
+                    attr.Block()
+            prim.GetAttribute('physxJoint:maxJointVelocity').Block()
+            joint = UsdPhysics.PrismaticJoint(prim) if instance == 'linear' else UsdPhysics.RevoluteJoint(prim)
+            reference = UsdPhysics.PrismaticJoint(source) if source.IsA(UsdPhysics.PrismaticJoint) else UsdPhysics.RevoluteJoint(source)
+            lower, upper = reference.GetLowerLimitAttr().Get(), reference.GetUpperLimitAttr().Get()
+            margin = f32(f32(.2)*f32(upper-lower))
+            bounds = [f32(multiplier*f32(lower-margin)), f32(multiplier*f32(upper+margin))]
+            joint.CreateLowerLimitAttr(min(bounds))
+            joint.CreateUpperLimitAttr(max(bounds))
+        visiting.remove(name)
+        completed.add(name)
+
+    for name, element in elements.items():
+        if element.find('mimic') is not None:
+            preserve(name)
+    stage.GetRootLayer().Save()
 
 
 def _preserve_collision_capsules(usd_path, cfg):

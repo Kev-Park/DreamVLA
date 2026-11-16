@@ -74,6 +74,10 @@ def main():
                         drive = UsdPhysics.DriveAPI.Get(prim, 'angular')
                         inertia = prim.GetAttribute('physics:JointEquivalentInertia')
                         row['joints'].append(dict(name=prim.GetName(), schemas=list(prim.GetAppliedSchemas()),
+                            axis=UsdPhysics.RevoluteJoint(prim).GetAxisAttr().Get(),
+                            lower_limit=UsdPhysics.RevoluteJoint(prim).GetLowerLimitAttr().Get(),
+                            upper_limit=UsdPhysics.RevoluteJoint(prim).GetUpperLimitAttr().Get(),
+                            max_velocity=prim.GetAttribute('physxJoint:maxJointVelocity').Get(),
                             stiffness=drive.GetStiffnessAttr().Get(), damping=drive.GetDampingAttr().Get(),
                             drive_type=drive.GetTypeAttr().Get(), equivalent_inertia=inertia.Get() if inertia else None,
                             attributes={attr.GetName(): str(attr.Get()) for attr in prim.GetAttributes()
