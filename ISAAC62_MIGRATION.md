@@ -5,6 +5,41 @@ running on Isaac Sim 6.2 with preserved policy inputs, outputs, physics recipes,
 data formats, collection semantics, metrics, and rendering. A successful import
 or a file-surface audit is not completion.
 
+## Fresh rest-pose repair live validation (2026-11-16)
+
+With the user's narrow GPU1 graphics exception, fresh conversion at `134c4f0`
+passes the 50-inertial-body/43-joint physical-property audit. All 54 authored
+rest-world matrices match the original within 5.551115123125783e-17; fixed-joint
+graph, zero-force drives and joint velocity limits agree. The paired real PhysX
+initial and canonical nonzero poses both pass the existing 1e-6 gate. Effective
+masses and COM positions are exact, maximum inertia error is 7.45e-9, and named
+43-joint/PPO/hand interfaces agree. The aggregate `preservation_pass` is still
+false: raw importer joint order differs, although named mappings pass. This
+receipt must not be represented as an unconditional preservation pass.
+
+Standing drawer, squatting drawer and standing button each complete the fresh
+asset's two-environment, 32-step reset/camera/contact/render integration fixture.
+All three exit zero. The 39 output files are SHA-256 verified locally under
+`out/isaac62_migration/isaac62_generated_reference_runtime_134c4f0/`. These are
+zero-action technical tests, not learned-policy success tests; user appearance
+review remains pending. Account CPU observed during rendering was about 2%;
+GPU0 held substantive work and GPU1 only the approved 6-MiB graphics context.
+Final audit confirms no owned GPU contexts or reservations remain.
+
+No episode horizon was changed. The original contributed protocol explicitly
+specifies 500 controls over ten seconds and 499 saved observations, while its
+shared environment extends the horizon to reference length. Read-only timing
+checks on the three newly generated references find standing drawer 10.75 s
+with switch at 3.5 s, squatting drawer 11.70 s with switch at 6.0 s, and button
+15.375 s with runtime FK-derived switch at 6.9 s. These sampled clips support
+10 seconds for the declared fixed-length protocol, but do not prove that every
+reference fits or that it yields better success. Full-reference behavior and
+fixed-ten-second behavior are different experimental choices awaiting review.
+Our existing static-pick GR00T chain caps rollouts at 500 controls (10 s), while
+the walking chain caps them at 1200 controls (24 s); reference exhaustion and
+other termination conditions can end either earlier. Timing evidence is in
+`out/isaac62_migration/check_contributed_horizon_timing.json`.
+
 ## Recorded parents
 
 - g1: `0505979bf6058b772edb1e7436bb757461aba88f`
