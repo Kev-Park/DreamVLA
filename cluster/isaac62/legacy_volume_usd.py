@@ -72,6 +72,14 @@ def convert_cooked_volumes(stage, sdk):
             raise NotImplementedError(f'Volume-only migration cannot preserve {prim.GetPath()}: {unsupported}')
     private_defaults = []
     for prim in bodies:
+        material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial('physics')[0]
+        if material:
+            material_prim = material.GetPrim()
+            known_deformable = ('PhysxDeformableBodyMaterialAPI' in authored_apis(material_prim)
+                                or material_prim.HasAPI('OmniPhysicsDeformableMaterialAPI'))
+            if not known_deformable and (material_prim.HasAPI(UsdPhysics.MaterialAPI)
+                                         or material_prim.HasAPI('OmniPhysicsBaseMaterialAPI')):
+                raise NotImplementedError('Non-deformable physics material binding requires separate conversion')
         density = _value(prim, 'physics:density')
         mass = _value(prim, 'physics:mass')
         if density is not None and (mass is None or mass <= 0):
@@ -148,7 +156,10 @@ def convert_cooked_volumes(stage, sdk):
                     _set(mesh.GetPrim(),'physxCollision:'+key,data.get('physxCollision:'+key))
             meshes[kind] = mesh
         sdk.clean_old_deformable_apis_and_attrs(prim)
-        if not UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial('physics')[0]:
+        material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial('physics')[0]
+        # Physics-purpose lookup may fall back to a visual all-purpose
+        # binding. A visual material does not supply legacy elasticity.
+        if not material or not material.GetPrim().HasAPI('OmniPhysicsDeformableMaterialAPI'):
             private_defaults.append(_bind_implicit_legacy_material(stage, prim, data.get('physics:density')))
     return dict(body_count=len(bodies),material_count=len(materials),
                 private_legacy_defaults=private_defaults, discovery='authored API metadata')

@@ -52,6 +52,7 @@ def main():
                 assert not UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial('physics')[0]
                 sentinel = UsdShade.Material.Define(stage, prim.GetPath().AppendChild('legacyDefaultMaterial'))
                 sentinel.GetPrim().SetCustomDataByKey('preserveFixtureSentinel', 'original-unused-material')
+                UsdShade.MaterialBindingAPI.Apply(prim).Bind(sentinel)
                 count += 1
             assert count
             source = output/'unbound_fixture.usda'
@@ -72,7 +73,10 @@ def main():
                 sentinel = sim.stage.GetPrimAtPath(old['path']+'/legacyDefaultMaterial')
                 assert sentinel.GetCustomDataByKey('preserveFixtureSentinel') == 'original-unused-material'
                 assert not sentinel.HasAPI('OmniPhysicsDeformableMaterialAPI')
+                visual = UsdShade.MaterialBindingAPI(sim.stage.GetPrimAtPath(old['path'])).ComputeBoundMaterial()[0]
+                assert visual.GetPrim() == sentinel
             receipt['existing_material_preserved'] = True
+            receipt['visual_binding_preserved'] = True
         old=receipt['conversion']['legacy_bodies'][0]
         assert asset.max_sim_vertices_per_body==old['simulation_nodes']
         assert asset.max_sim_elements_per_body==old['simulation_elements']
