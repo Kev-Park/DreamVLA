@@ -517,13 +517,13 @@ def activate_contact_sensors(prim_path: str, threshold: float = 0.0, stage: Usd.
     while len(all_prims) > 0:
         # get current prim
         child_prim = all_prims.pop(0)
-        # check if prim is a rigid body
-        # nested rigid bodies are not allowed by SDK so we can safely assume that
-        # if a prim has a rigid body API, it is a rigid body and we don't need to
-        # check its children
+        # Imported articulations can nest links below other rigid bodies, with
+        # reset xform stacks separating their physics transforms. Visit every
+        # descendant rather than stopping at the first link in that hierarchy.
+        all_prims += child_prim.GetChildren()
         if child_prim.HasAPI(UsdPhysics.RigidBodyAPI):
             # set sleep threshold to zero
-            rb = PhysxSchema.PhysxRigidBodyAPI.Get(stage, prim.GetPrimPath())
+            rb = PhysxSchema.PhysxRigidBodyAPI.Apply(child_prim)
             rb.CreateSleepThresholdAttr().Set(0.0)
             # add contact report API with threshold of zero
             if not child_prim.HasAPI(PhysxSchema.PhysxContactReportAPI):
@@ -536,9 +536,6 @@ def activate_contact_sensors(prim_path: str, threshold: float = 0.0, stage: Usd.
             cr_api.CreateThresholdAttr().Set(threshold)
             # increment number of contact sensors
             num_contact_sensors += 1
-        else:
-            # add all children to tree
-            all_prims += child_prim.GetChildren()
     # check if no contact sensors were found
     if num_contact_sensors == 0:
         raise ValueError(
