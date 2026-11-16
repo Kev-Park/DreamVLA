@@ -6,11 +6,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import time
 
-from .paths import add_external_paths, ffmpeg_path
+from .paths import add_external_paths
 
 add_external_paths()
 
@@ -135,7 +134,6 @@ def main():
     a.multi_gpu = False
     a.kit_args = (a.kit_args or "") + " --/ngx/enabled=false --/rtx/post/aa/op=1"
     app = AppLauncher(a).app
-    import cv2
     import gymnasium as gym
     import numpy as np
     import torch
@@ -666,61 +664,11 @@ def main():
                 not a.one_success_per_reference or ref.name not in successful_references
             )
         ):
-            if len(frames) != 499:
-                raise ValueError("Incomplete successful episode")
             folder = a.output / f".episode_{saved:06d}.tmp-{os.getpid()}"
             folder.mkdir()
-            np.savez_compressed(
-                folder / "data.npz", **{k: np.asarray(v) for k, v in data.items()}
-            )
-            cv2.imwrite(
-                str(folder / "first_frame.png"),
-                cv2.cvtColor(frames[0], cv2.COLOR_RGB2BGR),
-            )
-            cmd = [
-                ffmpeg_path(),
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "rawvideo",
-                "-pix_fmt",
-                "rgb24",
-                "-s",
-                "640x480",
-                "-r",
-                "50",
-                "-i",
-                "pipe:0",
-                "-an",
-                "-c:v",
-                "libx264",
-                "-threads",
-                "2",
-                "-preset",
-                "fast",
-                "-crf",
-                "18",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                str(folder / "ego_view.mp4"),
-            ]
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-            try:
-                for rgb in frames:
-                    proc.stdin.write(rgb.tobytes())
-            finally:
-                proc.stdin.close()
-            if proc.wait(timeout=60):
-                raise RuntimeError("Video encoder failed")
-            cap = cv2.VideoCapture(str(folder / "ego_view.mp4"))
-            count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            cap.release()
-            if count != 499 or fps != 50:
-                raise ValueError("Encoded video mismatch")
+            from .recording import write_episode_media
+
+            write_episode_media(folder, data, frames)
             meta = dict(
                 outcome,
                 task=PROMPT,
