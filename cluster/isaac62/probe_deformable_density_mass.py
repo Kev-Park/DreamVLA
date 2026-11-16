@@ -20,6 +20,8 @@ def main():
     parser.add_argument('--dt', type=float, default=.005)
     parser.add_argument('--case', help='Run one case at the origin in an isolated process')
     parser.add_argument('--rotated', action='store_true', help='Capture rest tensors under a rotated, scaled spawn')
+    parser.add_argument('--rotation', type=float, nargs=4, default=(.9238795325, 0., 0., .3826834324),
+                        help='Diagnostic root quaternion, wxyz; used with --rotated')
     args = parser.parse_args()
     assert os.name == 'posix' and os.environ.get('CUDA_VISIBLE_DEVICES') == '0'
     version = importlib.metadata.version('isaacsim')
@@ -41,6 +43,10 @@ def main():
         from isaaclab.assets import DeformableObject, DeformableObjectCfg
         from pxr import Gf, UsdGeom, UsdShade
         report['isaaclab_source'] = isaaclab.__file__
+        rotation = np.asarray(args.rotation, dtype=np.float64)
+        assert np.linalg.norm(rotation) > 0
+        rotation = tuple(rotation/np.linalg.norm(rotation))
+        report['spawn_rotation_wxyz'] = rotation if args.rotated else (1., 0., 0., 0.)
         torch.set_num_threads(1)
         assert 0 < args.dt <= .005
         report['dt'] = args.dt
@@ -78,7 +84,7 @@ def main():
                 physics_material=material, mass_props=sim_utils.MassPropertiesCfg(mass=mass, density=density))
             cubes[name] = DeformableObject(DeformableObjectCfg(prim_path='/World/'+name, spawn=spawn,
                 init_state=DeformableObjectCfg.InitialStateCfg(pos=(index, 0, 1),
-                    rot=(.9238795325, 0., 0., .3826834324) if args.rotated else (1., 0., 0., 0.))))
+                    rot=rotation if args.rotated else (1., 0., 0., 0.))))
             if args.rotated:
                 root_prim = sim.stage.GetPrimAtPath('/World/'+name)
                 scale = root_prim.GetAttribute('xformOp:scale')
