@@ -38,7 +38,12 @@ def fixture_urdf(case):
         if 'nondiagonal' in case:
             text = text.replace('ixx=".1" ixy="0" ixz="0" iyy=".1" iyz="0" izz=".01"',
                                 'ixx=".1" ixy=".015" ixz=".006" iyy=".08" iyz="-.003" izz=".04"')
-        if 'merged' in case:
+        if 'empty_fixed' in case:
+            text = text.replace('</robot>', '''
+<link name="payload"/>
+<joint name="payload_fixed" type="fixed"><parent link="arm"/><child link="payload"/><origin xyz=".1 -.06 .15" rpy=".1 .2 -.1"/></joint>
+</robot>''')
+        elif 'merged' in case:
             text = text.replace('</robot>', '''
 <link name="payload"><inertial><origin xyz=".02 .03 .01" rpy=".1 .2 .3"/><mass value=".3"/><inertia ixx=".02" ixy="0" ixz="0" iyy=".03" iyz="0" izz=".04"/></inertial></link>
 <joint name="payload_fixed" type="fixed"><parent link="arm"/><child link="payload"/><origin xyz=".1 -.06 .15" rpy=".1 .2 -.1"/></joint>
@@ -78,6 +83,7 @@ def main():
             inertia_merged_natural=dict(merge_fixed_joints=True),
             inertia_merged_floating=dict(merge_fixed_joints=True, fix_base=False),
             inertia_merged_rotated_floating=dict(merge_fixed_joints=True, fix_base=False))
+        cases['inertia_empty_fixed_merged'] = dict(merge_fixed_joints=True)
         if args.cases:
             unknown = set(args.cases) - cases.keys()
             if unknown:
@@ -159,10 +165,11 @@ def main():
                 tree = ET.parse(source).getroot()
                 fixed_count = sum(joint.get('type') == 'fixed' for joint in tree.findall('joint'))
                 source_links = {link.get('name') for link in tree.findall('link')}
-                source_mass = sum(float(link.find('inertial/mass').get('value')) for link in tree.findall('link'))
-                imported_mass = sum(properties['mass'] for properties in row['mass_properties'].values())
+                source_masses = [link.find('inertial/mass') for link in tree.findall('link')]
+                source_mass = sum(float(mass.get('value')) for mass in source_masses if mass is not None)
+                imported_mass = sum(properties['mass'] or 0. for properties in row['mass_properties'].values())
                 row['mass_conservation'] = dict(source=source_mass, imported=imported_mass,
-                    absolute_error=abs(source_mass-imported_mass))
+                    absolute_error=abs(source_mass-imported_mass), all_source_masses_explicit=all(mass is not None for mass in source_masses))
                 row['merge_requested'] = cfg.merge_fixed_joints
                 # Do not assume that requesting a merge collapses a massive
                 # fixed child: SDK 5.1 retains it. Compare observed topologies
@@ -171,7 +178,8 @@ def main():
                 if not cfg.merge_fixed_joints:
                     assert set(row['bodies']) == source_links, row
                 assert len(row['joints']) == len(tree.findall('joint'))-fixed_count, row
-                assert row['mass_conservation']['absolute_error'] < 1e-6, row
+                if row['mass_conservation']['all_source_masses_explicit']:
+                    assert row['mass_conservation']['absolute_error'] < 1e-6, row
                 report['cases'][name] = row
             except Exception:
                 report['cases'][name] = dict(completed=False, requested_options=options, error=traceback.format_exc())
