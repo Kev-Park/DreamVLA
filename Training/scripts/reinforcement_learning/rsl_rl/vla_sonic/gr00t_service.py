@@ -86,6 +86,8 @@ def checkpoint_identity(path):
     config = path/'config.json'
     files = {}
     for file in sorted(path.rglob('*')):
+        if file.name == 'ready.json':
+            continue  # A service descriptor is not part of its model checkpoint.
         if file.is_file() and (file.suffix in {'.json', '.safetensors'} or
                                file.name in {'pytorch_model.bin', 'model.pt'}):
             with file.open('rb') as stream:

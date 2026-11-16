@@ -16,7 +16,8 @@ import torch
 
 SCRIPTS = Path(__file__).resolve().parents[1]/'Training/scripts/reinforcement_learning/rsl_rl'
 sys.path.insert(0, str(SCRIPTS))
-from vla_sonic.gr00t_service import PolicyService, PolicyServiceClient, capture_rng, restore_rng, publish_descriptor
+from vla_sonic.gr00t_service import (PolicyService, PolicyServiceClient, capture_rng,
+                                    restore_rng, publish_descriptor, checkpoint_identity, same_checkpoint)
 
 
 class FixturePolicy:
@@ -53,6 +54,17 @@ def serve_fixture(checkpoint, ready_file):
 
 
 class InferenceServiceContract(unittest.TestCase):
+    def test_relocation_requires_identical_weights(self):
+        with tempfile.TemporaryDirectory() as directory:
+            left, right = (Path(directory)/name for name in ('left', 'right'))
+            for path in (left, right):
+                path.mkdir()
+                (path/'config.json').write_text('{}')
+                (path/'model.safetensors').write_bytes(b'weight fixture')
+            self.assertTrue(same_checkpoint(checkpoint_identity(left), checkpoint_identity(right)))
+            (right/'model.safetensors').write_bytes(b'different weights')
+            self.assertFalse(same_checkpoint(checkpoint_identity(left), checkpoint_identity(right)))
+
     @classmethod
     def setUpClass(cls):
         cls.directory = tempfile.TemporaryDirectory()
