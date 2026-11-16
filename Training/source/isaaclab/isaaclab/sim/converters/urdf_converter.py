@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import re
+import importlib.metadata
 
 import isaacsim
 import omni.kit.app
@@ -49,9 +50,11 @@ class UrdfConverter(AssetConverterBase):
         manager = omni.kit.app.get_app().get_extension_manager()
         if not manager.is_extension_enabled("isaacsim.asset.importer.urdf"):
             enable_extension("isaacsim.asset.importer.urdf")
-        from isaacsim.asset.importer.urdf._urdf import acquire_urdf_interface
+        self._modern_urdf_importer = importlib.metadata.version("isaacsim").startswith("6.")
+        if not self._modern_urdf_importer:
+            from isaacsim.asset.importer.urdf._urdf import acquire_urdf_interface
 
-        self._urdf_interface = acquire_urdf_interface()
+            self._urdf_interface = acquire_urdf_interface()
         super().__init__(cfg=cfg)
 
     """
@@ -65,6 +68,11 @@ class UrdfConverter(AssetConverterBase):
             cfg: The URDF conversion configuration.
         """
 
+        if self._modern_urdf_importer:
+            from .urdf_converter_62 import convert_asset
+
+            convert_asset(self, cfg)
+            return
         import_config = self._get_urdf_import_config()
         # parse URDF file
         result, self._robot_model = omni.kit.commands.execute(
