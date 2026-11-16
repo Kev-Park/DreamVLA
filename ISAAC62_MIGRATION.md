@@ -44,6 +44,41 @@ This is numerical reference-generation validation, not a new visual approval.
 Other gradient-based reference refiners also call this library and require a
 follow-up audit; a stitch-only repair does not prove their preservation.
 
+The follow-up at `ddb5101` factors that behavior into
+`TrajGen/holosoma_adapters/kinematics_autograd.py` and uses it in the stitch,
+simple table-clearance refiner and 29-DOF augmented-Lagrangian refiner. The
+factory retains the original named-transform dictionary and its iteration
+order, including dictionary joint inputs and optional frame selection. It
+does not mutate the chain or the installed package. Its paired fixture invokes
+the actual Adapter-B script, exports/reloads references, and observes costs,
+parameters and gradients. Simple refinement keeps its 1,500-step budget; the
+AL fixture uses two outer rounds of 25 Adam updates and a separate rebased
+source-path/orientation augmentation pass. These are bounded validation
+settings, not new production recipes. All eleven phases at `ddb5101` completed
+with exit zero, including the paired original-source/legacy, candidate/legacy
+and candidate/target runs and two full-stitch regressions. All three refiner
+modes preserve the original legacy export and trace arrays bit-for-bit. Across
+environments, joints, root positions, objects, grasp positions and all recorded
+costs/parameters/gradients are identical. The augmentation palm path and hand
+orientation anchors are also identical. Only the serialized JAXLie global-pose
+matrix has the already-observed 5.96046448e-8 rounding difference. Both full
+stitch exports still match the accepted `4dc37e8` output bit-for-bit.
+
+The full simple run records 15 trace arrays, bounded AL 18 and AL plus
+augmentation 36. Each refiner exports 195 frames. Original receipts and
+`comparison.json` are local under
+`out/isaac62_migration/isaac62_refiners_ddb5101/`; all 66 retrieved files match
+their remote SHA-256 hashes. The session and workers are terminal, with no
+account-owned GPU contexts. This validates bounded optimization/export parity,
+not AL convergence, motion quality or task success.
+
+The AST consumer inventory in
+`out/isaac62_migration/reference_fk_consumer_inventory.json` also identifies
+older task-specific refiners, the diagnostic script and Izat's three reference
+generators as follow-up candidates. A gradient-bearing file alone is not proof
+that every FK call contributes to its loss. Those entrypoints have not been
+silently declared covered by the walking fixture.
+
 ## Drawer/button contribution integration (2026-11-15)
 
 Izat's 69-file contribution under `contrib/drawer_button` is now included in
