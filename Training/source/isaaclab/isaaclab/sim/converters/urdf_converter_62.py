@@ -73,6 +73,7 @@ def convert_asset(converter, cfg):
         source.GetRootLayer().Save()
     _preserve_empty_fixed_links(target, cfg)
     _preserve_joint_velocity_limits(target, cfg)
+    _preserve_explicit_joint_position_limits(target, cfg)
     _preserve_collision_capsules(target, cfg)
     _preserve_mimic_joints(target, cfg)
 
@@ -135,7 +136,10 @@ def _preserve_mimic_joints(usd_path, cfg):
             for attr in prim.GetAttributes():
                 if attr.GetName().startswith('drive:'+instance+':'):
                     attr.Block()
-            prim.GetAttribute('physxJoint:maxJointVelocity').Block()
+            # Original does not author a limit for mimic joints: PhysX's
+            # schema fallback is 1e6. Author that value explicitly so Newton
+            # velocity metadata cannot reintroduce the URDF limit.
+            PhysxSchema.PhysxJointAPI.Apply(prim).CreateMaxJointVelocityAttr(1e6)
             joint = UsdPhysics.PrismaticJoint(prim) if instance == 'linear' else UsdPhysics.RevoluteJoint(prim)
             reference = UsdPhysics.PrismaticJoint(source) if source.IsA(UsdPhysics.PrismaticJoint) else UsdPhysics.RevoluteJoint(source)
             lower, upper = reference.GetLowerLimitAttr().Get(), reference.GetUpperLimitAttr().Get()
@@ -149,6 +153,40 @@ def _preserve_mimic_joints(usd_path, cfg):
     for name, element in elements.items():
         if element.find('mimic') is not None:
             preserve(name)
+    stage.GetRootLayer().Save()
+
+
+def _preserve_explicit_joint_position_limits(usd_path, cfg):
+    """Keep original C++ float32 rounding for explicitly bounded joints.
+
+    This is applied before mimic source-limit expansion, which otherwise
+    amplifies a one-ULP degrees conversion difference. Continuous joints and
+    unspecified bounds retain the importer's unbounded handling.
+    """
+    from pxr import Tf, Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(usd_path))
+    f32 = lambda value: struct.unpack('f', struct.pack('f', value))[0]
+    joints = {prim.GetName(): prim for prim in stage.Traverse()
+              if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)}
+    for element in ET.parse(cfg.asset_path).getroot().findall('joint'):
+        kind = element.get('type')
+        if kind not in ('revolute', 'prismatic'):
+            continue
+        limit = element.find('limit')
+        if limit is None:
+            continue
+        name = Tf.MakeValidIdentifier(element.get('name'))
+        if name not in joints:
+            raise RuntimeError(f'Cannot preserve explicit limits for missing joint {name}')
+        joint = UsdPhysics.PrismaticJoint(joints[name]) if kind == 'prismatic' else UsdPhysics.RevoluteJoint(joints[name])
+        scale = 1.0 if kind == 'prismatic' else f32(180.0/f32(math.pi))
+        for field, create in (('lower', joint.CreateLowerLimitAttr), ('upper', joint.CreateUpperLimitAttr)):
+            if field in limit.attrib:
+                value = float(limit.get(field))
+                if not math.isfinite(value):
+                    raise ValueError(f'Non-finite explicit {field} limit for {name}')
+                create(f32(f32(value)*scale))
     stage.GetRootLayer().Save()
 
 
