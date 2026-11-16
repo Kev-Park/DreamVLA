@@ -113,6 +113,9 @@ def main():
             from dreamvla_drawer_button.scene import close_drawer_on_reset
             contributed.configure(cfg, RepairSpec(scale=0.5))
             close_drawer_on_reset(cfg)
+        if contributed_drawer or contributed_button:
+            # Measurement only: verify contact rows against the articulation.
+            cfg.scene.contact_forces.track_pose = True
         cfg.seed = 17
         if args.ref_motions_path is not None:
             if not hasattr(cfg, 'ref_motions_path'):
@@ -165,6 +168,18 @@ def main():
         with torch.inference_mode():
             obs, _ = env.reset(seed=17)
         finite(obs, 'reset_observations')
+        def check_contact_order():
+            if not (contributed_drawer or contributed_button):
+                return
+            sensor = base.scene['contact_forces']
+            ids, names = robot.find_bodies(sensor.body_names, preserve_order=True)
+            assert names == sensor.body_names
+            expected = robot.data.body_pos_w[:, ids]
+            error = float((sensor.data.pos_w-expected).abs().max())
+            assert error < 1e-5, ('Contact rows do not match articulation bodies', error)
+            receipt.setdefault('contact_order_checks', []).append(
+                dict(num_envs=args.num_envs, bodies=len(names), maximum_position_error_m=error))
+        check_contact_order()
         receipt['pid'] = os.getpid()
         inventory = subprocess.run(['nvidia-smi', '-q', '-x'], capture_output=True,
                                    text=True, check=True, timeout=20)
@@ -188,6 +203,8 @@ def main():
                 obs, reward, terminated, truncated, _ = env.step(actions)
                 finite(obs, 'observations')
                 finite(reward, 'reward')
+                if step in {0, args.steps-1}:
+                    check_contact_order()
                 for name, value in (('root_pos_w', robot.data.root_pos_w),
                                     ('root_quat_w', robot.data.root_quat_w),
                                     ('joint_pos', robot.data.joint_pos),
