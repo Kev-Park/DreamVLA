@@ -80,6 +80,47 @@ not cover this transformed-body case; full diagnostic preservation remains
 unproven. Exact captures and the local numerical comparison are under
 `out/isaac62_migration/isaac62_density_mass_d03719b/`.
 
+### Measured transformed-body diagnostic compatibility repair
+
+`28803ac` adds actual native quaternion, gradient and stress captures under
+initial, prescribed stretch, shear and rigid-rotation states. `79fbb35` repeats
+these with a general-axis root quaternion, not just a45-degree Z rotation.
+Both SDKs finish, and the captures are SHA-verified locally. Original5.1
+simulation rotations obey Q=polar(F_incremental) R_initial R_initial. Its
+reported simulation gradient is Q^T F_incremental L_initial. The collision
+gradient uses the inverse local rest edges followed by inverse initial scale
+and initial rotation. Direct formula predictions against native original
+captures agree within4.4e-6 in gradients and2.6kPa in stresses across the
+general-axis controlled states. This is a measured legacy reporting convention;
+it is not a proposal to change physical parameters or adopt new diagnostics.
+
+`bbe4375` preserves these conventions in the read-only adapter and bypasses
+modern SDK diagnostics for nonidentity root linear transforms. Two actual
+target captures (45-degree and general-axis roots, four states each) pass the
+independent original-capture comparator `67ae883`: element-mean gradient error
+<=1.436e-6, simulation rotation-matrix error<=1.110e-6 and stress error<=525Pa.
+The existing1e-5 gradient/rotation and stiffness-normalized10kPa stress bounds
+are unchanged. Different cooked meshes preclude pointwise tetrahedron parity;
+these checks do not establish solver-trajectory parity. Original collision
+quaternions are still zero, while the adapter returns proper rotations, so
+collision-quaternion parity is explicitly not claimed.
+
+`c98fa54` restores the missing simulation/collision rest-pose tensor methods
+with original float32 flattened buffer shapes and zero padding. The real
+heterogeneous two-body fixture passes these shape/finiteness/padding checks,
+plus its existing state and diagnostic checks. The saved cooked-USD regression
+and its seven atomic rejection guards pass; cloned implicit-material default
+and density1300 regressions also pass at `67ae883`. Finally `cd4bd01` runs the
+general-axis four-state case with an explicitly bound50kPa material: its
+element-mean gradient error<=1.462e-6 and stress error<=0.142Pa pass the original
+1e-5 and10Pa bounds. Both native original and target rest buffers agree with
+the established frame formula at atol1e-4/rtol1e-5 (float32 inverse matrices,
+not bitwise equality). All files are SHA-verified locally. No owned GPU
+contexts or reservations remain. Sheared/reflected root-frame diagnostics
+remain explicitly unsupported rather than silently assigned an untested frame
+convention. Density-only saved-USD conversion and the existing review gates
+remain open; the overall migration is not declared complete.
+
 With the user's narrow GPU1 graphics exception, fresh conversion at `134c4f0`
 passes the 50-inertial-body/43-joint physical-property audit. All 54 authored
 rest-world matrices match the original within 5.551115123125783e-17; fixed-joint
