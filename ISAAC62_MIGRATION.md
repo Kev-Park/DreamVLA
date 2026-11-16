@@ -22,30 +22,36 @@ volume-deformable conversion/state/diagnostics. The detailed sections below reta
 failures, repairs and the exact limits of each check. This does not establish
 scientific success-rate parity or mean every registered task works.
 
-The user approved the contributed ten-second horizon on November 16 after
-verification against Izat's original 500-control/499-recorded-frame protocol, and
-approved explicit rejection of nonneutral legacy dampingScale. Commit `67005b5`
-passed bounded runtime validation; the shared pick/walk horizon resolver
-retains its original longest-reference behavior. Completion still requires actual
-collection and evaluation checks under the approved horizon, user appearance
-review, and a final requirement audit. The concrete decision plans
-are `out/isaac62_migration/contributed_horizon_review_plan.json` and
-`out/isaac62_migration/nonneutral_damping_review_plan.json` in the EMBER root.
-Review renders include standing drawer, squatting drawer and button at
-`out/isaac62_migration/isaac62_generated_reference_runtime_134c4f0/`, with each
-task's `third_person.mp4`; `out/reports/dashboard.html` indexes the broader renders.
+The migration is complete within the requested bounded validation scope.
+The user approved the contributed ten-second horizon and explicit rejection of
+nonneutral legacy dampingScale, confirmed that the robots are visible in the
+short technical clips, and authorized continuation. This is not a claim of
+motion-quality or scientific success-rate parity. No full scientific training
+runs or evaluation suites were required.
 
-The reviewed horizon passes standing-drawer, squatting-drawer and button task
-construction, reset, 32 zero-action steps, contact/camera checks, and rendering
-with references longer than ten seconds. Each environment reports exactly ten
-seconds and 500 maximum controls. The three 1280-by-720, 32-frame clips and
-associated outputs (39 files) are pulled locally and SHA-256 verified under
-`out/isaac62_migration/isaac62_generated_reference_runtime_67005b5/`.
-Drawer and button each also pass two bounded PPO updates, exact model/Adam
-restore into a new runner, and a resumed update under the same horizon. This is
-not a complete 500-step collection or task-success evaluation. Evidence is in
-`out/isaac62_migration/poll_horizon_ppo_67005b5.json`; all test processes and GPU
-reservations are released. Appearance review is still pending.
+The final gates cover actual contributed drawer/button training commands,
+PPO model/Adam restore and resumed updates, eight expert/student evaluation
+commands across both reset tracks, one-attempt collection guards for both
+tasks, the production 499-frame recorder, and an intentional invalid-checkpoint
+failure. Both collection attempts exhausted their budgets and retained no
+failed demonstrations. The valid-record writer is tested with an explicitly
+synthetic fixture; a successful physical drawer/button collection is not claimed.
+
+Execution revealed and repaired stale observation-size checks, OpenCV video
+verification incompatibility, missing exception cleanup, and fast-shutdown
+failure-status masking. All earlier 18 capability-area evidence hashes and the
+final gate assertions pass. Exact scopes, evidence hashes and inherited limits
+are in `out/isaac62_migration/migration_final_audit_20261116.json`; resource
+receipts are in `migration_final_resource_release.json`.
+No owned migration test jobs, GPU reservations or temporary SSH relays remain.
+The final code validation source is `800bc49`; subsequent documentation and
+unused-import cleanup do not change runtime behavior.
+
+Review renders include standing drawer, squatting drawer and button under
+`out/isaac62_migration/isaac62_generated_reference_runtime_67005b5/`, each with
+`third_person.mp4`. They are 32-frame (0.64-second) zero-action appearance
+checks, not successful policy rollouts. `out/reports/dashboard.html` indexes
+these and the earlier renders.
 
 Explicit limitations remain visible: raw imported joint order differs (named
 policy/action interfaces pass); twelve registry constructors fail identically in
@@ -59,6 +65,55 @@ The evidence-address audit corrected seven stale references and verifies that al
 `out/isaac62_migration/evidence_addressability_audit_20261116.json`. This proves
 traceability, not capability completion. No migration test jobs remain active at
 the last terminal/resource check.
+
+## Contributed collection/evaluation integration (2026-11-16)
+
+The approved drawer/button horizon is ten seconds (500 controls), retaining
+499 nonterminal recorded observations. Pick and walk keep their original
+longest-reference horizon resolver. The original contributed protocol and
+collector specify this fixed contract; this is a reviewed correction of an
+inconsistency with the shared environment's automatic extension.
+
+Eight actual contributed evaluation commands completed under `551395c`:
+drawer and standing button, expert and native GR00T, each with repeatability and
+fresh-start tracks. Expert button trials each reached 500 controls; native
+GR00T button trials reached 433 and 500 controls. All token-composition audits
+were exact, with one history update per control and no nonfinite decoder
+outputs. These one-update technical checkpoints are not qualified experts;
+none of their outcomes is a scientific success-rate estimate. The drawer
+trials terminated early and were retained as failures. Local, SHA-verified
+outputs are `out/isaac62_migration/isaac62_izat_teacher_tracks_551395c/` and
+`out/isaac62_migration/isaac62_izat_student_tracks_551395c/`.
+
+This execution exposed and repaired stale hard-coded expert observation widths
+and support for RSL-RL's TensorDict container. The configured observations and
+checkpoint architecture are unchanged; the evaluator now validates the actual
+policy observation group. Actual drawer/button training CLIs and PPO
+model/Adam restore plus resumed updates pass the approved horizon. Metadata and
+checkpoint hashes are in
+`out/isaac62_migration/isaac62_izat_cli_metadata_67005b5_actual/`.
+
+The successful-record media path is now callable without duplicating its
+implementation. Its 499-frame synthetic integration test exposed OpenCV's
+missing video decoder in the Isaac 6.2 environment: OpenCV reported a valid
+499-frame, 50 Hz MP4 as unopened. Verification now uses FFprobe, while keeping
+the same encoder, data and task filters. The repaired production writer passes
+499 decoded 640-by-480 RGB frames at 50 Hz and exact saved-array comparisons.
+The explicitly synthetic fixture is under
+`out/isaac62_migration/isaac62_izat_recording_d9b0d7c/`; it is not a successful
+robot demonstration. Data conversion continues in the existing approved SONIC
+data environment with PyAV/OpenCV/PyArrow, not the simulator environment.
+
+Failed collection also exposed missing simulator cleanup before raising a
+quota error. A `finally` block now closes the client, environment and app.
+Isaac 6.2's fast shutdown is given the correct exit code, with an explicit
+traceback before it can exit the process; the older SDK's close signature is
+still accepted. The final `800bc49` rejection test logs its deliberate missing repair contract,
+returns process status 1, and releases all contexts/reservations. It is pulled
+and SHA-verified under
+`out/isaac62_migration/isaac62_izat_failure_exit_800bc49/`. The one-attempt
+collection checks and their quota/failure receipts are under
+`out/isaac62_migration/isaac62_izat_collection_checks_504c9b5/`.
 
 ## Fresh rest-pose repair live validation (2026-11-16)
 

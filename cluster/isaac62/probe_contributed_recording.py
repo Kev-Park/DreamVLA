@@ -4,7 +4,6 @@ This checks the 499-frame recording boundary, arrays and encoded video; it does
 not claim that a real expert completed a task or passed the physical filter.
 """
 import argparse
-import json
 import os
 from pathlib import Path
 import subprocess
