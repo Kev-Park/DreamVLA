@@ -208,6 +208,54 @@ shoulder roll. No transform replacement or tolerance waiver has been applied.
 Evidence: `isaac62_urdf_geometry_51cef96/receipt.json` and
 `diagnose_matched_shoulders.json` in local migration outputs.
 
+### Live PhysX pose parity (2026-11-16)
+
+The paired `cef7837` test reads actual PhysX link transforms for all 54 bodies,
+separately from USD/Gf matrices. After aligning at the pelvis, the initial poses
+pass the fixed 1e-6 position/rotation-matrix gate (maxima 2.98e-7 m / 7.11e-7).
+An identical nonzero named joint state with identical root poses, evaluated by
+forward kinematics without a physics advance, also passes (4.77e-7 m / 8.64e-7).
+Named model/finger interfaces remain exact. Thus the measured USD shoulder
+matrix discrepancy does not appear in these actual PhysX pose comparisons.
+This does not waive the USD gate, prove arbitrary-trajectory dynamics parity or
+change the separately failed raw-joint-order flag. Both paired articulations
+and their reservation are terminal/released. Evidence is local under
+`isaac62_urdf_live_mass_cef7837/`.
+
+### Native camera verification follow-up (2026-11-16)
+
+The new native fixture validates sensor and renderer poses against the physical
+robot ancestor and unchanged mount/configuration, with a fixed 1e-5 gate.
+The initial `35ecfad` fixture failed on treating a regex configuration path as
+a concrete prim; `462dc42` resolves the actual sensor prim. That run captures
+all 32 frames and passes three 44-body contact-order checks, but its camera
+rotation oracle fails at up to 1.47e-4. The accepted rounded camera quaternion
+has squared norm 0.99973. A paired CPU diagnostic confirms SDK5.1 and SDK6.2
+have identical Gf quaternion semantics; normalizing the input predicts a
+different orientation from the original USD authoring path. The `8c42258`
+fixture uses that original Gf.Rotation interpretation and records the normalized
+alternative separately. Its native pick run passes all three camera comparisons:
+maximum physical position/rotation errors 1.57e-7 m / 9.76e-8 and maximum
+renderer position/rotation errors 1.64e-7 m / 1.57e-7. All three 44-body contact
+checks are exact. The normalized alternative remains different by 1.28648e-4.
+Original 32-frame video and images are local in
+`isaac62_native_pick_regression_8c42258`; the process and reservation are released.
+No production camera value or tolerance was changed. The stitched-reference
+counterpart at the same commit also passes 32 steps and all three contact checks
+with 44 bodies. Maximum physical position/rotation errors are 8.69e-8 m /
+1.001e-7; renderer errors are 9.06e-8 m / 1.366e-7. Its original images and
+32-frame MP4 are local in `isaac62_native_walk_regression_8c42258`. Both native
+workers, reservations and all account-owned GPU contexts are confirmed released.
+These are zero-action bounded technical checks, not policy-success estimates.
+
+The native kitchen logs reference three missing EXR files not present among
+tracked textures: `beige_wall_001_nor_gl_1k.exr`,
+`laminate_floor_03_rough_1k.exr`, and `laminate_floor_03_nor_gl_1k.exr`.
+Thirty collected JPG/PNG/MDL dependencies were checked remotely and are real
+files, not LFS pointers. MDL texture_return-to-color conversion errors also
+remain. These asset/material issues are not hidden by the RGB non-black check;
+no replacement textures or unreviewed appearance changes have been applied.
+
 ### Contributed live gates (2026-11-15)
 
 The actual contributed `sample-human` entrypoint completed one 196-frame
@@ -408,9 +456,9 @@ Local receipts and original videos are under EMBER's `out/isaac62_migration/`;
 | Merged project surface | Latest audit has no missing files, declared symbols or CLI options against either recorded parent. This is not behavioral proof. |
 | Task configurations | All 56 constructors were checked in both original 5.1 parents and current 6.2: 44 pass and the same 12 fail. No new failures or recorded configuration-metadata differences. The 12 original broken registrations remain explicitly failed. |
 | Task runtime and rendering | Representative tracking, static pick, walking, motion-only, drawer and button reset/step/render gates pass. Policy, camera and reference-overlay paths have local artifacts. User appearance review remains pending. |
-| Models and optimization | Saved SONIC/residual CUDA parity, GR00T service integration and residual optimizer/save/resume checks pass. Full GR00T optimizer/save/fresh-process resume now passes on Bluesclues. Izat's separate native training/serving entrypoints still need their own integration checks. |
+| Models and optimization | Saved SONIC/residual CUDA parity, GR00T service integration and residual optimizer/save/resume checks pass. Full GR00T optimizer/save/fresh-process resume now passes on Bluesclues. Izat's native training/export and fresh serving/reload gates also pass bounded fixtures; repaired drawer/button PPO restores model and Adam state exactly before a resumed update. |
 | Collection and reusable data | Passing expert write, failed student rescue, broad/late takeover labels and finger commands are checked. Actual 577+605-frame HDF5 conversions match full versus sharded/merged data, whole-dataset normalization and official GR00T loading. |
-| Reference generation | Actual input export, original holosoma optimization, old/new Adapter-B arrays and full-reference playback pass their stated gates. Original diffusion sampling awaits approval for the existing OmniControl environment. Strict full-stitch joint parity remains failed; visual review remains open. |
+| Reference generation | Actual input export, original holosoma optimization, old/new Adapter-B arrays and full-reference playback pass their stated gates. Original OmniControl sampling in the approved existing environment completed one 196-frame sample with all 1,000 diffusion steps; SMPL and full dataset-loader coverage remain open. Strict full-stitch joint parity remains failed; visual review remains open. |
 | Known limits | Exact snapshot/replay fails in both original and target SDKs; production rescue uses independent rerolls. Implicit-material stress, removed damping scaling and legacy collision-diagnostic parity remain explicitly unresolved/unsupported rather than silently approximated. |
 
 ### Material rejection leaves the USD stage unchanged
