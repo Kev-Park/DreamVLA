@@ -15,6 +15,7 @@ def main():
     parser.add_argument('--legacy-root', type=Path, required=True)
     parser.add_argument('--modern-root', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--cases', nargs='+', default=['default', 'mimic_normal'])
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
@@ -27,17 +28,19 @@ def main():
         from isaaclab.assets import Articulation, ArticulationCfg
         from isaaclab.sim import SimulationCfg, SimulationContext, UsdFileCfg
         sim = SimulationContext(SimulationCfg(dt=report['dt'], gravity=(0., 0., 0.), device=args.device))
-        robots, ids, traces = {}, {}, {}
+        robots, ids, traces, pose_traces, offsets = {}, {}, {}, {}, {}
         for version, root in (('legacy', args.legacy_root), ('modern', args.modern_root)):
-            for case in ('default', 'mimic_normal'):
+            for case in args.cases:
                 name = version+'_'+case
+                offsets[name] = (len(robots)*2., 0., 0.)
                 cfg = ArticulationCfg(prim_path='/World/'+name,
                     spawn=UsdFileCfg(usd_path=str(root/case/'option_fixture.usd')),
-                    init_state=ArticulationCfg.InitialStateCfg(pos=(len(robots)*2., 0., 0.), joint_pos={'.*': 0.}),
+                    init_state=ArticulationCfg.InitialStateCfg(pos=offsets[name], joint_pos={'.*': 0.}),
                     actuators={'hinge': ImplicitActuatorCfg(joint_names_expr=['hinge'],
                         stiffness=20., damping=1., effort_limit_sim=10., velocity_limit_sim=2.)})
                 robots[name] = Articulation(cfg)
                 traces[name] = []
+                pose_traces[name] = []
         sim.reset()
         for name, robot in robots.items():
             indices, names = robot.find_joints(['hinge', 'finger_hinge'], preserve_order=True)
@@ -57,20 +60,34 @@ def main():
                 q = robot.data.joint_pos[:, ids[name]]
                 assert torch.isfinite(q).all(), name
                 traces[name].append(q[0].cpu().tolist())
+                poses = robot.root_physx_view.get_link_transforms()[0].clone()
+                poses[:, :3] -= torch.tensor(offsets[name], device=args.device)
+                body_ids = [robot.body_names.index(body) for body in ('base', 'arm', 'finger')]
+                pose_traces[name].append(poses[body_ids].cpu().tolist())
         comparisons = {}
-        for case in ('default', 'mimic_normal'):
+        for case in args.cases:
             old, new = (torch.tensor(traces[version+'_'+case]) for version in ('legacy', 'modern'))
             error = float((old-new).abs().max())
+            left, right = (torch.tensor(pose_traces[version+'_'+case]) for version in ('legacy', 'modern'))
+            position_error = float((left[..., :3]-right[..., :3]).abs().max())
+            lq, rq = left[..., 3:], right[..., 3:]
+            lq = lq/lq.norm(dim=-1, keepdim=True)
+            rq = rq/rq.norm(dim=-1, keepdim=True)
+            quaternion_error = float(torch.minimum((lq-rq).abs().amax(-1), (lq+rq).abs().amax(-1)).max())
             comparisons[case] = dict(maximum_absolute_error_rad=error,
-                preservation_pass=error <= report['tolerance_rad'])
+                maximum_body_position_error_m=position_error, maximum_quaternion_component_error=quaternion_error,
+                preservation_pass=error <= report['tolerance_rad'] and position_error <= 2e-4 and quaternion_error <= 1e-4)
         # Prove the fixture actually exercises the enabled/disabled constraints.
-        response_gap = float((torch.tensor(traces['legacy_default'])[:, 1]
-                              - torch.tensor(traces['legacy_mimic_normal'])[:, 1]).abs().max())
+        response_gap = None
+        if 'default' in args.cases and 'mimic_normal' in args.cases:
+            response_gap = float((torch.tensor(traces['legacy_default'])[:, 1]
+                                  - torch.tensor(traces['legacy_mimic_normal'])[:, 1]).abs().max())
         hinge_range = {name: max(row[0] for row in trace)-min(row[0] for row in trace)
                        for name, trace in traces.items()}
-        report.update(measurement_completed=True, traces=traces, comparisons=comparisons,
+        report.update(measurement_completed=True, cases=args.cases, traces=traces, body_pose_traces=pose_traces,
+            comparisons=comparisons, body_position_tolerance_m=2e-4, quaternion_component_tolerance=1e-4,
             enabled_disabled_finger_response_gap_rad=response_gap, hinge_range_rad=hinge_range)
-        assert response_gap > .01, 'Fixture did not distinguish the two mimic flag states'
+        assert response_gap is None or response_gap > .01, 'Fixture did not distinguish the two mimic flag states'
         assert all(value > .1 for value in hinge_range.values()), 'Hinge stimulus did not move a fixture'
         assert all(row['preservation_pass'] for row in comparisons.values()), comparisons
         report['completed'] = True
