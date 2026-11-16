@@ -2611,3 +2611,36 @@ meshes. Eighteen files are SHA-verified locally in
 `compare_saved_bound_density.py --scaled`. All four phases finish with successful
 receipts, and owned GPU contexts/reservations are empty afterward. This validates
 the tested nonuniform-scale mass inference, not arbitrary transform/solver parity.
+
+### Sheared-root diagnostic preservation
+
+Native `f28440f` captures a general-axis root with nonuniform scale and an added
+shear, plus a reflected-root baseline. Both complete their nodal/kinematic test,
+but reflected native simulation rest matrices and gradients are zero and simulation
+stresses contain non-finite values. A completed probe there does not imply valid
+diagnostics. The adapter retains an explicit reflected-frame error rather than
+returning fabricated finite stresses. The probe now records finiteness for each
+diagnostic array and requires it outside the intentionally invalid reflected case.
+Eight native files are SHA-verified in `isaac62_density_mass_f28440f_native_frames/`.
+
+The finite sheared case reveals an additional native reporting convention:
+simulation diagnostics use `Gf.Transform`'s decomposed rotation and principal
+scale, excluding scale orientation. Collision bind coordinates retain authored
+shear, so their rest mapping must account for the complete authored linear frame.
+The first `f6d89d7` repair passes simulation diagnostics and the ordinary rotated
+regression but fails the shear collision comparison (gradient error 0.066 and
+stress error 14.3 kPa). Those failing captures are retained.
+
+The corrected `8336b02` read-only adapter passes the existing paired four-state
+comparator for simulation and collision gradients/stresses. Maximum mean-gradient
+error is 1.416e-6, simulation rotation-matrix error 7.988e-7, and stress error
+0.194 Pa, within unchanged 1e-5/1e-5/10-Pa bounds. The ordinary general-axis,
+nonuniform-scale regression passes too. Both simulation/collision rest buffers
+also match the independently established native formula at the existing
+atol1e-4/rtol1e-5; float32 inverse-buffer comparisons are not bitwise. Eight target
+files are SHA-verified under `isaac62_density_mass_8336b02_target_frames/`, alongside
+`shear_comparison.json`, `standard_comparison.json`, and `rest_pose_comparison.json`.
+These are element-mean diagnostic and buffer-convention checks with differing
+cooked meshes, not solver-trajectory, collision-quaternion or task-success parity.
+No simulator nodal state, material, policy, reward or episode horizon is changed.
+The terminal audit finds no owned GPU contexts or reservations.
