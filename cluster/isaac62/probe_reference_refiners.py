@@ -7,7 +7,6 @@ The optional augmentation pass exercises source-path and orientation anchors.
 import argparse
 import hashlib
 import importlib.metadata
-import inspect
 import json
 import os
 from pathlib import Path
@@ -107,7 +106,8 @@ def main():
             stage = 'augmentation'
             joints = values['joints'].copy()
             root_p = values['global_position'].copy()
-            root_q = np.asarray(motion['global_pose'].rotation().wxyz)
+            rotation = motion['global_pose'].rotation()
+            root_q = np.asarray(rotation.wxyz() if callable(rotation.wxyz) else rotation.wxyz)
             shift = np.array([.015, -.01, 0.], dtype=np.float32)
             objects = values['object_poses'][:, :3] + shift
             # Exercise the existing rebased source-path/orientation branches.
