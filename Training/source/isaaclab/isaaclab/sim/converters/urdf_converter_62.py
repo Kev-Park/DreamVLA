@@ -8,6 +8,8 @@ the SDK owns the generated layered asset and its internal reference paths.
 """
 import os
 from pathlib import Path
+import math
+import xml.etree.ElementTree as ET
 
 
 def convert_asset(converter, cfg):
@@ -69,3 +71,71 @@ def convert_asset(converter, cfg):
             raise RuntimeError("URDF importer produced no PhysX physics variant")
         physics.SetVariantSelection("physx")
         source.GetRootLayer().Save()
+    _preserve_empty_fixed_links(target, cfg)
+
+
+def _preserve_empty_fixed_links(usd_path, cfg):
+    """Retain the original importer's physical empty sensor links.
+
+    The SDK 5.1 importer kept empty, unmerged fixed links as rigid bodies.
+    Its zero authored mass resolves to 1 kg in PhysX, with isotropic 1e-4
+    inertia. SDK 6 instead leaves them as massless Xforms. For the original
+    G1 this silently removes four bodies and 4 kg. Author the measured legacy
+    properties explicitly in our wrapper; do not modify the SDK-generated
+    layers or add visual/collision geometry. Merged fixed links stay merged.
+    """
+    if cfg.merge_fixed_joints:
+        return
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+    robot = ET.parse(cfg.asset_path).getroot()
+    empty = {link.get("name") for link in robot.findall("link")
+             if all(link.find(field) is None for field in ("inertial", "visual", "collision"))}
+    if not empty:
+        return
+    stage = Usd.Stage.Open(str(usd_path))
+    assert stage and stage.GetDefaultPrim()
+    prims = list(stage.Traverse())
+    root_path = stage.GetDefaultPrim().GetPath()
+    restored = []
+    for joint in robot.findall("joint"):
+        child = joint.find("child").get("link")
+        if child not in empty or joint.get("type") != "fixed":
+            continue
+        matches = [prim for prim in prims if prim.GetName() == child and prim.IsA(UsdGeom.Xform)]
+        if len(matches) != 1:
+            raise RuntimeError(f"Cannot identify empty URDF link {child}: {matches}")
+        body = matches[0]
+        if body.HasAPI(UsdPhysics.RigidBodyAPI):
+            continue
+        parent_name = joint.find("parent").get("link")
+        parents = [prim for prim in prims if prim.GetName() == parent_name and prim.HasAPI(UsdPhysics.RigidBodyAPI)]
+        if len(parents) != 1:
+            raise RuntimeError(f"Cannot identify physical parent {parent_name} of empty link {child}")
+        UsdPhysics.RigidBodyAPI.Apply(body)
+        mass = UsdPhysics.MassAPI.Apply(body)
+        mass.CreateMassAttr(1.0)
+        mass.CreateCenterOfMassAttr(Gf.Vec3f(0.0))
+        mass.CreateDiagonalInertiaAttr(Gf.Vec3f(1e-4))
+        mass.CreatePrincipalAxesAttr(Gf.Quatf(1.0))
+        origin = joint.find("origin")
+        xyz = [float(value) for value in (origin.get("xyz", "0 0 0") if origin is not None else "0 0 0").split()]
+        rpy = [float(value) for value in (origin.get("rpy", "0 0 0") if origin is not None else "0 0 0").split()]
+        sx, sy, sz = [math.sin(value/2) for value in rpy]
+        cx, cy, cz = [math.cos(value/2) for value in rpy]
+        rotation = Gf.Quatf(cx*cy*cz+sx*sy*sz,
+                           Gf.Vec3f(sx*cy*cz-cx*sy*sz, cx*sy*cz+sx*cy*sz, cx*cy*sz-sx*sy*cz))
+        fixed = UsdPhysics.FixedJoint.Define(stage, root_path.AppendPath("LegacyFixedLinks").AppendChild(joint.get("name")))
+        fixed.CreateBody0Rel().SetTargets([parents[0].GetPath()])
+        fixed.CreateBody1Rel().SetTargets([body.GetPath()])
+        fixed.CreateLocalPos0Attr(Gf.Vec3f(*xyz))
+        fixed.CreateLocalRot0Attr(rotation)
+        fixed.CreateLocalPos1Attr(Gf.Vec3f(0.0))
+        fixed.CreateLocalRot1Attr(Gf.Quatf(1.0))
+        restored.append(child)
+    if restored:
+        stage.GetRootLayer().customLayerData = {
+            **stage.GetRootLayer().customLayerData,
+            "dreamvla_legacy_empty_fixed_links": ",".join(sorted(restored)),
+        }
+        stage.GetRootLayer().Save()
