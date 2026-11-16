@@ -69,11 +69,19 @@ def main():
                 expected[joint.find('child').get('link')] = expected[joint.find('parent').get('link')] @ origin(joint.find('origin'))
                 pending.remove(joint)
         bodies = {p.GetName(): p for p in stage.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)}
-        assert set(bodies) == set(links), (set(bodies)-set(links), set(links)-set(bodies))
+        inertial_links = {name for name, link in links.items() if link.find('inertial') is not None}
+        assert set(bodies) == inertial_links, (set(bodies)-inertial_links, inertial_links-set(bodies))
+        # Sensor links without inertial/collision properties are retained as
+        # plain Xforms, not rigid bodies. Audit their transforms as well.
+        link_prims = {}
+        for name in links:
+            matches = [p for p in stage.Traverse() if p.GetName() == name and p.IsA(UsdGeom.Xform)]
+            assert len(matches) == 1, (name, [str(p.GetPath()) for p in matches])
+            link_prims[name] = matches[0]
         cache = UsdGeom.XformCache()
         world = lambda p: np.asarray(cache.GetLocalToWorldTransform(p)).T
         base_inv = np.linalg.inv(world(bodies[root]))
-        for name, prim in bodies.items():
+        for name, prim in link_prims.items():
             gate('links', dict(name=name), dict(transform_error=float(np.max(np.abs(base_inv @ world(prim)-expected[name])))))
         by_name = {p.GetName(): p for p in stage.Traverse() if p.IsA(UsdPhysics.Joint)}
         unit_axes = dict(X=np.array([1., 0, 0]), Y=np.array([0., 1, 0]), Z=np.array([0., 0, 1]))
