@@ -42,10 +42,11 @@ def main():
             robot.update(sim.get_physics_dt())
             masses = robot.root_physx_view.get_masses().cpu()
             inertias = robot.root_physx_view.get_inertias().cpu()
-            assert torch.isfinite(masses).all() and torch.isfinite(inertias).all()
+            coms = robot.root_physx_view.get_coms().cpu()
+            assert torch.isfinite(masses).all() and torch.isfinite(inertias).all() and torch.isfinite(coms).all()
             assert masses.shape == (1, len(robot.body_names))
             report['robots'][name] = dict(body_names=list(robot.body_names), masses=masses[0].tolist(),
-                                         inertias=inertias[0].tolist(), joint_names=list(robot.joint_names),
+                                         inertias=inertias[0].tolist(), coms=coms[0].tolist(), joint_names=list(robot.joint_names),
                                          total_mass=float(masses.sum()))
         for _ in range(16):
             sim.step(render=False)
@@ -56,10 +57,19 @@ def main():
         left = dict(zip(legacy['body_names'], legacy['masses']))
         right = dict(zip(modern['body_names'], modern['masses']))
         errors = {name: abs(left[name]-right[name]) for name in left.keys() & right.keys()}
+        left_ids = {name: index for index, name in enumerate(legacy['body_names'])}
+        right_ids = {name: index for index, name in enumerate(modern['body_names'])}
+        inertia_errors, com_errors = {}, {}
+        for name in left.keys() & right.keys():
+            i, j = left_ids[name], right_ids[name]
+            inertia_errors[name] = float((torch.tensor(legacy['inertias'][i])-torch.tensor(modern['inertias'][j])).abs().max())
+            com_errors[name] = float((torch.tensor(legacy['coms'][i][:3])-torch.tensor(modern['coms'][j][:3])).abs().max())
         report.update(completed=True, common_body_mass_errors=errors,
+                      common_body_inertia_errors=inertia_errors, common_body_com_position_errors=com_errors,
                       missing_modern_bodies=sorted(left.keys()-right.keys()),
                       extra_modern_bodies=sorted(right.keys()-left.keys()),
-                      preservation_pass=left.keys() == right.keys() and max(errors.values()) < 1e-6,
+                      preservation_pass=left.keys() == right.keys() and legacy['joint_names'] == modern['joint_names']
+                      and max(errors.values()) < 1e-6 and max(inertia_errors.values()) < 1e-6 and max(com_errors.values()) < 1e-6,
                       steps=16)
     except BaseException:
         report['error'] = traceback.format_exc()
