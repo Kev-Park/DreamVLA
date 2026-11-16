@@ -378,6 +378,10 @@ def _spawn_mesh_geom_from_mesh(
         # supply those deformable constants. Own this compatibility default
         # locally so neither scene-wide defaults nor another asset change.
         material_path = f'{geom_prim_path}/legacyDefaultMaterial'
+        suffix = 1
+        while mesh_prim.GetStage().GetPrimAtPath(material_path):
+            material_path = f'{geom_prim_path}/legacyDefaultMaterial_{suffix}'
+            suffix += 1
         density = cfg.mass_props.density if cfg.mass_props is not None else None
         material_cfg = DeformableBodyMaterialCfg(density=density)
         material = material_cfg.func(material_path, material_cfg)

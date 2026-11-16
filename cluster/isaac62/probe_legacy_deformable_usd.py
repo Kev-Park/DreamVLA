@@ -50,6 +50,8 @@ def main():
                 if 'PhysxDeformableBodyAPI' not in authored_apis(prim):continue
                 prim.RemoveProperty('material:binding:physics')
                 assert not UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial('physics')[0]
+                sentinel = UsdShade.Material.Define(stage, prim.GetPath().AppendChild('legacyDefaultMaterial'))
+                sentinel.GetPrim().SetCustomDataByKey('preserveFixtureSentinel', 'original-unused-material')
                 count += 1
             assert count
             source = output/'unbound_fixture.usda'
@@ -66,6 +68,11 @@ def main():
             assert asset.material_physx_view is None
             receipt['public_material_view_none'] = True
             assert receipt['conversion']['conversion']['private_legacy_defaults']
+            for old in receipt['conversion']['legacy_bodies']:
+                sentinel = sim.stage.GetPrimAtPath(old['path']+'/legacyDefaultMaterial')
+                assert sentinel.GetCustomDataByKey('preserveFixtureSentinel') == 'original-unused-material'
+                assert not sentinel.HasAPI('OmniPhysicsDeformableMaterialAPI')
+            receipt['existing_material_preserved'] = True
         old=receipt['conversion']['legacy_bodies'][0]
         assert asset.max_sim_vertices_per_body==old['simulation_nodes']
         assert asset.max_sim_elements_per_body==old['simulation_elements']
@@ -113,6 +120,8 @@ def main():
         receipt['affine_check']=dict(errors=errors,gradient_atol=1e-4,stress_atol_pa=stress_atol,
                                     youngs_pa=youngs, poissons_ratio=poisson)
         assert all(e['gradient']<=1e-4 and e['stress_pa']<=stress_atol for e in errors.values()),errors
+        if args.omit_material:
+            assert hashlib.sha256(original_source.read_bytes()).hexdigest()==source_sha
         receipt.update(completed=True,frames=20,source_unchanged=True,
                        mean_fall_m=float((before-after)[...,2].mean()),
                        finite_arrays={k:list(v.shape) for k,v in arrays.items()})

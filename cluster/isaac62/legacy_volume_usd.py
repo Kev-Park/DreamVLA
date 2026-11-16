@@ -41,7 +41,12 @@ def _bind_pose(mesh, points):
 
 def _bind_implicit_legacy_material(stage, body, density):
     """Keep omitted-material elasticity local and its public material view absent."""
-    material = UsdShade.Material.Define(stage, body.GetPath().AppendChild('legacyDefaultMaterial'))
+    path = body.GetPath().AppendChild('legacyDefaultMaterial')
+    suffix = 1
+    while stage.GetPrimAtPath(path):
+        path = body.GetPath().AppendChild(f'legacyDefaultMaterial_{suffix}')
+        suffix += 1
+    material = UsdShade.Material.Define(stage, path)
     prim = material.GetPrim()
     for schema in ('OmniPhysicsBaseMaterialAPI', 'OmniPhysicsDeformableMaterialAPI', 'PhysxDeformableMaterialAPI'):
         prim.ApplyAPI(schema)
