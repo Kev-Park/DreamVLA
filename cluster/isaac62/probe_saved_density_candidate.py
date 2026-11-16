@@ -22,6 +22,8 @@ def main():
     parser.add_argument('--density', type=float, required=True)
     parser.add_argument('--candidate', action='store_true')
     parser.add_argument('--mass-from-density', action='store_true')
+    parser.add_argument('--bound-material', action='store_true',
+                        help='Retain the saved explicit material for density/mass controls')
     args = parser.parse_args()
     version = importlib.metadata.version('isaacsim')
     assert version == ('6.2.0.0' if args.candidate else '5.1.0.0')
@@ -31,7 +33,8 @@ def main():
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     args.output.mkdir(parents=True, exist_ok=False)
     report = dict(completed=False, started=time.time(), scope=__doc__, isaacsim=version,
-                  source_sha256=digest, density=args.density, candidate=args.candidate)
+                  source_sha256=digest, density=args.density, candidate=args.candidate,
+                  bound_material=args.bound_material)
     app = sim = None
     try:
         from isaacsim import SimulationApp
@@ -46,14 +49,15 @@ def main():
         import isaaclab.sim as sim_utils
         from isaaclab.assets import DeformableObject, DeformableObjectCfg
         from isaacsim.core.utils.stage import open_stage
-        from legacy_volume_usd import authored_apis, convert_cooked_volumes
+        from legacy_volume_usd import authored_apis
         torch.set_num_threads(1)
         stage = Usd.Stage.Open(Usd.Stage.Open(str(source)).Flatten())
         bodies = [p for p in stage.Traverse() if 'PhysxDeformableBodyAPI' in authored_apis(p)]
         assert len(bodies) == 1
         body = bodies[0]
-        body.RemoveProperty('material:binding:physics')
-        assert not UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial('physics')[0]
+        if not args.bound_material:
+            body.RemoveProperty('material:binding:physics')
+        assert bool(UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial('physics')[0]) == args.bound_material
         rest = np.asarray(body.GetAttribute('physxDeformable:simulationRestPoints').Get(), dtype=np.float64)
         connectivity = np.asarray(body.GetAttribute('physxDeformable:simulationIndices').Get()).reshape(-1, 4)
         tetrahedra = rest[connectivity]
@@ -83,8 +87,9 @@ def main():
             converted = stage.GetPrimAtPath(path)
             assert converted.GetAttribute('omniphysics:mass').Get() == explicit_mass
             material = UsdShade.MaterialBindingAPI(converted).ComputeBoundMaterial('physics')[0]
-            assert material.GetPrim().GetAttribute('omniphysics:density').Get() == args.density
-            assert material.GetPrim().GetCustomDataByKey('isaaclab:implicitLegacyDeformableMaterial')
+            if not args.bound_material:
+                assert material.GetPrim().GetAttribute('omniphysics:density').Get() == args.density
+                assert material.GetPrim().GetCustomDataByKey('isaaclab:implicitLegacyDeformableMaterial')
             fixture = converted_file
             report['public_converter_without_post_edits'] = True
             from check_legacy_volume_rejections import run_checks
@@ -93,7 +98,8 @@ def main():
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
         asset = DeformableObject(DeformableObjectCfg(prim_path='/World/SoftCube', spawn=None))
         sim.reset()
-        assert asset.is_initialized and asset.material_physx_view is None
+        assert asset.is_initialized
+        assert (asset.material_physx_view is not None) == args.bound_material
         assert asset.max_sim_vertices_per_body == source_counts['nodes']
         assert asset.max_sim_elements_per_body == source_counts['elements']
         initial = asset.data.nodal_state_w.clone()
@@ -118,7 +124,8 @@ def main():
         assert relaxation > 1e-5, 'No informative free relaxation'
         assert hashlib.sha256(source.read_bytes()).hexdigest() == digest
         report.update(completed=True, source_unchanged=True, source_counts=source_counts,
-                      steps=64, dt=.005, relaxation_m=relaxation, public_material_view_none=True)
+                      steps=64, dt=.005, relaxation_m=relaxation,
+                      public_material_view_none=asset.material_physx_view is None)
     except BaseException:
         report['error'] = traceback.format_exc()
         raise
