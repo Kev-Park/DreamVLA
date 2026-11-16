@@ -87,7 +87,7 @@ def _preserve_collision_capsules(usd_path, cfg):
     """
     if not cfg.replace_cylinders_with_capsules:
         return
-    from pxr import Usd, UsdGeom, UsdPhysics
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
     stage = Usd.Stage.Open(str(usd_path))
     assert stage and stage.GetDefaultPrim()
@@ -104,7 +104,11 @@ def _preserve_collision_capsules(usd_path, cfg):
         capsule.CreateHeightAttr(height)
         capsule.CreateRadiusAttr(radius)
         capsule.CreateAxisAttr(axis)
-        capsule.CreateExtentAttr(UsdGeom.Capsule.ComputeExtent(height, radius, axis))
+        # Python exposes Boundable.ComputeExtent(time), not the C++ static
+        # capsule overload. The analytic local half-extents are identical.
+        half_extents = Gf.Vec3f(radius)
+        half_extents[{'X': 0, 'Y': 1, 'Z': 2}[axis]] = height/2 + radius
+        capsule.CreateExtentAttr([-half_extents, half_extents])
     stage.GetRootLayer().Save()
 
 
