@@ -20,6 +20,14 @@ class VolumeDeformableView:
         # A saved cooked body must retain its existing topology/tensor view.
         roots = [stage.GetPrimAtPath(path) for path in view.prim_paths]
         can_wrap = all(p.HasAPI('PhysxAutoDeformableBodyAPI') or p.IsA(UsdGeom.TetMesh) for p in roots)
+        # The SDK wrapper explicitly recooks auto bodies even when wrapping.
+        # Without a bound material this can replace their simulation meshes
+        # after the native view exists, invalidating it and crashing PhysX.
+        # Use our read-only cooked-topology diagnostics for these bodies.
+        # Stress queries still reject unknown implicit material parameters.
+        can_wrap = can_wrap and all(
+            bool(UsdShade.MaterialBindingAPI(p).ComputeBoundMaterial('physics')[0]) for p in roots
+        )
         self._diagnostics = DeformablePrim(pattern, deformable_type='volume') if can_wrap else None
         self._stage = stage
         self._collision_rest = None
