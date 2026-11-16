@@ -195,6 +195,38 @@ do not resolve non-neutral dampingScale, density-only saved-body mass conversion
 exact physical snapshot continuity, contributed horizon review or user visual
 review, and do not claim every arbitrary USD material arrangement is supported.
 
+## Native non-neutral damping investigation (2026-11-16)
+
+The original5.1 runtime was tested with seven isolated cubes, two initial strain
+modes and64steps per mode. Parameters include scale0/0.5/1, a duplicate baseline,
+zero/high elasticity-damping controls and the candidate halved coefficient.
+Every valid case's authored material values are checked, and the positive damping
+control must separate before measurements count as informative. The clean run
+`4d9f6b7` completes128steps without PhysX errors, then releases all GPU contexts and
+its reservation. All six files from the two attempts are locally SHA-256 verified.
+
+The neutral baseline repeat differs by0.0098/0.0108mm across the two modes.
+Scale0.5 differs from neutral by5.09/4.32mm. Replacing scale0.5 at coefficient0.02
+with scale1 at coefficient0.01 still differs by1.025/0.864mm. Scale0 also differs
+from coefficient0 by13.09/10.99mm. Thus the knob has a real effect in the installed
+original runtime, and the simple coefficient-multiplication shortcut does not
+preserve its behavior. These measurements do not establish any new6.2 mapping.
+The existing explicit rejection of non-neutral values remains in place.
+
+The first attempt `c95cbae` mistakenly included scale2. Its native C++ setter
+reports that the supported domain is[0,1], so this attempt is not a clean passing
+experiment, regardless of its process exit. Its log is retained. The corrected
+run removes invalid cases and verifies their authored values before simulation.
+
+A tracked Python/YAML usage search finds the neutral default and neutral material
+test, compatibility guards and diagnostic fixtures; no non-neutral production task
+assignment was found. A review is pending on whether this unused legacy option may
+remain explicitly unsupported for migration completion or must have equivalent
+support. Evidence, exact metrics and unchanged-code proposal are in
+`out/isaac62_migration/nonneutral_damping_review_plan.json`; the clean measurements
+are in `isaac51_legacy_damping_4d9f6b7/legacy/receipt.json`. No task/model/training
+settings have been changed or approximately mapped.
+
 ## Recorded parents
 
 - g1: `0505979bf6058b772edb1e7436bb757461aba88f`
