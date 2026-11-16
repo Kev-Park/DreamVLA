@@ -356,9 +356,9 @@ Remaining mimic scope includes non-cardinal axes (explicitly rejected), chained
 references, prismatic cases and their live validation. The initial supported
 cardinal rotational fixture is not evidence for every URDF mimic arrangement.
 An independent authored-default audit also found original articulation solver
-settings 32 position/1 velocity iterations, whereas the new asset leaves those
-fields unauthored. Their preservation remains to be addressed; passing this
-small fixture does not waive it (`mimic_solver_metadata.json`).
+settings 32 position/1 velocity iterations, whereas the initial new asset left
+those fields unauthored (`mimic_solver_metadata.json`). The next section records
+the subsequent repair and validation of those defaults.
 
 An independent read of original root overrides establishes a salient behavior
 not covered by the earlier root-API-location metric: `root_link_name='arm'`
@@ -366,8 +366,79 @@ rewires the world fixed joint's body1 from `base` to `arm` with identity local
 anchors, while leaving all bodies and the articulation-root API path present.
 This matches the pinned original C++ implementation; it is not a no-op or a
 request to discard other bodies. Evidence: `original_root_override_metadata.json`.
-The root-override port remains explicit unsupported until this behavior is
-preserved and tested, including non-fixed-base cases.
+At that point the root-override port was still unsupported. The following
+section records its subsequent implementation and fixed/floating-base tests.
+
+### Root selection, solver defaults and diagonal mass frames (2026-11-16)
+
+The new converter now preserves the original fixed/floating root-link contract:
+all links remain; fixed bases attach the world joint to the selected link with
+identity anchors and put ArticulationRootAPI on that joint; floating bases put
+the API on the selected body. Generated alternative articulation-root schemas
+are removed to avoid competing root choices. Original solver defaults are now
+explicit: 32 position iterations, 1 velocity iteration and the configured
+self-collision setting. The five actual original/new conversion cases at
+`6d31a77` match root roles, attachment targets/anchors and solver fields exactly.
+Evidence: `root_metadata_comparison.json` and the two SDK receipts.
+
+Live validation exposed a small but real additional difference. The first
+240-step root comparison at `ee385ee` passes four cases, but a floating interior
+root misses the fixed quaternion-component gate (1.015251e-4 versus 1e-4).
+An identical-original-asset control passes, and a same-origin, collision-filtered
+comparison at `1609106` reproduces the miss. Thus placement alone does not explain
+it; neither failed result is waived. Effective masses, body inertia tensors and
+COM positions match exactly, but the modern converter permutes eigenvectors of
+already-diagonal tensors, giving different principal mass frames. The original
+`ImportHelpers.cpp::Diagonalize` exits at identity for diagonal tensors.
+
+The wrapper now preserves that identity frame and original diagonal ordering
+for positive diagonal inertias with unmerged links and zero inertial rotation.
+It does not assume this shortcut applies to merged, rotated or non-diagonal
+inertias; those broader mass-frame cases remain to be audited. After this repair
+at `0bfa259`, the same-origin test passes all five root cases with unchanged
+thresholds. Floating-root maxima are 3.20375e-7 rad in named joint positions,
+1.18511e-6 m in body positions and 2.02656e-6 in quaternion components. Measured
+mass frames now agree as well. Replaying the original *separated* test with the
+same pre-repair probe source (`ee385ee`) and repaired assets also passes all
+five, including floating-root quaternion error 2.00048e-6. This establishes a
+repair of the original failed gate, not just a passing alternative fixture.
+
+Receipts: `isaac62_urdf_mimic_runtime_ee385ee/` (failed),
+`isaac62_urdf_root_placement_control_ee385ee/` (identical-original control),
+`isaac62_urdf_mimic_runtime_1609106/` (failed same-origin),
+`isaac62_urdf_mimic_runtime_0bfa259/` (repaired same-origin), and
+`isaac62_urdf_root_separated_repaired_ee385ee/` (repaired original test).
+All these jobs are terminal, their reservations released and account GPU
+contexts absent. The follow-up `isaac62_urdf_mimic_regression_0bfa259` also passes
+both mimic flag states after the root/solver/mass-frame changes, with maximum
+joint errors 1.19209e-7 and 2.08616e-7 rad, body-position errors below 3.6e-7 m,
+and quaternion errors below 3.9e-7. Effective velocity limits still match exactly.
+This proves paired importer behavior in the 6.2 engine for this primitive
+fixture, not complete cross-engine numerical determinism.
+
+The actual contributed G1 was then freshly converted at `0bfa259` and tested
+against the original asset, rather than relying on the three-link fixture.
+The live test retains all 54 bodies and 43 joints, with no missing/extra bodies,
+exact masses and COM positions, inertia differences at most 7.45e-9 and all 43
+effective velocity limits exact with actuator overrides disabled. Initial and
+canonical nonzero-state physical poses pass the existing 1e-6 gates (maximum
+position 4.77e-7 m, rotation-matrix component 8.64e-7). Actual canonical GR00T,
+29-joint PPO and both binary hand-command interfaces pass. Raw hand-joint order
+still differs, so its separate strict preservation flag remains false; named
+mapping is required and tested. Receipt: `isaac62_urdf_live_mass_0bfa259/receipt.json`.
+
+The fresh G1 also passes the real contributed button task regression at
+`0bfa259`: two environments, 32 zero-action steps, reset and final reset, all
+three 54-body contact-order checks exact, and all three camera mount/renderer
+checks passed. Maximum camera position/quaternion-component errors are
+2.3842e-7 m / 1.7881e-7; renderer position/rotation-matrix errors are at most
+1.9916e-7 m / 2.8678e-7. Seven sampled PNGs and the original third-person video
+pass basic nonblack/media checks. The video has 32 frames at 1280x720, 50 fps,
+0.64 s. No learned-policy success or subjective appearance is assessed.
+Original artifacts are local at `isaac62_izat_button_runtime_0bfa259/`; the
+shared dashboard now indexes 75 runs without recompressing media. User visual
+review remains pending. The renderer, reservation and all account GPU contexts
+were released; a local SSH/SCP client review found no remaining clients.
 
 A further audit found modern imported joints lacked authored PhysX velocity
 limits, retaining only Newton metadata. The bridge now authors the original
@@ -470,9 +541,8 @@ the selected PhysX layer's requested zero gains are verified. Audit receipt:
 change at `fc061e6` avoids assuming wheel metadata for standalone SDK installs;
 its next runtime regression remains to be executed.
 
-Remaining URDF scope is explicit: the new importer does not support root-link
-overrides or natural-frequency drive gains through the old API. Requests for
-those remaining options fail explicitly,
+Remaining URDF scope is explicit: natural-frequency drive gains through the
+old API remain unsupported and requests fail explicitly,
 instead of silently dropping them. Their preservation is not established.
 The SDK also emits a different robot hierarchy; camera attachment paths and
 full collision/inertia/limit/physics/rendering parity still need validation before
