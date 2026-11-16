@@ -2516,3 +2516,50 @@ The upstream OmniControl checkpoint was found under Biped's existing locomotion
 worktree. A bounded generation check is awaiting approval to use the existing
 omnicontrol environment under the workspace environment-switch rule. No model was
 replaced and that environment has not been executed during this follow-up.
+
+### November 16: saved-volume density and restored Adroit receipts
+
+Commit `8f338c8` supports positive body-only density for cooked legacy volumes
+with implicit material defaults. The converter carries density on a private
+material without changing shared materials or the public absent-material view.
+Body-density overrides on explicitly bound deformable materials remain rejected
+before mutation; no approximate override mapping is introduced.
+
+Native 5.1 and target 6.2 free-relaxation controls use the identical saved rest mesh
+(64 nodes, 135 tetrahedra), densities 1000 and 1300, and corresponding explicit
+masses computed from that mesh's volume. Density-only versus explicit-mass
+positions agree within 1.08 micrometers in 5.1 and 6.50 micrometers in 6.2, below
+the existing 10-micrometer tolerance. The density changes produce measurable
+motion changes in both SDKs. Cross-SDK trajectories differ by up to 3.38 mm for
+both density and explicit-mass controls; **solver trajectory parity is not
+claimed**. Evidence: `isaac62_density_mass_9572308/density_mass_comparison.json`
+under the local migration output root.
+
+The public `convert_copy` path is separately exercised with no temporary mass or
+post-conversion edits. Both densities complete 64 free simulation steps, preserve
+the source SHA and cooked topology, retain the absent public material view, and
+exactly match the earlier diagnostic candidate's positions. All seven atomic
+unsupported-case checks pass at both densities. Ten result files are pulled and
+SHA-verified in `isaac62_density_mass_8f338c8_public/`.
+
+Adroit's shared connection is restored and its queue is empty. Slurm 3463916 is
+COMPLETED with exit 0:0. Pulled and SHA-verified initial/resume receipts prove a
+real 1,620,515,968-trainable-parameter GR00T optimizer step, checkpoint save,
+fresh-process reload with matching sampled weights and optimizer step 1, then
+advancement to model/optimizer step 2 with finite loss and changed parameters.
+This uses the existing Adroit GR00T environment (Torch 2.7.1+cu128), not a claim
+that Adroit runs Isaac 6.2. Evidence is in
+`isaac62_gr00t_training_adroit_b6b38aa/`. No new Slurm job was submitted.
+
+The full migration remains incomplete. Drawer/button horizon review, user visual
+review, the nonneutral damping decision, and the remaining capability audit are
+still required. The accepted pick/walk decoder and experimental horizons have
+not been changed.
+
+The explicit-mass saved-USD regression also passes 20 simulation steps and the
+seven atomic rejection checks after this repair. Five files are SHA-verified in
+`isaac62_density_mass_8f338c8_regression_retry/`. Its initial launcher accidentally
+reserved a slot already reserved by the probe itself and exited at the reservation
+assertion before starting Isaac. Terminal state and empty resources were verified
+before retrying with the probe as the sole reservation owner. The retry completed
+and released all owned GPU contexts and reservations; no scientific run restarted.
