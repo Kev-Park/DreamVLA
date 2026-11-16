@@ -124,10 +124,21 @@ def main():
     from .robot_model import get_project_g1_robot_model
 
     model = get_project_g1_robot_model()
+    features = get_features_sonic_vla(model)
+    # Some DreamVLA SONIC exports add world-pose telemetry to the upstream
+    # schema. This raw format never recorded those measurements. Preserve the
+    # contributed dataset contract instead of inventing zero robot/object poses;
+    # these fields are not part of its GR00T modality configuration.
+    for name in (
+        "teleop.root_pos_w",
+        "teleop.object_pos_w",
+        "teleop.object_quat_w",
+    ):
+        features.pop(name, None)
     exporter = Gr00tDataExporter.create(
         save_root=args.output,
         fps=50,
-        features=get_features_sonic_vla(model),
+        features=features,
         modality_config=get_modality_config_sonic_vla(model),
         task=first["task"],
         script_config=source,
