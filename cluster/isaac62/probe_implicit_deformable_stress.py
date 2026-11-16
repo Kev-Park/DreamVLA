@@ -38,6 +38,9 @@ def main():
         from pxr import UsdShade
         torch.set_num_threads(1)
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
+        scene_default = sim.stage.GetPrimAtPath(sim.cfg.physics_prim_path+'/defaultMaterial')
+        scene_material_values = lambda: {a.GetName(): str(a.Get()) for a in scene_default.GetAttributes()}
+        scene_before = scene_material_values()
         spawn = sim_utils.MeshCuboidCfg(size=(.2, .2, .2),
             deformable_props=sim_utils.DeformableBodyPropertiesCfg(
                 simulation_hexahedral_resolution=3, solver_position_iteration_count=4),
@@ -88,6 +91,8 @@ def main():
                     row['measurements'][name] = dict(available=False, error=str(error))
             report['cases'].append(row)
         np.savez(args.output/'measurements.npz', **arrays)
+        report['scene_default_material_unchanged'] = scene_before == scene_material_values()
+        assert report['scene_default_material_unchanged']
         report.update(completed=True, steps=12,
                       stress_available=all(x['measurements']['sim_element_stress_w']['available']
                                            for x in report['cases']))
