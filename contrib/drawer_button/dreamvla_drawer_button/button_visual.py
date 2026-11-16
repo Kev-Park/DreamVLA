@@ -209,14 +209,25 @@ class VisualButton:
 
         self.Gf = Gf
         self.meta = manifest()
-        if stage.GetPrimAtPath(path):
-            raise ValueError("Button already exists")
+        existing = stage.GetPrimAtPath(path)
+        if existing:
+            # Isaac clones inherit env_0. A panel just created there is also
+            # visible in later clones, but needs its own placement/animation
+            # overrides. Never reuse an already authored local panel or a
+            # different inherited asset.
+            locally_authored = any(str(spec.path) == path for spec in existing.GetPrimStack())
+            if (locally_authored or existing.GetCustomDataByKey('version') != VERSION
+                    or existing.GetCustomDataByKey('visual_only') is not True):
+                raise ValueError("Button already exists: " + path)
         self.prim = stage.DefinePrim(path, "Xform")
-        self.prim.GetReferences().AddReference(str(asset))
+        from pxr import Sdf
+        self.prim.GetReferences().SetReferences([Sdf.Reference(str(asset))])
         audit_visual_only(self.prim)
         xf = UsdGeom.Xformable(self.prim)
         xf.SetResetXformStack(True)
-        self.translate = xf.AddTranslateOp()
+        self.translate = xf.GetTranslateOp()
+        if not self.translate:
+            self.translate = xf.AddTranslateOp()
         cap = stage.GetPrimAtPath(path + self.meta["cap_path"])
         self.cap = cap.GetAttribute("xformOp:translate")
         self.cap_initial = np.array(self.cap.Get())
