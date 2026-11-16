@@ -69,18 +69,10 @@ def main():
                 expected[joint.find('child').get('link')] = expected[joint.find('parent').get('link')] @ origin(joint.find('origin'))
                 pending.remove(joint)
         bodies = {p.GetName(): p for p in stage.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)}
-        inertial_links = {name for name, link in links.items() if link.find('inertial') is not None}
-        assert set(bodies) == inertial_links, (set(bodies)-inertial_links, inertial_links-set(bodies))
-        # Sensor links without inertial/collision properties are retained as
-        # plain Xforms, not rigid bodies. Audit their transforms as well.
-        link_prims = {}
-        for name in links:
-            if name in bodies:
-                link_prims[name] = bodies[name]
-                continue
-            matches = [p for p in stage.Traverse() if p.GetName() == name and p.IsA(UsdGeom.Xform)]
-            assert len(matches) == 1, (name, [str(p.GetPath()) for p in matches])
-            link_prims[name] = matches[0]
+        # This fixture exercises the unmerged original G1 contract. The matched
+        # SDK5.1 importer retains even empty fixed sensor links as rigid bodies.
+        assert set(bodies) == set(links), (set(bodies)-set(links), set(links)-set(bodies))
+        link_prims = bodies
         cache = UsdGeom.XformCache()
         world = lambda p: np.asarray(cache.GetLocalToWorldTransform(p)).T
         base_inv = np.linalg.inv(world(bodies[root]))
