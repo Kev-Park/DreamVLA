@@ -189,6 +189,7 @@ def main():
                 return
             import xml.etree.ElementTree as ET
             from dreamvla_drawer_button.paths import BACKEND_ROOT
+            from dreamvla_drawer_button.contracts import scene as original_scene_contract
             from isaaclab.utils.math import quat_apply, quat_from_euler_xyz, quat_mul
             urdf = ET.parse(BACKEND_ROOT/'Sim2Real/resources/robots/g1_description/g1_29dof_with_hand.urdf')
             joint = urdf.find("./joint[@name='d435_joint']")
@@ -201,9 +202,12 @@ def main():
             ids, _ = robot.find_bodies([parent], preserve_order=True)
             parent_pos = robot.data.body_pos_w[:, ids[0]]
             parent_q = robot.data.body_quat_w[:, ids[0]]
-            offset = cfg.scene.camera_robot.offset
-            offset_pos = torch.tensor(offset.pos, device=base.device).reshape(1, 3)
-            offset_q = torch.tensor(offset.rot, device=base.device).reshape(1, 4)
+            original_camera = original_scene_contract('drawer' if contributed_drawer else 'standing_button')['camera']
+            assert [cfg.scene.camera_robot.width, cfg.scene.camera_robot.height] == original_camera['resolution']
+            assert cfg.scene.camera_robot.spawn.focal_length == original_camera['focal_length']
+            assert cfg.scene.camera_robot.spawn.horizontal_aperture == original_camera['horizontal_aperture']
+            offset_pos = torch.tensor(original_camera['pos'], device=base.device).reshape(1, 3)
+            offset_q = torch.tensor(original_camera['rot'], device=base.device).reshape(1, 4)
             local_pos = xyz.reshape(1, 3)+quat_apply(mount_q, offset_pos)
             expected_pos = parent_pos+quat_apply(parent_q, local_pos.expand(base.num_envs, -1))
             expected_q = quat_mul(parent_q, quat_mul(mount_q, offset_q).expand(base.num_envs, -1))
@@ -218,8 +222,10 @@ def main():
             quat_error = float(torch.minimum((actual_q-expected_q).abs().amax(-1),
                                             (actual_q+expected_q).abs().amax(-1)).max())
             from isaacsim.core.prims import XFormPrim
-            parent_view = XFormPrim(base.scene['camera_robot'].cfg.prim_path.rsplit('/', 2)[0],
-                                    reset_xform_properties=False)
+            camera_parts = base.scene['camera_robot'].cfg.prim_path.split('/')
+            assert camera_parts.count(parent) == 1
+            parent_path = '/'.join(camera_parts[:camera_parts.index(parent)+1])
+            parent_view = XFormPrim(parent_path, reset_xform_properties=False)
             parent_view.initialize()
             def values(pose):
                 return [x.cpu().tolist() if isinstance(x, torch.Tensor) else np.asarray(x).tolist() for x in pose]
