@@ -46,7 +46,9 @@ def main():
                     ('mass88', 8.8, None, 1100.), ('material_low', None, None, 100.),
                     ('repeat', .8, 1300., 1100.), ('nomat_body_density', None, 1300., None),
                     ('nomat_mass_high', 10.4, None, None), ('nomat_mass_low', .8, None, None),
-                    ('nomat_default', None, None, None)]
+                    ('nomat_default', None, None, None),
+                    ('nomat_mass8', 8., None, None),
+                    ('nomat_density1000', None, 1000., None)]
         cubes, configs = {}, {}
         for index, (name, mass, density, material_density) in enumerate(settings):
             material = None if material_density is None else sim_utils.DeformableBodyMaterialCfg(
@@ -70,6 +72,31 @@ def main():
                       for a in root.GetAttributes()
                       if a.GetName() in ('physics:mass', 'physics:density', 'omniphysics:mass')}
             configs[name]['resolved_body_values'] = values
+            # Measure actual cooked volume rather than assuming that the mesh
+            # cooker retained the nominal cuboid volume. Use public native
+            # tensor calls; the legacy wrapper need not expose new aliases.
+            view = cube.root_physx_view
+            simulation_indices = (view.get_sim_element_indices() if version == '5.1.0.0'
+                                  else view.get_simulation_element_indices())
+            collision_indices = (view.get_element_indices() if version == '5.1.0.0'
+                                 else view.get_collision_element_indices())
+            collision_positions = (view.get_nodal_positions() if version == '5.1.0.0'
+                                   else view.get_collision_nodal_positions())
+            cooked = {}
+            for kind, positions, indices in (
+                    ('simulation', original[name][..., :3], simulation_indices),
+                    ('collision', collision_positions, collision_indices)):
+                points = positions[0].double()
+                connectivity = indices[0].long().reshape(-1, 4)
+                assert connectivity.min() >= 0 and connectivity.max() < len(points)
+                tetrahedra = points[connectivity]
+                edges = tetrahedra[:, 1:] - tetrahedra[:, :1]
+                volumes = torch.linalg.det(edges).abs() / 6
+                cooked[kind] = dict(volume_m3=float(volumes.sum()),
+                    nodes=len(points), elements=len(connectivity),
+                    degenerate_elements=int((volumes == 0).sum()),
+                    index_dtype=str(indices.dtype))
+            configs[name]['cooked_geometry'] = cooked
             if material:
                 configs[name]['bound_material_values'] = {a.GetName(): str(a.Get())
                     for a in material.GetPrim().GetAttributes() if 'density' in a.GetName().lower()}
@@ -93,7 +120,9 @@ def main():
                  ('material_density', 'mass88'), ('material_density', 'mass_high'),
                  ('material_density', 'material_low'), ('nomat_body_density', 'nomat_mass_high'),
                  ('nomat_body_density', 'nomat_mass_low'), ('nomat_default', 'nomat_mass_high'),
-                 ('nomat_default', 'nomat_mass_low'), ('nomat_mass_high', 'nomat_mass_low')]
+                 ('nomat_default', 'nomat_mass_low'), ('nomat_mass_high', 'nomat_mass_low'),
+                 ('nomat_default', 'nomat_mass8'), ('nomat_density1000', 'nomat_mass8'),
+                 ('nomat_default', 'nomat_density1000')]
         comparisons = {}
         for left, right in pairs:
             delta = arrays[left]-arrays[right]
