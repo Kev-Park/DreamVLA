@@ -99,6 +99,57 @@ consumer defaults. Do not infer the installed solver defaults from either alone.
 A next bounded check can compare strain relaxation for unbound and explicit legacy
 material values within each SDK, without changing production spawning semantics.
 
+## Procedural omitted-material physics and stress repair (2026-11-16)
+
+A free-state relaxation probe establishes a material-default regression. In5.1,
+an omitted material and explicit legacy50MPa/0.45 material differ by at most
+2.83e-6m over32steps. In6.2 before repair, their maximum node difference is
+0.01170m: the omitted-material cube retains its strained shape. A50Pa control
+relaxes distinctly, establishing that this fixture distinguishes stiffness.
+These are within-SDK comparisons; cooked meshes and solver responses differ
+between SDKs, so no cross-SDK trajectory-equivalence claim follows.
+
+The first two held/released-node probes are inconclusive: their shapes remain
+frozen in both SDKs, including the softer control. The strengthened control gate
+fails. An initial harness shutdown bug nevertheless returned zero; those receipts
+retain the error and informative_control=false and must not count as passes.
+`8cc182e` uses an initially strained, fully free state and returns failure when
+its control is uninformative. Both SDKs then pass the control check.
+
+`b437609` restores the original defaults for procedurally spawned volume bodies
+whose caller omitted a material, using a private per-asset compatibility material.
+It carries the verified legacy values: Young's modulus50MPa, Poisson ratio0.45,
+elasticity damping0.005 and dynamic friction0.25, with any requested density
+preserved. The original public material_physx_view remainsNone, as required by
+the existing initialization test; the private default is not exposed as a
+user-editable material view. The scene-wide material is not modified. SDK
+recooking is avoided for the private defaults by using read-only diagnostics.
+The repaired cube differs from the explicit legacy-material control by at most
+1.17e-5m, versus0.01087m for the discriminating soft control. This is bounded
+functional evidence, not bit-exact dynamics preservation.
+
+The shear case also reveals that the old native collision-stress diagnostic uses
+full-F linear strain, while its simulation diagnostic uses corotated stretch.
+Applying the latter to both produces about12% collision-stress error in shear.
+The corrected collision convention (`165420c`) predicts saved native5.1 samples
+within8Pa across the three tested affine strains. Fresh6.2 omitted-material
+runs with and without a1300kg/m3 density override both complete12steps, preserve
+the None public material view, retain finite stress diagnostics and assert that
+all shared scene-material attributes remain unchanged. Per-case mean-tensor
+errors against5.1 are at most0.00946% of the native peak for collision stress
+and0.0363% for simulation stress. Meshes differ, so these are aggregate
+comparisons, not pointwise tensor identity.
+
+All30result files from the five new run directories are SHA-256 verified locally
+under `out/isaac62_migration/`. The exact metrics and scope are in
+`material_default_stress_comparison_b8e887d.json`. No model, task reward, training
+recipe, scientific success threshold or global physics material was changed.
+The last resource audit finds no owned GPU contexts/reservations; native Windows
+SSH/scp process enumeration also finds no remaining clients. Saved-USD bodies
+with omitted materials and multi-instance private defaults still require their
+own coverage. Non-neutral damping support, exact physical snapshot replay,
+contributed horizon review and user appearance review remain open.
+
 ## Recorded parents
 
 - g1: `0505979bf6058b772edb1e7436bb757461aba88f`
