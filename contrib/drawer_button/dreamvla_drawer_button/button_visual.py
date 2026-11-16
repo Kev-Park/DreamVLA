@@ -228,9 +228,11 @@ class VisualButton:
         self.translate = xf.GetTranslateOp()
         if not self.translate:
             self.translate = xf.AddTranslateOp()
+        self.translate.Set(Gf.Vec3d(*self.translate.Get()))
         cap = stage.GetPrimAtPath(path + self.meta["cap_path"])
         self.cap = cap.GetAttribute("xformOp:translate")
         self.cap_initial = np.array(self.cap.Get())
+        self.cap.Set(Gf.Vec3d(*self.cap_initial))
         parent = UsdGeom.XformCache().GetLocalToWorldTransform(cap.GetParent())
         self.press_axis = np.array(parent.GetInverse().TransformDir(Gf.Vec3d(1, 0, 0)))
         self.target = np.zeros(3)
