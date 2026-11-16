@@ -8,6 +8,7 @@ import importlib.metadata
 import json
 from pathlib import Path
 import traceback
+import xml.etree.ElementTree as ET
 
 
 URDF = """<robot name="option_fixture">
@@ -17,6 +18,21 @@ URDF = """<robot name="option_fixture">
 <joint name="hinge" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 .1" rpy="0 .1 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="10" velocity="2"/><dynamics damping=".27" spring_stiffness=".31"/></joint>
 <joint name="finger_hinge" type="revolute"><parent link="arm"/><child link="finger"/><origin xyz="0 0 .4"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="5" velocity="2"/><mimic joint="hinge" multiplier="-1" offset=".1"/></joint>
 </robot>"""
+
+
+def fixture_urdf(case):
+    """Keep every generated source available for paired importer inspection."""
+    text = URDF
+    if case.startswith('prismatic_'):
+        text = text.replace('type="revolute"', 'type="prismatic"')
+    if case == 'noncardinal_mimic':
+        text = text.replace('xyz="0 1 0"', 'xyz=".6 .8 0"')
+    if case == 'chained_mimic':
+        text = text.replace('</robot>', '''
+<link name="tip"><inertial><mass value=".1"/><inertia ixx=".001" ixy="0" ixz="0" iyy=".001" iyz="0" izz=".001"/></inertial></link>
+<joint name="tip_hinge" type="revolute"><parent link="finger"/><child link="tip"/><origin xyz="0 0 .2"/><axis xyz="0 1 0"/><limit lower="-.5" upper=".5" effort="3" velocity="1"/><mimic joint="finger_hinge" multiplier=".5" offset="-.03"/></joint>
+</robot>''')
+    return text
 
 
 def main():
@@ -33,15 +49,17 @@ def main():
         app = AppLauncher(args, multi_gpu=False, fast_shutdown=True).app
         from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
         from pxr import Usd, UsdGeom, UsdPhysics
-        source = args.output/'option_fixture.urdf'
-        source.write_text(URDF)
         cases = dict(default={}, capsule=dict(replace_cylinders_with_capsules=True),
             mimic_normal=dict(convert_mimic_joints_to_normal_joints=True),
             root_name=dict(root_link_name='base'), root_interior=dict(root_link_name='arm'),
             floating_default=dict(fix_base=False), floating_root=dict(fix_base=False, root_link_name='arm'),
             capsule_instanceable=dict(replace_cylinders_with_capsules=True, make_instanceable=True),
             natural_force={}, natural_acceleration={}, natural_velocity={}, natural_none={},
-            natural_patterns={}, natural_partial={}, natural_mimic=dict(convert_mimic_joints_to_normal_joints=True))
+            natural_patterns={}, natural_partial={}, natural_mimic=dict(convert_mimic_joints_to_normal_joints=True),
+            prismatic_pd=dict(convert_mimic_joints_to_normal_joints=True),
+            prismatic_natural=dict(convert_mimic_joints_to_normal_joints=True),
+            chained_mimic=dict(convert_mimic_joints_to_normal_joints=True),
+            noncardinal_mimic=dict(convert_mimic_joints_to_normal_joints=True))
         if args.cases:
             unknown = set(args.cases) - cases.keys()
             if unknown:
@@ -49,11 +67,14 @@ def main():
             cases = {name: cases[name] for name in args.cases}
         for name, options in cases.items():
             try:
+                source = args.output/'sources'/name/'option_fixture.urdf'
+                source.parent.mkdir(parents=True)
+                source.write_text(fixture_urdf(name))
                 cfg = UrdfConverterCfg(asset_path=str(source), usd_dir=str(args.output/name),
                     force_usd_conversion=True, merge_fixed_joints=False,
                     **{'make_instanceable': False, 'fix_base': True, **options})
                 cfg.joint_drive.gains = UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=1., damping=.2)
-                if name.startswith('natural_'):
+                if name.startswith('natural_') or name == 'prismatic_natural':
                     cfg.joint_drive.gains = UrdfConverterCfg.JointDriveCfg.NaturalFrequencyGainsCfg(
                         natural_frequency=8., damping_ratio=.7)
                     cfg.joint_drive.drive_type = 'force' if name == 'natural_force' else 'acceleration'
@@ -71,7 +92,7 @@ def main():
                 path = Path(UrdfConverter(cfg).usd_path)
                 stage = Usd.Stage.Open(str(path))
                 assert stage and stage.GetDefaultPrim()
-                row = dict(completed=True, requested_options=options, usd_path=str(path), bodies=[], geometry=[], joints=[], articulation_roots=[], root_settings={}, fixed_joints=[])
+                row = dict(completed=True, requested_options=options, urdf_source=str(source), usd_path=str(path), bodies=[], geometry=[], joints=[], articulation_roots=[], root_settings={}, fixed_joints=[])
                 row['drive_request'] = dict(drive_type=cfg.joint_drive.drive_type, target_type=cfg.joint_drive.target_type,
                     natural_frequency=getattr(cfg.joint_drive.gains, 'natural_frequency', None),
                     damping_ratio=getattr(cfg.joint_drive.gains, 'damping_ratio', None))
@@ -97,20 +118,23 @@ def main():
                             collision=prim.HasAPI(UsdPhysics.CollisionAPI), instance_proxy=prim.IsInstanceProxy(),
                             height=shape.GetHeightAttr().Get(), radius=shape.GetRadiusAttr().Get(),
                             axis=shape.GetAxisAttr().Get(), extent=[list(x) for x in shape.GetExtentAttr().Get()]))
-                    if prim.IsA(UsdPhysics.RevoluteJoint):
-                        drive = UsdPhysics.DriveAPI.Get(prim, 'angular')
+                    if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint):
+                        linear = prim.IsA(UsdPhysics.PrismaticJoint)
+                        joint = UsdPhysics.PrismaticJoint(prim) if linear else UsdPhysics.RevoluteJoint(prim)
+                        drive = UsdPhysics.DriveAPI.Get(prim, 'linear' if linear else 'angular')
                         inertia = prim.GetAttribute('physics:JointEquivalentInertia')
-                        row['joints'].append(dict(name=prim.GetName(), schemas=list(prim.GetAppliedSchemas()),
-                            axis=UsdPhysics.RevoluteJoint(prim).GetAxisAttr().Get(),
-                            lower_limit=UsdPhysics.RevoluteJoint(prim).GetLowerLimitAttr().Get(),
-                            upper_limit=UsdPhysics.RevoluteJoint(prim).GetUpperLimitAttr().Get(),
+                        row['joints'].append(dict(name=prim.GetName(), joint_type=prim.GetTypeName(), schemas=list(prim.GetAppliedSchemas()),
+                            axis=joint.GetAxisAttr().Get(),
+                            lower_limit=joint.GetLowerLimitAttr().Get(),
+                            upper_limit=joint.GetUpperLimitAttr().Get(),
                             max_velocity=prim.GetAttribute('physxJoint:maxJointVelocity').Get(),
                             stiffness=drive.GetStiffnessAttr().Get(), damping=drive.GetDampingAttr().Get(),
                             drive_type=drive.GetTypeAttr().Get(), equivalent_inertia=inertia.Get() if inertia else None,
                             attributes={attr.GetName(): str(attr.Get()) for attr in prim.GetAttributes()
                                 if 'mimic' in attr.GetName().lower()},
                             relationships={rel.GetName(): [str(x) for x in rel.GetTargets()] for rel in prim.GetRelationships()}))
-                assert len(row['bodies']) == 3 and len(row['joints']) == 2, row
+                tree = ET.parse(source).getroot()
+                assert len(row['bodies']) == len(tree.findall('link')) and len(row['joints']) == len(tree.findall('joint')), row
                 report['cases'][name] = row
             except Exception:
                 report['cases'][name] = dict(completed=False, requested_options=options, error=traceback.format_exc())
