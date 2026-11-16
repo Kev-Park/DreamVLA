@@ -131,6 +131,9 @@ def main():
                 rest_method = 'get_sim_element_rest_poses' if kind == 'simulation' else 'get_element_rest_poses'
                 if hasattr(view, rest_method):
                     topology[name+'_'+kind+'_native_rest_poses'] = getattr(view, rest_method)().cpu().numpy().copy()
+                prefix = 'get_sim_element_' if kind == 'simulation' else 'get_element_'
+                for diagnostic in ('deformation_gradients', 'stresses'):
+                    topology[name+'_'+kind+'_'+diagnostic] = getattr(view, prefix+diagnostic)().cpu().numpy().copy()
                 if version == '5.1.0.0':
                     rest_attr = root.GetAttribute('physxDeformable:'+kind+'RestPoints')
                     if rest_attr and rest_attr.Get() is not None:
