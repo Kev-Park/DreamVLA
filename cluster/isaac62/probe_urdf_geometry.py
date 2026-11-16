@@ -75,6 +75,9 @@ def main():
         # plain Xforms, not rigid bodies. Audit their transforms as well.
         link_prims = {}
         for name in links:
+            if name in bodies:
+                link_prims[name] = bodies[name]
+                continue
             matches = [p for p in stage.Traverse() if p.GetName() == name and p.IsA(UsdGeom.Xform)]
             assert len(matches) == 1, (name, [str(p.GetPath()) for p in matches])
             link_prims[name] = matches[0]
