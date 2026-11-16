@@ -277,21 +277,49 @@ pending; no visual equivalence or robot-success claim is made.
 
 ### Remaining URDF options and velocity-limit repair (2026-11-16)
 
-The actual original g1 converter at `793cec0` completes six small primitive
-fixtures: default, capsule replacement, the mimic flag, explicit root name,
-and force/acceleration natural-frequency drives. Capsule output retains the
-source height 0.4, radius 0.05 and Z axis. The default drive coefficients in
-6.2 match the original values exactly. However, the modern optional probe
-stops at its explicit unsupported-capsule rejection, so the other optional
-features remain incomplete. No unsupported option is silently ignored.
+The expanded original-g1 probe at `0328707` completes eight independent
+primitive fixtures: default, collision capsule replacement, the mimic flag,
+explicit base/interior root names, instanceable capsule replacement, and
+force/acceleration natural-frequency drives. Unlike the earlier probe, one
+failure no longer hides the remaining option results. Source visual cylinders
+are retained while collision cylinders become capsules, with source float32
+height/radius and capsule extents. Both root-name requests keep all three bodies
+and the original fixed-root articulation API location; this small fixture alone
+does not establish general rerooting semantics.
 
 The original `convert_mimic_joints_to_normal_joints` flag is inverted relative
 to its name: true preserves a PhysX mimic constraint and suppresses that
 joint's drive, whereas false produces independent driven joints. The actual
 original outputs and source both establish this. Preserve that observed
 contract; do not silently correct the flag's meaning during the refactor.
-Original and modern receipts: `isaac51_urdf_options_793cec0/` and
-`isaac62_urdf_options_793cec0/` in local migration outputs.
+Original receipt: `isaac51_urdf_options_0328707/receipt.json` in local migration
+outputs. The corresponding pre-repair 6.2 receipt records seven independently
+failed cases across four option families, rather than stopping at the first.
+
+The bridge now implements collision-only capsule replacement in its owned USD
+wrapper, retaining visual geometry, transforms, APIs and bindings. Float32 source
+dimensions and analytic capsule extents match the original importer. Unexpected
+instanced collision-cylinder proxies still reject explicitly instead of changing
+instanceability. The first real retry at `24f2ef3` exposed that USD Python does
+not bind the C++ static capsule extent overload; its failed evidence is retained.
+The repair uses explicit local half-extents. Modern cache revision 4 invalidates
+assets from before this feature. The full independent matrix at `3e3ab34` completes all measurements: default
+and both capsule cases pass; mimic, two root-name requests and two natural-drive
+cases remain explicit failures. Collision capsule type, dimensions, axis, extent
+and standard hinge gains compare exactly against the actual 5.1 outputs. Visual
+cylinders are unchanged from the modern default, and their type/axis/extent match
+5.1. Their dimensions retain a small existing double/float32 difference (.4
+versus .4000000059604645 for height); no new visual change was introduced by the
+capsule option. The final process returns exit 1 as required by five failed cases.
+All worker, tmux, reservation and account GPU contexts were released; external
+jobs were untouched. Receipts: `isaac62_urdf_options_3e3ab34/receipt.json` and
+`capsule_compatibility_comparison.json`. This proves conversion output, not new
+physics or visual-behavior equivalence.
+
+The probe also exposed Kit shutdown swallowing pending Python failures and
+returning exit zero. Its shutdown now passes the receipt's success/failure code
+through the supported SDK close arguments. A zero wrapper status from the older
+probe must never override its failed receipt.
 
 A further audit found modern imported joints lacked authored PhysX velocity
 limits, retaining only Newton metadata. The bridge now authors the original
@@ -395,8 +423,8 @@ change at `fc061e6` avoids assuming wheel metadata for standalone SDK installs;
 its next runtime regression remains to be executed.
 
 Remaining URDF scope is explicit: the new importer does not support root-link
-overrides, mimic-to-normal conversion, cylinder replacement or natural-frequency
-drive gains through the old API. Requests for these options fail explicitly,
+overrides, the original mimic-flag behavior or natural-frequency
+drive gains through the old API. Requests for those remaining options fail explicitly,
 instead of silently dropping them. Their preservation is not established.
 The SDK also emits a different robot hierarchy; camera attachment paths and
 full collision/inertia/limit/physics/rendering parity still need validation before
