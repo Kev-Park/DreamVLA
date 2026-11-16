@@ -42,7 +42,24 @@ rates are not evidence for these newly integrated entrypoints. Original
 OmniControl environment use was approved on 2026-11-15; generation remains to be
 executed and checked.
 
-## Current validation state (2026-11-12)
+## Full GR00T save/resume gate (2026-11-15)
+
+The actual full-model validation passed on Bluesclues GPU 4 using committed probe
+`107ade9`, the existing GR00T environment, checkpoint 92967 and its matching
+walking dataset. All 1,620,515,968 trainable parameters remained enabled with
+FP32 weights and AdamW state, BF16 computation and the bounded batch-one fixture.
+Update one saved full model, optimizer, scheduler and Trainer state. A fresh
+process verified the saved trainable-weight samples and optimizer/global step
+one, then reached step two with finite loss and changed weights. Peak allocated
+CUDA memory was 38,521,350,144 bytes. Both processes exited zero and the owned
+GPU reservation was released. Reports are under local
+`out/isaac62_migration/isaac62_gr00t_training_blue_107ade9/`.
+This proves bounded optimization/save/resume, not full-study convergence or
+bitwise-continuous dataset RNG: the native resume loader explicitly reseeds.
+Adroit job 3463916's current state is unknown because its shared connection is
+on authentication hold; no further job was submitted there.
+
+## Current validation state (2026-11-15)
 
 The migration is **not complete**. The table below summarizes current evidence;
 subsequent dated entries retain the development history, including failed attempts.
@@ -54,7 +71,7 @@ Local receipts and original videos are under EMBER's `out/isaac62_migration/`;
 | Merged project surface | Latest audit has no missing files, declared symbols or CLI options against either recorded parent. This is not behavioral proof. |
 | Task configurations | All 56 constructors were checked in both original 5.1 parents and current 6.2: 44 pass and the same 12 fail. No new failures or recorded configuration-metadata differences. The 12 original broken registrations remain explicitly failed. |
 | Task runtime and rendering | Representative tracking, static pick, walking, motion-only, drawer and button reset/step/render gates pass. Policy, camera and reference-overlay paths have local artifacts. User appearance review remains pending. |
-| Models and optimization | Saved SONIC/residual CUDA parity, GR00T service integration and residual optimizer/save/resume checks pass. Full GR00T optimizer/save/resume is queued on Adroit as job 3463916 and has not passed. |
+| Models and optimization | Saved SONIC/residual CUDA parity, GR00T service integration and residual optimizer/save/resume checks pass. Full GR00T optimizer/save/fresh-process resume now passes on Bluesclues. Izat's separate native training/serving entrypoints still need their own integration checks. |
 | Collection and reusable data | Passing expert write, failed student rescue, broad/late takeover labels and finger commands are checked. Actual 577+605-frame HDF5 conversions match full versus sharded/merged data, whole-dataset normalization and official GR00T loading. |
 | Reference generation | Actual input export, original holosoma optimization, old/new Adapter-B arrays and full-reference playback pass their stated gates. Original diffusion sampling awaits approval for the existing OmniControl environment. Strict full-stitch joint parity remains failed; visual review remains open. |
 | Known limits | Exact snapshot/replay fails in both original and target SDKs; production rescue uses independent rerolls. Implicit-material stress, removed damping scaling and legacy collision-diagnostic parity remain explicitly unresolved/unsupported rather than silently approximated. |
