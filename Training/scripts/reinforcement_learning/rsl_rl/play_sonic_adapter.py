@@ -60,6 +60,9 @@ parser.add_argument("--traj-dump", type=str, default=None,
 parser.add_argument("--force-motion-id", type=int, default=-1,
                     help="Force this motion_id for every reset (>=0) to render one specific clip.")
 parser.add_argument("--path", type=str, default=None, help="Explicit checkpoint path (overrides auto-discovery).")
+parser.add_argument("--sonic-pt", type=str, default=None,
+                    help="Native SONIC checkpoint; uses the same loader and wrapper mode as evaluation.")
+parser.add_argument("--encoder-mode", default="g1", choices=["g1", "teleop"])
 parser.add_argument(
     "--sonic-decoder-onnx", type=str,
     default=gear_sonic_deploy("policy/release/model_decoder.onnx"),
@@ -630,14 +633,20 @@ def main():
     else:
         # ---- frozen encoder + decoder + adapter wrapper (same wiring as training) ----
         print(f"[play_sonic_adapter] loading frozen SONIC decoder ONNX: {args_cli.sonic_decoder_onnx}")
-        decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
+        if args_cli.sonic_pt:
+            from vla_sonic.sonic_pt import load_sonic_pt
+            encoder_pt, decoder = load_sonic_pt(args_cli.sonic_pt, device, encoder=args_cli.encoder_mode)
+        else:
+            decoder = load_frozen_decoder(args_cli.sonic_decoder_onnx, device)
         print(f"[play_sonic_adapter] loading frozen SONIC encoder ONNX: {args_cli.sonic_encoder_onnx}")
-        encoder = load_frozen_encoder(args_cli.sonic_encoder_onnx, device)
+        encoder = encoder_pt if args_cli.sonic_pt else load_frozen_encoder(args_cli.sonic_encoder_onnx, device)
         env = TokenAdapterVecEnvWrapper(
             env, decoder, encoder, device,
             residual_scale=args_cli.residual_scale,
             residual_transform=args_cli.residual_transform,
             clip_actions=None,
+            pt_mode=bool(args_cli.sonic_pt),
+            encoder_mode=args_cli.encoder_mode,
         )
 
     # ---- policy: trained adapter, zero-residual baseline, reference playback, or reference-PD ----
