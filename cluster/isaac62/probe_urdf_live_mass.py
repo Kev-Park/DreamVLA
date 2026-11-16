@@ -40,6 +40,31 @@ def main():
             cfg.init_state.pos = (index*3.0, 0., 1.)
             robots[name] = Articulation(cfg)
         sim.reset()
+
+        def compare_live_poses(label):
+            # Read actual PhysX link transforms, not USD/Gf evaluated matrices.
+            # Align at each pelvis so the intentional 3 m scene separation drops out.
+            from isaaclab.utils.math import convert_quat, matrix_from_quat, subtract_frame_transforms
+            poses = {}
+            for name, robot in robots.items():
+                raw = robot.root_physx_view.get_link_transforms().clone()[0]
+                q = convert_quat(raw[:, 3:7], to='wxyz')
+                q = q / q.norm(dim=-1, keepdim=True)
+                root = robot.body_names.index('pelvis')
+                pos, quat = subtract_frame_transforms(raw[root:root+1, :3].expand_as(raw[:, :3]),
+                    q[root:root+1].expand_as(q), raw[:, :3], q)
+                rotation = matrix_from_quat(quat)
+                poses[name] = {body: dict(position=pos[index].cpu().tolist(),
+                    rotation=rotation[index].cpu().tolist()) for index, body in enumerate(robot.body_names)}
+            errors = {}
+            for body in poses['legacy']:
+                a, b = poses['legacy'][body], poses['modern'][body]
+                errors[body] = {field: float((torch.tensor(a[field])-torch.tensor(b[field])).abs().max())
+                               for field in ('position', 'rotation')}
+            report.setdefault('live_pose_comparisons', {})[label] = dict(poses=poses, errors=errors,
+                tolerance=1e-6, preservation_pass=all(value <= 1e-6 for row in errors.values() for value in row.values()))
+
+        compare_live_poses('initial')
         for name, robot in robots.items():
             robot.update(sim.get_physics_dt())
             masses = robot.root_physx_view.get_masses().cpu()
@@ -109,6 +134,16 @@ def main():
                     commands.append(robot.data.joint_pos_target[0, hand_ids].cpu().tolist())
                 row['hands'][side] = commands
             io[label] = row
+        # Re-establish identical root poses before comparing named nonzero FK.
+        # This uses no physics timestep, so gravity/contact evolution is excluded.
+        for index, robot in enumerate(robots.values()):
+            root = robot.data.default_root_state.clone()
+            root[:, :3] = torch.tensor([index*3., 0., 1.], device=args.device)
+            root[:, 3:7] = torch.tensor([1., 0., 0., 0.], device=args.device)
+            root[:, 7:] = 0.
+            robot.write_root_state_to_sim(root)
+        sim.forward()
+        compare_live_poses('canonical_nonzero_joint_state')
         assert io['legacy'] == io['modern'], 'Named model/hand interfaces changed'
         report.update(completed=True, named_io_pass=True, named_io=io,
                       raw_joint_order_equal=legacy['joint_names'] == modern['joint_names'])
