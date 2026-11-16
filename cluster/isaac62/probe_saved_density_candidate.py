@@ -1,10 +1,6 @@
-"""Measure a density-only saved-volume candidate without lifting its production guard.
+"""Measure density-only saved volumes through the public file converter.
 
-The candidate uses the existing explicit-mass geometry conversion, then clears
-the temporary mass before any physics is initialized. Its already-local implicit
-material retains the requested density. The source and exported native fixture
-never receive that temporary mass. This is a diagnostic candidate, not evidence
-that the public density-only converter is supported.
+The target uses convert_copy without temporary masses or post-conversion edits.
 With --mass-from-density, it instead uses the normal explicit-mass conversion
 as a control, with mass computed from the identical saved simulation rest mesh.
 """
@@ -77,33 +73,22 @@ def main():
         assert stage.GetRootLayer().Export(str(fixture))
         report['native_fixture_sha256'] = hashlib.sha256(fixture.read_bytes()).hexdigest()
         if args.candidate:
-            from isaacsim.core.utils.extensions import enable_extension
-            enable_extension('omni.physx.asset_validator')
-            from omni.physxassetvalidator.scripts.deformableSchemaChecker import DeformableSchemaChecker
-            if not args.mass_from_density:
-                before = stage.GetRootLayer().ExportToString()
-                try:
-                    convert_cooked_volumes(stage, DeformableSchemaChecker)
-                except NotImplementedError as error:
-                    assert 'density' in str(error)
-                else:
-                    raise AssertionError('Production density-only guard unexpectedly absent')
-                assert stage.GetRootLayer().ExportToString() == before
-                report['production_guard_preserved_atomically'] = True
-                # Geometry conversion only. No simulation is run with this mass.
-                body.GetAttribute('physics:mass').Set(.8)
+            from legacy_volume_usd import convert_copy
             path = body.GetPath()
-            report['candidate_conversion'] = convert_cooked_volumes(stage, DeformableSchemaChecker)
+            converted_file = args.output/'candidate.usda'
+            fixture_digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+            report['candidate_conversion'] = convert_copy(fixture, converted_file)
+            assert hashlib.sha256(fixture.read_bytes()).hexdigest() == fixture_digest
+            stage = Usd.Stage.Open(str(converted_file))
             converted = stage.GetPrimAtPath(path)
-            converted.GetAttribute('omniphysics:mass').Set(explicit_mass)
-            legacy_mass = converted.GetAttribute('physics:mass')
-            if legacy_mass:
-                legacy_mass.Set(explicit_mass)
+            assert converted.GetAttribute('omniphysics:mass').Get() == explicit_mass
             material = UsdShade.MaterialBindingAPI(converted).ComputeBoundMaterial('physics')[0]
             assert material.GetPrim().GetAttribute('omniphysics:density').Get() == args.density
             assert material.GetPrim().GetCustomDataByKey('isaaclab:implicitLegacyDeformableMaterial')
-            fixture = args.output/'candidate.usda'
-            assert stage.GetRootLayer().Export(str(fixture))
+            fixture = converted_file
+            report['public_converter_without_post_edits'] = True
+            from check_legacy_volume_rejections import run_checks
+            report['atomic_rejections'] = run_checks()
         assert open_stage(str(fixture))
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
         asset = DeformableObject(DeformableObjectCfg(prim_path='/World/SoftCube', spawn=None))

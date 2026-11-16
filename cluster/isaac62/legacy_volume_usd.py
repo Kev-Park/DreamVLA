@@ -83,7 +83,14 @@ def convert_cooked_volumes(stage, sdk):
         density = _value(prim, 'physics:density')
         mass = _value(prim, 'physics:mass')
         if density is not None and (mass is None or mass <= 0):
-            raise NotImplementedError('Body-only density without explicit mass cannot be dropped')
+            # Unbound/visual-only bodies receive their own implicit material
+            # below, so their body density can be carried without changing a
+            # shared material. Bound deformable material overrides need a
+            # separate implementation; never silently drop that override.
+            if material and known_deformable:
+                raise NotImplementedError('Body-only density override on a bound deformable material requires separate conversion')
+            if density <= 0:
+                raise NotImplementedError('Nonpositive body-only density requires separate conversion')
         if any(a.GetNumTimeSamples() for a in prim.GetAttributes() if a.GetName().startswith('physxDeformable:')):
             raise NotImplementedError('Animated legacy solver arrays require a separate conversion')
     for prim in materials:
@@ -199,9 +206,7 @@ def convert_copy(source, destination):
             if attr and attr.HasAuthoredValueOpinion() and attr.Get()!=1.:
                 raise NotImplementedError('Non-neutral dampingScale is removed by the SDK converter')
         if 'PhysxDeformableBodyAPI' not in schemas:continue
-        density=prim.GetAttribute('physics:density');mass=prim.GetAttribute('physics:mass')
-        if density and density.HasAuthoredValueOpinion() and (not mass or not mass.Get() or mass.Get()<0):
-            raise NotImplementedError('SDK conversion drops body-only density without explicit mass')
+        # Density validation is shared with the in-memory conversion below.
         def size(name):
             value=prim.GetAttribute(name).Get()
             return len(value) if value is not None else 0
