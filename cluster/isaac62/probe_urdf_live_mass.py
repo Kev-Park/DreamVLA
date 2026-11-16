@@ -16,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--legacy-usd', type=Path, required=True)
     parser.add_argument('--modern-usd', type=Path, required=True)
+    parser.add_argument('--pre-fix-usd', type=Path, help='Optional preserved asset to measure regression before repair')
     parser.add_argument('--state-info', type=Path, required=True,
                         help='Original converted dataset metadata defining the GR00T joint order')
     parser.add_argument('--output', type=Path, required=True)
@@ -33,7 +34,10 @@ def main():
         from dreamvla_drawer_button.isaac.robot import G1_SONIC_CFG
         sim = SimulationContext(SimulationCfg(dt=0.005, device=args.device))
         robots = {}
-        for index, (name, path) in enumerate([('legacy', args.legacy_usd), ('modern', args.modern_usd)]):
+        inputs = [('legacy', args.legacy_usd), ('modern', args.modern_usd)]
+        if args.pre_fix_usd is not None:
+            inputs.append(('pre_fix', args.pre_fix_usd))
+        for index, (name, path) in enumerate(inputs):
             cfg = G1_SONIC_CFG.copy()
             cfg.prim_path = '/World/'+name
             cfg.spawn.usd_path = str(path)
@@ -90,6 +94,10 @@ def main():
         old_limits = dict(zip(legacy['joint_names'], legacy['velocity_limits']))
         new_limits = dict(zip(modern['joint_names'], modern['velocity_limits']))
         limit_errors = {name: abs(old_limits[name]-new_limits[name]) for name in old_limits}
+        if 'pre_fix' in report['robots']:
+            previous = report['robots']['pre_fix']
+            previous_limits = dict(zip(previous['joint_names'], previous['velocity_limits']))
+            report['pre_fix_velocity_limit_errors'] = {name: abs(old_limits[name]-previous_limits[name]) for name in old_limits}
         report['imported_velocity_limits'] = dict(actuator_overrides_disabled=True,
             maximum_absolute_error=max(limit_errors.values()), errors=limit_errors,
             preservation_pass=max(limit_errors.values()) < 1e-6)
