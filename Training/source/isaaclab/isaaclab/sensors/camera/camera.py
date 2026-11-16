@@ -619,7 +619,14 @@ class Camera(SensorBase):
         # remain at their authored poses even while the rendered camera moves.
         simulation = sim_utils.SimulationContext.instance()
         use_usd = simulation is None or not simulation.is_fabric_enabled()
-        poses, quat = self._view.get_world_poses(env_ids, usd=use_usd)
+        if use_usd:
+            poses, quat = self._view.get_world_poses(env_ids, usd=True)
+        else:
+            # The core Fabric view owns uint32 Warp indices; forwarding Torch's
+            # int64 env_ids tries an invalid dtype reinterpretation in SDK 6.2.
+            # Fetch its correctly indexed view, then select requested Torch rows.
+            poses, quat = self._view.get_world_poses(usd=False)
+            poses, quat = poses[env_ids], quat[env_ids]
         self._data.pos_w[env_ids] = poses
         self._data.quat_w_world[env_ids] = convert_camera_frame_orientation_convention(
             quat, origin="opengl", target="world"
