@@ -22,6 +22,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils import math as math_utils
 
 from .sonic_ort import SonicCudaExecution
+from .sonic_onnx import session_source
 from .sonic_latent import action_contract, compose_latent
 
 
@@ -225,7 +226,7 @@ class SonicLatentAction(ActionTerm):
             providers = ["CPUExecutionProvider"]
 
         self._decoder_session = ort.InferenceSession(
-            str(decoder_path), sess_options=session_options, providers=providers
+            session_source(decoder_path, self.num_envs), sess_options=session_options, providers=providers
         )
         active_provider = self._decoder_session.get_providers()[0]
         expected_provider = (
@@ -274,7 +275,7 @@ class SonicLatentAction(ActionTerm):
         else:
             providers = ["CPUExecutionProvider"]
         self._encoder_session = ort.InferenceSession(
-            str(encoder_path), sess_options=session_options, providers=providers
+            session_source(encoder_path, self.num_envs), sess_options=session_options, providers=providers
         )
         self._encoder_input_name = self._encoder_session.get_inputs()[0].name
         self._encoder_output_name = self._encoder_session.get_outputs()[0].name
