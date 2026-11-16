@@ -52,37 +52,25 @@ def main():
             cubes[name] = DeformableObject(DeformableObjectCfg(prim_path='/World/'+name,
                 spawn=spawn, init_state=DeformableObjectCfg.InitialStateCfg(pos=(index, 0, 1))))
         sim.reset()
-        original, targets, traces = {}, {}, {name: [] for name in cubes}
+        original, traces = {}, {name: [] for name in cubes}
+        report['initial_strain_rms_m'] = {}
         for name, cube in cubes.items():
             assert cube.is_initialized
             assert (cube.material_physx_view is None) == (name == 'unbound')
             original[name] = cube.data.nodal_state_w.clone()
-            target = cube.data.nodal_kinematic_target.clone()
+            assert torch.all(cube.data.nodal_kinematic_target[..., 3] == 1), 'Nodes must start free'
             center = original[name][..., :3].mean(1, keepdim=True)
-            target[..., :3] = original[name][..., :3]
-            target[..., 0] = center[..., 0]+1.1*(target[..., 0]-center[..., 0])
-            target[..., 3] = 0
-            targets[name] = target
-            cube.write_nodal_kinematic_target_to_sim(target)
-        for _ in range(4):
-            for cube in cubes.values():
-                cube.write_data_to_sim()
-            sim.step(render=False)
-            for cube in cubes.values():
-                cube.update(sim.get_physics_dt())
-        report['held_strain_rms_m'] = {}
-        for name, cube in cubes.items():
-            # Zero nodal velocity before release in every arm.
-            state = cube.data.nodal_state_w.clone()
+            # Start from a strained free state. Toggling every node from held
+            # to free left both SDKs motionless in the preceding diagnostic;
+            # that result cannot characterize constitutive response.
+            state = original[name].clone()
+            state[..., 0] = center[..., 0]+1.1*(state[..., 0]-center[..., 0])
             pos = state[..., :3]
             rest = original[name][..., :3]
             delta = (pos-pos.mean(1, keepdim=True))-(rest-rest.mean(1, keepdim=True))
-            report['held_strain_rms_m'][name] = float(torch.sqrt(torch.mean(delta**2)))
+            report['initial_strain_rms_m'][name] = float(torch.sqrt(torch.mean(delta**2)))
             state[..., 3:] = 0
             cube.write_nodal_state_to_sim(state)
-            target = targets[name].clone()
-            target[..., 3] = 1
-            cube.write_nodal_kinematic_target_to_sim(target)
         for _ in range(32):
             for cube in cubes.values():
                 cube.write_data_to_sim()
@@ -105,9 +93,9 @@ def main():
             comparisons[name] = dict(rest_geometry_max_error_m=rest_error,
                 maximum_centered_node_error_m=float(np.abs(delta).max()),
                 rms_centered_node_error_by_step_m=np.sqrt(np.mean(delta**2, axis=(1, 2))).tolist())
-        report['informative_control'] = all(x > .001 for x in report['held_strain_rms_m'].values()) and (
+        report['informative_control'] = all(x > .001 for x in report['initial_strain_rms_m'].values()) and (
             comparisons['soft_control']['maximum_centered_node_error_m'] > .0001)
-        report.update(completed=True, steps=36, release_steps=32,
+        report.update(completed=report['informative_control'], measurement_completed=True, steps=32, release_steps=32,
             implicit_versus_explicit=comparisons,
             relaxation_rms_from_rest_by_step_m={name: np.sqrt(np.mean(
                 (arrays[name]-arrays[name+'_rest'])**2, axis=(1, 2))).tolist() for name in cubes})
