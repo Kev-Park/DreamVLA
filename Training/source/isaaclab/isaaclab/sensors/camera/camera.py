@@ -628,6 +628,8 @@ class Camera(SensorBase):
             hierarchy = self._view._get_fabric_hierarchy()
             hierarchy.update_world_xforms()
             indices = env_ids.tolist() if isinstance(env_ids, torch.Tensor) else list(env_ids)
+            if not indices:
+                return
             positions, orientations = [], []
             for index in indices:
                 matrix = hierarchy.get_world_xform(usdrt.Sdf.Path(self._view.prim_paths[index]))

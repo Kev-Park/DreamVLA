@@ -94,11 +94,10 @@ def main():
         del runner
         resumed = OnPolicyRunner(env, agent.to_dict(), log_dir=str(output/'resumed'), device=args.device)
         resumed.load(str(first))
-        restored = output/'restored.pt'
-        resumed.save(str(restored))
-        restored_state = torch.load(restored, map_location='cpu', weights_only=False)
-        exact(saved['model_state_dict'], restored_state['model_state_dict'])
-        exact(saved['optimizer_state_dict'], restored_state['optimizer_state_dict'])
+        # Compare live restored state before another optimizer update. Calling
+        # runner.save here would require a logger initialized only by learn().
+        exact(saved['model_state_dict'], resumed.alg.policy.state_dict())
+        exact(saved['optimizer_state_dict'], resumed.alg.optimizer.state_dict())
         assert resumed.current_learning_iteration == 1
         resumed.current_learning_iteration += 1  # Same zero-based accounting as train_ppo.
         resumed.learn(num_learning_iterations=1, init_at_random_ep_len=False)
