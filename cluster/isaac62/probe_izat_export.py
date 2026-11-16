@@ -48,6 +48,13 @@ def main():
     info = read(output/'meta/info.json')
     assert info['total_episodes'] == 1 and info['total_frames'] == frames
     assert info['script_config']['raw_episode_count'] == 1
+    import pyarrow.parquet as pq
+    parquet = list((output/'data').rglob('*.parquet')); assert len(parquet) == 1
+    table = pq.read_table(parquet[0])
+    for name in FIELDS:
+        np.testing.assert_array_equal(np.asarray(table[name].to_pylist()), arrays[name])
+    for name in ('teleop.root_pos_w', 'teleop.object_pos_w', 'teleop.object_quat_w'):
+        assert name not in table.column_names and name not in info['features']
     videos = list((output/'videos').rglob('*.mp4')); assert len(videos) == 1
     capture = cv2.VideoCapture(str(videos[0])); decoded = []
     try:
@@ -68,6 +75,7 @@ def main():
     assert original == {p.name:digest(p) for p in episode.iterdir()}
     report = dict(completed=True, synthetic_fixture=True, episodes=1, frames=frames,
                   decoded_frames=len(decoded), fps=fps, resume_files_unchanged=True,
+                  all_recorded_policy_arrays_exact=True, invented_world_pose_fields=False,
                   source_hashes=original, scope='Actual contributed converter and SONIC exporter; no simulation or expert success')
     write_json(args.output/'receipt.json', report)
     print(json.dumps(report))
