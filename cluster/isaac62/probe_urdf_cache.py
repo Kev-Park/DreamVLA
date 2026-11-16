@@ -23,7 +23,7 @@ def main():
         source = args.output/'cache_fixture.urdf'
         source.write_text('<robot name="cache_fixture"><link name="base"/></robot>')
         cfg = UrdfConverterCfg(asset_path=str(source), usd_dir=str(args.output/'cache'),
-            fix_base=True, force_usd_conversion=False)
+            fix_base=True, force_usd_conversion=False, joint_drive=None)
         calls = []
 
         def injected(converter, config):
