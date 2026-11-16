@@ -25,9 +25,13 @@ class VolumeDeformableView:
         # after the native view exists, invalidating it and crashing PhysX.
         # Use our read-only cooked-topology diagnostics for these bodies.
         # Stress queries still reject unknown implicit material parameters.
-        can_wrap = can_wrap and all(
-            bool(UsdShade.MaterialBindingAPI(p).ComputeBoundMaterial('physics')[0]) for p in roots
-        )
+        def stable_explicit_material(prim):
+            material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial('physics')[0]
+            return bool(material) and not material.GetPrim().GetCustomDataByKey(
+                'isaaclab:implicitLegacyDeformableMaterial'
+            )
+
+        can_wrap = can_wrap and all(stable_explicit_material(p) for p in roots)
         self._diagnostics = DeformablePrim(pattern, deformable_type='volume') if can_wrap else None
         self._stage = stage
         self._collision_rest = None

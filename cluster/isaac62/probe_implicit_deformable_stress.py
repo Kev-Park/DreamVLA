@@ -34,6 +34,7 @@ def main():
         import torch
         import isaaclab.sim as sim_utils
         from isaaclab.assets import DeformableObject, DeformableObjectCfg
+        from pxr import UsdShade
         torch.set_num_threads(1)
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
         spawn = sim_utils.MeshCuboidCfg(size=(.2, .2, .2),
@@ -44,6 +45,12 @@ def main():
             init_state=DeformableObjectCfg.InitialStateCfg(pos=(0, 0, 1))))
         sim.reset()
         assert asset.is_initialized and asset.material_physx_view is None
+        root = sim.stage.GetPrimAtPath('/World/SoftCube/geometry/mesh' if version == '5.1.0.0'
+                                      else '/World/SoftCube')
+        material = UsdShade.MaterialBindingAPI(root).ComputeBoundMaterial('physics')[0]
+        report.update(material_bound=bool(material), material_physx_view_is_none=True,
+            private_legacy_default=bool(material) and bool(material.GetPrim().GetCustomDataByKey(
+                'isaaclab:implicitLegacyDeformableMaterial')))
         original = asset.data.nodal_state_w.clone()
         assert torch.isfinite(original).all()
         center = original[..., :3].mean(1, keepdim=True)
@@ -76,7 +83,7 @@ def main():
                     row['measurements'][name] = dict(available=False, error=str(error))
             report['cases'].append(row)
         np.savez(args.output/'measurements.npz', **arrays)
-        report.update(completed=True, material_bound=False, steps=12,
+        report.update(completed=True, steps=12,
                       stress_available=all(x['measurements']['sim_element_stress_w']['available']
                                            for x in report['cases']))
     except BaseException:

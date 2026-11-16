@@ -372,12 +372,16 @@ def _spawn_mesh_geom_from_mesh(
         material_cfg.func(material_path, material_cfg)
         # apply material
         bind_physics_material(physics_binding_path, material_path)
-    elif new_deformable and cfg.mass_props is not None and cfg.mass_props.density is not None:
-        material_path = f'{geom_prim_path}/densityMaterial'
-        material = UsdShade.Material.Define(mesh_prim.GetStage(), material_path).GetPrim()
-        material.ApplyAPI('OmniPhysicsBaseMaterialAPI')
-        material.ApplyAPI('OmniPhysicsDeformableMaterialAPI')
-        material.GetAttribute('omniphysics:density').Set(cfg.mass_props.density)
+    elif new_deformable:
+        # A legacy omitted material still had elasticity: E=50 MPa, nu=.45,
+        # damping=.005, friction=.25. The new scene's rigid default does not
+        # supply those deformable constants. Own this compatibility default
+        # locally so neither scene-wide defaults nor another asset change.
+        material_path = f'{geom_prim_path}/legacyDefaultMaterial'
+        density = cfg.mass_props.density if cfg.mass_props is not None else None
+        material_cfg = DeformableBodyMaterialCfg(density=density)
+        material = material_cfg.func(material_path, material_cfg)
+        material.SetCustomDataByKey('isaaclab:implicitLegacyDeformableMaterial', True)
         bind_physics_material(physics_binding_path, material_path)
 
     # note: we apply the rigid properties to the parent prim in case of rigid objects.

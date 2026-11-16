@@ -333,7 +333,11 @@ class DeformableObject(AssetBase):
             raise RuntimeError(f"Failed to create deformable body at: {self.cfg.prim_path}. Please check PhysX logs.")
 
         # resolve material path back into regex expression
-        if material_prim is not None:
+        # A backend-owned compatibility default preserves the original API's
+        # absent, nonmodifiable material view for an omitted user material.
+        if material_prim is not None and not material_prim.GetCustomDataByKey(
+            'isaaclab:implicitLegacyDeformableMaterial'
+        ):
             # -- material prim expression
             material_prim_path = material_prim.GetPath().pathString
             # check if the material prim is under the template prim
@@ -357,7 +361,7 @@ class DeformableObject(AssetBase):
             omni.log.info(f"Deformable material initialized at: {material_prim_path_expr}")
             omni.log.info(f"Number of instances: {self._material_physx_view.count}")
         else:
-            omni.log.info("No deformable material found. Material properties will be set to default values.")
+            omni.log.info("No explicit deformable material view. Material properties use backend defaults.")
 
         # container for data access
         self._data = DeformableObjectData(self.root_physx_view, self.device)
