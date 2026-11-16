@@ -614,8 +614,12 @@ class Camera(SensorBase):
         if len(self._sensor_prims) == 0:
             raise RuntimeError("Camera prim is None. Please call 'sim.play()' first.")
 
-        # get the poses from the view
-        poses, quat = self._view.get_world_poses(env_ids)
+        # Physics updates Fabric directly when that interface is enabled. The
+        # core view defaults to USD, whose articulated parent transforms then
+        # remain at their authored poses even while the rendered camera moves.
+        simulation = sim_utils.SimulationContext.instance()
+        use_usd = simulation is None or not simulation.is_fabric_enabled()
+        poses, quat = self._view.get_world_poses(env_ids, usd=use_usd)
         self._data.pos_w[env_ids] = poses
         self._data.quat_w_world[env_ids] = convert_camera_frame_orientation_convention(
             quat, origin="opengl", target="world"
