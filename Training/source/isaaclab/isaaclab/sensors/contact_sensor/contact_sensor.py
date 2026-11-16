@@ -9,13 +9,14 @@
 from __future__ import annotations
 
 import torch
+import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import carb
 import omni.physics.tensors.api as physx
 from isaacsim.core.simulation_manager import SimulationManager
-from pxr import PhysxSchema
+from pxr import PhysxSchema, Usd
 
 import isaaclab.sim as sim_utils
 import isaaclab.utils.string as string_utils
@@ -115,6 +116,8 @@ class ContactSensor(SensorBase):
     @property
     def body_names(self) -> list[str]:
         """Ordered names of bodies with contact sensors attached."""
+        if getattr(self, "_nested_view_indices", None) is not None:
+            return list(self._nested_body_names)
         prim_paths = self.body_physx_view.prim_paths[: self.num_bodies]
         return [path.split("/")[-1] for path in prim_paths]
 
@@ -259,12 +262,16 @@ class ContactSensor(SensorBase):
         # check that only rigid bodies are selected
         leaf_pattern = self.cfg.prim_path.rsplit("/", 1)[-1]
         template_prim_path = self._parent_prims[0].GetPath().pathString
-        body_names = list()
-        for prim in sim_utils.find_matching_prims(template_prim_path + "/" + leaf_pattern):
-            # check if prim has contact reporter API
-            if prim.HasAPI(PhysxSchema.PhysxContactReportAPI):
-                prim_path = prim.GetPath().pathString
-                body_names.append(prim_path.rsplit("/", 1)[-1])
+        # SDK 6's URDF importer authors nested link hierarchies. Match contact
+        # reporting descendants by leaf name, as Isaac Lab 3.0 does, while
+        # keeping the old single-pattern view for assets with flat body paths.
+        name_pattern = re.compile(leaf_pattern)
+        bodies = [prim for prim in Usd.PrimRange(self._parent_prims[0])
+                  if name_pattern.fullmatch(prim.GetName())
+                  and prim.HasAPI(PhysxSchema.PhysxContactReportAPI)]
+        body_names = [prim.GetName() for prim in bodies]
+        nested = any(str(prim.GetParent().GetPath()) != template_prim_path for prim in bodies)
+        self._nested_view_indices = None
         # check that there is at least one body with contact reporter API
         if not body_names:
             raise RuntimeError(
@@ -278,12 +285,20 @@ class ContactSensor(SensorBase):
         # convert regex expressions to glob expressions for PhysX
         body_names_glob = body_names_regex.replace(".*", "*")
         filter_prim_paths_glob = [expr.replace(".*", "*") for expr in self.cfg.filter_prim_paths_expr]
+        if nested:
+            if len(set(body_names)) != len(body_names):
+                raise ValueError("Nested contact bodies must have unique leaf names")
+            relative_paths = [str(prim.GetPath())[len(template_prim_path):] for prim in bodies]
+            parent_expression = self.cfg.prim_path.rsplit('/', 1)[0]
+            body_names_glob = [(parent_expression+path).replace('.*', '*') for path in relative_paths]
+        filter_patterns = ([filter_prim_paths_glob]*len(bodies)
+                           if nested and filter_prim_paths_glob else filter_prim_paths_glob)
 
         # create a rigid prim view for the sensor
         self._body_physx_view = self._physics_sim_view.create_rigid_body_view(body_names_glob)
         self._contact_physx_view = self._physics_sim_view.create_rigid_contact_view(
             body_names_glob,
-            filter_patterns=filter_prim_paths_glob,
+            filter_patterns=filter_patterns,
             max_contact_data_count=self.cfg.max_contact_data_count_per_prim * len(body_names) * self._num_envs,
         )
         # resolve the true count of bodies
@@ -295,6 +310,16 @@ class ContactSensor(SensorBase):
                 f"\n\tInput prim path    : {self.cfg.prim_path}"
                 f"\n\tResolved prim paths: {body_names_regex}"
             )
+        if nested:
+            # PhysX list-pattern views are pattern-major. Resolve actual row
+            # paths instead of assuming an order or mixing clones on reshape.
+            rows = {path:index for index,path in enumerate(self.body_physx_view.prim_paths)}
+            indices = [[rows[str(parent.GetPath())+relative] for relative in relative_paths]
+                       for parent in self._parent_prims]
+            if len(rows) != self._num_envs*self._num_bodies:
+                raise RuntimeError("Nested contact view contains duplicate or missing body paths")
+            self._nested_view_indices = torch.tensor(indices, dtype=torch.long, device=self._device)
+            self._nested_body_names = body_names
 
         # prepare data buffers
         self._data.net_forces_w = torch.zeros(self._num_envs, self._num_bodies, 3, device=self._device)
@@ -343,6 +368,13 @@ class ContactSensor(SensorBase):
             else:
                 self._data.force_matrix_w_history = self._data.force_matrix_w.unsqueeze(1)
 
+    def _view_rows(self, data: torch.Tensor, *shape: int) -> torch.Tensor:
+        """Return PhysX rows in the public (environment, body, ...) ordering."""
+        raw = data.view(self._num_envs*self._num_bodies, *shape)
+        if self._nested_view_indices is not None:
+            return raw[self._nested_view_indices]
+        return raw.view(self._num_envs, self._num_bodies, *shape)
+
     def _update_buffers_impl(self, env_ids: Sequence[int]):
         """Fills the buffers of the sensor data."""
         # default to all sensors
@@ -353,7 +385,7 @@ class ContactSensor(SensorBase):
         # TODO: We are handling the indexing ourself because of the shape; (N, B) vs expected (N * B).
         #   This isn't the most efficient way to do this, but it's the easiest to implement.
         net_forces_w = self.contact_physx_view.get_net_contact_forces(dt=self._sim_physics_dt)
-        self._data.net_forces_w[env_ids, :, :] = net_forces_w.view(-1, self._num_bodies, 3)[env_ids]
+        self._data.net_forces_w[env_ids, :, :] = self._view_rows(net_forces_w, 3)[env_ids]
         # update contact force history
         if self.cfg.history_length > 0:
             self._data.net_forces_w_history[env_ids] = self._data.net_forces_w_history[env_ids].roll(1, dims=1)
@@ -365,7 +397,7 @@ class ContactSensor(SensorBase):
             num_filters = self.contact_physx_view.filter_count
             # acquire and shape the force matrix
             force_matrix_w = self.contact_physx_view.get_contact_force_matrix(dt=self._sim_physics_dt)
-            force_matrix_w = force_matrix_w.view(-1, self._num_bodies, num_filters, 3)
+            force_matrix_w = self._view_rows(force_matrix_w, num_filters, 3)
             self._data.force_matrix_w[env_ids] = force_matrix_w[env_ids]
             if self.cfg.history_length > 0:
                 self._data.force_matrix_w_history[env_ids] = self._data.force_matrix_w_history[env_ids].roll(1, dims=1)
@@ -373,7 +405,7 @@ class ContactSensor(SensorBase):
 
         # obtain the pose of the sensor origin
         if self.cfg.track_pose:
-            pose = self.body_physx_view.get_transforms().view(-1, self._num_bodies, 7)[env_ids]
+            pose = self._view_rows(self.body_physx_view.get_transforms(), 7)[env_ids]
             pose[..., 3:] = convert_quat(pose[..., 3:], to="wxyz")
             self._data.pos_w[env_ids], self._data.quat_w[env_ids] = pose.split([3, 4], dim=-1)
 
@@ -401,7 +433,8 @@ class ContactSensor(SensorBase):
                 agg = agg.zero_().index_add_(0, row_ids, pts) / counts.clamp_min(1).unsqueeze(1)
                 agg[counts == 0] = float("nan")
 
-            self._contact_position_aggregate_buffer[:] = agg.view(self._num_envs * self.num_bodies, -1, 3)
+            ordered = self._view_rows(agg, self.contact_physx_view.filter_count, 3)
+            self._contact_position_aggregate_buffer[:] = ordered.reshape(self._num_envs*self.num_bodies, -1, 3)
             self._data.contact_pos_w[env_ids] = self._contact_position_aggregate_buffer.view(
                 self._num_envs, self._num_bodies, self.contact_physx_view.filter_count, 3
             )[env_ids]
@@ -463,7 +496,7 @@ class ContactSensor(SensorBase):
             frame_origins: torch.Tensor = self._data.pos_w
         else:
             pose = self.body_physx_view.get_transforms()
-            frame_origins = pose.view(-1, self._num_bodies, 7)[:, :, :3]
+            frame_origins = self._view_rows(pose, 7)[:, :, :3]
         # visualize
         self.contact_visualizer.visualize(frame_origins.view(-1, 3), marker_indices=marker_indices.view(-1))
 
