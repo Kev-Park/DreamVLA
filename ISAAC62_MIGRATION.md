@@ -75,6 +75,52 @@ This closes the configuration-assembly gate without installing pytest into the
 production GR00T profile. It does not establish contributed training or serving.
 Local receipt: `out/isaac62_migration/check_izat_native_config.json`.
 
+### Real exporter and URDF migration fixes (2026-11-16)
+
+The contributed converter failed against the installed SONIC exporter because
+that schema additionally requires robot/object world-pose telemetry absent from
+the contributed raw recordings. The converter now retains its original recorded
+schema, omitting only those three unrecorded telemetry fields and rejecting that
+omission if they ever become configured GR00T modalities. It does not invent
+world poses or alter policy observations/actions. The actual 50-frame integration
+at `acef058` passes exact comparisons of every recorded policy array after the
+declared storage cast, all 50 decoded RGB frames at 50 fps, unchanged source hashes
+and byte-unchanged completed-dataset resume. Scalar width-one Parquet columns
+are checked explicitly. Non-FSQ synthetic labels were correctly rejected during
+fixture development; the final fixture retains that validation. Receipts:
+`out/isaac62_migration/check_izat_export_fsq.json` and the earlier failed
+`check_izat_export.json`.
+
+Actual robot preparation exposed a shared-framework migration gap:
+`isaacsim.asset.importer.urdf._urdf` no longer exists in SDK 6.2. The contributed
+asset command also allowed fast application shutdown to hide an exception behind
+exit code zero. It now prints errors before shutdown, uses the supported SDK exit
+code when available, and rejects a missing USD. The shared URDF converter retains
+its legacy path and bridges to the public `URDFImporter`/`URDFImporterConfig`
+when available. This follows NVIDIA's
+[URDF migration contract](https://docs.isaacsim.omniverse.nvidia.com/6.2.0/migration_guides/isaac_sim_6_0/urdf_mjcf_importer_exporter_pipeline.html).
+The bridge retains the requested asset filename using relative layered references
+and explicitly selects the generated PhysX variant; without that selection the
+first generated asset composed zero physics joints.
+
+Robot preparation at `bb570ce` exits zero and produces a composable asset. A
+separate read-only USD audit finds exactly the original 43 movable joint names,
+all requested force drives with zero stiffness/damping, a valid default prim and
+instanceable geometry. This is not yet physics/rendering proof, nor legacy/target
+robot-geometry parity. The unused generated MuJoCo layer warns about absent gains;
+the selected PhysX layer's requested zero gains are verified. Audit receipt:
+`out/isaac62_migration/audit_izat_robot_physx.json`. A later API-detection-only
+change at `fc061e6` avoids assuming wheel metadata for standalone SDK installs;
+its next runtime regression remains to be executed.
+
+Remaining URDF scope is explicit: the new importer does not support root-link
+overrides, mimic-to-normal conversion, cylinder replacement or natural-frequency
+drive gains through the old API. Requests for these options fail explicitly,
+instead of silently dropping them. Their preservation is not established.
+The SDK also emits a different robot hierarchy; camera attachment paths and
+full collision/inertia/limit/physics/rendering parity still need validation before
+accepting the contributed simulation pipeline.
+
 ## Full GR00T save/resume gate (2026-11-15)
 
 The actual full-model validation passed on Bluesclues GPU 4 using committed probe
