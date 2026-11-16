@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--modern-root', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cases', nargs='+', default=['default', 'mimic_normal'])
+    parser.add_argument('--imported-drives', action='store_true', help='Keep imported gains and limits instead of a common hinge stimulus override')
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
@@ -30,16 +31,19 @@ def main():
         from isaaclab.assets import Articulation, ArticulationCfg
         from isaaclab.sim import SimulationCfg, SimulationContext, UsdFileCfg
         sim = SimulationContext(SimulationCfg(dt=report['dt'], gravity=(0., 0., 0.), device=args.device))
+        report['imported_drives'] = args.imported_drives
         robots, ids, traces, pose_traces, offsets = {}, {}, {}, {}, {}
         for version, root in (('legacy', args.legacy_root), ('modern', args.modern_root)):
             for case in args.cases:
                 name = version+'_'+case
                 offsets[name] = (0., 0., 0.)
+                actuator = (ImplicitActuatorCfg(joint_names_expr=['hinge'], stiffness=None, damping=None)
+                            if args.imported_drives else ImplicitActuatorCfg(joint_names_expr=['hinge'],
+                                stiffness=20., damping=1., effort_limit_sim=10., velocity_limit_sim=2.))
                 cfg = ArticulationCfg(prim_path='/World/'+name,
                     spawn=UsdFileCfg(usd_path=str(root/case/'option_fixture.usd')),
                     init_state=ArticulationCfg.InitialStateCfg(pos=offsets[name], joint_pos={'.*': 0.}),
-                    actuators={'hinge': ImplicitActuatorCfg(joint_names_expr=['hinge'],
-                        stiffness=20., damping=1., effort_limit_sim=10., velocity_limit_sim=2.)})
+                    actuators={'hinge': actuator})
                 robots[name] = Articulation(cfg)
                 traces[name] = []
                 pose_traces[name] = []
@@ -62,6 +66,8 @@ def main():
             report['robots'][name] = dict(joint_names=list(robot.joint_names),
                 body_names=list(robot.body_names),
                 velocity_limits=robot.root_physx_view.get_dof_max_velocities().cpu().tolist(),
+                stiffness=robot.root_physx_view.get_dof_stiffnesses().cpu().tolist(),
+                damping=robot.root_physx_view.get_dof_dampings().cpu().tolist(),
                 masses=robot.root_physx_view.get_masses().cpu().tolist(),
                 inertias=robot.root_physx_view.get_inertias().cpu().tolist(),
                 coms=robot.root_physx_view.get_coms().cpu().tolist(),

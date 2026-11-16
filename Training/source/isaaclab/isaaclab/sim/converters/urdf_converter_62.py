@@ -9,6 +9,7 @@ the SDK owns the generated layered asset and its internal reference paths.
 import os
 from pathlib import Path
 import math
+import re
 import struct
 import xml.etree.ElementTree as ET
 
@@ -19,12 +20,19 @@ def convert_asset(converter, cfg):
     from .urdf_converter_cfg import UrdfConverterCfg
 
     drive_type = target_type = stiffness = damping = None
+    natural = None
     if cfg.joint_drive is not None:
         drive = cfg.joint_drive
-        if not isinstance(drive.gains, UrdfConverterCfg.JointDriveCfg.PDGainsCfg):
-            raise NotImplementedError("Isaac Sim 6 removed natural-frequency URDF drive conversion")
-        drive_type, target_type = drive.drive_type, drive.target_type
-        stiffness, damping = drive.gains.stiffness, drive.gains.damping
+        if isinstance(drive.gains, UrdfConverterCfg.JointDriveCfg.NaturalFrequencyGainsCfg):
+            natural = _natural_drive_values(cfg)
+            # The SDK no longer computes the original equivalent inertia.
+            # Import neutral drives, then author the original values below.
+            drive_type, target_type, stiffness, damping = 'force', 'position', 0., 0.
+        elif isinstance(drive.gains, UrdfConverterCfg.JointDriveCfg.PDGainsCfg):
+            drive_type, target_type = drive.drive_type, drive.target_type
+            stiffness, damping = drive.gains.stiffness, drive.gains.damping
+        else:
+            raise TypeError(f'Unknown URDF joint gain configuration: {type(drive.gains)}')
     collision = {"convex_hull": "Convex Hull", "convex_decomposition": "Convex Decomposition"}
     if cfg.collider_type not in collision:
         raise ValueError(f"Unknown collision simplification: {cfg.collider_type}")
@@ -72,7 +80,9 @@ def convert_asset(converter, cfg):
     _preserve_joint_velocity_limits(target, cfg)
     _preserve_explicit_joint_position_limits(target, cfg)
     _preserve_collision_capsules(target, cfg)
-    _preserve_mimic_joints(target, cfg)
+    if natural is not None:
+        _preserve_natural_drives(target, natural)
+    _preserve_mimic_joints(target, cfg, natural)
     _preserve_articulation_root(target, cfg)
     _preserve_diagonal_inertia_frames(target, cfg)
 
@@ -170,14 +180,100 @@ def _preserve_articulation_root(usd_path, cfg):
     stage.GetRootLayer().Save()
 
 
-def _preserve_mimic_joints(usd_path, cfg):
+def _natural_drive_values(cfg):
+    """Resolve the original regex/default and float32 natural-drive recipe."""
+    from pxr import Tf
+    from .urdf_legacy_inertia import compute_equivalent_inertias, f32
+
+    elements = {Tf.MakeValidIdentifier(element.get('name')): element
+                for element in ET.parse(cfg.asset_path).getroot().findall('joint')}
+    inertias = {Tf.MakeValidIdentifier(name): value
+                for name, value in compute_equivalent_inertias(cfg.asset_path).items()}
+
+    def resolve(value, default, label):
+        result, assigned = {name: default for name in elements}, set()
+        if isinstance(value, dict):
+            for pattern, setting in value.items():
+                matches = [name for name in elements if re.search(pattern, name)]
+                if not matches:
+                    raise ValueError(f'No URDF joint matches {label} pattern {pattern!r}')
+                for name in matches:
+                    result[name] = setting
+                assigned.update(matches)
+        else:
+            result = {name: value for name in elements}
+            assigned = set(elements)
+        return result, assigned
+
+    drive = cfg.joint_drive
+    types, _ = resolve(drive.drive_type, 'acceleration', 'drive type')
+    targets, _ = resolve(drive.target_type, 'position', 'target type')
+    frequencies, assigned = resolve(drive.gains.natural_frequency, 25., 'natural frequency')
+    ratios, _ = resolve(drive.gains.damping_ratio, .005, 'damping ratio')
+    result = {}
+    for name, element in elements.items():
+        dtype, target = types[name], targets[name]
+        if dtype not in ('force', 'acceleration') or target not in ('position', 'velocity', 'none'):
+            raise ValueError(f'Invalid URDF drive/target type for {name}: {dtype}/{target}')
+        frequency, ratio = f32(float(frequencies[name])), f32(float(ratios[name]))
+        if not math.isfinite(frequency) or not math.isfinite(ratio):
+            raise ValueError(f'Non-finite natural-drive parameters for {name}')
+        mass = inertias[name] if dtype == 'force' else 1.
+        scale = 1. if element.get('type') == 'prismatic' else math.pi/180.
+        # compute_natural_stiffness is C++ float; damping and the angular
+        # conversion are Python double until each original drive setter.
+        strength = f32(scale*f32(f32(mass*frequency)*frequency)) if name in assigned else 0.
+        damping = f32(scale*(2*mass*frequency*ratio)) if name in assigned and target == 'position' else 0.
+        stiffness = strength
+        if target == 'velocity':
+            stiffness, damping = 0., strength
+        elif target == 'none':
+            dynamics = element.find('dynamics')
+            stiffness = f32(float(dynamics.get('stiffness', '0'))) if dynamics is not None else 0.
+            damping = f32(float(dynamics.get('damping', '0'))) if dynamics is not None else 0.
+        result[name] = dict(drive_type=dtype, target_type=target, stiffness=stiffness, damping=damping,
+            natural_frequency=frequency, damping_ratio=ratio, equivalent_inertia=inertias[name],
+            movable=element.get('type') in ('revolute', 'continuous', 'prismatic'))
+    return result
+
+
+def _preserve_natural_drives(usd_path, parameters):
+    from pxr import Sdf, Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(usd_path))
+    found = set()
+    for prim in stage.Traverse():
+        if not (prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)):
+            continue
+        name = prim.GetName()
+        if name not in parameters:
+            continue
+        row = parameters[name]
+        instance = 'linear' if prim.IsA(UsdPhysics.PrismaticJoint) else 'angular'
+        drive = UsdPhysics.DriveAPI.Apply(prim, instance)
+        drive.CreateTypeAttr(row['drive_type'])
+        drive.CreateStiffnessAttr(row['stiffness'])
+        drive.CreateDampingAttr(row['damping'])
+        if row['target_type'] == 'velocity':
+            drive.CreateTargetVelocityAttr(0.)
+        elif row['target_type'] == 'position':
+            drive.CreateTargetPositionAttr(0.)
+        prim.CreateAttribute('physics:JointEquivalentInertia', Sdf.ValueTypeNames.Float, custom=True).Set(row['equivalent_inertia'])
+        found.add(name)
+    expected = {name for name, row in parameters.items() if row['movable']}
+    if found != expected:
+        raise RuntimeError(f'Natural-drive joint coverage mismatch: {sorted(found ^ expected)}')
+    stage.GetRootLayer().Save()
+
+
+def _preserve_mimic_joints(usd_path, cfg, natural=None):
     """Preserve the original importer's observed (inverted) mimic flag.
 
     Original configureMimicAPI: NVIDIA urdf-importer-extension, Apache-2.0,
     commit 9908f0341ee4c375a94d594c4eeb318dea3f4cf2, UrdfImporter.cpp.
     True parses mimic constraints; false leaves independent driven joints.
     PD gain overrides do not change its default 25/.005 constraint parameters.
-    Natural-frequency gain configuration is rejected before reaching here.
+    Natural-frequency configuration instead supplies its resolved parameters.
     """
     from pxr import PhysxSchema, Sdf, Tf, Usd, UsdPhysics
 
@@ -228,8 +324,8 @@ def _preserve_mimic_joints(usd_path, cfg):
                 raise ValueError(f'Non-finite mimic coefficients for {name}')
             api.CreateGearingAttr(-multiplier)
             api.CreateOffsetAttr(offset)
-            api.CreateNaturalFrequencyAttr(25.0)
-            api.CreateDampingRatioAttr(.005)
+            api.CreateNaturalFrequencyAttr(natural[name]['natural_frequency'] if natural is not None else 25.0)
+            api.CreateDampingRatioAttr(natural[name]['damping_ratio'] if natural is not None else .005)
             api.CreateReferenceJointRel().SetTargets([source.GetPath()])
             instance = 'linear' if prim.IsA(UsdPhysics.PrismaticJoint) else 'angular'
             prim.RemoveAPI(UsdPhysics.DriveAPI, instance)

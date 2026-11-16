@@ -14,7 +14,7 @@ URDF = """<robot name="option_fixture">
 <link name="base"><inertial><mass value="2"/><inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1"/></inertial></link>
 <link name="arm"><inertial><origin xyz="0 0 .2"/><mass value="1"/><inertia ixx=".1" ixy="0" ixz="0" iyy=".1" iyz="0" izz=".01"/></inertial><visual><geometry><cylinder radius=".05" length=".4"/></geometry></visual><collision><geometry><cylinder radius=".05" length=".4"/></geometry></collision></link>
 <link name="finger"><inertial><origin xyz="0 0 .1"/><mass value=".2"/><inertia ixx=".01" ixy="0" ixz="0" iyy=".01" iyz="0" izz=".001"/></inertial><collision><geometry><box size=".02 .02 .2"/></geometry></collision></link>
-<joint name="hinge" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 .1" rpy="0 .1 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="10" velocity="2"/></joint>
+<joint name="hinge" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 .1" rpy="0 .1 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="10" velocity="2"/><dynamics damping=".27" stiffness=".31"/></joint>
 <joint name="finger_hinge" type="revolute"><parent link="arm"/><child link="finger"/><origin xyz="0 0 .4"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="5" velocity="2"/><mimic joint="hinge" multiplier="-1" offset=".1"/></joint>
 </robot>"""
 
@@ -40,7 +40,8 @@ def main():
             root_name=dict(root_link_name='base'), root_interior=dict(root_link_name='arm'),
             floating_default=dict(fix_base=False), floating_root=dict(fix_base=False, root_link_name='arm'),
             capsule_instanceable=dict(replace_cylinders_with_capsules=True, make_instanceable=True),
-            natural_force={}, natural_acceleration={})
+            natural_force={}, natural_acceleration={}, natural_velocity={}, natural_none={},
+            natural_patterns={}, natural_partial={}, natural_mimic=dict(convert_mimic_joints_to_normal_joints=True))
         if args.cases:
             unknown = set(args.cases) - cases.keys()
             if unknown:
@@ -56,10 +57,24 @@ def main():
                     cfg.joint_drive.gains = UrdfConverterCfg.JointDriveCfg.NaturalFrequencyGainsCfg(
                         natural_frequency=8., damping_ratio=.7)
                     cfg.joint_drive.drive_type = 'force' if name == 'natural_force' else 'acceleration'
+                    if name != 'natural_acceleration':
+                        cfg.joint_drive.drive_type = 'force'
+                    if name in ('natural_velocity', 'natural_none'):
+                        cfg.joint_drive.target_type = 'velocity' if name == 'natural_velocity' else 'none'
+                    elif name == 'natural_patterns':
+                        cfg.joint_drive.drive_type = {'hinge': 'force', '^finger': 'acceleration'}
+                        cfg.joint_drive.target_type = {'hinge': 'position', '^finger': 'velocity'}
+                        cfg.joint_drive.gains.natural_frequency = {'hinge': 8., '^finger': 5.}
+                        cfg.joint_drive.gains.damping_ratio = {'hinge': .7, '^finger': .4}
+                    elif name == 'natural_partial':
+                        cfg.joint_drive.gains.natural_frequency = {'^hinge$': 8.}
                 path = Path(UrdfConverter(cfg).usd_path)
                 stage = Usd.Stage.Open(str(path))
                 assert stage and stage.GetDefaultPrim()
                 row = dict(completed=True, requested_options=options, usd_path=str(path), bodies=[], geometry=[], joints=[], articulation_roots=[], root_settings={}, fixed_joints=[])
+                row['drive_request'] = dict(drive_type=cfg.joint_drive.drive_type, target_type=cfg.joint_drive.target_type,
+                    natural_frequency=getattr(cfg.joint_drive.gains, 'natural_frequency', None),
+                    damping_ratio=getattr(cfg.joint_drive.gains, 'damping_ratio', None))
                 for prim in Usd.PrimRange(stage.GetPseudoRoot(), Usd.TraverseInstanceProxies()):
                     if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
                         row['articulation_roots'].append(str(prim.GetPath()))
