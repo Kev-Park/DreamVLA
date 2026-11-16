@@ -1,7 +1,9 @@
 """Compare live PhysX response of original/modern imports with both mimic flags.
 
 This owned three-link fixture uses zero gravity, identical hinge drive overrides
-and no finger actuator. It measures importer compatibility, not research success.
+and no finger actuator. Robots share the same origin with inter-robot collisions
+filtered, avoiding world-placement rounding as a comparison confound. It measures
+importer compatibility, not research success.
 """
 import argparse
 import json
@@ -32,7 +34,7 @@ def main():
         for version, root in (('legacy', args.legacy_root), ('modern', args.modern_root)):
             for case in args.cases:
                 name = version+'_'+case
-                offsets[name] = (len(robots)*2., 0., 0.)
+                offsets[name] = (0., 0., 0.)
                 cfg = ArticulationCfg(prim_path='/World/'+name,
                     spawn=UsdFileCfg(usd_path=str(root/case/'option_fixture.usd')),
                     init_state=ArticulationCfg.InitialStateCfg(pos=offsets[name], joint_pos={'.*': 0.}),
@@ -41,6 +43,17 @@ def main():
                 robots[name] = Articulation(cfg)
                 traces[name] = []
                 pose_traces[name] = []
+        from pxr import Sdf, UsdPhysics
+        # No floor/contact stimulus exists in this fixture. Isolate all robot
+        # colliders, including instance proxies, without modifying their assets.
+        group = UsdPhysics.CollisionGroup.Define(sim.stage, '/World/FixtureIsolation')
+        group.GetCollidersCollectionAPI().CreateIncludesRel().SetTargets(
+            [Sdf.Path('/World/'+name) for name in robots])
+        group.GetCollidersCollectionAPI().CreateExpansionRuleAttr('expandPrims')
+        group.CreateFilteredGroupsRel().SetTargets([group.GetPath()])
+        report['placement_control'] = dict(shared_origin=True, collision_group=str(group.GetPath()),
+            filtered_groups=[str(p) for p in group.GetFilteredGroupsRel().GetTargets()],
+            asset_sources_unchanged=True)
         sim.reset()
         for name, robot in robots.items():
             indices, names = robot.find_joints(['hinge', 'finger_hinge'], preserve_order=True)
