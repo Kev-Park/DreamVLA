@@ -97,8 +97,8 @@ class VolumeDeformableView:
     def get_element_rest_poses(self):
         inverse = self._inverse_rest_edges(self._collision_rest_positions(),
             self._view.get_collision_element_indices(), 'collision')
-        _, rotation, inverse_scale = self._legacy_frames()
-        raw = (inverse @ inverse_scale @ rotation).transpose(-2, -1).contiguous().flatten(-2)
+        _, rotation, collision_frame = self._legacy_frames()
+        raw = (inverse @ collision_frame @ rotation).transpose(-2, -1).contiguous().flatten(-2)
         return self._mask_elements(raw, 'collision').reshape(self.count, -1)
 
     def get_sim_nodal_velocities(self):
@@ -186,6 +186,7 @@ class VolumeDeformableView:
             if np.any(scale <= 0):
                 raise RuntimeError('Legacy deformable diagnostics require a nonsingular initial root frame')
             rotation = linear / scale[:, None, :]
+            collision_frame = np.stack([np.diag(1 / row) for row in scale])
             if np.any(np.linalg.det(rotation) <= 0):
                 raise RuntimeError('Reflected root frames have invalid legacy simulation stress/rest diagnostics')
             sheared = np.max(np.abs(rotation.transpose(0, 2, 1) @ rotation-np.eye(3)), axis=(1, 2)) > 1e-6
@@ -195,15 +196,19 @@ class VolumeDeformableView:
                 # Paired four-state native captures validate this reporting
                 # convention; simulator nodal states are never changed here.
                 transform = Gf.Transform(matrices[index])
+                inverse_authored_linear = np.linalg.inv(linear[index])
                 scale[index] = transform.GetScale()
                 if np.any(scale[index] <= 0):
                     raise RuntimeError('Legacy diagnostics require positive decomposed root scales')
                 rotation[index] = np.asarray(Gf.Matrix3d().SetRotate(transform.GetRotation())).T
                 linear[index] = rotation[index] @ np.diag(scale[index])
+                # Collision bind coordinates retain the authored shear even
+                # though the legacy diagnostic's initial rotation does not.
+                collision_frame[index] = inverse_authored_linear @ rotation[index]
             reference = self._view.get_simulation_nodal_positions()
             convert = lambda value: torch.as_tensor(value, device=reference.device, dtype=reference.dtype)[:, None]
             self._legacy_frame_cache = (convert(linear), convert(rotation),
-                convert(np.stack([np.diag(1 / row) for row in scale])))
+                convert(collision_frame))
         return self._legacy_frame_cache
 
     def _legacy_simulation_state(self):
@@ -270,8 +275,8 @@ class VolumeDeformableView:
         edges = torch.where(valid[..., None, None], edges, identity)
         if torch.any(torch.linalg.det(rest_edges).abs() < 1e-12):
             raise RuntimeError('Cannot recover collision element diagnostics from a degenerate rest tetrahedron')
-        _, rotation, inverse_scale = self._legacy_frames()
-        return edges @ torch.linalg.inv(rest_edges) @ inverse_scale @ rotation
+        _, rotation, collision_frame = self._legacy_frames()
+        return edges @ torch.linalg.inv(rest_edges) @ collision_frame @ rotation
 
     def get_element_deformation_gradients(self):
         return self._mask_elements(self._collision_gradient().transpose(-2, -1).contiguous().flatten(-2), "collision")

@@ -229,8 +229,14 @@ def main():
         report.update(cases=configs, comparisons=comparisons, steps=64, measurement_completed=True,
             informative_control=(None if args.case else
                 comparisons['material_density_vs_material_low']['max_error_m'] > 1e-4))
+        report['diagnostics_finite'] = {key: bool(np.isfinite(value).all()) for key, value in topology.items()
+            if any(key.endswith(suffix) for suffix in ('native_rest_poses', 'deformation_gradients', 'stresses', 'rotations'))}
         np.savez(args.output/'traces.npz', **arrays)
         np.savez(args.output/'topology.npz', **topology)
+        # Reflected roots intentionally capture the native invalid result as
+        # baseline evidence. Completion there is not diagnostic validity.
+        if args.root_frame != 'reflection':
+            assert all(report['diagnostics_finite'].values()), 'Non-finite element diagnostic'
         if not args.case:
             assert report['informative_control'], 'Material density control did not separate'
         report['completed'] = True
