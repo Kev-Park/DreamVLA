@@ -40,18 +40,31 @@ def main():
                 body = body.GetParent()
             assert body, str(prim.GetPath())
             matrix = world(prim)
+            # The 5.1 importer authors mesh CollisionAPI on an ancestor
+            # Xform; 6.2 authors it on the Mesh itself. Include the geometry
+            # beneath either representation without treating visuals as hulls.
+            collision_owner = prim
+            while collision_owner and collision_owner != body:
+                if collision_owner.HasAPI(UsdPhysics.CollisionAPI):
+                    break
+                collision_owner = collision_owner.GetParent()
+            is_collision = bool(collision_owner and collision_owner != body)
             params = {a.GetName(): str(a.Get()) for a in prim.GetAttributes()
                       if a.GetName() in ('radius', 'height', 'axis', 'size',
                                         'physics:collisionEnabled', 'physics:approximation')}
+            if is_collision:
+                params.update({a.GetName(): str(a.Get()) for a in collision_owner.GetAttributes()
+                               if a.GetName() in ('physics:collisionEnabled', 'physics:approximation')})
             points = None
             if prim.IsA(UsdGeom.Mesh):
                 mesh = UsdGeom.Mesh(prim)
                 p = np.asarray(mesh.GetPointsAttr().Get(), dtype=np.float64)
                 points = p @ matrix[:3, :3].T + matrix[:3, 3]
                 assert points.ndim == 2 and points.shape[1] == 3 and np.isfinite(points).all()
-            key = (body.GetName(), prim.GetTypeName(), prim.HasAPI(UsdPhysics.CollisionAPI))
+            key = (body.GetName(), prim.GetTypeName(), is_collision)
             surfaces[key].append(dict(path=str(prim.GetPath()), matrix=matrix,
-                                      params=params, points=points))
+                                      params=params, points=points,
+                                      collision_api_on_geometry=prim.HasAPI(UsdPhysics.CollisionAPI)))
         joints = {}
         for prim in stage.Traverse():
             if not prim.IsA(UsdPhysics.Joint):
@@ -98,6 +111,9 @@ def main():
                     error = float(np.max(np.abs(a['matrix']-b['matrix'])))
                 report['surfaces'].append(dict(body=key[0], type=key[1], collision=key[2],
                     legacy=a['path'], modern=b['path'], geometry_error=error,
+                    collision_api_on_geometry={
+                        'legacy': a['collision_api_on_geometry'],
+                        'modern': b['collision_api_on_geometry']},
                     parameters_equal=a['params'] == b['params']))
         for name in sorted(lj):
             errors = []
