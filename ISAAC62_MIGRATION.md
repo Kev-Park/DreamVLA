@@ -541,12 +541,55 @@ the selected PhysX layer's requested zero gains are verified. Audit receipt:
 change at `fc061e6` avoids assuming wheel metadata for standalone SDK installs;
 its next runtime regression remains to be executed.
 
-Remaining URDF scope is explicit: natural-frequency drive gains through the
-old API remain unsupported and requests fail explicitly,
-instead of silently dropping them. Their preservation is not established.
+Natural-frequency drives were initially rejected explicitly rather than silently
+dropped. The preservation implementation and paired evidence are recorded in the
+natural-drive follow-up below; broader inertia and mimic coverage remains open.
 The SDK also emits a different robot hierarchy; camera attachment paths and
 full collision/inertia/limit/physics/rendering parity still need validation before
 accepting the contributed simulation pipeline.
+
+### Natural-frequency drive preservation (2026-11-16)
+
+The original importer?s equivalent-inertia calculation is ported with its float32
+rounding and original traversal order. On the actual original G1 asset, all 43
+joint inertias match bit for bit (`g1_legacy_natural_inertia_audit.json`). The
+implementation preserves the original, nonstandard use of inertia magnitudes
+rather than substituting a different physical model.
+
+Source `b607d99` introduced this port and exposed two differences in the expanded
+original fixture: an unmatched frequency regex retains the parser?s unscaled
+strength of 625, and the URDF spring field is `spring_stiffness`. Fix `1cd0602`
+preserves both, including raw URDF damping for unmatched joints. Converter cache
+version 11 invalidates earlier generated compatibility assets.
+
+Fresh original 5.1 and target 6.2 fixtures each complete all eight cases: default,
+force/acceleration natural drives, velocity/none targets, mixed regexes, partial
+frequency coverage and the original mimic flag. Every natural-drive stiffness,
+damping and drive type matches exactly. The `none` fixture exercises nonzero
+spring stiffness 0.31 and damping 0.27. Receipts are in
+`isaac{51,62}_urdf_options_1cd0602/` under local migration output.
+
+The stricter metadata comparison still reports two differences: the default PD
+path lacks the original equivalent-inertia annotation, and the constrained mimic
+joint uses the target schema?s infinite velocity default instead of the legacy
+1,000,000 default. These are recorded, not treated as an all-properties pass;
+see `natural_drive_metadata_comparison_1cd0602.json`. The subsequent natural-mimic live test below establishes effective velocity and
+response preservation for this fixture despite the schema-default difference.
+
+The paired 240-step force/acceleration response test uses the actual imported
+gains and limits, without the earlier common-gain overrides. Both pass the existing
+joint/body/orientation gates: maximum joint error is 2.98023e-8 rad for force
+and 7.45058e-8 rad for acceleration; maximum body-position error is 3.27826e-7 m.
+Effective stiffness/damping match exactly. Hinges traverse more than 0.55 rad,
+so the comparison exercises motion. Evidence:
+`isaac62_urdf_natural_runtime_1cd0602/receipt.json`. The fixture exits zero and
+releases its GPU process/reservation. A separate 240-step natural-mimic fixture
+also passes: maximum joint error 8.94070e-8 rad and body-position error
+2.94298e-7 m. Effective gains and velocity limits match exactly, including the
+unactuated mimic finger. Evidence:
+`isaac62_urdf_natural_mimic_runtime_1cd0602/receipt.json`. Its process, reservation
+and GPU contexts are also released. Prismatic and chained/non-cardinal
+mimic fixtures and merged/rotated/non-diagonal inertia coverage remain open.
 
 ### Nested contacts and actual SONIC batching (2026-11-16)
 
