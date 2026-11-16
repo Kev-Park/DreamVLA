@@ -16,6 +16,7 @@ import traceback
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--density', type=float, help='Exercise omitted material with a body-density override')
     args = parser.parse_args()
     assert os.name == 'posix' and os.environ.get('CUDA_VISIBLE_DEVICES') == '0'
     version = importlib.metadata.version('isaacsim')
@@ -40,7 +41,7 @@ def main():
         spawn = sim_utils.MeshCuboidCfg(size=(.2, .2, .2),
             deformable_props=sim_utils.DeformableBodyPropertiesCfg(
                 simulation_hexahedral_resolution=3, solver_position_iteration_count=4),
-            physics_material=None, mass_props=sim_utils.MassPropertiesCfg(mass=.8))
+            physics_material=None, mass_props=sim_utils.MassPropertiesCfg(mass=.8, density=args.density))
         asset = DeformableObject(DeformableObjectCfg(prim_path='/World/SoftCube', spawn=spawn,
             init_state=DeformableObjectCfg.InitialStateCfg(pos=(0, 0, 1))))
         sim.reset()
@@ -51,6 +52,10 @@ def main():
         report.update(material_bound=bool(material), material_physx_view_is_none=True,
             private_legacy_default=bool(material) and bool(material.GetPrim().GetCustomDataByKey(
                 'isaaclab:implicitLegacyDeformableMaterial')))
+        if args.density is not None and version == '6.2.0.0':
+            density = material.GetPrim().GetAttribute('omniphysics:density').Get()
+            assert density == args.density
+            report['density_override'] = density
         original = asset.data.nodal_state_w.clone()
         assert torch.isfinite(original).all()
         center = original[..., :3].mean(1, keepdim=True)
