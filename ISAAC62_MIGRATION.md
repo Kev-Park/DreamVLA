@@ -42,6 +42,39 @@ rates are not evidence for these newly integrated entrypoints. Original
 OmniControl environment use was approved on 2026-11-15; generation remains to be
 executed and checked.
 
+### Contributed live gates (2026-11-15)
+
+The actual contributed `sample-human` entrypoint completed one 196-frame
+button-press XYZ sample in the approved existing OmniControl environment.
+It loaded original checkpoint SHA256
+`886b722e95496f4ceafd704c4e1d0578888733d12ce67429677b80a91a9c36d0`,
+the original four normalization arrays, CFG 2.5 and all 1,000 diffusion steps.
+The generated motion `(1,22,3,196)` and hints `(1,196,22,3)` are finite.
+The contributed process-local XYZ adapter does not exercise SMPL or the dataset
+loader. Runtime was 176.09 seconds. Initial tmux environment forwarding failed
+before package import; a verified terminal failure and released reservation
+preceded the corrected launch. No dependencies or model implementation were
+patched. Original output and provenance are local in
+`isaac62_izat_human_46f367a/`. Both owned processes and GPU allocation were
+confirmed released before the next fixture.
+
+The real Isaac 6.2 gate at `69f4e96` registers and constructs both contributed
+task configurations and their actual PPO runner configurations. Both pass with
+two environments, physics dt 0.005, decimation 4 and three original action terms
+(`joint_pos`, `left_hand_action`, `right_hand_action`). This does not instantiate
+the environments or prove stepping/rendering. Full configurations, log and
+terminal zero are local in `isaac62_izat_configs_69f4e96/`; no owned GPU contexts
+or reservations remain.
+
+The actual contributed fine-tuning launcher also assembles a native configuration
+against the installed GR00T implementation at `3281663`: 35,554 steps for the
+99,800-frame fixture at 5.7 passes, effective batch 16, constant 1e-4 learning
+rate, frozen VLM, horizon 40 and absolute actions. Only the final training
+execution boundary is intercepted, using stdlib mocking; no model is loaded.
+This closes the configuration-assembly gate without installing pytest into the
+production GR00T profile. It does not establish contributed training or serving.
+Local receipt: `out/isaac62_migration/check_izat_native_config.json`.
+
 ## Full GR00T save/resume gate (2026-11-15)
 
 The actual full-model validation passed on Bluesclues GPU 4 using committed probe
