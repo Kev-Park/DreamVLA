@@ -75,6 +75,32 @@ class VolumeDeformableView:
     def get_nodal_positions(self):
         return self._view.get_collision_nodal_positions()
 
+    def _inverse_rest_edges(self, positions, indices, kind):
+        valid = self._element_mask(kind, indices.shape[1])
+        indices = torch.where(valid[..., None], indices.long(), torch.zeros_like(indices, dtype=torch.long))
+        batch = torch.arange(self.count, device=positions.device)[:, None, None]
+        points = positions[batch, indices]
+        edges = (points[..., 1:, :] - points[..., :1, :]).transpose(-2, -1)
+        identity = torch.eye(3, device=positions.device, dtype=positions.dtype)
+        edges = torch.where(valid[..., None, None], edges, identity)
+        if torch.any(torch.linalg.det(edges).abs() < 1e-12):
+            raise RuntimeError('Cannot invert a degenerate real rest tetrahedron')
+        return torch.linalg.inv(edges)
+
+    def get_sim_element_rest_poses(self):
+        inverse = self._inverse_rest_edges(self._view.get_rest_nodal_positions(),
+            self._view.get_rest_element_indices(), 'simulation')
+        linear, _, _ = self._legacy_frames()
+        raw = (inverse @ linear).transpose(-2, -1).contiguous().flatten(-2)
+        return self._mask_elements(raw, 'simulation').reshape(self.count, -1)
+
+    def get_element_rest_poses(self):
+        inverse = self._inverse_rest_edges(self._collision_rest_positions(),
+            self._view.get_collision_element_indices(), 'collision')
+        _, rotation, inverse_scale = self._legacy_frames()
+        raw = (inverse @ inverse_scale @ rotation).transpose(-2, -1).contiguous().flatten(-2)
+        return self._mask_elements(raw, 'collision').reshape(self.count, -1)
+
     def get_sim_nodal_velocities(self):
         return self._view.get_simulation_nodal_velocities()
 
@@ -198,9 +224,8 @@ class VolumeDeformableView:
             raise RuntimeError('Degenerate real simulation rest tetrahedron')
         return edges @ torch.linalg.inv(rest_edges)
 
-    def _collision_gradient(self):
+    def _collision_rest_positions(self):
         current = self._view.get_collision_nodal_positions()
-        indices = self._view.get_collision_element_indices().long()
         if self._collision_rest is None:
             rest = torch.zeros_like(current)
             for body, path in enumerate(self._view.collision_mesh_prim_paths):
@@ -214,6 +239,12 @@ class VolumeDeformableView:
                     raise RuntimeError('Collision rest topology exceeds the live nodal tensor')
                 rest[body, :row.shape[0]] = row
             self._collision_rest = rest
+        return self._collision_rest
+
+    def _collision_gradient(self):
+        current = self._view.get_collision_nodal_positions()
+        indices = self._view.get_collision_element_indices().long()
+        self._collision_rest_positions()
         valid = self._element_mask("collision", indices.shape[1])
         indices = torch.where(valid[..., None], indices, torch.zeros_like(indices))
         if torch.any(indices < 0) or torch.any(indices >= current.shape[1]):

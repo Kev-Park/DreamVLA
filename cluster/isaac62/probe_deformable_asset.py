@@ -89,6 +89,20 @@ def main():
                 init_state=DeformableObjectCfg.InitialStateCfg(pos=(0, 0, 1))))
         sim.reset()
         assert asset.is_initialized
+        rest_pose_checks = {}
+        for kind, method, maximum in (
+                ('simulation', 'get_sim_element_rest_poses', asset.max_sim_elements_per_body),
+                ('collision', 'get_element_rest_poses', asset.max_collision_elements_per_body)):
+            rest_pose = getattr(asset.root_physx_view, method)()
+            assert rest_pose.dtype == torch.float32 and tuple(rest_pose.shape) == (asset.num_instances, maximum*9)
+            assert torch.isfinite(rest_pose).all()
+            if not legacy:
+                counts = getattr(asset.root_physx_view, kind+'_element_counts')
+                rows = rest_pose.reshape(asset.num_instances, maximum, 9)
+                for body, count in enumerate(counts.tolist()):
+                    assert torch.count_nonzero(rows[body, count:]) == 0
+            rest_pose_checks[kind] = dict(shape=list(rest_pose.shape), finite=True)
+        receipt['rest_pose_checks'] = rest_pose_checks
         root_path = '/World/SoftCube0' if args.heterogeneous else '/World/SoftCube'
         root = sim.stage.GetPrimAtPath(root_path+'/geometry/mesh' if legacy else root_path)
         if legacy:
