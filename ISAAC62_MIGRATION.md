@@ -673,6 +673,51 @@ All owned workers, reservations and GPU contexts are verified released. Merged,
 rotated and non-diagonal mass-frame coverage and other documented migration
 requirements remain open.
 
+### Rotated inertia and conditional fixed-link merge preservation (2026-11-16)
+
+The new eight-case fixture measures rotated inertial origins, non-diagonal
+tensors, fixed/floating roots, massive fixed payloads and natural-frequency
+drives. The first probe (`b357d88`) incorrectly assumed a merge request would
+remove a massive fixed child; its failed receipts remain preserved. Corrected
+probe `d35ad86` records observed topology and independently checks mass totals.
+The original SDK retains the massive payload and fixed joint even when merging
+is requested; an additional original empty-link control at `3ddd5e8` establishes
+that a truly empty fixed child is removed. Original receipts:
+`isaac51_urdf_options_d35ad86/` and `isaac51_urdf_options_3ddd5e8/`.
+
+The unmodified modern merge prepass combined even the massive payload into its
+parent, changing body count and fixed attachments. Conservation of aggregate
+mass does not preserve those body/contact interfaces. Fix `3ddd5e8` disables
+that full SDK prepass and retains the SDK's ordinary empty-link removal. The
+existing helper restores empty physical links when the user requests no merge.
+Unrotated diagonal mass-frame restoration now also applies to the retained
+massive bodies under a merge request. Converter cache version 13 invalidates
+previous compatibility assets. No model inputs/outputs or training recipe was
+changed, and no SDK package was patched.
+
+Nine fresh target conversions match the original body names, fixed attachment
+graph, joint gains, axes and limits. Body masses and centers of mass match
+exactly. Rotated/non-diagonal eigenvalue ordering and principal-axis quaternions
+can differ while representing the same physical tensor: explicitly reconstructing
+R diag(I) R^T gives maximum entry error below 6.2e-9. This was checked rather
+than replacing the target diagonalizer unnecessarily. Evidence:
+`mass_property_comparison_3ddd5e8.json` and
+`isaac62_urdf_options_3ddd5e8/receipt.json`.
+
+All eight paired 240-step imported-gain response tests pass with every joint
+and body compared, including each retained payload. Maximum joint-position
+error is 1.49012e-7 rad; maximum body-position error is 4.47035e-7 m and
+quaternion-component error is below 6.8e-7. Effective gains and velocity limits
+match exactly. Both original and target imports run in SDK 6.2; this establishes
+bounded importer preservation, not general cross-SDK solver identity or task
+success. Receipt/log: `isaac62_urdf_mass_runtime_3ddd5e8/`. The earlier four-case
+unmerged response also passes independently under `d35ad86`.
+
+Every worker, reservation and account-owned GPU context is verified released.
+A local SSH-client audit found no stale clients. These gates cover the planned
+representative merged/rotated/non-diagonal cases; the other migration
+requirements and pending scientific/appearance reviews remain open.
+
 ### Nested contacts and actual SONIC batching (2026-11-16)
 
 The contributed drawer's real two-environment startup found two shared contact
