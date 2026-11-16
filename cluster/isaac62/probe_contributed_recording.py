@@ -56,9 +56,9 @@ def main():
         for name in arrays:
             np.testing.assert_array_equal(saved[name], arrays[name])
     decoder = subprocess.Popen(
-        [ffmpeg_path(), '-v', 'error', '-threads', '1', '-i', str(episode/'ego_view.mp4'),
+        [ffmpeg_path(), '-nostdin', '-v', 'error', '-threads', '1', '-i', str(episode/'ego_view.mp4'),
          '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     means = []
     try:
