@@ -43,6 +43,43 @@ density/mass equivalence. All six result files are SHA-verified locally; no
 owned GPU contexts or reservations remain after completion. These are scoped
 API/diagnostic checks, not a declaration of full migration completion.
 
+The follow-up `2f212c5` runs each implicit-material case in its own process at
+identical coordinates (five cases per SDK). All ten finish with finite states;
+the default/repeat traces are bit-identical in each SDK. Density1300 versus
+mass10.4 now differs by only 4.791e-6 m in 5.1 and 1.201e-6 m in 6.2.
+The volume-derived mass comparison differs by 7.749e-7 and 4.783e-6 m.
+These results substantially reduce the apparent discrepancy of the multi-body
+fixture: its differing world coordinates confounded the stiff-material test.
+They do not by themselves prove a saved-USD mapping, which remains guarded.
+All 30 files are SHA-verified locally under
+`out/isaac62_migration/isaac62_density_mass_2f212c5/`, alongside the local
+`comparison.json`. Both GPUs have no owned contexts and reservations are empty.
+
+The removed rest-pose tensor methods are being checked separately using rotated,
+nonuniformly scaled spawning. Initial `c66de9c` failed in both SDKs because
+`MeshCuboidCfg` has no scale constructor argument; `1de96ca` corrects this by
+authoring a USD root transform, and both SDKs complete. No production rest-pose
+method is implemented from an unverified inverse-edge formula. `3c9fcef`
+additionally records actual authored rest points separately from interpolated
+collision-node positions to establish the original API's matrix convention.
+
+`3c9fcef` and `d03719b` both complete in original 5.1 and target 6.2; all
+eight files per fixture are SHA-verified locally. With a 45-degree root rotation
+and scale(1.2,0.9,1.1), original simulation rest matrices agree with inverse local
+rest edges (column-major buffer) to 1.91e-6. Original collision rest matrices
+contain an additional root-transform factor; using inverse local edges alone
+misses by93.98. Direct native-gradient captures at `d03719b` confirm this is
+not just a reconstruction discrepancy: original and migrated simulation and
+collision gradient/stress outputs differ under this nonidentity spawn.
+Original simulation peak stress is56.44MPa, target simulation766.6Pa;
+original collision peak344.83MPa, target collision56.45MPa. These figures are
+diagnostic outputs, not task performance or a claim about which physical
+interpretation should be selected. No production frame-convention repair was
+applied from the inferred formula. The identity-spawn diagonal/shear gates do
+not cover this transformed-body case; full diagnostic preservation remains
+unproven. Exact captures and the local numerical comparison are under
+`out/isaac62_migration/isaac62_density_mass_d03719b/`.
+
 With the user's narrow GPU1 graphics exception, fresh conversion at `134c4f0`
 passes the 50-inertial-body/43-joint physical-property audit. All 54 authored
 rest-world matrices match the original within 5.551115123125783e-17; fixed-joint
