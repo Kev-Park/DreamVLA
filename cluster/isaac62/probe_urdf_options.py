@@ -38,6 +38,7 @@ def main():
         cases = dict(default={}, capsule=dict(replace_cylinders_with_capsules=True),
             mimic_normal=dict(convert_mimic_joints_to_normal_joints=True),
             root_name=dict(root_link_name='base'), root_interior=dict(root_link_name='arm'),
+            floating_default=dict(fix_base=False), floating_root=dict(fix_base=False, root_link_name='arm'),
             capsule_instanceable=dict(replace_cylinders_with_capsules=True, make_instanceable=True),
             natural_force={}, natural_acceleration={})
         if args.cases:
@@ -48,8 +49,8 @@ def main():
         for name, options in cases.items():
             try:
                 cfg = UrdfConverterCfg(asset_path=str(source), usd_dir=str(args.output/name),
-                    force_usd_conversion=True, fix_base=True, merge_fixed_joints=False,
-                    **{'make_instanceable': False, **options})
+                    force_usd_conversion=True, merge_fixed_joints=False,
+                    **{'make_instanceable': False, 'fix_base': True, **options})
                 cfg.joint_drive.gains = UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=1., damping=.2)
                 if name.startswith('natural_'):
                     cfg.joint_drive.gains = UrdfConverterCfg.JointDriveCfg.NaturalFrequencyGainsCfg(
@@ -58,10 +59,21 @@ def main():
                 path = Path(UrdfConverter(cfg).usd_path)
                 stage = Usd.Stage.Open(str(path))
                 assert stage and stage.GetDefaultPrim()
-                row = dict(completed=True, requested_options=options, usd_path=str(path), bodies=[], geometry=[], joints=[], articulation_roots=[])
+                row = dict(completed=True, requested_options=options, usd_path=str(path), bodies=[], geometry=[], joints=[], articulation_roots=[], root_settings={}, fixed_joints=[])
                 for prim in Usd.PrimRange(stage.GetPseudoRoot(), Usd.TraverseInstanceProxies()):
                     if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
                         row['articulation_roots'].append(str(prim.GetPath()))
+                        row['root_settings'][str(prim.GetPath())] = {
+                            attr.GetName(): attr.Get() for attr in prim.GetAttributes()
+                            if attr.GetName().startswith('physxArticulation:') and
+                            ('solver' in attr.GetName() or 'SelfCollisions' in attr.GetName())}
+                    if prim.IsA(UsdPhysics.FixedJoint):
+                        joint = UsdPhysics.FixedJoint(prim)
+                        row['fixed_joints'].append(dict(name=prim.GetName(),
+                            body0=[str(p) for p in joint.GetBody0Rel().GetTargets()],
+                            body1=[str(p) for p in joint.GetBody1Rel().GetTargets()],
+                            pos0=list(joint.GetLocalPos0Attr().Get()), pos1=list(joint.GetLocalPos1Attr().Get()),
+                            rot0=str(joint.GetLocalRot0Attr().Get()), rot1=str(joint.GetLocalRot1Attr().Get())))
                     if prim.HasAPI(UsdPhysics.RigidBodyAPI):
                         row['bodies'].append(prim.GetName())
                     if prim.GetTypeName() in ('Cylinder', 'Capsule'):

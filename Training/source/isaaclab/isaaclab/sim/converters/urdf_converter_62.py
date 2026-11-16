@@ -18,9 +18,6 @@ def convert_asset(converter, cfg):
     from pxr import Usd, UsdGeom
     from .urdf_converter_cfg import UrdfConverterCfg
 
-    for name in ("root_link_name",):
-        if getattr(cfg, name):
-            raise NotImplementedError(f"Isaac Sim 6 URDF importer cannot preserve {name}")
     drive_type = target_type = stiffness = damping = None
     if cfg.joint_drive is not None:
         drive = cfg.joint_drive
@@ -76,6 +73,61 @@ def convert_asset(converter, cfg):
     _preserve_explicit_joint_position_limits(target, cfg)
     _preserve_collision_capsules(target, cfg)
     _preserve_mimic_joints(target, cfg)
+    _preserve_articulation_root(target, cfg)
+
+
+def _preserve_articulation_root(usd_path, cfg):
+    """Keep original root-link selection, world attachment and solver defaults.
+
+    The original importer retains all links. For fixed bases it points the
+    world joint at the selected root with identity local anchors; for floating
+    bases it puts ArticulationRootAPI on that link. It uses 32/1 solver iterations.
+    See NVIDIA's original UrdfImporter.cpp (pinned source cited below).
+    """
+    from pxr import Gf, PhysxSchema, Tf, Usd, UsdPhysics
+
+    robot = ET.parse(cfg.asset_path).getroot()
+    links = {link.get('name') for link in robot.findall('link')}
+    children = {joint.find('child').get('link') for joint in robot.findall('joint')}
+    roots = links-children
+    if len(roots) != 1:
+        raise ValueError(f'Expected one URDF root link, found {sorted(roots)}')
+    selected = cfg.root_link_name or next(iter(roots))
+    if selected not in links:
+        raise ValueError(f'Unknown requested URDF root link: {selected}')
+    stage = Usd.Stage.Open(str(usd_path))
+    prims = list(stage.Traverse())
+    bodies = [prim for prim in prims if prim.GetName() == Tf.MakeValidIdentifier(selected)
+              and prim.HasAPI(UsdPhysics.RigidBodyAPI)]
+    if len(bodies) != 1:
+        raise ValueError(f'Cannot identify physical URDF root {selected}: {bodies}')
+    target = bodies[0]
+    if cfg.fix_base:
+        fixed = [prim for prim in prims if prim.GetName() == 'root_joint' and prim.IsA(UsdPhysics.FixedJoint)]
+        if len(fixed) != 1:
+            raise RuntimeError(f'Cannot identify world attachment joint: {fixed}')
+        target = fixed[0]
+        joint = UsdPhysics.FixedJoint(target)
+        joint.CreateBody0Rel().SetTargets([])
+        joint.CreateBody1Rel().SetTargets([bodies[0].GetPath()])
+        joint.CreateLocalPos0Attr(Gf.Vec3f(0.))
+        joint.CreateLocalPos1Attr(Gf.Vec3f(0.))
+        joint.CreateLocalRot0Attr(Gf.Quatf(1.))
+        joint.CreateLocalRot1Attr(Gf.Quatf(1.))
+    # Clear the generated root, including Newton's alternative root metadata,
+    # before selecting exactly one original-compatible PhysX articulation root.
+    for prim in prims:
+        for schema in ('PhysicsArticulationRootAPI', 'PhysxArticulationAPI', 'NewtonArticulationRootAPI'):
+            if schema in prim.GetAppliedSchemas():
+                prim.RemoveAPI(schema)
+    movable = any(joint.get('type') not in ('fixed', 'floating') for joint in robot.findall('joint'))
+    if cfg.fix_base or movable:
+        UsdPhysics.ArticulationRootAPI.Apply(target)
+        api = PhysxSchema.PhysxArticulationAPI.Apply(target)
+        api.CreateEnabledSelfCollisionsAttr(cfg.self_collision)
+        api.CreateSolverPositionIterationCountAttr(32)
+        api.CreateSolverVelocityIterationCountAttr(1)
+    stage.GetRootLayer().Save()
 
 
 def _preserve_mimic_joints(usd_path, cfg):
