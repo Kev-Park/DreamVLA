@@ -26,6 +26,9 @@ def main():
     episode = raw/'episode_000000'; episode.mkdir(parents=True)
     frames = 50
     arrays = {key: np.zeros((frames, width), np.float64) for key,width in FIELDS.items()}
+    for name in ('observation.state', 'observation.eef_state', 'action.wbc',
+                 'action.motion_token', 'teleop.left_hand_joints', 'teleop.right_hand_joints'):
+        arrays[name] = np.arange(frames*FIELDS[name], dtype=np.float64).reshape(frames,-1)/10000
     for key in ('observation.root_orientation', 'observation.cpp_rotation_offset',
                 'observation.init_base_quat'):
         arrays[key][:,0] = 1
@@ -52,7 +55,13 @@ def main():
     parquet = list((output/'data').rglob('*.parquet')); assert len(parquet) == 1
     table = pq.read_table(parquet[0])
     for name in FIELDS:
-        np.testing.assert_array_equal(np.asarray(table[name].to_pylist()), arrays[name])
+        actual = np.asarray(table[name].to_pylist())
+        expected = arrays[name].astype(info['features'][name]['dtype'])
+        # LeRobot stores width-one numeric features as scalar Parquet columns.
+        if FIELDS[name] == 1:
+            assert actual.shape == (frames,)
+            expected = expected[:,0]
+        np.testing.assert_array_equal(actual, expected)
     for name in ('teleop.root_pos_w', 'teleop.object_pos_w', 'teleop.object_quat_w'):
         assert name not in table.column_names and name not in info['features']
     videos = list((output/'videos').rglob('*.mp4')); assert len(videos) == 1
