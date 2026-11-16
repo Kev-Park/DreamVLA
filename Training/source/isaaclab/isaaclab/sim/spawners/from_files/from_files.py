@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+import os
 
 import isaacsim.core.utils.prims as prim_utils
 import omni.kit.commands
@@ -261,6 +262,14 @@ def _spawn_from_usd_file(
     Raises:
         FileNotFoundError: If the USD file does not exist at the given path.
     """
+    # Keep local paths relative to the caller's working directory. The SDK 6
+    # stage-reference helper resolves relative strings through its USD resolver,
+    # which need not use the Python working directory even when our existence
+    # check below succeeds. Pass the same existing file with an absolute path;
+    # leave remote asset URLs and unresolved paths unchanged.
+    if os.path.isfile(usd_path):
+        usd_path = os.path.abspath(usd_path)
+
     # check if usd path exists with periodic logging until timeout
     if not check_usd_path_with_timeout(usd_path):
         if "4.5" in usd_path:

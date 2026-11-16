@@ -34,14 +34,65 @@ profile could not run because that environment does not contain pytest; it is
 not a passing test result.
 
 The contribution's own dependency inventory records Isaac 4.5, and its README
-explicitly disclaims completed GPU integration. The existing native drawer/button
-6.2 checks do not cover these isolated task/controller snapshots. Still required:
-actual configuration/runtime/rendering checks for both contributed tasks,
-bounded PPO save/resume, recording/export, native training/serving, and both
-evaluation tracks with their original assets and contracts. Historical success
-rates are not evidence for these newly integrated entrypoints. Original
-OmniControl environment use was approved on 2026-11-15; generation remains to be
-executed and checked.
+explicitly disclaims completed GPU integration. Its isolated task/controller
+snapshots require their own tests; the earlier native drawer/button gates do not
+cover them. The later live-gate records below establish configuration, runtime,
+rendering, PPO restore, conversion, original motion generation and native GR00T
+training checks. Production collection and both evaluation tracks remain open.
+Historical success rates are not evidence for these newly integrated entrypoints.
+
+### Current contributed integration follow-up (2026-11-16)
+
+The real `train_ppo` CLI at `798ee2b` completed one drawer iteration with two
+environments and its original rollout/optimizer settings. It wrote `model_0.pt`,
+the training contract, configuration and completion receipt. The saved model's
+68 tensors and 51 optimizer state tensors are finite. This complements the
+separate two-update/save/exact-restore/resumed-update gates for both tasks; it
+is not a task-performance result.
+
+The original button panel's build initially failed because its referenced
+`models/ElevatorButtonUpDown.usd` was not copied. The dependency fix `0d5c050`
+includes that source model and its texture, with original Git LFS hashes checked.
+Actual rendering then exposed inherited USD clones sharing authored transforms.
+The fixes through `45503e9` preserve the original asset, allow only verified
+inherited visual clones, and author independent initial translations and cap
+positions. The actual USD inheritance test checks independent placement,
+animation, reset and atomic rejection of a duplicate local panel. The real
+two-environment button render at `45503e9` passes 32 steps, resets, strict camera
+and renderer poses, contact ordering and the production visual helper. Its
+original frames and MP4 are local under
+`out/isaac62_migration/isaac62_izat_button_runtime_45503e9/`. The panel's cosmetic
+cap is not a simulated physical press or a task-success assertion.
+
+The contributed native GR00T training path at `5b8c101` completed one actual
+Adam update and exported three safetensors files totaling 12,576,200,896 bytes.
+Loss is 0.6314754486, optimizer step is one, and sampled trainable weights change
+by up to 9.99663e-5 with finite values. It exercises the actual native dataset,
+processor, model, trainer and final save through the contributed launcher.
+The test uses the existing walking checkpoint and a 50-frame converted synthetic
+fixture, with explicitly recorded batch-one/one-update/no-periodic-checkpoint
+overrides. It neither establishes task success nor validates optimizer resume;
+the full Adam fresh-process resume gate is separately recorded at `107ade9`.
+Peak allocated CUDA memory is 38,516,082,688 bytes. Training and its reservation
+are terminal and released. Receipt and log are local in
+`out/isaac62_migration/isaac62_izat_native_train_5b8c101/`; the exported model
+remains on Bluesclues. Fresh-process contributed serving at `7b4a713` also
+passes: the actual `serve.py` reloads that export, accepts protocol ping/reset,
+and produces finite `(40,64)`, `(40,7)` and `(40,7)` arrays for two requests.
+The requests use seeds 17 and 19, not a claim of bitwise repeatability. Inference
+times are 0.5964 and 0.1499 seconds. Protocol shutdown returns successfully and
+the fresh server exits zero. Raw model predictions are continuous; this test
+does not move the collector's later FSQ operation into the server. Original
+receipts, predictions and logs are local in
+`out/isaac62_migration/isaac62_izat_native_serve_7b4a713/`.
+
+An original episode-timing inconsistency requires user review before production
+collection/evaluation: `rollout.py` asserts 500 steps at 0.02 s and expects 499
+recorded frames, but the shared environment extends the selected reference to
+approximately 15.38 seconds. Both behaviors also exist in the contribution's
+original parent. No timing behavior has been changed. The concrete options are
+in `out/isaac62_migration/contributed_horizon_review_plan.json`. This hold does
+not prevent independent model/protocol and native-task regression checks.
 
 ### Contributed live gates (2026-11-15)
 
