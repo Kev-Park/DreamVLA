@@ -10,6 +10,10 @@ Adapter B handles grounding / grab-hold / lead-in). Viz + file I/O + main loop r
 import os
 import torch
 import pytorch_kinematics as pk
+if __package__:
+    from .kinematics_autograd import autograd_forward_kinematics
+else:
+    from kinematics_autograd import autograd_forward_kinematics
 import numpy as np
 import torch.optim as optim
 from isaac_utils.rotations import(
@@ -24,6 +28,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 urdf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          '..', '..', 'Training', 'HumanoidVerse', 'humanoidverse', 'data', 'robots', 'g1', 'g1_29dof.urdf')
 chain = pk.build_chain_from_urdf(open(urdf_path, 'rb').read()).to(dtype=torch.float32, device=DEVICE)
+forward_kinematics = autograd_forward_kinematics(chain)
 
 # Per-joint SOFT position limits from the URDF: hard [lower, upper] scaled about the midpoint by
 # JLIM_FACTOR (matches IsaacLab soft_joint_pos_limit_factor=0.9 used in training). Audit of the
@@ -534,7 +539,7 @@ def compute_cost(joint_angles, trans, quats, offset_x=OFFSET_X, offset_z=OFFSET_
     for id in inactive_joint_ids:
         name = joint_names[id]
         q_dict[name] = target_joint_angles[:, id]
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = forward_kinematics(q_dict)
     # Collect all link positions
     cost2 = torch.zeros(joint_angles.shape[0], device=joint_angles.device)
     rot_matrix = quaternion_to_matrix(quats)
@@ -1086,7 +1091,7 @@ def _palm_path_of(joints_t, trans, quats):
     the same +0.035 root lift. Used to build the augmentation's shape target from the source clip.
     """
     q_dict = {name: joints_t[:, i] for i, name in enumerate(joint_names)}
-    fk = chain.forward_kinematics(q_dict)
+    fk = forward_kinematics(q_dict)
     rot = quaternion_to_matrix(quats)
     tz = trans + torch.tensor([0., 0., 0.035], device=trans.device)
     hand_pos = None
@@ -1135,7 +1140,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
     traj_fps_hz = float(fps)
 
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate(joint_names)}
-    fk_results_ref = chain.forward_kinematics(q_dict)
+    fk_results_ref = forward_kinematics(q_dict)
     pos = fk_results_ref["right_wrist_pitch_link"].get_matrix()[:, :3, 3]
     rot_matrix = quaternion_to_matrix(quats)
     trans_with_z_setup = trans + torch.tensor([0., 0., 0.035], device=DEVICE)
@@ -1257,7 +1262,7 @@ def refine_arm(joints, base_pos, base_quat, grab_pos_obj, grab_idx_in, fps=20.0,
                 point_fixed_dir = _pf_s / _pf_s.norm().clamp(min=1e-6)
 
             if AUG_ORIENT_W > 0:                      # source hand rotation for the orientation anchor
-                _fk_s = chain.forward_kinematics({n: _src_t[:, i] for i, n in enumerate(joint_names)})
+                _fk_s = forward_kinematics({n: _src_t[:, i] for i, n in enumerate(joint_names)})
                 _rot_s = quaternion_to_matrix(quats)
                 for _i, (_ln, _tf) in enumerate(_fk_s.items()):
                     if _i == 38:

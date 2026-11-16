@@ -28,6 +28,10 @@ Usage: python holosoma_to_pkl.py <holosoma_out.npz> <out_basepath>   -> writes <
 import numpy as np, torch, sys, os, pickle
 import jaxlie, jax.numpy as jnp
 import pytorch_kinematics as pk
+if __package__:
+    from .kinematics_autograd import autograd_forward_kinematics
+else:
+    from kinematics_autograd import autograd_forward_kinematics
 
 PAUSE, INTERP = 10, 10
 # Grab hold, inherited from the legacy retarget.py pipeline (Pick_sim FREEZE_FOR=10): freeze
@@ -122,6 +126,7 @@ def refine_right_arm_table(joints, base_pos, base_quat, grab_idx, chain):
     tip_local = _t.tensor([HAND_TIP_OFFSET, 0.0, 0.0])
     arm = _t.nn.Parameter(arm0.clone())
     opt = _t.optim.Adam([arm], lr=1e-3)
+    forward_kinematics = autograd_forward_kinematics(chain)
 
     def _pen(pts, gi):   # penetration depth into the table corner {x>x_edge, z<z_table}, pre-grab
         p = pts[:gi]
@@ -133,7 +138,7 @@ def refine_right_arm_table(joints, base_pos, base_quat, grab_idx, chain):
     for _step in range(REFINE_STEPS):
         opt.zero_grad()
         j = jt.clone(); j[:, _RARM] = arm
-        fk = chain.forward_kinematics(j)
+        fk = forward_kinematics(j)
         hm = fk["right_rubber_hand"].get_matrix()                       # (F,4,4) root frame
         hp = hm[:, :3, 3]; hr = hm[:, :3, :3]
         tip_root = hp + _t.einsum("fij,j->fi", hr, tip_local)

@@ -27,10 +27,14 @@ usage: python stitch_static_approach.py <walk_pool> <static_pool> <out_pool> [pi
   --shift-ramp-frames N: ramp the shift in only over the last N frames before the grab (default: whole approach).
 pools are directory names under ~/kevin/ref_motions (REF_MOTIONS_DIR overrides) or paths.
 """
-import os, sys, glob, pickle, inspect
+import os, sys, glob, pickle
 import numpy as np, torch
 import jaxlie, jax.numpy as jnp
 import pytorch_kinematics as pk
+if __package__:
+    from .kinematics_autograd import autograd_forward_kinematics
+else:
+    from kinematics_autograd import autograd_forward_kinematics
 
 TRANSITION = 15            # frames (20 fps) to blend waist/right arm from the walking pose into the static path
 ONSET_MOVE = 0.03          # m, static hand displacement from its rest pose that marks the approach onset
@@ -120,23 +124,14 @@ def solve_upper(chain, lim, Jfix, q0, root_P, root_R, tgt_p, tgt_R, torso_R):
     lo, hi = (torch.tensor(x[idx], dtype=torch.float32) for x in lim)
     opt = torch.optim.Adam([q], lr=0.02)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, IK_ITERS, eta_min=1e-3)
-    # pytorch-kinematics 0.10 defaults to an analytical FK backward. Preserve
-    # the ordinary autograd used to build the original stitched references:
-    # tiny gradient changes accumulate over the 1,200 Adam updates.
-    explicit_autograd = "analytical_grad" in inspect.signature(chain.forward_kinematics_tensor).parameters
-    if explicit_autograd:
-        hand_index, torso_index = chain.get_frame_indices(HAND, "torso_link")
+    forward_kinematics = autograd_forward_kinematics(chain)
     for _ in range(IK_ITERS):
         Jf = torch.cat([J[:, :12], q[:, :3], J[:, 15:22], q[:, 3:]], dim=1)
-        if explicit_autograd:
-            transforms = chain.forward_kinematics_tensor(Jf, analytical_grad=False)
-            M, torso_matrix = transforms[hand_index], transforms[torso_index]
-        else:
-            fk = chain.forward_kinematics(Jf)
-            M, torso_matrix = fk[HAND].get_matrix(), fk["torso_link"].get_matrix()
+        fk = forward_kinematics(Jf)
+        M = fk[HAND].get_matrix()
         p = torch.einsum("nij,nj->ni", Rr, M[:, :3, 3]) + Pr
         R = Rr @ M[:, :3, :3]
-        RT = Rr @ torso_matrix[:, :3, :3]
+        RT = Rr @ fk["torso_link"].get_matrix()[:, :3, :3]
         e_p = ((p - tp) ** 2).sum(-1)
         e_r = 3.0 - (R * tR).sum((-1, -2))                      # = 2(1 - cos angle)
         e_t = 3.0 - (RT * tT).sum((-1, -2))
