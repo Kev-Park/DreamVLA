@@ -118,8 +118,13 @@ def main():
         sim.reset()
         assert asset.is_initialized
         assert (asset.material_physx_view is not None) == args.bound_material
-        assert asset.max_sim_vertices_per_body == source_counts['nodes']
-        assert asset.max_sim_elements_per_body == source_counts['elements']
+        runtime_counts = dict(nodes=asset.max_sim_vertices_per_body, elements=asset.max_sim_elements_per_body)
+        report.update(source_counts=source_counts, runtime_counts=runtime_counts,
+                      authored_topology_preserved=runtime_counts == source_counts)
+        # Legacy 5.1 may recook a scaled asset on load. Capture that behavior
+        # rather than assuming identical nodes across different SDK cookers.
+        if not args.root_scale or args.candidate:
+            assert runtime_counts == source_counts
         initial = asset.data.nodal_state_w.clone()
         assert torch.all(asset.data.nodal_kinematic_target[..., 3] == 1)
         state = initial.clone()
