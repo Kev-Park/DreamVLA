@@ -3,11 +3,13 @@
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
 import sys
 import time
+import traceback
 
 from .paths import add_external_paths
 
@@ -699,6 +701,11 @@ def main():
         if not collecting and len(outcomes) != a.episodes:
             raise RuntimeError("Missing planned attempts")
         progress("complete")
+    except BaseException:
+        # Fast Kit shutdown can exit before Python prints a pending traceback.
+        if app.config.get("fast_shutdown", False):
+            traceback.print_exc()
+        raise
     finally:
         try:
             if client is not None:
@@ -708,7 +715,12 @@ def main():
                 if env is not None:
                     env.close()
             finally:
-                app.close()
+                # Isaac 6.2 can preserve a failure status during fast shutdown.
+                # Keep the older SDK's close signature usable as well.
+                close_kwargs = {}
+                if "exit_code" in inspect.signature(app.close).parameters:
+                    close_kwargs["exit_code"] = int(sys.exc_info()[0] is not None)
+                app.close(**close_kwargs)
 
 
 if __name__ == "__main__":
