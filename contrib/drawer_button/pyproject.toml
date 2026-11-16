@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dreamvla-drawer-button"
+version = "0.1.0"
+description = "Drawer and standing-button reference, expert, and VLA research tools"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24,<3", "PyYAML>=6,<7"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "ruff==0.14.4"]
+
+[project.scripts]
+dreamvla-tasks = "dreamvla_drawer_button.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["dreamvla_drawer_button*"]
+
+[tool.setuptools]
+license-files = ["LICENSE", "NOTICE.md", "LICENSES/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff.lint]
+select = ["F", "E9"]
