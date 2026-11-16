@@ -49,7 +49,7 @@ def main():
             try:
                 cfg = UrdfConverterCfg(asset_path=str(source), usd_dir=str(args.output/name),
                     force_usd_conversion=True, fix_base=True, merge_fixed_joints=False,
-                    **dict(make_instanceable=False, **options))
+                    **{'make_instanceable': False, **options})
                 cfg.joint_drive.gains = UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=1., damping=.2)
                 if name.startswith('natural_'):
                     cfg.joint_drive.gains = UrdfConverterCfg.JointDriveCfg.NaturalFrequencyGainsCfg(
