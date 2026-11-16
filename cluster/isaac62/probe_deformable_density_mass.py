@@ -41,6 +41,12 @@ def main():
         torch.set_num_threads(1)
         sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=.005, device='cuda:0'))
         # The cube volume is .008 m^3: density1300 ->10.4kg,1100 ->8.8kg,100 ->.8kg.
+        # Independently measured in the a850b45 native fixture. The cookers
+        # produce different topologies/volumes; nominal volume is not enough
+        # to compare density against an explicit mass for a stiff material.
+        measured_volume = .008024893316787251 if version == '5.1.0.0' else .008048089583646978
+        report['mass_reference_volume_m3'] = measured_volume
+        report['mass_reference_evidence'] = 'isaac62_density_mass_a850b45'
         settings = [('mass_low', .8, 1300., 1100.), ('mass_high', 10.4, None, 1100.),
                     ('body_density', None, 1300., 1100.), ('material_density', None, None, 1100.),
                     ('mass88', 8.8, None, 1100.), ('material_low', None, None, 100.),
@@ -48,7 +54,10 @@ def main():
                     ('nomat_mass_high', 10.4, None, None), ('nomat_mass_low', .8, None, None),
                     ('nomat_default', None, None, None),
                     ('nomat_mass8', 8., None, None),
-                    ('nomat_density1000', None, 1000., None)]
+                    ('nomat_density1000', None, 1000., None),
+                    ('nomat_cooked_mass1000', measured_volume*1000., None, None),
+                    ('nomat_cooked_mass1300', measured_volume*1300., None, None),
+                    ('nomat_repeat', None, None, None)]
         cubes, configs = {}, {}
         for index, (name, mass, density, material_density) in enumerate(settings):
             material = None if material_density is None else sim_utils.DeformableBodyMaterialCfg(
@@ -122,7 +131,11 @@ def main():
                  ('nomat_body_density', 'nomat_mass_low'), ('nomat_default', 'nomat_mass_high'),
                  ('nomat_default', 'nomat_mass_low'), ('nomat_mass_high', 'nomat_mass_low'),
                  ('nomat_default', 'nomat_mass8'), ('nomat_density1000', 'nomat_mass8'),
-                 ('nomat_default', 'nomat_density1000')]
+                 ('nomat_default', 'nomat_density1000'),
+                 ('nomat_default', 'nomat_cooked_mass1000'),
+                 ('nomat_density1000', 'nomat_cooked_mass1000'),
+                 ('nomat_body_density', 'nomat_cooked_mass1300'),
+                 ('nomat_default', 'nomat_repeat')]
         comparisons = {}
         for left, right in pairs:
             delta = arrays[left]-arrays[right]
