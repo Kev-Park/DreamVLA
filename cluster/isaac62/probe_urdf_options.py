@@ -93,7 +93,13 @@ def main():
     finally:
         (args.output/'receipt.json').write_text(json.dumps(report, indent=2)+'\n')
         if app is not None:
-            app.close()
+            # Kit can terminate the process inside close(), swallowing a pending
+            # Python exception. Keep its exit status consistent with the receipt.
+            import inspect
+            supported = inspect.signature(app.close).parameters
+            options = dict(wait_for_replicator=False, skip_cleanup=True,
+                exit_code=0 if report['completed'] else 1)
+            app.close(**{key: value for key, value in options.items() if key in supported})
 
 
 if __name__ == '__main__':
