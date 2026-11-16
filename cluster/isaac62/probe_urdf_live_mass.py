@@ -37,6 +37,7 @@ def main():
             cfg = G1_SONIC_CFG.copy()
             cfg.prim_path = '/World/'+name
             cfg.spawn.usd_path = str(path)
+            cfg.actuators = {}  # Measure imported limits without actuator overrides masking them.
             cfg.init_state.pos = (index*3.0, 0., 1.)
             robots[name] = Articulation(cfg)
         sim.reset()
@@ -70,11 +71,13 @@ def main():
             masses = robot.root_physx_view.get_masses().cpu()
             inertias = robot.root_physx_view.get_inertias().cpu()
             coms = robot.root_physx_view.get_coms().cpu()
+            velocity_limits = robot.root_physx_view.get_dof_max_velocities().cpu()
+            assert torch.isfinite(velocity_limits).all()
             assert torch.isfinite(masses).all() and torch.isfinite(inertias).all() and torch.isfinite(coms).all()
             assert masses.shape == (1, len(robot.body_names))
             report['robots'][name] = dict(body_names=list(robot.body_names), masses=masses[0].tolist(),
                                          inertias=inertias[0].tolist(), coms=coms[0].tolist(), joint_names=list(robot.joint_names),
-                                         total_mass=float(masses.sum()))
+                                         total_mass=float(masses.sum()), velocity_limits=velocity_limits[0].tolist())
         for _ in range(16):
             sim.step(render=False)
             for robot in robots.values():
@@ -84,6 +87,12 @@ def main():
         left = dict(zip(legacy['body_names'], legacy['masses']))
         right = dict(zip(modern['body_names'], modern['masses']))
         errors = {name: abs(left[name]-right[name]) for name in left.keys() & right.keys()}
+        old_limits = dict(zip(legacy['joint_names'], legacy['velocity_limits']))
+        new_limits = dict(zip(modern['joint_names'], modern['velocity_limits']))
+        limit_errors = {name: abs(old_limits[name]-new_limits[name]) for name in old_limits}
+        report['imported_velocity_limits'] = dict(actuator_overrides_disabled=True,
+            maximum_absolute_error=max(limit_errors.values()), errors=limit_errors,
+            preservation_pass=max(limit_errors.values()) < 1e-6)
         left_ids = {name: index for index, name in enumerate(legacy['body_names'])}
         right_ids = {name: index for index, name in enumerate(modern['body_names'])}
         inertia_errors, com_errors = {}, {}

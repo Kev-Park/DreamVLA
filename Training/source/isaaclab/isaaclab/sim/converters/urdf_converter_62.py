@@ -72,6 +72,7 @@ def convert_asset(converter, cfg):
         physics.SetVariantSelection("physx")
         source.GetRootLayer().Save()
     _preserve_empty_fixed_links(target, cfg)
+    _preserve_joint_velocity_limits(target, cfg)
 
 
 def _preserve_empty_fixed_links(usd_path, cfg):
@@ -139,3 +140,43 @@ def _preserve_empty_fixed_links(usd_path, cfg):
             "dreamvla_legacy_empty_fixed_links": ",".join(sorted(restored)),
         }
         stage.GetRootLayer().Save()
+
+
+def _preserve_joint_velocity_limits(usd_path, cfg):
+    """Author the original importer's PhysX velocity limits in our wrapper.
+
+    The modern pipeline writes newton:velocityLimit but does not author the
+    PhysX maxJointVelocity field. The original converter writes angular limits
+    in degrees/s, linear limits in m/s, and FLT_MAX for non-positive limits.
+    This restores raw-import behavior even when no actuator overrides it.
+    """
+    from pxr import PhysxSchema, Tf, Usd, UsdPhysics
+
+    robot = ET.parse(cfg.asset_path).getroot()
+    expected = {}
+    for element in robot.findall("joint"):
+        if element.get("type") not in ("revolute", "continuous", "prismatic"):
+            continue
+        name = Tf.MakeValidIdentifier(element.get("name"))
+        if name in expected:
+            raise ValueError(f"URDF joint names collide after USD sanitization: {name}")
+        limit = element.find("limit")
+        velocity = float(limit.get("velocity", "0")) if limit is not None else 0.0
+        if not math.isfinite(velocity):
+            raise ValueError(f"Non-finite URDF velocity limit for {name}")
+        scale = 1.0 if element.get("type") == "prismatic" else 180.0/math.pi
+        expected[name] = velocity*scale if velocity > 0 else 3.4028234663852886e38
+    stage = Usd.Stage.Open(str(usd_path))
+    assert stage and stage.GetDefaultPrim()
+    found = set()
+    for prim in stage.Traverse():
+        if not (prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)):
+            continue
+        name = prim.GetName()
+        if name not in expected:
+            continue
+        PhysxSchema.PhysxJointAPI.Apply(prim).CreateMaxJointVelocityAttr(expected[name])
+        found.add(name)
+    if found != set(expected):
+        raise RuntimeError(f"Cannot preserve velocity limits for missing joints: {sorted(set(expected)-found)}")
+    stage.GetRootLayer().Save()
