@@ -7,14 +7,11 @@ generation = Generation("stand", __file__)
 # os.environ["CUDA_VISIBLE_DEVICES"] = ""
 import torch
 import pytorch_kinematics as pk
+from .kinematics import autograd_forward_kinematics
 import numpy as np
 import pickle as pkl
-import viser
-from viser.extras import ViserUrdf
 import jax.numpy as jnp
 import jaxlie
-import yourdfpy
-import pyroki as pk2
 import pickle
 import time
 import tqdm
@@ -28,6 +25,7 @@ urdf_path = str(
     BACKEND_ROOT / "Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf"
 )
 chain = pk.build_chain_from_urdf(open(urdf_path).read())
+forward_kinematics = autograd_forward_kinematics(chain)
 pkl_path = generation.plan["base"][generation.kind]
 VIS = False
 SAVE_FOLDER = "Open_Drawer_sim2"
@@ -111,7 +109,7 @@ def compute_cost(
     for id in inactive_joint_ids:
         name = joint_names[id]
         q_dict[name] = target_joint_angles[:, id]
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = forward_kinematics(q_dict)
     # Collect all link positions
     cost2 = torch.zeros(joint_angles.shape[0])
     rot_matrix = quaternion_to_matrix(quats)
@@ -172,24 +170,28 @@ def compute_cost(
 target_positions = []
 joint_angles_next = []
 
-urdf = yourdfpy.URDF.load(
-    str(
-        BACKEND_ROOT
-        / "Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf"
-    )
-)
-
-heightmap = np.zeros(
-    (1000, 1000), dtype=np.float32
-)  # Dummy heightmap for visualization
-
-heightmap = pk2.collision.Heightmap(
-    pose=jaxlie.SE3.identity(),
-    size=jnp.array([0.01, 0.01, 1.0]),
-    height_data=heightmap,
-)
-
 if not generation.enabled or VIS:
+    import viser
+    from viser.extras import ViserUrdf
+    import yourdfpy
+    import pyroki as pk2
+
+    urdf = yourdfpy.URDF.load(
+        str(
+            BACKEND_ROOT
+            / "Training/HumanoidVerse/humanoidverse/data/robots/g1/g1_27dof.urdf"
+        )
+    )
+
+    heightmap = np.zeros(
+        (1000, 1000), dtype=np.float32
+    )  # Dummy heightmap for visualization
+
+    heightmap = pk2.collision.Heightmap(
+        pose=jaxlie.SE3.identity(),
+        size=jnp.array([0.01, 0.01, 1.0]),
+        height_data=heightmap,
+    )
     server = viser.ViserServer()
     base_frame = server.scene.add_frame("/base", show_axes=False)
     urdf_vis = ViserUrdf(server, urdf, root_node_name="/base")
@@ -259,7 +261,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
         i for i, name in enumerate(joint_names) if name in inactive_joint_names
     ]
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate(joint_names)}
-    fk_results_ref = chain.forward_kinematics(q_dict)
+    fk_results_ref = forward_kinematics(q_dict)
     # copy a tensor
     # Initial guess for joint angles (can be zeros or random)
     target_joint_angles[1:] = target_joint_angles[0:1]  # Freeze all but the first frame
@@ -334,7 +336,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
 
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate(joint_names)}
     rot_matrix = quaternion_to_matrix(target_quats)
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = forward_kinematics(q_dict)
     pos_right_ankle = fk_results["right_ankle_roll_link"].get_matrix()[:, :3, 3]
     pos_right_ankle = (
         torch.bmm(pos_right_ankle.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0]
@@ -361,7 +363,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
     optimizer = optim.Adam([joint_angles], lr=0.01)
 
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate(joint_names)}
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = forward_kinematics(q_dict)
     tf = fk_results["right_wrist_yaw_link"]
     pos = tf.get_matrix()[:, :3, 3]  # shape (N, 3)
 
@@ -434,7 +436,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
     first_viol_i = 0
     q_dict = {name: joints_new[:, i] for i, name in enumerate(joint_names)}
     rot_matrix = quaternion_to_matrix(quats_new)
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = forward_kinematics(q_dict)
     pos_right_ankle = fk_results["right_ankle_roll_link"].get_matrix()[:, :3, 3]
     pos_right_ankle = (
         torch.bmm(pos_right_ankle.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0]

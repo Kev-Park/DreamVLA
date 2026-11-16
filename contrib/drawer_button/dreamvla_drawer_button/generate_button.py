@@ -25,14 +25,11 @@ out.mkdir(parents=True, exist_ok=False)
 # os.environ["CUDA_VISIBLE_DEVICES"] = ""
 import torch
 import pytorch_kinematics as pk
+from .kinematics import autograd_forward_kinematics
 import numpy as np
 import pickle as pkl
-import viser
-from viser.extras import ViserUrdf
 import jax.numpy as jnp
 import jaxlie
-import yourdfpy
-import pyroki as pk2
 import pickle
 import time
 
@@ -53,6 +50,7 @@ urdf_path = str(
 )
 chain = pk.build_chain_from_urdf(open(urdf_path).read())
 chain = chain.to(device=DEVICE)
+forward_kinematics = autograd_forward_kinematics(chain)
 pkl_path = plan["base"]
 if digest(pkl_path) != plan["base_sha256"]:
     raise ValueError("Base motion changed")
@@ -89,16 +87,20 @@ SHIFT_Xs, SHIFT_Ys, SHIFT_Zs = np.asarray(plan["points"], dtype=np.float64).T
 START_FROM = 10
 num_timesteps = 196
 
-heightmap = np.zeros(
-    (1000, 1000), dtype=np.float32
-)  # Dummy heightmap for visualization
-heightmap = pk2.collision.Heightmap(
-    pose=jaxlie.SE3.identity(),
-    size=jnp.array([0.01, 0.01, 1.0]),
-    height_data=heightmap,
-)
-
 if VIS:
+    import viser
+    from viser.extras import ViserUrdf
+    import yourdfpy
+    import pyroki as pk2
+
+    heightmap = np.zeros(
+        (1000, 1000), dtype=np.float32
+    )  # Dummy heightmap for visualization
+    heightmap = pk2.collision.Heightmap(
+        pose=jaxlie.SE3.identity(),
+        size=jnp.array([0.01, 0.01, 1.0]),
+        height_data=heightmap,
+    )
     urdf = yourdfpy.URDF.load(urdf_path)
     server = viser.ViserServer()
     base_frame = server.scene.add_frame("/base", show_axes=False)
@@ -120,7 +122,7 @@ def compute_cost(joint_angles, trans, quats, ref_dists):
     for id in inactive_joint_ids:
         name = joint_names[id]
         q_dict[name] = target_joint_angles[:, id]
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = forward_kinematics(q_dict)
     cost2 = torch.zeros(joint_angles.shape[0], device=DEVICE)
     rot_matrix = quaternion_to_matrix(quats)
     i = 0
@@ -282,7 +284,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
     ).unsqueeze(0)[:, :12]
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate(joint_names)}
     rot_matrix = quaternion_to_matrix(target_quats)
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = forward_kinematics(q_dict)
     pos_right_ankle = fk_results["right_ankle_roll_link"].get_matrix()[:, :3, 3]
     pos_right_ankle = (
         torch.bmm(pos_right_ankle.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0]
@@ -307,7 +309,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
         i for i, name in enumerate(joint_names) if name in inactive_joint_names
     ]
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate(joint_names)}
-    fk_results_ref = chain.forward_kinematics(q_dict)
+    fk_results_ref = forward_kinematics(q_dict)
     target_trans[:, :] = target_trans[:1, :]
     target_quats[:, :] = target_quats[:1, :]
     if i == 0:
@@ -329,7 +331,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
     optimizer = optim.Adam([joint_angles], lr=0.001)
 
     q_dict = {name: target_joint_angles[:, i] for i, name in enumerate(joint_names)}
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = forward_kinematics(q_dict)
     tf = fk_results["right_wrist_pitch_link"]
     pos = tf.get_matrix()[:, :3, 3]
     rot_matrix = quaternion_to_matrix(quats)
@@ -403,7 +405,7 @@ for i in tqdm.tqdm(range(len(SHIFT_Xs))):
     first_viol_i = 0
     q_dict = {name: joints_new[:, i] for i, name in enumerate(joint_names)}
     rot_matrix = quaternion_to_matrix(quats_new)
-    fk_results = chain.forward_kinematics(q_dict)
+    fk_results = forward_kinematics(q_dict)
     pos_right_ankle = fk_results["right_ankle_roll_link"].get_matrix()[:, :3, 3]
     pos_right_ankle = (
         torch.bmm(pos_right_ankle.unsqueeze(1), rot_matrix.transpose(2, 1))[:, 0]
