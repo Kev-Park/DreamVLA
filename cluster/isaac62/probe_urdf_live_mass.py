@@ -1,0 +1,75 @@
+"""Measure effective PhysX body masses for matched original/new URDF imports.
+
+This is a diagnostic with two standalone articulations, not a task evaluation.
+Completion means measurement succeeded; preservation_pass separately states
+whether body names and effective masses agree. No source asset is modified.
+"""
+import argparse
+import json
+from pathlib import Path
+import time
+import traceback
+
+
+def main():
+    from isaaclab.app import AppLauncher
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--legacy-usd', type=Path, required=True)
+    parser.add_argument('--modern-usd', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    AppLauncher.add_app_launcher_args(parser)
+    args = parser.parse_args()
+    args.headless = True
+    args.output.mkdir(parents=True, exist_ok=False)
+    report = dict(completed=False, started=time.time(), scope=__doc__, robots={})
+    app = None
+    try:
+        app = AppLauncher(args, multi_gpu=False, fast_shutdown=True).app
+        import torch
+        from isaaclab.assets import Articulation
+        from isaaclab.sim import SimulationCfg, SimulationContext
+        from dreamvla_drawer_button.isaac.robot import G1_SONIC_CFG
+        sim = SimulationContext(SimulationCfg(dt=0.005, device=args.device))
+        robots = {}
+        for index, (name, path) in enumerate([('legacy', args.legacy_usd), ('modern', args.modern_usd)]):
+            cfg = G1_SONIC_CFG.copy()
+            cfg.prim_path = '/World/'+name
+            cfg.spawn.usd_path = str(path)
+            cfg.init_state.pos = (index*3.0, 0., 1.)
+            robots[name] = Articulation(cfg)
+        sim.reset()
+        for name, robot in robots.items():
+            robot.update(sim.get_physics_dt())
+            masses = robot.root_physx_view.get_masses().cpu()
+            inertias = robot.root_physx_view.get_inertias().cpu()
+            assert torch.isfinite(masses).all() and torch.isfinite(inertias).all()
+            assert masses.shape == (1, len(robot.body_names))
+            report['robots'][name] = dict(body_names=list(robot.body_names), masses=masses[0].tolist(),
+                                         inertias=inertias[0].tolist(), joint_names=list(robot.joint_names),
+                                         total_mass=float(masses.sum()))
+        for _ in range(16):
+            sim.step(render=False)
+            for robot in robots.values():
+                robot.update(sim.get_physics_dt())
+                assert torch.isfinite(robot.data.joint_pos).all()
+        legacy, modern = (report['robots'][name] for name in ('legacy', 'modern'))
+        left = dict(zip(legacy['body_names'], legacy['masses']))
+        right = dict(zip(modern['body_names'], modern['masses']))
+        errors = {name: abs(left[name]-right[name]) for name in left.keys() & right.keys()}
+        report.update(completed=True, common_body_mass_errors=errors,
+                      missing_modern_bodies=sorted(left.keys()-right.keys()),
+                      extra_modern_bodies=sorted(right.keys()-left.keys()),
+                      preservation_pass=left.keys() == right.keys() and max(errors.values()) < 1e-6,
+                      steps=16)
+    except BaseException:
+        report['error'] = traceback.format_exc()
+        raise
+    finally:
+        report['finished'] = time.time()
+        (args.output/'receipt.json').write_text(json.dumps(report, indent=2))
+        if app is not None:
+            app.close(exit_code=0 if report['completed'] else 1)
+
+
+if __name__ == '__main__':
+    main()
