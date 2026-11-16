@@ -32,7 +32,7 @@ def main():
             "Choose a new asset output; conversion does not overwrite assets"
         )
     a.headless = True
-    app = AppLauncher(a).app
+    app = AppLauncher(a, multi_gpu=False).app
     completed = False
     try:
         from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg

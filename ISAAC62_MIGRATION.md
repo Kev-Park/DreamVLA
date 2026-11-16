@@ -93,6 +93,24 @@ The GPU routing CPU tests also pass in both approved Biped environments; receipt
 
 ## Broader CPU preservation checks (2026-11-16)
 
+The startup-path audit also found that contributed `asset_robot.py` and
+`train_ppo.py` left `SimulationApp`'s multi-GPU default in effect. Both now pass
+`multi_gpu=False` explicitly to AppLauncher, matching the existing rollout
+setting and activating the modern CUDA-index renderer selector. Policy,
+optimizer, environment count and task configuration are unchanged. Both actual
+stage help entrypoints pass after the edit; live startup remains pending the
+graphics-context decision. The original-generation and contributed production
+entrypoints do not bypass AppLauncher with another direct SimulationApp call.
+
+For the separately open deformable damping issue, NVIDIA's
+[PhysX 5.4-to-5.5 migration guide](https://nvidia-omniverse.github.io/PhysX/physx/5.5.1/docs/MigrationTo55.html)
+confirms removal of DampingScale and suggests adjusting elasticity damping for
+a similar effect. The [Omni Physics migration table](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/110.0/dev_guide/deformables/deformable_migration.html)
+lists no replacement attribute. These sources do not establish an exact
+numerical mapping or prove that the installed old solver ignored the attribute.
+Keep the non-neutral rejection explicit until paired old/new behavior is
+established; do not silently multiply another damping coefficient.
+
 The committed `probe_urdf_rest_poses.py` at `43dc543` passes 28 separately owned
 wrapper cases: nine rotated/non-diagonal/merged-body inertia fixtures, four
 prismatic/chained/non-cardinal mimic fixtures, eight natural-drive cases, six

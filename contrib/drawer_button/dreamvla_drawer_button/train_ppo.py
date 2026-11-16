@@ -57,7 +57,7 @@ def main():
         a.output.mkdir(parents=True)
         write_json(a.output / "training_contract.json", contract, durable=True)
     a.headless = True
-    app = AppLauncher(a).app
+    app = AppLauncher(a, multi_gpu=False).app
     env = None
     try:
         import gymnasium as gym
