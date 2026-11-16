@@ -211,7 +211,7 @@ def main():
             sensor = base.scene['camera_robot']
             sensor.update(0.0, force_recompute=True)
             actual = sensor.data
-            path = cfg.scene.camera_robot.prim_path.replace('{ENV_REGEX_NS}', base.scene.env_prim_paths[0])
+            path = sensor._view.prim_paths[0]  # Concrete path; cfg holds an env regex after scene resolution.
             camera_prim = base.sim.stage.GetPrimAtPath(path)
             assert camera_prim.IsValid(), path
             parent_prim = camera_prim.GetParent()
