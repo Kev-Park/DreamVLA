@@ -26,6 +26,10 @@ def main():
     a = p.parse_args()
     files = {
         "buttons.usd": a.source / "buttons.usd",
+        # buttons.usd references this layer; retain its relative dependency
+        # paths until button_visual flattens the source and repairs textures.
+        "models/ElevatorButtonUpDown.usd": a.source / "models/ElevatorButtonUpDown.usd",
+        "models/textures/UpDown.jpg": a.source / "models/textures/UpDown.jpg",
         "textures/UpDown.jpg": a.source / "textures/UpDown.jpg",
         "LICENSE": BACKEND_ROOT / "LICENSE",
     }
