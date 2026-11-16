@@ -5,6 +5,45 @@ running on Isaac Sim 6.2 with preserved policy inputs, outputs, physics recipes,
 data formats, collection semantics, metrics, and rendering. A successful import
 or a file-surface audit is not completion.
 
+## Current validation state (November 16)
+
+The merged `g1` contains original g1 `0505979`, locomotion `bb9d874`, and Izat's
+`14c979c` contribution. The remote locomotion and Izat tips were checked again;
+both are unchanged and are ancestors of the current branch. Simulator tests use
+the approved Isaac 6.2 environment; model-server and native 5.1 comparisons use
+their existing approved environments. No single-environment compatibility claim
+is made.
+
+Bounded evidence covers original policy inference, GR00T client/server operation,
+real optimizer/save/reload/resume, dataset conversion and labels, contributed PPO
+and native GR00T paths, reference generation/refinement/replay, URDF physical and
+named-interface preservation, camera/contact/render integration, and supported
+volume-deformable conversion/state/diagnostics. The detailed sections below retain
+failures, repairs and the exact limits of each check. This does not establish
+scientific success-rate parity or mean every registered task works.
+
+Completion still requires the reviewed drawer/button horizon and actual collection
+and evaluation checks under it, the nonneutral damping compatibility decision,
+user appearance review, and a final requirement audit. The concrete decision plans
+are `out/isaac62_migration/contributed_horizon_review_plan.json` and
+`out/isaac62_migration/nonneutral_damping_review_plan.json` in the EMBER root.
+Review renders include standing drawer, squatting drawer and button at
+`out/isaac62_migration/isaac62_generated_reference_runtime_134c4f0/`, with each
+task's `third_person.mp4`; `out/reports/dashboard.html` indexes the broader renders.
+
+Explicit limitations remain visible: raw imported joint order differs (named
+policy/action interfaces pass); twelve registry constructors fail identically in
+both parents and the target; exact reset/snapshot replay fails in matched native
+and target tests, so production rescue uses independent rerolls; reflected native
+simulation diagnostics are invalid and the adapter rejects them. None of these
+failed or limited checks is counted as an unconditional preservation pass.
+
+The evidence-address audit corrected seven stale references and verifies that all
+146 cited local files exist, recording their byte hashes and capture formats in
+`out/isaac62_migration/evidence_addressability_audit_20261116.json`. This proves
+traceability, not capability completion. No migration test jobs remain active at
+the last terminal/resource check.
+
 ## Fresh rest-pose repair live validation (2026-11-16)
 
 ### Deformable mass/density precedence investigation
