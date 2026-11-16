@@ -91,6 +91,58 @@ CPU helper validation as a completed live gate.
 The GPU routing CPU tests also pass in both approved Biped environments; receipt:
 `out/isaac62_migration/gpu_routing_cpu_a14e178.json`.
 
+## Broader CPU preservation checks (2026-11-16)
+
+The committed `probe_urdf_rest_poses.py` at `43dc543` passes 28 separately owned
+wrapper cases: nine rotated/non-diagonal/merged-body inertia fixtures, four
+prismatic/chained/non-cardinal mimic fixtures, eight natural-drive cases, six
+fixed/floating/root-selection cases, and the actual G1. Every case preserves
+all non-transform prim properties, paths, relationships and instanceability;
+input-layer SHA-256 hashes are unchanged. Maximum rest-matrix errors are at
+most 1.1102230246251565e-16 for the small fixtures and
+5.551115123125783e-17 for G1. Reapplication is exact and parent rotation plus
+translation errors are at most 4.440892098500626e-16. These are CPU wrapper
+checks, not fresh importer or live PhysX tests.
+
+The initial harness stopped 14 cases because older receipts lacked the newer
+`urdf_source` field. Original committed probe sources identify their existing
+shared `option_fixture.urdf`; only those 14 cases were rerun, and they pass.
+The initial failed harness report is preserved separately from the successful
+retry. Local outputs are `isaac62_rest_pose_matrix_43dc543/` and
+`isaac62_rest_pose_matrix_43dc543_metadata_retry/` under the migration directory.
+
+The original SMPL and full HumanML loader paths have now also been exercised by
+`probe_human_smpl_loader.py` at `1f711f4`, in the previously approved OmniControl
+environment on one CPU. The initial test exposed user-site contamination:
+`~/.local` NumPy 1.26.4 and Torch 2.7 override the environment's own packages.
+SMPL's chumpy import and motion-loader masks fail on removed NumPy aliases;
+text-only loading passes. No package or source workaround was applied.
+
+With `PYTHONNOUSERSITE=1`, the same environment's NumPy 1.23.5 and Torch
+2.14.0+cu130 complete the bounded CPU gate. The real SMPL model handles
+axis-angle, matrices, quaternions and 6D rotations; cross-representation error
+is at most 1.4901161193847656e-8. Masked frames and translation are checked
+(translation error 5.960464477539063e-8). The a2m, a2mpl, vibe and 6,890-vertex
+outputs are finite with their expected dimensions. Actual train, eval,
+ground-truth and text-only loader modes each read one batch using their
+original eight-worker DataLoader. The available test split contains four
+motion examples and five text-only examples; this is not a full-corpus test.
+Five recorded model/config/split input checksums remain unchanged. The original
+`TrajGen/model`, `TrajGen/data_loaders` and rotation-conversion sources are
+unchanged from the original g1 parent. No GPU, diffusion sampling, training,
+package installation or input-data edit was involved in this gate. Do not
+infer GPU compatibility of this isolated stack from the CPU result; the prior
+diffusion fixture used the user-site Torch stack.
+
+Both failure and passing outputs are local in
+`isaac62_human_smpl_loader_1f711f4/` and
+`isaac62_human_smpl_loader_1f711f4_isolated/`. All 62 pulled files across these
+four new result directories match remote SHA-256 checksums. A final live
+resource check finds no loader workers, GPU contexts or reservations under
+our account, with aggregate account CPU approximately 0.0078% of the host's
+64 logical CPUs. Receipts: `cpu_suite_local_file_verification.json` and
+`cpu_suite_resources_and_files_1f711f4.json` in local migration outputs.
+
 ## Stitch gradient compatibility follow-up (2026-11-16)
 
 The strict full-stitch failure at `a4f8523` is reproducible: joint angles differ
@@ -1032,7 +1084,7 @@ Local receipts and original videos are under EMBER's `out/isaac62_migration/`;
 | Task runtime and rendering | Representative tracking, static pick, walking, motion-only, drawer and button reset/step/render gates pass. Policy, camera and reference-overlay paths have local artifacts. User appearance review remains pending. |
 | Models and optimization | Saved SONIC/residual CUDA parity, GR00T service integration and residual optimizer/save/resume checks pass. Full GR00T optimizer/save/fresh-process resume now passes on Bluesclues. Izat's native training/export and fresh serving/reload gates also pass bounded fixtures; repaired drawer/button PPO restores model and Adam state exactly before a resumed update. |
 | Collection and reusable data | Passing expert write, failed student rescue, broad/late takeover labels and finger commands are checked. Actual 577+605-frame HDF5 conversions match full versus sharded/merged data, whole-dataset normalization and official GR00T loading. |
-| Reference generation | Actual input export, original holosoma optimization, old/new Adapter-B arrays and full-reference playback pass their stated gates. Original OmniControl sampling in the approved existing environment completed one 196-frame sample with all 1,000 diffusion steps; SMPL and full dataset-loader coverage remain open. Strict full-stitch joint parity remains failed; visual review remains open. |
+| Reference generation | Actual input export, original holosoma optimization, old/new Adapter-B arrays and full-reference playback pass their stated gates. Original OmniControl sampling completed one 196-frame sample with all 1,000 diffusion steps. Bounded original SMPL conversion and all four HumanML loader modes now pass with user-site imports disabled in the approved environment. Full-stitch exported arrays and optimization traces, other refiners and the three contributed reference generators pass paired numerical gates. User visual review remains open. |
 | Known limits | Exact snapshot/replay fails in both original and target SDKs; production rescue uses independent rerolls. Implicit-material stress, removed damping scaling and legacy collision-diagnostic parity remain explicitly unresolved/unsupported rather than silently approximated. |
 
 ### Material rejection leaves the USD stage unchanged
