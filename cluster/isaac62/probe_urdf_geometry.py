@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--urdf', type=Path, required=True)
     parser.add_argument('--usd', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--baseline-usd', type=Path, help='Matched original unmerged conversion; retains separate ideal-URDF gate')
     args = parser.parse_args()
     import numpy as np
     from scipy.spatial import cKDTree
@@ -76,6 +77,17 @@ def main():
         cache = UsdGeom.XformCache()
         world = lambda p: np.asarray(cache.GetLocalToWorldTransform(p)).T
         base_inv = np.linalg.inv(world(bodies[root]))
+        if args.baseline_usd is not None:
+            baseline = Usd.Stage.Open(str(args.baseline_usd))
+            assert baseline and baseline.GetDefaultPrim()
+            original = {p.GetName(): p for p in baseline.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)}
+            assert set(original) == set(links), 'Matched baseline body coverage differs'
+            original_base_inv = np.linalg.inv(world(original[root]))
+            errors = {name: float(np.max(np.abs(
+                base_inv @ world(bodies[name])-original_base_inv @ world(original[name])))) for name in links}
+            report['matched_baseline'] = dict(path=str(args.baseline_usd),
+                link_transform_errors=errors, tolerance=1e-6,
+                preservation_pass=all(np.isfinite(value) and value <= 1e-6 for value in errors.values()))
         for name, prim in link_prims.items():
             gate('links', dict(name=name), dict(transform_error=float(np.max(np.abs(base_inv @ world(prim)-expected[name])))))
         by_name = {p.GetName(): p for p in stage.Traverse() if p.IsA(UsdPhysics.Joint)}
