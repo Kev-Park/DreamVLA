@@ -98,8 +98,21 @@ def main():
             checked.append(str(prim.GetPath()))
         receipt['material_binding_checks'] = checked
 
+        contributed_drawer = args.task == 'DreamVLA-DrawerButton-Open-Drawer-SONIC-Teacher-Repair-v0'
+        contributed_button = args.task == 'DreamVLA-DrawerButton-Button-Press-Standing-SONIC-v0'
+        if contributed_drawer:
+            from dreamvla_drawer_button.isaac import sonic_teacher_repair as contributed
+            contributed.register_task()
+        elif contributed_button:
+            from dreamvla_drawer_button.isaac import motion_tracking_button_press_standing_sonic_env as contributed
+            contributed.register_task()
         cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs,
                             enable_cameras=True)
+        if contributed_drawer:
+            from dreamvla_drawer_button.isaac.sonic_teacher_repair_contract import RepairSpec
+            from dreamvla_drawer_button.scene import close_drawer_on_reset
+            contributed.configure(cfg, RepairSpec(scale=0.5))
+            close_drawer_on_reset(cfg)
         cfg.seed = 17
         if args.ref_motions_path is not None:
             if not hasattr(cfg, 'ref_motions_path'):
