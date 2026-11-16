@@ -79,6 +79,55 @@ generators as follow-up candidates. A gradient-bearing file alone is not proof
 that every FK call contributes to its loss. Those entrypoints have not been
 silently declared covered by the walking fixture.
 
+### Historical optimizer bindings and derivative contract
+
+At `ee6207f`, thirteen historical optimizer/diagnostic scripts explicitly bind
+the same ordinary-autograd helper. Their existing direct script invocation is
+retained; the import setup locates the shared source relative to each script.
+No loss, optimizer, target, iteration, visualization branch or file-writing
+behavior is changed. A whole-program AST comparison against `19939bb`, after
+normalizing only this import setup and FK binding, passes for all thirteen
+files (`out/isaac62_migration/legacy_refiner_ast_ee6207f.json`).
+
+The real shared FK derivative fixture passes sixteen cases in both installed
+environments: 27/29 DOF, batches one/seven, tensor/dictionary joint inputs,
+and all 39 links or three explicitly selected links. All 64 saved input,
+transform, weighted-loss and gradient arrays match bit-for-bit, including link
+dictionary order. Evidence is local under
+`out/isaac62_migration/isaac62_fk_autograd_ee6207f/`. This is source-preservation
+and derivative-component evidence; it does not claim execution of the older
+interactive generator/viewer entrypoints.
+
+### Contributed generator headless follow-up
+
+The `0cc3ce9` repair uses that same FK binding in Izat's standing/squatting
+drawer and standing-button generators. It also defers the existing Viser,
+yourdfpy and PyRoKi imports and viewer-only URDF/heightmap construction until
+their original visualization branches. These dependencies are present in the
+original reference environment but absent from the target simulator profile;
+no installation, fake module or dependency replacement is used. The complete
+cost and target-trajectory function ASTs are unchanged except for the FK binding
+(`out/isaac62_migration/contributed_ik_objective_ast_0cc3ce9.json`).
+
+The paired fixture invokes the real `prepare-references` and generator CLIs,
+with trusted original retargeted inputs and one seeded target per kind. It
+retains each generator's full per-point optimization budget and original early
+stop, plus reference export/reload. Original-source/legacy, candidate/legacy
+and candidate/target runs are compared separately. All nine phases completed
+with exit zero. The original and refactored legacy outputs and recorded cost,
+parameter and gradient traces are bit-exact. Every exported array and trace
+also matches the target environment bit-for-bit, including root quaternions,
+global pose matrices and task target metadata. Standing/squatting drawer each
+use 2,000 backward steps and export 215/234 frames; button uses 10,000 steps and
+exports 205 frames. All target runs load none of Viser, yourdfpy or PyRoKi.
+Evidence is local in
+`out/isaac62_migration/isaac62_contributed_ik_0cc3ce9/comparison.json`.
+The session and workers are terminal; no account-owned GPU contexts remain.
+These are complete per-point generation checks, not an entire grid, a physical
+task-success evaluation, an interactive-viewer test or user appearance approval.
+The next integration gate will load these new references in the simulator and
+render them with a freshly converted robot asset using the current importer.
+
 ## Drawer/button contribution integration (2026-11-15)
 
 Izat's 69-file contribution under `contrib/drawer_button` is now included in
