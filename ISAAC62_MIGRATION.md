@@ -22,14 +22,30 @@ volume-deformable conversion/state/diagnostics. The detailed sections below reta
 failures, repairs and the exact limits of each check. This does not establish
 scientific success-rate parity or mean every registered task works.
 
-Completion still requires the reviewed drawer/button horizon and actual collection
-and evaluation checks under it, the nonneutral damping compatibility decision,
-user appearance review, and a final requirement audit. The concrete decision plans
+The user approved the contributed ten-second horizon on November 16 after
+verification against Izat's original 500-control/499-recorded-frame protocol, and
+approved explicit rejection of nonneutral legacy dampingScale. Commit `67005b5`
+passed bounded runtime validation; the shared pick/walk horizon resolver
+retains its original longest-reference behavior. Completion still requires actual
+collection and evaluation checks under the approved horizon, user appearance
+review, and a final requirement audit. The concrete decision plans
 are `out/isaac62_migration/contributed_horizon_review_plan.json` and
 `out/isaac62_migration/nonneutral_damping_review_plan.json` in the EMBER root.
 Review renders include standing drawer, squatting drawer and button at
 `out/isaac62_migration/isaac62_generated_reference_runtime_134c4f0/`, with each
 task's `third_person.mp4`; `out/reports/dashboard.html` indexes the broader renders.
+
+The reviewed horizon passes standing-drawer, squatting-drawer and button task
+construction, reset, 32 zero-action steps, contact/camera checks, and rendering
+with references longer than ten seconds. Each environment reports exactly ten
+seconds and 500 maximum controls. The three 1280-by-720, 32-frame clips and
+associated outputs (39 files) are pulled locally and SHA-256 verified under
+`out/isaac62_migration/isaac62_generated_reference_runtime_67005b5/`.
+Drawer and button each also pass two bounded PPO updates, exact model/Adam
+restore into a new runner, and a resumed update under the same horizon. This is
+not a complete 500-step collection or task-success evaluation. Evidence is in
+`out/isaac62_migration/poll_horizon_ppo_67005b5.json`; all test processes and GPU
+reservations are released. Appearance review is still pending.
 
 Explicit limitations remain visible: raw imported joint order differs (named
 policy/action interfaces pass); twelve registry constructors fail identically in
