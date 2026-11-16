@@ -94,6 +94,37 @@ original parent. No timing behavior has been changed. The concrete options are
 in `out/isaac62_migration/contributed_horizon_review_plan.json`. This hold does
 not prevent independent model/protocol and native-task regression checks.
 
+The read-only physical-property audit at `7537c9c` compares the converted robot
+against the original URDF, covering all 50 authored inertial bodies and all 43
+movable joint limits. Maximum absolute errors are 2.75e-7 kg for mass, 7.25e-9 m
+for center of mass, 1.51e-9 kg m² for the reconstructed inertia tensor, and
+9.46e-8 rad for joint limits. All fixed gates pass. This does not establish
+collision geometry or dynamic trajectory equivalence. Local receipt:
+`out/isaac62_migration/isaac62_urdf_physics_7537c9c/receipt.json`.
+
+A native pick regression initially failed twice before stepping because its
+working directory selected unmaterialized Git LFS pointers in the validation
+checkout. File existence alone missed this provisioning error. The real robot,
+bottle and kitchen assets in the original checkout match the current pointer
+SHA256 OIDs. The corrected fixture uses that original asset working directory,
+while imports still use the updated editable validation checkout. An initial
+speculative source change to absolute-path resolution was ineffective and was
+removed at `bbce322`; shared spawning behavior is unchanged. Both failed receipts
+are preserved, and neither is counted as a passing regression.
+The corrected native pick fixture at `bbce322` then completed 32 steps, initial
+and final resets, ten nonconstant RGB images and a 1280x720, 50 fps, 32-frame
+video. It uses the original Isaac 5.1 scene assets in Isaac 6.2 and zero policy
+actions. Its task success is not assessed, and it does not contain the stricter
+contributed camera-mount/contact-position diagnostics. Original artifacts are
+local in `out/isaac62_migration/isaac62_native_pick_regression_bbce322/` and the
+generic review dashboard references the original video without recompression.
+The stitched-reference sibling `isaac62_native_walk_regression_bbce322` passes
+the same 32-step/reset/render gate using `StitchMAX200v3/pick_14030.pkl`, with
+zero terminations or truncations. This is a technical scene regression, not a
+learned walking-policy performance evaluation. Both processes, all account-owned
+GPU contexts and their reservations are confirmed released. The final native
+walking-reference account CPU sample is 0.00017% of host capacity.
+
 ### Contributed live gates (2026-11-15)
 
 The actual contributed `sample-human` entrypoint completed one 196-frame
