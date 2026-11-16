@@ -109,19 +109,30 @@ def main():
                                 float(cKDTree(b['points']).query(a['points'])[0].max()))
                 else:
                     error = float(np.max(np.abs(a['matrix']-b['matrix'])))
+                parameter_errors = {}
+                parameters_match = a['params'].keys() == b['params'].keys()
+                for name in a['params'].keys() & b['params'].keys():
+                    if name in ('radius', 'height', 'size'):
+                        delta = abs(float(a['params'][name])-float(b['params'][name]))
+                        parameter_errors[name] = delta
+                        parameters_match &= np.isfinite(delta) and delta <= 1e-6
+                    else:
+                        parameters_match &= a['params'][name] == b['params'][name]
                 report['surfaces'].append(dict(body=key[0], type=key[1], collision=key[2],
                     legacy=a['path'], modern=b['path'], geometry_error=error,
                     collision_api_on_geometry={
                         'legacy': a['collision_api_on_geometry'],
                         'modern': b['collision_api_on_geometry']},
-                    parameters_equal=a['params'] == b['params']))
+                    parameters_exact=a['params'] == b['params'],
+                    parameter_values={'legacy': a['params'], 'modern': b['params']},
+                    parameter_errors=parameter_errors, parameters_match=bool(parameters_match)))
         for name in sorted(lj):
             errors = []
             for a, b in zip(lj[name], rj[name]):
                 assert a[0] == b[0], (name, a[0], b[0])
                 errors.append(float(np.max(np.abs(a[1]-b[1]))))
             report['joints'].append(dict(name=name, anchor_errors=errors))
-        report['preservation_pass'] = all(r['geometry_error'] <= 1e-6 and r['parameters_equal']
+        report['preservation_pass'] = all(r['geometry_error'] <= 1e-6 and r['parameters_match']
                                            for r in report['surfaces']) and all(
             max(r['anchor_errors']) <= 1e-6 for r in report['joints'])
         report['completed'] = True
