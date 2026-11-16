@@ -164,22 +164,51 @@ The new importer nests the physical `d435_link` below the torso instead of
 directly below `Robot`. Contributed recording/rollout camera construction now
 resolves that unique mount from the actual robot USD, keeping the original
 intrinsics, resolution and local pose. It does not create a disconnected camera
-at the old flat path. The next real fixture additionally checks camera world
+at the old flat path. The subsequent real fixture checked camera world
 position/orientation against independently read URDF torso-to-mount transforms
-and the original camera offset. This gate remains unproven until runtime receipts
-pass. An initial standing-button reset at `a26cfa0` first exposed an optional
+and the original camera offset. Its initial failed evidence is recorded below. An initial standing-button reset at `a26cfa0` first exposed an optional
 `last_contacts` diagnostics-buffer assumption. The contributed reset now has the
 same presence guard as the already migrated native button task. The replacement
 two-environment standing-button reset then reaches a camera-pose failure. The
 camera position differs from the independent articulation/URDF expectation by
 0.0379229 m. The torso's PhysX and Fabric poses agree, while its authored USD
 pose remains at startup. Reading the camera through Fabric, explicitly updating
-it at capture, and attaching directly to the physical torso have not resolved
-the discrepancy (`af91ee1`). No camera correctness pass is claimed. The bounded
-`128fa64` probe retains reset and stepped diagnostics and video before applying
-the same strict final acceptance check; this distinguishes reset-only staleness
-from a persistent mismatch. Contributed PPO, actual recording, native GR00T
+it at capture, and attaching directly to the physical torso did not resolve
+the discrepancy (`af91ee1`). The bounded `128fa64` probe retained reset and
+stepped diagnostics and video before applying the same strict final acceptance
+check, establishing a persistent mismatch rather than reset-only staleness. Contributed PPO, actual recording, native GR00T
 training/serving and both evaluation tracks still require their own runtime gates.
+
+The first mismatch was stale USD pose telemetry. The attempted migration fix
+using the deprecated core Fabric view introduced a rendered offset too: its
+`_create_fabric_view_indices` calls `SetWorldXformFromUsd` on cameras without
+world transforms, writing the stale authored world pose over their live
+inherited mount. The rendered offset then remains fixed relative to the torso.
+The shared camera reader now queries IFabricHierarchy without authoring a world
+transform. The unhelpful rigid-parent attachment workaround was removed; the
+original d435 mount and camera-local pose are preserved. The strict real button
+regression at `6d2e633` passes reset, 32 steps and final reset across two
+environments. All three sensor-pose comparisons pass; independently inverted
+renderer matrices agree with the URDF/PhysX mount within 5.99e-8 m position and
+2.07e-7 rotation-matrix components. Contact-body comparisons remain exact.
+Original videos, frames, telemetry and terminal/resource receipts are local in
+`out/isaac62_migration/isaac62_izat_button_runtime_6d2e633/`. This is technical
+rendering validation, not task-success or visual-behavior approval. The drawer
+regression with the same strict camera check also passes at `aa33234`: three
+renderer comparisons are within 8.62e-8 m and 2.02e-7 rotation-matrix components;
+all 50 contact-body poses match exactly throughout the fixture. Both tests
+release their owned processes, GPU contexts and reservations. A separate
+contributed PPO regression at `40932cc` also passes for the drawer: two updates,
+checkpoint save, a new runner restoring every model and Adam state exactly, then
+a third update advancing optimizer state and changing finite model parameters.
+The action width remains 66. This is a same-process/new-runner test, not a fresh
+simulator or RNG-continuity test. The earlier `aa33234` fixture failed when its
+inspection save accessed a logger not yet initialized by learn(); that test
+error is retained and corrected by comparing live restored state directly.
+The standing-button PPO regression separately passes the same gates at
+`40932cc`. Both workers exit zero, release their reservations and leave no
+account-owned GPU contexts. Small receipts/logs are local under
+`isaac62_izat_{drawer,button}_ppo_40932cc/`; fixture checkpoints remain remote.
 
 A fresh remote fetch on 2026-11-16 confirms Izat's contribution tip remains
 `14c979c`, and ancestry verification confirms it is included in the current
