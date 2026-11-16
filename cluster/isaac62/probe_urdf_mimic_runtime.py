@@ -55,6 +55,20 @@ def main():
             [Sdf.Path('/World/'+name) for name in robots])
         group.GetCollidersCollectionAPI().CreateExpansionRuleAttr('expandPrims')
         group.CreateFilteredGroupsRel().SetTargets([group.GetPath()])
+        report['source_joint_metadata'] = {}
+        for name in robots:
+            rows = []
+            for prim in sim.stage.Traverse():
+                if not prim.GetPath().HasPrefix(Sdf.Path('/World/'+name)):
+                    continue
+                if not (prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)):
+                    continue
+                rows.append(dict(path=str(prim.GetPath()), schemas=list(prim.GetAppliedSchemas()),
+                    properties={attr.GetName(): dict(value=str(attr.Get()), authored=attr.HasAuthoredValueOpinion())
+                                for attr in prim.GetAttributes()
+                                if 'mimic' in attr.GetName().lower() or attr.GetName() in
+                                ('physics:axis', 'physics:localRot0', 'physics:localRot1')}))
+            report['source_joint_metadata'][name] = rows
         report['placement_control'] = dict(shared_origin=True, collision_group=str(group.GetPath()),
             filtered_groups=[str(p) for p in group.GetFilteredGroupsRel().GetTargets()],
             asset_sources_unchanged=True)
@@ -131,8 +145,11 @@ def main():
     finally:
         (args.output/'receipt.json').write_text(json.dumps(report, indent=2)+'\n')
         if app is not None:
-            app.close(wait_for_replicator=False, skip_cleanup=True,
-                      exit_code=0 if report['completed'] else 1)
+            import inspect
+            supported = inspect.signature(app.close).parameters
+            options = dict(wait_for_replicator=False, skip_cleanup=True,
+                           exit_code=0 if report['completed'] else 1)
+            app.close(**{key: value for key, value in options.items() if key in supported})
 
 
 if __name__ == '__main__':
