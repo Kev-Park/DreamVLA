@@ -591,6 +591,48 @@ unactuated mimic finger. Evidence:
 and GPU contexts are also released. Prismatic and chained/non-cardinal
 mimic fixtures and merged/rotated/non-diagonal inertia coverage remain open.
 
+### Prismatic and chained mimic follow-up (2026-11-16)
+
+The expanded source probe `d17c38b` adds prismatic PD, prismatic natural-frequency,
+a three-joint mimic chain and a non-cardinal-axis case. It preserves each tiny
+source URDF alongside its conversion receipts. The original SDK completes all
+four conversions. The target completes the first three with identical joint
+types, axes, limits, drive types and gains. Its non-cardinal case is explicitly
+rejected by the existing preservation guard; the overall fixture correctly exits
+one after still recording all independent case results. Evidence:
+`extended_mimic_metadata_d17c38b.json`, `isaac62_urdf_options_d17c38b/receipt.json`
+and the original receipt under
+`isaac51_urdf_options_d17c38b/eval_videos/isaac51_urdf_options_d17c38b/`.
+
+The original non-cardinal import authors empty axis tokens, a rotX mimic API,
+and natural-frequency/damping attributes under a separate `physxMimicJoint:rot:`
+prefix. Its C++ `getJointAxis`/`configureMimicAPI` code confirms this behavior.
+A successful original conversion alone does not establish how its physics
+fallback behaves. Do not replace it with guessed modern semantics or count this
+case as preserved. Further original-response and frame/constraint inspection is
+required before implementing this path.
+
+Live comparison `d69246e` covers all three successful cases for 240 steps at
+1/120 s, preserving imported gains and limits. The probe compares every joint
+and body, including the extra tip joint/body, with explicit meters for prismatic
+coordinates. All pass the existing body/orientation gates and joint tolerances:
+
+| Fixture | Maximum joint-position difference | Maximum body-position difference |
+| --- | --- | --- |
+| Prismatic PD | 3.18323e-11 m | 1.49012e-7 m |
+| Prismatic natural frequency | 4.65661e-10 m | 1.45286e-7 m |
+| Three-joint mimic chain | 8.94070e-8 rad | 3.12924e-7 m |
+
+Every compared joint moves: prismatic excursions exceed 0.23 m, and the chain
+moves about 0.737, 0.736 and 0.374 rad across its three joints. Effective gains
+and velocity limits match exactly. Both generated imports are simulated in the
+target SDK; this tests importer preservation within 6.2, not cross-SDK solver
+identity or task performance. The expected missing-explicit-actuator warnings
+remain because only the first joint has an actuator configuration. Receipt/log:
+`isaac62_urdf_extended_runtime_d69246e/`. All fixture workers, reservations and
+account-owned GPU contexts are verified released. Non-cardinal support and the
+broader inertia-frame gates remain incomplete.
+
 ### Nested contacts and actual SONIC batching (2026-11-16)
 
 The contributed drawer's real two-environment startup found two shared contact
