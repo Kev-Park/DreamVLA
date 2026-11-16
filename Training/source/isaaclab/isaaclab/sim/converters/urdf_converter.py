@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
+from pathlib import Path
 import re
 
 import isaacsim
@@ -62,6 +64,14 @@ class UrdfConverter(AssetConverterBase):
     Implementation specific methods.
     """
 
+    def _config_to_hash(self, cfg: UrdfConverterCfg) -> str:
+        original = super()._config_to_hash(cfg)
+        if not self._modern_urdf_importer:
+            return original
+        # Invalidate assets from before the empty-fixed-body and PhysX velocity
+        # repairs. No user flag is needed and legacy SDK cache keys stay intact.
+        return hashlib.md5((original + "isaac62-urdf-physx-compat-2").encode()).hexdigest()
+
     def _convert_asset(self, cfg: UrdfConverterCfg):
         """Calls underlying Omniverse command to convert URDF to USD.
 
@@ -72,7 +82,13 @@ class UrdfConverter(AssetConverterBase):
         if self._modern_urdf_importer:
             from .urdf_converter_62 import convert_asset
 
-            convert_asset(self, cfg)
+            try:
+                convert_asset(self, cfg)
+            except BaseException:
+                # The base converter writes this marker before conversion. A
+                # failed post-process can leave a partial USD; never cache it.
+                Path(self._dest_hash_path).unlink(missing_ok=True)
+                raise
             return
         import_config = self._get_urdf_import_config()
         # parse URDF file
