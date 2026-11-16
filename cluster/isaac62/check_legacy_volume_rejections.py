@@ -29,6 +29,11 @@ def run_checks():
         prim = schema(stage, 'PhysxDeformableBodyMaterialAPI')
         prim.CreateAttribute('physxDeformableBodyMaterial:dampingScale', Sdf.ValueTypeNames.Float).Set(2.)
 
+    def later_damping(stage):
+        first = UsdShade.Material.Define(stage, '/FirstMaterial').GetPrim()
+        first.SetMetadata('apiSchemas', Sdf.TokenListOp.CreateExplicit(['PhysxDeformableBodyMaterialAPI']))
+        damping(stage)
+
     def density(stage):
         prim = schema(stage, 'PhysxDeformableBodyAPI')
         prim.CreateAttribute('physics:density', Sdf.ValueTypeNames.Float).Set(1000.)
@@ -48,6 +53,7 @@ def run_checks():
         UsdShade.MaterialBindingAPI.Apply(body).Bind(material, materialPurpose='physics')
 
     reject('nonneutral_damping', damping, 'dampingScale')
+    reject('later_nonneutral_damping', later_damping, 'dampingScale')
     reject('bound_material_density_override', density, 'density')
     reject('animated_solver_arrays', animated, 'Animated')
     reject('nondeformable_physics_binding', rigid_binding, 'Non-deformable')

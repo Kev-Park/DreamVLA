@@ -93,9 +93,12 @@ def convert_cooked_volumes(stage, sdk):
                 raise NotImplementedError('Nonpositive body-only density requires separate conversion')
         if any(a.GetNumTimeSamples() for a in prim.GetAttributes() if a.GetName().startswith('physxDeformable:')):
             raise NotImplementedError('Animated legacy solver arrays require a separate conversion')
+    # Validate every material before mutating any of them. A later unsupported
+    # material must not leave earlier materials partially converted.
     for prim in materials:
         if _value(prim, 'physxDeformableBodyMaterial:dampingScale', 1.) != 1.:
             raise NotImplementedError('Non-neutral legacy dampingScale has no current equivalent')
+    for prim in materials:
         for schema in ('OmniPhysicsBaseMaterialAPI', 'OmniPhysicsDeformableMaterialAPI', 'PhysxDeformableMaterialAPI'):
             prim.ApplyAPI(schema)
         defaults = {'density':None, 'dynamicFriction':.25, 'poissonsRatio':.45,
