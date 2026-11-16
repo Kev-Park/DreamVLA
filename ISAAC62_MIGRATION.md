@@ -321,6 +321,54 @@ returning exit zero. Its shutdown now passes the receipt's success/failure code
 through the supported SDK close arguments. A zero wrapper status from the older
 probe must never override its failed receipt.
 
+The mimic implementation's first paired metadata test at `3e47ad4` matches
+original axes, explicit position bounds, velocity metadata, standard gains and
+all five PhysX mimic parameters exactly. This required preserving original
+float32 position-limit conversion before the mimic's 20% source-limit expansion.
+Do not treat matching authored USD alone as behavioral proof: the subsequent
+four-articulation live comparison at `b976fdf` failed both flag states over 240
+steps (maximum named-joint errors .4795514 and .1329596 rad, against a fixed
+.0002-rad gate). The modern default joint angles remained coupled with a .1-rad
+offset despite the legacy flag being false. The suspected competing Newton mimic
+metadata is now explicitly disabled in the PhysX wrapper; the original PhysX
+constraint remains conditional on the observed legacy flag. The repeated live
+comparison at `d241860` passes both flag states without changing the .0002-rad
+threshold: maximum errors are .0000366122 and .0001472086 rad. The .5401598-rad
+enabled/disabled finger response gap proves the fixture actually distinguishes
+both settings. Effective velocity limits match exactly, including the unbounded
+mimic limit (5.9390470094e36 in both assets). This isolates the competing Newton
+constraint as the cause of the large earlier failure. Both original-generated
+and new assets run in the same 6.2 engine; this is importer parity, not a claim
+of cross-engine determinism. Worker, tmux, reservation and account GPU contexts
+were released; other users' jobs were untouched.
+
+The test also exposed why the original unbounded mimic velocity must be
+preserved at the engine level rather than authoring the USD schema's nominal
+1e6 fallback as an actual limit. The wrapper removes its ordinary-joint limit
+and blocks competing Newton velocity metadata for mimic joints. USD schema
+fallbacks differ between the installed SDKs (old 1e6, new infinity), but actual
+PhysX limits match. Metadata-only equality is insufficient. Evidence:
+`isaac62_urdf_mimic_runtime_b976fdf/receipt.json` (failed),
+`isaac62_urdf_mimic_runtime_d241860/receipt.json` (passed), and
+`isaac62_urdf_options_d241860/receipt.json`.
+
+Remaining mimic scope includes non-cardinal axes (explicitly rejected), chained
+references, prismatic cases and their live validation. The initial supported
+cardinal rotational fixture is not evidence for every URDF mimic arrangement.
+An independent authored-default audit also found original articulation solver
+settings 32 position/1 velocity iterations, whereas the new asset leaves those
+fields unauthored. Their preservation remains to be addressed; passing this
+small fixture does not waive it (`mimic_solver_metadata.json`).
+
+An independent read of original root overrides establishes a salient behavior
+not covered by the earlier root-API-location metric: `root_link_name='arm'`
+rewires the world fixed joint's body1 from `base` to `arm` with identity local
+anchors, while leaving all bodies and the articulation-root API path present.
+This matches the pinned original C++ implementation; it is not a no-op or a
+request to discard other bodies. Evidence: `original_root_override_metadata.json`.
+The root-override port remains explicit unsupported until this behavior is
+preserved and tested, including non-fixed-base cases.
+
 A further audit found modern imported joints lacked authored PhysX velocity
 limits, retaining only Newton metadata. The bridge now authors the original
 PhysX field from URDF limits in its owned wrapper. Angular conversion matches
@@ -423,8 +471,8 @@ change at `fc061e6` avoids assuming wheel metadata for standalone SDK installs;
 its next runtime regression remains to be executed.
 
 Remaining URDF scope is explicit: the new importer does not support root-link
-overrides, the original mimic-flag behavior or natural-frequency
-drive gains through the old API. Requests for those remaining options fail explicitly,
+overrides or natural-frequency drive gains through the old API. Requests for
+those remaining options fail explicitly,
 instead of silently dropping them. Their preservation is not established.
 The SDK also emits a different robot hierarchy; camera attachment paths and
 full collision/inertia/limit/physics/rendering parity still need validation before
