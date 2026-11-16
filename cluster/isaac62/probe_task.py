@@ -134,6 +134,11 @@ def main():
         if SimulationManager.get_active_physics_engine() != 'physx':
             raise RuntimeError('Task migration must preserve the PhysX engine')
         robot = base.scene['robot']
+        visual = None
+        if contributed_button:
+            from dreamvla_drawer_button.button_visual import ButtonTaskVisual, manifest
+            visual = ButtonTaskVisual(base)
+            receipt['button_visual_manifest'] = manifest()
         if not isinstance(robot.data.joint_pos, torch.Tensor):
             raise TypeError('Project asset interface must preserve Torch tensors')
         receipt['joint_names'] = list(robot.joint_names)
@@ -171,6 +176,9 @@ def main():
 
         with torch.inference_mode():
             obs, _ = env.reset(seed=17)
+        if visual is not None:
+            visual.reset()
+            receipt.setdefault('button_visual_samples', []).append(visual.update())
         finite(obs, 'reset_observations')
         def check_contact_order():
             if not (contributed_drawer or contributed_button):
@@ -322,6 +330,10 @@ def main():
                 terminated_count += int(terminated.sum().item())
                 truncated_count += int(truncated.sum().item())
                 before = SimulationManager.get_num_physics_steps()
+                if visual is not None:
+                    sample = visual.update()
+                    if step in {0, args.steps-1}:
+                        receipt.setdefault('button_visual_samples', []).append(sample)
                 pixels = rgb(env.render(), 'third_person')
                 if video is None:
                     height, width = pixels.shape[:2]
@@ -368,6 +380,9 @@ def main():
         # Save the stepped trace first so a reset failure retains its evidence.
         with torch.inference_mode():
             obs, _ = env.reset(seed=17)
+        if visual is not None:
+            visual.reset()
+            receipt.setdefault('button_visual_samples', []).append(visual.update())
         finite(obs, 'final_reset_observations')
         receipt['steps_completed'] = len(roots)
         assert all(check['passed'] for check in receipt.get('camera_mount_checks', [])), (
