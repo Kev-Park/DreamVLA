@@ -630,8 +630,48 @@ target SDK; this tests importer preservation within 6.2, not cross-SDK solver
 identity or task performance. The expected missing-explicit-actuator warnings
 remain because only the first joint has an actuator configuration. Receipt/log:
 `isaac62_urdf_extended_runtime_d69246e/`. All fixture workers, reservations and
-account-owned GPU contexts are verified released. Non-cardinal support and the
-broader inertia-frame gates remain incomplete.
+account-owned GPU contexts are verified released. Non-cardinal support was still
+incomplete at this stage; its repair is recorded below. Broader inertia-frame
+coverage remains open.
+
+### Non-cardinal mimic preservation (2026-11-16)
+
+The original SDK 5.1 control at `27b4dc3` establishes usable physics for the
+original oblique-axis fixture: 240 imported-gain steps, about 0.78538 rad hinge
+excursion, finite joint/body state and exit zero. Both identical original copies
+match exactly. Its empty axis tokens therefore do not justify dropping this
+path during migration. Original receipt:
+`isaac51_urdf_noncardinal_original_27b4dc3/receipt.json`.
+
+Fix `ee1396a` follows the pinned C++ `getJointAxis`/`configureMimicAPI` behavior:
+ordered float32 epsilon checks identify nearly cardinal axes; genuinely oblique
+axes use rotX in the reoriented joint frame. The modern asset retains its valid
+X token rather than copying the original empty token. Original gearing, offset,
+reference-axis fallback and expanded limits are retained. The nonstandard
+`physxMimicJoint:rot:` frequency/damping prefix is preserved; those values are not
+moved into `rotX`, which would activate different constraint settings. The
+live receipt confirms rot-prefix values are authored while rotX frequency and
+damping remain un-authored schema defaults of zero. Converter cache version 12
+invalidates earlier compatibility assets.
+
+The fresh target fixture completes all four extended conversions. Its paired
+240-step response test passes oblique mimic plus the prismatic PD, prismatic
+natural-frequency and three-joint mimic regressions. Every joint and body is
+compared, and all effective gains and velocity limits match exactly. For the
+oblique case, maximum joint error is 5.96046e-8 rad, body-position error
+2.98023e-7 m and quaternion-component error 3.46452e-7. Evidence:
+`isaac62_urdf_options_ee1396a/receipt.json` and
+`isaac62_urdf_extended_runtime_ee1396a/receipt.json`.
+
+Comparing the original SDK 5.1 trace directly to the repaired SDK 6.2 trace also
+passes the same gates for this one fixture; report:
+`noncardinal_cross_sdk_response_ee1396a.json`. This is bounded numerical evidence,
+not a claim of general solver identity or task success. Existing unresolved
+visual-reference and intentionally incomplete actuator-configuration warnings
+remain in the original/paired logs; no mimic/constraint parser error is logged.
+All owned workers, reservations and GPU contexts are verified released. Merged,
+rotated and non-diagonal mass-frame coverage and other documented migration
+requirements remain open.
 
 ### Nested contacts and actual SONIC batching (2026-11-16)
 
