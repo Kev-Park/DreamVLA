@@ -16,6 +16,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--legacy-usd', type=Path, required=True)
     parser.add_argument('--modern-usd', type=Path, required=True)
+    parser.add_argument('--state-info', type=Path, required=True,
+                        help='Original converted dataset metadata defining the GR00T joint order')
     parser.add_argument('--output', type=Path, required=True)
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
@@ -71,6 +73,44 @@ def main():
                       preservation_pass=left.keys() == right.keys() and legacy['joint_names'] == modern['joint_names']
                       and max(errors.values()) < 1e-6 and max(inertia_errors.values()) < 1e-6 and max(com_errors.values()) < 1e-6,
                       steps=16)
+        # Keep the strict raw-order result above. Independently exercise the
+        # actual named interfaces used by PPO, collection and finger control.
+        from types import SimpleNamespace
+        from isaaclab.envs import mdp
+        from dreamvla_drawer_button.isaac.motion_tracking_open_drawer_env import ActionsCfg, ObservationsCfg
+        names = json.loads(args.state_info.read_text())['features']['observation.state']['names']
+        assert len(names) == len(set(names)) == 43
+        values = {name: (index+1)*0.001 for index, name in enumerate(names)}
+        expected_q = torch.tensor([[values[name] for name in names]], device=args.device)
+        io = {}
+        for label, robot in robots.items():
+            env = SimpleNamespace(scene={'robot': robot}, num_envs=1, device=args.device, sim=sim)
+            raw = torch.tensor([[values[name] for name in robot.joint_names]], device=args.device)
+            robot.write_joint_state_to_sim(raw, torch.zeros_like(raw))
+            ids, resolved = robot.find_joints(names, preserve_order=True)
+            assert list(resolved) == names
+            q = robot.data.joint_pos[:, ids]
+            assert torch.equal(q, expected_q), 'Canonical dataset state changed'
+            obs_cfg = ObservationsCfg().policy.joint_pos.params['asset_cfg'].copy()
+            obs_cfg.resolve(env.scene)
+            policy_obs = mdp.joint_pos_rel(env, obs_cfg)
+            row = dict(canonical_state=q.cpu().tolist(), ppo_joint_pos=policy_obs.cpu().tolist(), hands={})
+            action_cfg = ActionsCfg()
+            for side in ('left', 'right'):
+                hand_names = [name for name in names if name.startswith(side+'_hand_')]
+                hand_ids, resolved = robot.find_joints(hand_names, preserve_order=True)
+                assert list(resolved) == hand_names and len(hand_ids) == 7
+                cfg = getattr(action_cfg, side+'_hand_action')
+                term = cfg.class_type(cfg, env)
+                commands = []
+                for value in (-1., 1.):
+                    term.process_actions(torch.full((1, 1), value, device=args.device))
+                    term.apply_actions()
+                    commands.append(robot.data.joint_pos_target[0, hand_ids].cpu().tolist())
+                row['hands'][side] = commands
+            io[label] = row
+        assert io['legacy'] == io['modern'], 'Named model/hand interfaces changed'
+        report.update(named_io_pass=True, named_io=io, raw_joint_order_equal=legacy['joint_names'] == modern['joint_names'])
     except BaseException:
         report['error'] = traceback.format_exc()
         raise
