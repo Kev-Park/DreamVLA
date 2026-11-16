@@ -42,6 +42,8 @@ def scene(task):
         if task == "standing_button"
         else None,
         camera=dict(
+            # Logical mount-frame identifier retained for archived v1 records;
+            # runtime_camera_prim_path records the resolved physical USD path.
             prim="Robot/d435_link/Camera",
             resolution=[640, 480],
             pos=[0.05, 0, 0],

@@ -212,10 +212,25 @@ def main():
             actual_q = camera.quat_w_opengl
             quat_error = float(torch.minimum((actual_q-expected_q).abs().amax(-1),
                                             (actual_q+expected_q).abs().amax(-1)).max())
-            assert pos_error < 1e-5 and quat_error < 1e-5, ('Physical camera mount mismatch', pos_error, quat_error)
+            from isaacsim.core.prims import XFormPrim
+            parent_view = XFormPrim(cfg.scene.camera_robot.prim_path.rsplit('/', 2)[0],
+                                    reset_xform_properties=False)
+            parent_view.initialize()
+            def values(pose):
+                return [x.cpu().tolist() if isinstance(x, torch.Tensor) else np.asarray(x).tolist() for x in pose]
+            diagnostics = dict(parent_physx=[parent_pos.cpu().tolist(), parent_q.cpu().tolist()],
+                               parent_usd=values(parent_view.get_world_poses()),
+                               parent_fabric=values(parent_view.get_world_poses(usd=False)),
+                               camera_local=values(base.scene['camera_robot']._view.get_local_poses()),
+                               legacy_context_physics_view=base.sim.physics_sim_view is not None,
+                               manager_physics_view=SimulationManager.get_physics_sim_view() is not None)
             receipt.setdefault('camera_mount_checks', []).append(dict(
                 num_envs=base.num_envs, parent=parent, prim_path=cfg.scene.camera_robot.prim_path,
-                maximum_position_error_m=pos_error, maximum_quaternion_component_error=quat_error))
+                maximum_position_error_m=pos_error, maximum_quaternion_component_error=quat_error,
+                expected_positions=expected_pos.cpu().tolist(), actual_positions=camera.pos_w.cpu().tolist(),
+                expected_quaternions_opengl=expected_q.cpu().tolist(), actual_quaternions_opengl=actual_q.cpu().tolist(),
+                passed=pos_error < 1e-5 and quat_error < 1e-5, diagnostics=diagnostics))
+            assert pos_error < 1e-5 and quat_error < 1e-5, ('Physical camera mount mismatch', pos_error, quat_error)
         receipt['pid'] = os.getpid()
         inventory = subprocess.run(['nvidia-smi', '-q', '-x'], capture_output=True,
                                    text=True, check=True, timeout=20)
