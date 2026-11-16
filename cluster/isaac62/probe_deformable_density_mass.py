@@ -39,7 +39,7 @@ def main():
         import isaaclab
         import isaaclab.sim as sim_utils
         from isaaclab.assets import DeformableObject, DeformableObjectCfg
-        from pxr import UsdShade
+        from pxr import Gf, UsdGeom, UsdShade
         report['isaaclab_source'] = isaaclab.__file__
         torch.set_num_threads(1)
         assert 0 < args.dt <= .005
@@ -73,13 +73,19 @@ def main():
             material = None if material_density is None else sim_utils.DeformableBodyMaterialCfg(
                 youngs_modulus=50000., poissons_ratio=.3, density=material_density)
             spawn = sim_utils.MeshCuboidCfg(size=(.2, .2, .2),
-                scale=(1.2, .9, 1.1) if args.rotated else (1., 1., 1.),
                 deformable_props=sim_utils.DeformableBodyPropertiesCfg(
                     simulation_hexahedral_resolution=3, solver_position_iteration_count=4),
                 physics_material=material, mass_props=sim_utils.MassPropertiesCfg(mass=mass, density=density))
             cubes[name] = DeformableObject(DeformableObjectCfg(prim_path='/World/'+name, spawn=spawn,
                 init_state=DeformableObjectCfg.InitialStateCfg(pos=(index, 0, 1),
                     rot=(.9238795325, 0., 0., .3826834324) if args.rotated else (1., 0., 0., 0.))))
+            if args.rotated:
+                root_prim = sim.stage.GetPrimAtPath('/World/'+name)
+                scale = root_prim.GetAttribute('xformOp:scale')
+                if scale:
+                    scale.Set(Gf.Vec3f(1.2, .9, 1.1))
+                else:
+                    UsdGeom.Xformable(root_prim).AddScaleOp().Set(Gf.Vec3f(1.2, .9, 1.1))
             configs[name] = dict(body_mass=mass, body_density=density, material_density=material_density)
         sim.reset()
         original = {name: cube.data.nodal_state_w.clone() for name, cube in cubes.items()}
