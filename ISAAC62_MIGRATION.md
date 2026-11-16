@@ -150,6 +150,51 @@ with omitted materials and multi-instance private defaults still require their
 own coverage. Non-neutral damping support, exact physical snapshot replay,
 contributed horizon review and user appearance review remain open.
 
+## Multi-instance and saved-USD implicit defaults (2026-11-16)
+
+The production regex spawner now has actual two-body/shared-view coverage for
+omitted materials, both with normal density and a1300kg/m3 override. Both cases
+complete12steps/three affine strains with finite simulation/collision stress,
+retain material_physx_view=None, and assert unchanged shared scene-material
+attributes. Each body's compatibility-default binding is verified. Receipts are
+local in `isaac62_material_default_multi_e1fd6cc/`.
+
+The isolated cooked-volume USD converter now supplies the same private legacy
+default when no deformable physics material was bound. The test derives an
+unbound fixture from the genuine saved5.1 cube stage, without changing that input.
+It preserves all cooked node/element counts, mass, gravity response and the None
+public material view, then exercises20steps and known affine strain. Maximum
+gradient errors are2.21e-6/2.49e-5 for simulation/collision; stress errors are
+450.1/1876.9Pa for the50MPa default. Gradient tolerance remains1e-4. Stress uses
+the original normalized tolerance2e-4 times Young's modulus: the original50kPa
+material case still has10Pa, while the50MPa default has10kPa. No existing failed
+gate was waived. This is a derived fixture, not a new production success result.
+
+Compatibility materials choose an unused prim name. A pre-existing material at
+the preferred name remains intact, and the new material is named with a suffix.
+The final fixture also binds that existing material for visual/all-purpose use:
+USD physics-purpose lookup can fall back to it, but it contains no elasticity.
+Conversion now distinguishes visual-only fallback from an actual deformable
+physics binding, retains the visual binding and supplies a separate physics
+binding. Bindings to another physics-material type are rejected before mutation
+instead of guessing their semantics. Seven actual anonymous-stage loss-prevention
+checks pass with byte-identical before/after layers, including that new guard.
+
+Source hashes are independently rechecked after runtime and before transfer.
+All21newresult files are pulled and SHA-256 verified under
+`out/isaac62_migration/isaac62_material_default_multi_e1fd6cc/`,
+`isaac62_legacy_default_usd_015c1f4/`, `isaac62_legacy_default_usd_1bc59b5/` and
+`isaac62_legacy_default_usd_d2efb2b/`. The last receipt verifies both the existing
+material and visual binding explicitly. All jobs exited zero, no account GPU
+contexts remain, and reservations are empty.
+
+Remote tips were checked again: Izat remains14c979c and locomotion remainsbb9d874.
+Both are confirmed ancestors of currentg1; no newer contribution on those branches
+was omitted. Evidence is `integrated_parent_ancestry_20261116.json`. These passes
+do not resolve non-neutral dampingScale, density-only saved-body mass conversion,
+exact physical snapshot continuity, contributed horizon review or user visual
+review, and do not claim every arbitrary USD material arrangement is supported.
+
 ## Recorded parents
 
 - g1: `0505979bf6058b772edb1e7436bb757461aba88f`
