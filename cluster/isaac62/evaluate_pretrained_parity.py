@@ -16,7 +16,7 @@ import traceback
 def main():
     base = Path.home()/'kevin'
     root = Path(__file__).resolve().parents[2]
-    output = base/'eval_videos/isaac62_expert_parity_20261116'
+    output = base/'eval_videos/isaac62_expert_parity_20261116_v2'
     output.mkdir(exist_ok=False)
     os.sched_setaffinity(0, {0, 1, 2, 3})
     owner = str(os.getpid())
@@ -65,7 +65,7 @@ def main():
                 command = [python, str(root/'cluster/isaac62/run_expert_entrypoint.py'),
                            '--entrypoint', str(source/'Training/scripts/reinforcement_learning/rsl_rl/eval_sonic_adapter.py'),
                            '--receipt', str(run_dir/'entrypoint.json'), '--', '--headless',
-                           '--device', 'cuda:0', '--num_envs', '100', '--num_episodes', '500',
+                           '--device', 'cuda:0', '--num_envs', '500', '--num_episodes', '500',
                            '--max_steps', '10000', '--seed', '0',
                            '--task', 'Isaac-Motion-Tracking-Pick-HOI-v0', '--waist-dof', '29',
                            '--sonic-pt', str(base/'sonic/sonic_release_3pt_heading_wrist_81-20260415_051436_model_step_100000'),
