@@ -715,7 +715,17 @@ def main():
     )
     trajectory = {name: [] for name in ("root_pos", "root_quat", "joint_pos", "ref_order_joint_pos",
                                        "ref_root_pos", "ref_root_quat", "ref_joint_pos",
-                                       "motion_time", "motion_duration")}
+                                       "motion_time", "motion_duration", "done")}
+    trace_object = False
+    trace_hand_bid = None
+    if args_cli.traj_dump:
+        trace_object = "object" in env.unwrapped.scene.keys()
+        if trace_object:
+            trajectory.update(object_pos=[], object_quat=[])
+        hand_ids = env.unwrapped.scene["robot"].find_bodies("right_wrist_yaw_link")[0]
+        if hand_ids:
+            trace_hand_bid = hand_ids[0]
+            trajectory.update(wrist_pos=[], wrist_quat=[])
     if args_cli.reference_playback:
         _write_reference_pose(env, ref_joint_map, device)  # frame 0 = reference at reset
         flush_render(env)  # camera flush, no physics step (was 2 raw app pumps)
@@ -772,7 +782,14 @@ def main():
                           "ref_root_pos": reference["root_pos"][0],
                           "ref_root_quat": reference["root_rot"][0],
                           "ref_joint_pos": reference["dof_pos"][0], "motion_time": motion_time[0],
-                          "motion_duration": unw.motion_lib.get_motion_length(unw.motion_ids)[0]}
+                          "motion_duration": unw.motion_lib.get_motion_length(unw.motion_ids)[0],
+                          "done": dones[0]}
+                if trace_object:
+                    values.update(object_pos=unw.scene["object"].data.root_pos_w[0]-unw.scene.env_origins[0],
+                                  object_quat=unw.scene["object"].data.root_quat_w[0])
+                if trace_hand_bid is not None:
+                    values.update(wrist_pos=robot.data.body_pos_w[0, trace_hand_bid]-unw.scene.env_origins[0],
+                                  wrist_quat=robot.data.body_quat_w[0, trace_hand_bid])
                 for name, value in values.items():
                     trajectory[name].append(value.detach().cpu().numpy().copy())
 
