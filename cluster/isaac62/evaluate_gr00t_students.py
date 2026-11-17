@@ -61,6 +61,19 @@ def main():
                 env.update(HS_REWORK_CLOSE_ON_ARRIVAL='1', HS_REWORK_ARRIVE_FINGER_D='0',
                            HS_REWORK_ARRIVE_D='0.08', HS_REWORK_PALM_NORMAL='0',
                            HS_REWORK_PALM_REACH='0.07', HS_PALM_NORMAL_SIGN='+1')
+            packages = [str(p) for p in (root/'Training/source').iterdir()
+                        if p.is_dir() and (p/p.name/'__init__.py').is_file()]
+            packages += [str(base/'GR00T-WholeBodyControl'),
+                         str(root/'Training/scripts/reinforcement_learning/rsl_rl')]
+            env['PYTHONPATH'] = os.pathsep.join(packages)
+            # These feature imports require no running simulator. Catch incomplete
+            # deployments before loading a model or compiling renderer shaders.
+            preflight = subprocess.run(
+                [sys.executable, '-c', 'import vla_sonic.obs_to_policy; import vla_sonic.gr00t_service'],
+                env=env, capture_output=True, text=True, timeout=120)
+            (output/'import_preflight.log').write_text(preflight.stdout+preflight.stderr)
+            if preflight.returncode:
+                raise RuntimeError('Offline student feature imports failed; inspect import_preflight.log')
             row = dict(task=task, checkpoint=str(checkpoint), started=time.time(), shards=[],
                        hs_settings={k:v for k,v in env.items() if k.startswith('HS_')})
             row['reference_sha256'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -89,9 +102,6 @@ def main():
                     time.sleep(1)
                 row['checkpoint_identity'] = json.loads((model_dir/'ready.json').read_text())['checkpoint']
                 save()
-                packages = [str(p) for p in (root/'Training/source').iterdir()
-                            if p.is_dir() and (p/p.name/'__init__.py').is_file()]
-                env['PYTHONPATH'] = os.pathsep.join(packages)
                 for shard in range(4):
                     ids = source/f'eval_ids{shard}.txt'
                     command = [sys.executable, str(root/'cluster/isaac62/run_expert_entrypoint.py'),
@@ -110,9 +120,12 @@ def main():
                     with (output/f'eval{shard}.log').open('w') as log:
                         result = subprocess.run(command, cwd=base/'DreamVLA/Training', env=env,
                                                 stdout=log, stderr=subprocess.STDOUT, timeout=21600)
-                    item.update(returncode=result.returncode, finished=time.time())
+                    entry_path = output/f'entrypoint{shard}.json'
+                    entry = json.loads(entry_path.read_text()) if entry_path.exists() else {}
+                    text = (output/f'eval{shard}.log').read_text(errors='replace')
+                    item.update(returncode=result.returncode, finished=time.time(), entrypoint=entry)
                     save()
-                    if result.returncode:
+                    if result.returncode or not entry.get('completed') or 'VLA + SONIC EVAL SUMMARY' not in text:
                         raise RuntimeError(f'{task} shard {shard} failed: {result.returncode}')
             worker.terminate()
             worker.wait(timeout=30)
