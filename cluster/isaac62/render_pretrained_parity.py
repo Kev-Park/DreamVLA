@@ -1,5 +1,6 @@
 """Render the evaluated experts on a common reference selected by recorded held metrics."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -14,7 +15,9 @@ def main():
     root = Path(__file__).resolve().parents[2]
     output = base/'eval_videos/isaac62_expert_parity_20261116_v2'
     evaluation = json.loads((output/'receipt.json').read_text())
-    assert evaluation['completed'], 'Complete the production comparisons first'
+    audit = json.loads((output/'audit.json').read_text())
+    assert audit['completed'], 'Complete and numerically audit all production comparisons first'
+    assert audit['receipt_content_sha256'] == hashlib.sha256(json.dumps(evaluation, sort_keys=True).encode()).hexdigest()
     videos = output/'videos'
     videos.mkdir(exist_ok=False)
     os.sched_setaffinity(0, {0, 1, 2, 3})

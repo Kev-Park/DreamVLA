@@ -60,6 +60,7 @@ def main():
                             if p.is_dir() and (p/p.name/'__init__.py').is_file()]
                 env['PYTHONPATH'] = os.pathsep.join(packages)
                 checkpoint = base/'residuals'/ckpt
+                supports_episode_dump = 'HS_EVAL_DUMP_EPS' in (source/'Training/scripts/reinforcement_learning/rsl_rl/eval_sonic_adapter.py').read_text()
                 refs = base/'ref_motions'/pool
                 assert len(list(refs.glob('*.pkl'))) == 100
                 command = [python, str(root/'cluster/isaac62/run_expert_entrypoint.py'),
@@ -77,7 +78,8 @@ def main():
                            checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
                            reference_sha256={p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(refs.glob('*.pkl'))},
                            hs_settings={k:v for k,v in env.items() if k.startswith('HS_')},
-                           pythonpath=env['PYTHONPATH'], historical_held_success_pct=historical)
+                           pythonpath=env['PYTHONPATH'], historical_held_success_pct=historical,
+                           supports_episode_dump=supports_episode_dump)
                 receipt['runs'].append(row)
                 save()
                 with (run_dir/'eval.log').open('w') as log:
@@ -88,7 +90,9 @@ def main():
                 row['entrypoint'] = entry
                 row['metric_lines'] = [s for s in (run_dir/'eval.log').read_text().splitlines()
                                        if '[PHYS] held (lift>=5cm' in s or s.startswith('[MPJPE] ')]
-                row['completed'] = result.returncode == 0 and entry.get('completed', False) and (run_dir/'episodes.npz').exists()
+                row['completed'] = result.returncode == 0 and entry.get('completed', False) and (
+                    (run_dir/'episodes.npz').exists() if supports_episode_dump else
+                    any('[PHYS] held (lift>=5cm' in line for line in row['metric_lines']))
                 save()
                 # Keep the independent counterpart test even if one SDK fails.
         receipt['completed'] = all(r['completed'] for r in receipt['runs'])
