@@ -15,16 +15,44 @@ import time
 import traceback
 
 
+def completed_shard_files(output, shard, ids):
+    """Require a full summary and one finite closed trajectory per requested ID."""
+    import numpy as np
+    log = output/f'eval{shard}.log'
+    if not log.exists():
+        return None
+    text = log.read_text(errors='replace')
+    assert 'VLA + SONIC EVAL SUMMARY' in text and 'Traceback' not in text
+    count = re.search(r'Completed episodes:\s*(\d+)', text)
+    assert count and int(count[1]) == len(ids)
+    files = sorted(output.glob(f'b{shard}_ep*_m*_traj.npz'))
+    actual = [int(re.search(r'_m(\d+)_traj.npz$', p.name)[1]) for p in files]
+    assert sorted(actual) == sorted(ids), 'Incomplete or duplicated reference coverage'
+    for path in files:
+        with np.load(path, allow_pickle=False) as data:
+            for key in ['obj_pos', 'obj_quat', 'root_pos', 'root_quat',
+                        'wrist', 'body_pos', 'ref_body_pos', 'ref_root_pos']:
+                assert len(data[key]) > 0 and np.isfinite(data[key]).all(), (path, key)
+    return [log, *files]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gpu', type=int, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--resume-from', type=Path,
+                        help='Reuse only independently audited complete shards from a closed run.')
     args = parser.parse_args()
     base = Path.home()/'kevin'
     root = Path(__file__).resolve().parents[2]
     os.sched_setaffinity(0, {0, 1, 2, 3})
     args.output.mkdir(parents=True, exist_ok=False)
     receipt = dict(pid=os.getpid(), started=time.time(), completed=False, runs=[])
+    prior = None
+    if args.resume_from:
+        prior = json.loads((args.resume_from/'receipt.json').read_text())
+        assert prior.get('reservation_released'), 'Prior run has not released its allocation'
+        receipt['resume_from'] = str(args.resume_from)
     slots = [sys.executable, str(root/'cluster/gpu_slots.py')]
     owner = str(os.getpid())
     reserved = False
@@ -103,9 +131,27 @@ def main():
                         raise TimeoutError('Model service readiness exceeded 900 seconds')
                     time.sleep(1)
                 row['checkpoint_identity'] = json.loads((model_dir/'ready.json').read_text())['checkpoint']
+                if prior:
+                    old = next((r for r in prior['runs'] if r['task'] == task), None)
+                    if old:
+                        for key in ['reference_sha256', 'hs_settings']:
+                            assert old[key] == row[key], 'Resume recipe differs: '+key
+                        assert old['checkpoint_identity']['files_sha256'] == row['checkpoint_identity']['files_sha256']
                 save()
                 for shard in range(4):
                     ids = source/f'eval_ids{shard}.txt'
+                    if prior:
+                        files = completed_shard_files(args.resume_from/task, shard,
+                                                      list(map(int, ids.read_text().split())))
+                        if files:
+                            for file in files:
+                                (output/file.name).symlink_to(file.resolve(strict=True))
+                            row['shards'].append(dict(shard=shard, completed=True,
+                                reused_from=str(args.resume_from/task),
+                                proof='Complete summary, exact reference coverage, finite original trajectories',
+                                sha256={f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in files}))
+                            save()
+                            continue
                     command = [sys.executable, str(root/'cluster/isaac62/run_expert_entrypoint.py'),
                                '--entrypoint', str(root/'Training/scripts/reinforcement_learning/rsl_rl/eval_vla_sonic.py'),
                                '--receipt', str(output/f'entrypoint{shard}.json'), '--',

@@ -42,8 +42,8 @@ def main():
     finally:
         result['finished'] = time.time()
         args.receipt.write_text(json.dumps(result, indent=2)+'\n')
-        if namespace and 'simulation_app' in namespace:
-            app = namespace['simulation_app']
+        app = (namespace.get('simulation_app', namespace.get('_APP')) if namespace else None)
+        if app is not None:
             kwargs = dict(wait_for_replicator=False)
             if 'exit_code' in inspect.signature(app.close).parameters:
                 kwargs['exit_code'] = 0 if result['completed'] else 1

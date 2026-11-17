@@ -758,9 +758,11 @@ def main() -> int:
         np.savez(args.grasp_dump, **flat)
         print(f"[grasp-dump] wrote {len(grasp_dump['episodes'])} episodes -> {args.grasp_dump}")
     env.close()
-    _APP.close()
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    finally:
+        _APP.close()
