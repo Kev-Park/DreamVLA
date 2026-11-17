@@ -68,7 +68,10 @@ def main():
             # These feature imports require no running simulator. Catch incomplete
             # deployments before loading a model or compiling renderer shaders.
             preflight = subprocess.run(
-                [sys.executable, '-c', 'import isaac_utils.rotations; import vla_sonic.obs_to_policy; import vla_sonic.gr00t_service'],
+                [sys.executable, '-c',
+                 'import isaac_utils.rotations; import vla_sonic.obs_to_policy; '
+                 'import vla_sonic.gr00t_service; import pickle; from pathlib import Path; '
+                 '[pickle.loads(p.read_bytes()) for p in Path('+repr(str(refs))+').glob("*.pkl")]'],
                 env=env, capture_output=True, text=True, timeout=120)
             (output/'import_preflight.log').write_text(preflight.stdout+preflight.stderr)
             if preflight.returncode:
