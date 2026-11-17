@@ -63,13 +63,12 @@ def main():
                            HS_REWORK_PALM_REACH='0.07', HS_PALM_NORMAL_SIGN='+1')
             packages = [str(p) for p in (root/'Training/source').iterdir()
                         if p.is_dir() and (p/p.name/'__init__.py').is_file()]
-            packages += [str(base/'GR00T-WholeBodyControl'),
-                         str(root/'Training/scripts/reinforcement_learning/rsl_rl')]
+            packages += [str(root/'Training/scripts/reinforcement_learning/rsl_rl')]
             env['PYTHONPATH'] = os.pathsep.join(packages)
             # These feature imports require no running simulator. Catch incomplete
             # deployments before loading a model or compiling renderer shaders.
             preflight = subprocess.run(
-                [sys.executable, '-c', 'import vla_sonic.obs_to_policy; import vla_sonic.gr00t_service'],
+                [sys.executable, '-c', 'import isaac_utils.rotations; import vla_sonic.obs_to_policy; import vla_sonic.gr00t_service'],
                 env=env, capture_output=True, text=True, timeout=120)
             (output/'import_preflight.log').write_text(preflight.stdout+preflight.stderr)
             if preflight.returncode:
