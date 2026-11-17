@@ -2798,3 +2798,20 @@ all 500 episodes and 362 holds agree. The first coordinator's aggregate
 execution: all four evaluator entrypoints completed with return code zero,
 and the separate numeric audit passes. The harness now explicitly records
 whether the selected historical evaluator supports episode dumps.
+
+Four paired, overlay-free first-episode videos are also archived under the local
+evidence directory's `videos/`. Both migrated expert episodes meet the geometric
+grasp-and-hold criterion. The legacy static episode also meets it; the legacy
+walking episode does not. The latter is retained and explicitly labelled rather
+than represented as a success. Video duration, frame counts, finite traces and
+source-transfer SHA256 hashes were checked; motion quality requires user review.
+
+A separate migrated production-evaluator check on the rendered walking reference
+(`pick_11031.pkl`, motion index 48, seed 0, one environment) also holds successfully:
+1/1 episode, world/root-relative MPJPE 5.55865/3.75525 cm over 609 frames. Playback
+has a zero-action camera warm-up step that production evaluation does not. This
+initialization difference was identified but not changed, and is not established
+as the cause of any individual failed legacy playback. No policy, decoder,
+calibration or dynamics correction was made for these comparisons. All test
+processes exited, reservations were released and no test GPU contexts remained
+in the final resource audit.
