@@ -2754,3 +2754,47 @@ These are element-mean diagnostic and buffer-convention checks with differing
 cooked meshes, not solver-trajectory, collision-quaternion or task-success parity.
 No simulator nodal state, material, policy, reward or episode horizon is changed.
 The terminal audit finds no owned GPU contexts or reservations.
+
+### Pretrained pick and walking expert performance comparison (2026-11-16)
+
+The earlier one-reference visual fixtures were not population performance tests.
+The static fixture used af60v7, whereas this comparison uses the final af60v8c
+expert. Production evaluations now cover 500 completed episodes per expert and
+SDK, with all 100 held-out references covered in each run:
+
+| Expert | Isaac 5.1 held >=5cm | Isaac 6.2 held >=5cm | 5.1 world/root MPJPE (cm) | 6.2 world/root MPJPE (cm) |
+| --- | --- | --- | --- | --- |
+| af60v8c model_8998, static pick | 447/500 (89.4%) | 450/500 (90.0%) | Not emitted by the original evaluator | 3.31976 / 2.94895 |
+| T20_max_v3 model_4500, walk+pick | 362/500 (72.4%) | 366/500 (73.2%) | 5.31334 / 3.31474 | 5.32515 / 3.32649 |
+
+These runs show no evident expert success degradation under the tested migration.
+They do not establish exact trajectory equivalence, GR00T performance parity, or
+drawer/button expert performance. The historical walking result was 1529/2000
+(76.45%); both fresh 500-episode runs are lower than that historical estimate.
+The matching fresh legacy control is the direct migration comparator.
+
+Both SDKs use task `Isaac-Motion-Tracking-Pick-HOI-v0`, seed 0, 500 environments,
+native SONIC encoder/decoder, 29 DOFs, residual scale 0.1 and `additive_free`.
+Each expert retains its established HS_REWORK recipe; walking additionally
+retains palm-arrival closure and the original palm settings. There is no
+finger-output override, decoder correction, or skip-start argument. These are
+full production episodes, not fixed-length smoke rollouts. Success retains the
+original requirement: lift at least 5cm and remain within 0.15m of the simulated
+palm for at least 25 consecutive steps. The exact flags, commands, interpreter,
+source commits, checkpoint hashes and reference hashes are recorded in receipts.
+
+The materialized robot USD is identical to the migrated repository's tracked
+Git LFS object (SHA256 `d9518b46888096a4a7463db72387e58d36f4a1b8b3a790abd8923f1568be31d9`).
+The isolated checkout contains its LFS pointer, so both evaluations deliberately
+resolve assets from the original materialized asset directory. No geometry was
+substituted between SDKs.
+
+Local evidence is under `out/isaac62_expert_parity_20261116/`: `results.json`,
+`audit.json`, original run receipts, logs and supported per-episode NPZ files.
+The original walking evaluator has no NPZ exporter. Its aggregate count was
+independently verified by summing its per-reference episode/success table;
+all 500 episodes and 362 holds agree. The first coordinator's aggregate
+`completed=false` reflects that unsupported artifact, not failed policy
+execution: all four evaluator entrypoints completed with return code zero,
+and the separate numeric audit passes. The harness now explicitly records
+whether the selected historical evaluator supports episode dumps.
